@@ -20,6 +20,7 @@ repos:
       entry: markdownlint-cli2
       language: system
       files: \.(md|markdown)$
+      exclude: ^CHANGELOG\.md$
       pass_filenames: true
       require_serial: true
 
