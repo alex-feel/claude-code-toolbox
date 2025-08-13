@@ -1,0 +1,111 @@
+name: Lint and Validate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell:
+    name: PowerShell Script Analysis
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install PSScriptAnalyzer
+      shell: powershell
+      run: |
+        Set-PSRepository PSGallery -InstallationPolicy Trusted
+        Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+
+    - name: Run PSScriptAnalyzer
+      shell: powershell
+      run: |
+        $results = Invoke-ScriptAnalyzer -Path ./scripts/windows -Recurse -ReportSummary
+        if ($results) {
+          $results | Format-Table -AutoSize
+          throw "PSScriptAnalyzer found issues"
+        }
+        Write-Host "PowerShell scripts passed analysis" -ForegroundColor Green
+
+  shellcheck:
+    name: Shell Script Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run ShellCheck
+      uses: ludeeus/action-shellcheck@master
+      with:
+        scandir: './scripts'
+        ignore_paths: 'scripts/windows'
+        severity: warning
+
+  markdown:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run markdownlint
+      uses: DavidAnson/markdownlint-cli2-action@v16
+      with:
+        globs: |
+          **/*.md
+          !node_modules/**
+
+  json-yaml:
+    name: JSON/YAML Validation
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate JSON files
+      run: |
+        find . -name "*.json" -type f -not -path "./node_modules/*" | while read file; do
+          echo "Validating $file"
+          python -m json.tool "$file" > /dev/null || exit 1
+        done
+        echo "All JSON files are valid"
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Validate YAML files
+      run: |
+        pip install pyyaml
+        find . -name "*.yml" -o -name "*.yaml" -type f -not -path "./node_modules/*" | while read file; do
+          echo "Validating $file"
+          python -c "import yaml; yaml.safe_load(open('$file'))" || exit 1
+        done
+        echo "All YAML files are valid"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run Trivy security scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'

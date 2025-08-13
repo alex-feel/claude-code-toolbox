@@ -1,0 +1,47 @@
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+    - id: end-of-file-fixer
+      name: End-of-file fixer (non-Python)
+      description: Ensures every *non-Python* file is empty or ends with a single newline
+      exclude: ^.*\.(json|pyi?|py)$
+
+    - id: trailing-whitespace
+      name: Trailing-whitespace (non-Python)
+      description: Trims trailing whitespace in non-Python text files
+      exclude: ^.*\.(pyi?|py)$
+
+- repo: local
+  hooks:
+    - id: markdownlint
+      name: Markdown Lint
+      description: Lint markdown files
+      entry: markdownlint-cli2
+      language: system
+      files: \.(md|markdown)$
+      pass_filenames: true
+      require_serial: true
+
+    - id: psscriptanalyzer
+      name: PSScriptAnalyzer
+      description: Lint PowerShell scripts
+      entry: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/hooks/check-powershell.ps1
+      language: system
+      files: \.ps1$
+      pass_filenames: true
+      require_serial: true
+
+- repo: https://github.com/shellcheck-py/shellcheck-py
+  rev: v0.10.0.1
+  hooks:
+    - id: shellcheck
+      name: Shellcheck
+      description: Lint shell scripts
+      types: [shell]
+      args: [--severity=warning]
+
+- repo: https://github.com/commitizen-tools/commitizen
+  rev: v4.8.3
+  hooks:
+    - id: commitizen
