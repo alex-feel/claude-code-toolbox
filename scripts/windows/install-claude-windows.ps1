@@ -876,7 +876,7 @@ try {
         throw 'Claude Code installation failed with all methods.'
     }
 
-    Write-Info ""
+    # No need for extra output here
     exit 0
 } catch {
     Write-FailureMessage $_.Exception.Message
