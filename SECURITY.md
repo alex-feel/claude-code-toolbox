@@ -11,7 +11,7 @@
 We take security seriously. If you discover a security vulnerability, please follow these steps:
 
 1. **DO NOT** open a public issue
-2. Send details to: [security contact email]
+2. Send details via [GitHub Security Advisories](https://github.com/alex-feel/claude-code-toolbox/security/advisories/new)
 3. Include:
    - Description of the vulnerability
    - Steps to reproduce
