@@ -90,12 +90,17 @@ irm https://claude.ai/install.ps1 | iex
 
 ## macOS
 
-### Automated Installation (Coming Soon)
+### Automated Installation
 
 ```bash
-# Script coming soon
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
 ```
+
+**Features:**
+- Automatically installs Node.js if missing or outdated
+- Installs Claude Code CLI via npm or official installer
+- Configures shell PATH for immediate use
+- Works with zsh, bash, and fish shells
 
 ### Manual Installation
 
@@ -119,7 +124,21 @@ curl -fsSL https://claude.ai/install.sh | sh
 
 ## Linux
 
-### Ubuntu/Debian
+### Automated Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+```
+
+**Features:**
+- Detects your Linux distribution automatically
+- Installs Node.js using the appropriate package manager
+- Installs Claude Code CLI via npm or official installer
+- Works with Ubuntu, Debian, Fedora, RHEL, CentOS, Arch, and more
+
+### Manual Installation
+
+#### Ubuntu/Debian
 
 ```bash
 # Update package list
@@ -188,14 +207,9 @@ npm install -g claude-code
 
 ## Docker
 
-### Using Pre-built Image (Coming Soon)
+### Using Docker
 
-```bash
-docker run -it --rm \
-  -v ~/.config/claude:/root/.config/claude \
-  -v $(pwd):/workspace \
-  claudecode/claude-code
-```
+**Note**: Pre-built images are not yet available. You can build your own image using the Dockerfile below.
 
 ### Building Your Own Image
 
