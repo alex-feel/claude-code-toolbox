@@ -4,7 +4,7 @@ Get up and running with Claude Code in minutes!
 
 ## Installation
 
-### Windows - One Line Install
+### Windows
 
 Open PowerShell and run:
 
@@ -12,10 +12,28 @@ Open PowerShell and run:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')"
 ```
 
-This automatically installs:
-- Git for Windows (if needed)
-- Node.js LTS v18+ (if needed)
-- Claude Code CLI
+### macOS
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
+```
+
+### Linux
+
+Open Terminal and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+```
+
+The installer automatically:
+- Detects your operating system
+- Installs Git (if needed)
+- Installs Node.js LTS v18+ (if needed)
+- Installs Claude Code CLI
+- Configures your environment
 
 ### Verify Installation
 

@@ -35,9 +35,19 @@ The Windows installer automatically:
 - Cached availability checks to prevent redundant attempts
 - Comprehensive PATH refresh for immediate command availability
 
-### macOS and Linux
+### macOS
 
-Coming soon! Check [docs/installing.md](docs/installing.md) for manual installation steps.
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
+```
+
+### Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+```
+
+**Note**: macOS and Linux installers are in beta. For manual installation steps, see [docs/installing.md](docs/installing.md).
 
 ## 📋 Requirements
 
