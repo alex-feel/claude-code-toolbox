@@ -14,6 +14,7 @@ agents/
 │   ├── code-reviewer.md
 │   ├── test-generator.md
 │   ├── doc-writer.md
+│   ├── implementation-guide.md
 │   ├── performance-optimizer.md
 │   ├── security-auditor.md
 │   └── refactoring-assistant.md
@@ -78,9 +79,9 @@ Sub-agents are Markdown files with three parts:
 
 1. **YAML Frontmatter**: Metadata
    - `name`: Identifier for the sub-agent
-   - `description`: When to use this sub-agent
-   - `tools`: Optional comma-separated tool list
-   - `model`: Optional model to use
+   - `description`: When to use this sub-agent (last sentence should specify invocation trigger)
+   - `tools`: Optional comma-separated tool list (supports MCP server shortcuts like `mcp__context7`)
+   - `model`: Optional model to use (opus, sonnet, haiku)
    - `color`: Optional agent color
 
 2. **System Prompt**: Markdown content defining the agent's behavior
@@ -97,6 +98,9 @@ Creates comprehensive test suites with high coverage.
 
 ### Documentation Writer
 Generates and maintains technical documentation.
+
+### Implementation Guide
+Finds and prepares comprehensive implementation guidance using Context7 and authoritative sources.
 
 ### Performance Optimizer
 Analyzes and optimizes code performance.
@@ -122,6 +126,20 @@ Common tool configurations:
 - **Read-only**: `tools: Read, Grep, Glob`
 - **Read-write**: `tools: Read, Write, Edit`
 - **Full access**: `tools: Read, Write, Bash, Edit, Grep, Glob`
+
+### MCP Server Tools
+
+When using MCP (Model Context Protocol) tools, you can specify either individual tools or entire servers:
+
+- **Individual MCP tools**: `mcp__serverName__toolName` (e.g., `mcp__context7__get-library-docs`)
+- **All tools from MCP server**: `mcp__serverName` (e.g., `mcp__context7`)
+
+Example allowing all Context7 tools:
+```yaml
+tools: Glob, Grep, LS, Read, NotebookRead, mcp__context7
+```
+
+This is equivalent to listing all Context7 tools individually but is more concise and maintainable.
 
 ## Documentation
 

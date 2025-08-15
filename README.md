@@ -4,7 +4,51 @@ A community toolbox for Claude Code - automated installers, scripts, agent templ
 
 ## 🚀 Quick Install
 
-### Windows (PowerShell)
+### 🐍 Python Developer Setup
+
+Set up a complete Python development environment with one command:
+
+#### Windows
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1')"
+```
+
+Or using CMD:
+```cmd
+curl -L -o %TEMP%\setup-python.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-python.ps1
+```
+
+#### macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-python-environment.sh | bash
+```
+
+#### Linux
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-python-environment.sh | bash
+```
+
+This automated setup includes:
+- ✨ Claude Code installation
+- 🤖 7 Python-optimized subagents (code review, testing, docs, etc.)
+- 🎯 6 custom slash commands (/commit, /debug, /test, etc.)
+- 📚 Context7 MCP server for up-to-date library documentation
+- 🔧 Comprehensive Python developer system prompt
+- 🚀 Convenience launchers for quick startup
+
+**⚠️ IMPORTANT: After setup, use the simple command:**
+```bash
+claude-python
+```
+That's it! The setup script registers this command globally.
+
+[See the Python Setup Guide](docs/python-setup.md) for complete usage instructions.
+
+---
+
+### Standard Installation
+
+#### Windows (PowerShell)
 
 Run this command in PowerShell (as regular user, it will elevate if needed):
 
@@ -83,10 +127,13 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 
 ## 📚 Documentation
 
+- [Python Setup Guide](docs/python-setup.md) - Complete Python development environment setup
 - [Installation Guide](docs/installing.md) - Detailed installation instructions
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 - [Quick Start](docs/quickstart.md) - Getting started with Claude Code
 - [Sub-agents Guide](docs/agents.md) - Creating specialized AI assistants
+- [System Prompts Guide](system-prompts/README.md) - Comprehensive role-based configurations
+- [Output Styles Guide](docs/output-styles.md) - Transform Claude Code for different professional domains
 - [Slash Commands](docs/slash-commands.md) - Custom command shortcuts
 - [.claude Directory](docs/claude-directory.md) - Project configuration structure
 
@@ -94,13 +141,29 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 
 ```text
 claude-code-toolbox/
-├── scripts/           # Installation and utility scripts
-│   ├── windows/       # Windows PowerShell scripts
-│   ├── linux/         # Linux shell scripts
-│   └── macos/         # macOS shell scripts
-├── agents/            # Agent templates and examples
-├── slash-commands/    # Custom slash command templates
-└── docs/              # Documentation
+├── scripts/                     # Installation and utility scripts
+│   ├── windows/                 # Windows PowerShell scripts
+│   │   ├── install-claude-windows.ps1
+│   │   └── setup-python-environment.ps1
+│   ├── linux/                   # Linux shell scripts
+│   │   ├── install-claude-linux.sh
+│   │   └── setup-python-environment.sh
+│   └── macos/                   # macOS shell scripts
+│       ├── install-claude-macos.sh
+│       └── setup-python-environment.sh
+├── agents/                      # Agent templates and examples
+│   ├── examples/                # Ready-to-use subagents
+│   └── templates/               # Templates for creating new agents
+├── system-prompts/              # Comprehensive system prompts
+│   ├── examples/                # Role-specific configurations
+│   └── templates/               # Templates for custom prompts
+├── output-styles/               # Output style transformations
+│   ├── examples/                # Ready-to-use professional styles
+│   └── templates/               # Templates for creating new styles
+├── slash-commands/              # Custom slash command templates
+│   ├── examples/                # Ready-to-use commands
+│   └── templates/               # Command templates
+└── docs/                        # Documentation
 ```
 
 ## 🤝 Contributing
@@ -123,6 +186,7 @@ This is a community project and is not officially affiliated with Anthropic. Cla
 
 ## ✨ After Installation
 
+### Standard Installation
 Once installed, verify everything works:
 
 ```bash
@@ -135,9 +199,24 @@ Then start using Claude:
 claude
 ```
 
+### Python Developer Setup
+After running the Python setup script:
+
+```bash
+# 1. Verify installation
+claude doctor
+
+# 2. Start Claude with Python configuration - just run:
+claude-python
+
+# That's it! The command is registered globally during setup
+```
+
+**⚠️ Common Mistake:** Running `claude` directly won't load the Python system prompt! Always use `claude-python` command.
+
 For IDE integration:
-- **VS Code**: Run `claude` in the integrated terminal
-- **JetBrains**: Install the Claude Code plugin from Marketplace
+- **VS Code**: Configure terminal to use the launcher script
+- **JetBrains**: Set shell path to the launcher script
 
 ---
 
