@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.1...v1.1.2) (2025-08-15)
+
+
+### Bug Fixes
+
+* prevent early exit in setup-python-environment.ps1 ([c9cd621](https://github.com/alex-feel/claude-code-toolbox/commit/c9cd621129dc8ebfc4d3805cb1c4209d93896786))
+
 ## [1.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.0...v1.1.1) (2025-08-15)
 
 
