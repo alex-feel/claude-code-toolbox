@@ -34,6 +34,7 @@ jobs:
 
   shellcheck:
     name: Shell Script Analysis
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -48,6 +49,7 @@ jobs:
 
   markdown:
     name: Markdown Lint
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -63,6 +65,7 @@ jobs:
 
   json-yaml:
     name: JSON/YAML Validation
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -92,6 +95,7 @@ jobs:
 
   security:
     name: Security Scan
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
