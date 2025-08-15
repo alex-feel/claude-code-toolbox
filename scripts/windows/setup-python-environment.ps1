@@ -204,13 +204,10 @@ Write-Host ""
 Write-Host "Step 6: Configuring Context7 MCP server..." -ForegroundColor Cyan
 
 try {
-    # Find the claude command location (npm global install path)
-    $npmPath = (npm config get prefix 2>$null)
-    if (!$npmPath) {
-        # Fallback to default npm path
-        $npmPath = Join-Path $env:APPDATA "npm"
-    }
+    # npm global packages are always installed in %APPDATA%\npm on Windows
+    $npmPath = Join-Path $env:APPDATA "npm"
 
+    # Look for claude executable in the standard location
     $claudePath = Join-Path $npmPath "claude.ps1"
     $claudeCmd = Join-Path $npmPath "claude.cmd"
 
@@ -223,8 +220,8 @@ try {
     }
 
     if ($claudeExe) {
-        # Run the MCP command with full path
-        $mcpCommand = "& `"$claudeExe`" mcp add --transport http context7 https://mcp.context7.com/mcp"
+        # Run the MCP command with full path, also updating PATH for the subprocess
+        $mcpCommand = "`$env:Path = `"$npmPath;`$env:Path`"; & `"$claudeExe`" mcp add --transport http context7 https://mcp.context7.com/mcp 2>`$null"
 
         $mcpProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
             "-NoProfile",
@@ -239,7 +236,7 @@ try {
             Write-Info "To verify or add manually, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
         }
     } else {
-        Write-Warn "Could not locate claude command"
+        Write-Warn "Could not locate claude command at expected location: $npmPath"
         Write-Info "To add manually after opening a new terminal, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
     }
 } catch {
