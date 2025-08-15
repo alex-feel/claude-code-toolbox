@@ -12,6 +12,8 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
@@ -125,13 +127,16 @@ def download_file(url: str, destination: Path, force: bool = False) -> bool:
         try:
             response = urlopen(url)
             content = response.read()
-        except ssl.SSLError:
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            response = urlopen(url, context=ctx)
-            content = response.read()
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                response = urlopen(url, context=ctx)
+                content = response.read()
+            else:
+                raise
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
@@ -156,13 +161,16 @@ def install_claude() -> bool:
                 try:
                     response = urlopen(installer_url)
                     content = response.read().decode('utf-8')
-                except ssl.SSLError:
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    response = urlopen(installer_url, context=ctx)
-                    content = response.read().decode('utf-8')
+                except urllib.error.URLError as e:
+                    if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                        warning('SSL certificate verification failed, trying with unverified context')
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        response = urlopen(installer_url, context=ctx)
+                        content = response.read().decode('utf-8')
+                    else:
+                        raise
                 tmp.write(content)
                 temp_installer = tmp.name
 

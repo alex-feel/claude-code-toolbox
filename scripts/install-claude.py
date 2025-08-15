@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
@@ -83,14 +85,21 @@ def banner() -> None:
 def run_command(cmd: list, capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
     """Run a command and return the result."""
     try:
+        # Debug: print command being run if not capturing output
+        if not capture_output:
+            info(f'Executing: {", ".join(cmd)}')
         return subprocess.run(
             cmd,
             capture_output=capture_output,
             text=True,
             **kwargs,
         )
-    except FileNotFoundError:
+    except FileNotFoundError as e:
+        error(f'Command not found: {cmd[0]} - {e}')
         return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
+    except Exception as e:
+        error(f'Error running command {cmd[0]}: {e}')
+        return subprocess.CompletedProcess(cmd, 1, '', str(e))
 
 
 def is_admin() -> bool:
@@ -197,13 +206,16 @@ def install_git_windows_download() -> bool:
         try:
             with urlopen(GIT_WINDOWS_URL) as response:
                 html = response.read().decode('utf-8')
-        except ssl.SSLError:
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            with urlopen(GIT_WINDOWS_URL, context=ctx) as response:
-                html = response.read().decode('utf-8')
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(GIT_WINDOWS_URL, context=ctx) as response:
+                    html = response.read().decode('utf-8')
+            else:
+                raise
 
         # Find the installer link
         match = re.search(r'href="([^"]+Git-[\d.]+-64-bit\.exe)"', html)
@@ -221,15 +233,17 @@ def install_git_windows_download() -> bool:
         info(f'Downloading {installer_url}')
         try:
             urlretrieve(installer_url, temp_path)
-        except ssl.SSLError:
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            import urllib.request
-            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-            urllib.request.install_opener(opener)
-            urlretrieve(installer_url, temp_path)
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                urllib.request.install_opener(opener)
+                urlretrieve(installer_url, temp_path)
+            else:
+                raise
 
         # Run installer silently
         info('Running Git installer silently...')
@@ -383,13 +397,16 @@ def install_nodejs_direct() -> bool:
         try:
             with urlopen(NODE_LTS_API) as response:
                 versions = json.loads(response.read())
-        except ssl.SSLError:
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            with urlopen(NODE_LTS_API, context=ctx) as response:
-                versions = json.loads(response.read())
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(NODE_LTS_API, context=ctx) as response:
+                    versions = json.loads(response.read())
+            else:
+                raise
 
         lts_version = None
         for v in versions:
@@ -424,15 +441,17 @@ def install_nodejs_direct() -> bool:
         info(f'Downloading {installer_url}')
         try:
             urlretrieve(installer_url, temp_path)
-        except ssl.SSLError:
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            import urllib.request
-            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
-            urllib.request.install_opener(opener)
-            urlretrieve(installer_url, temp_path)
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                urllib.request.install_opener(opener)
+                urlretrieve(installer_url, temp_path)
+            else:
+                raise
 
         # Install based on OS
         if system == 'Windows':
@@ -602,7 +621,7 @@ def ensure_nodejs() -> bool:
 def install_claude_npm() -> bool:
     """Install Claude Code using npm."""
     # On Windows, check if npm is in Program Files even if not in PATH
-    if platform.system() == 'Windows' and not find_command('npm'):
+    if platform.system() == 'Windows':
         nodejs_path = r'C:\Program Files\nodejs'
         if Path(nodejs_path).exists():
             current_path = os.environ.get('PATH', '')
@@ -610,14 +629,32 @@ def install_claude_npm() -> bool:
                 os.environ['PATH'] = f'{nodejs_path};{current_path}'
                 info(f'Added {nodejs_path} to PATH for npm access')
 
-    if not find_command('npm'):
-        error('npm not found. Please install Node.js with npm')
-        return False
+        # Also check for npm.cmd specifically on Windows
+        npm_cmd = Path(nodejs_path) / 'npm.cmd'
+        if npm_cmd.exists():
+            info(f'Found npm.cmd at {npm_cmd}')
 
-    info('Installing Claude Code CLI via npm...')
+    npm_path = find_command('npm')
+    if not npm_path:
+        # On Windows, try to find npm.cmd explicitly
+        if platform.system() == 'Windows':
+            npm_cmd_path = Path(r'C:\Program Files\nodejs\npm.cmd')
+            if npm_cmd_path.exists():
+                npm_path = str(npm_cmd_path)
+                info(f'Using npm.cmd at {npm_path}')
+            else:
+                error('npm not found. Please install Node.js with npm')
+                return False
+        else:
+            error('npm not found. Please install Node.js with npm')
+            return False
+
+    info(f'Installing Claude Code CLI via npm (npm path: {npm_path})...')
 
     # Try without sudo first (show output for debugging)
-    result = run_command(['npm', 'install', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
+    cmd = [npm_path, 'install', '-g', CLAUDE_NPM_PACKAGE]
+    info(f'Running command: {" ".join(cmd)}')
+    result = run_command(cmd, capture_output=False)
 
     if result.returncode == 0:
         success('Claude Code installed successfully')
@@ -647,14 +684,17 @@ def install_claude_native() -> bool:
         try:
             with urlopen(CLAUDE_INSTALLER_URL) as response:
                 installer_script = response.read().decode('utf-8')
-        except ssl.SSLError:
-            # Fallback: create unverified SSL context for corporate environments
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            with urlopen(CLAUDE_INSTALLER_URL, context=ctx) as response:
-                installer_script = response.read().decode('utf-8')
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                # Fallback: create unverified SSL context for corporate environments
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(CLAUDE_INSTALLER_URL, context=ctx) as response:
+                    installer_script = response.read().decode('utf-8')
+            else:
+                raise
 
         # Save to temp file and execute
         with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
