@@ -64,8 +64,6 @@ A comprehensive system prompt for Python development that includes:
 - `refactoring-assistant` - Code restructuring
 - `security-auditor` - Security vulnerability assessment
 - `test-generator` - Comprehensive test suite creation
-- `technical-docs-expert` - Library documentation retrieval
-- `commits-expert` - Git commit workflow management
 
 ### Frontend Developer (`frontend-developer.md`)
 
