@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.0...v1.1.1) (2025-08-15)
+
+
+### Bug Fixes
+
+* make setup-python-environment.ps1 compatible with iex execution ([f8bae80](https://github.com/alex-feel/claude-code-toolbox/commit/f8bae80d14a521a083294221be1ca3addce59abf))
+
 ## [1.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.0.2...v1.1.0) (2025-08-15)
 
 
