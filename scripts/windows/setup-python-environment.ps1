@@ -92,7 +92,7 @@ function Write-Header {
     Write-Host "" # Empty line
 }
 
-function Test-CommandExists {
+function Test-CommandExist {
     param([string]$Command)
     try {
         $null = Get-Command $Command -ErrorAction Stop
@@ -102,16 +102,19 @@ function Test-CommandExists {
     }
 }
 
-function New-DirectoryIfNotExists {
+function New-DirectoryIfNotExist {
+    [CmdletBinding(SupportsShouldProcess=$true)]
     param([string]$Path)
     if (-not (Test-Path $Path)) {
-        New-Item -ItemType Directory -Path $Path -Force | Out-Null
-        return $true
+        if ($PSCmdlet.ShouldProcess($Path, 'Create Directory')) {
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+            return $true
+        }
     }
     return $false
 }
 
-function Download-File {
+function Save-FileFromUrl {
     param(
         [string]$Url,
         [string]$Destination
@@ -156,7 +159,7 @@ if (-not $SkipInstall) {
     Write-Host "Step 1: Skipping Claude Code installation (already installed)" -ForegroundColor Cyan
 
     # Verify Claude Code is available
-    if (-not (Test-CommandExists "claude")) {
+    if (-not (Test-CommandExist "claude")) {
         Write-ErrorMsg "Claude Code is not available in PATH"
         Write-Info "Please install Claude Code first or remove the -SkipInstall flag"
         exit 1
@@ -165,17 +168,17 @@ if (-not $SkipInstall) {
 
 # Step 2: Create directories
 Write-Host "`nStep 2: Creating configuration directories..." -ForegroundColor Cyan
-if (New-DirectoryIfNotExists $ClaudeUserDir) { Write-Success "Created: $ClaudeUserDir" }
-if (New-DirectoryIfNotExists $AgentsDir) { Write-Success "Created: $AgentsDir" }
-if (New-DirectoryIfNotExists $CommandsDir) { Write-Success "Created: $CommandsDir" }
-if (New-DirectoryIfNotExists $PromptsDir) { Write-Success "Created: $PromptsDir" }
+if (New-DirectoryIfNotExist $ClaudeUserDir) { Write-Success "Created: $ClaudeUserDir" }
+if (New-DirectoryIfNotExist $AgentsDir) { Write-Success "Created: $AgentsDir" }
+if (New-DirectoryIfNotExist $CommandsDir) { Write-Success "Created: $CommandsDir" }
+if (New-DirectoryIfNotExist $PromptsDir) { Write-Success "Created: $PromptsDir" }
 
 # Step 3: Download subagents
 Write-Host "`nStep 3: Downloading Python-optimized subagents..." -ForegroundColor Cyan
 foreach ($agent in $Agents) {
     $url = "$RepoBaseUrl/agents/examples/$agent.md"
     $destination = Join-Path $AgentsDir "$agent.md"
-    Download-File -Url $url -Destination $destination
+    Save-FileFromUrl -Url $url -Destination $destination
 }
 
 # Step 4: Download slash commands
@@ -183,7 +186,7 @@ Write-Host "`nStep 4: Downloading slash commands..." -ForegroundColor Cyan
 foreach ($command in $Commands) {
     $url = "$RepoBaseUrl/slash-commands/examples/$command.md"
     $destination = Join-Path $CommandsDir "$command.md"
-    Download-File -Url $url -Destination $destination
+    Save-FileFromUrl -Url $url -Destination $destination
 }
 
 # Step 5: Download Python developer system prompt
