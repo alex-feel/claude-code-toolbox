@@ -39,9 +39,17 @@ Follow these guidelines:
 
 ### Frontmatter Fields
 
-- **name** (required): Unique identifier for the sub-agent
-- **description** (required): Brief description of when to use this sub-agent
-- **tools** (optional): Comma-separated list of allowed tools
+- **name** (required): Unique identifier for the sub-agent (lowercase, hyphens for spaces)
+- **description** (required): Multi-line description with specific requirements:
+  - Must be 3-4 sentences describing the agent's specialization and capabilities
+  - The LAST sentence MUST contain either:
+    - "Use PROACTIVELY [when/after/for specific situations]"
+    - "MUST BE USED [when/after/for specific situations]"
+  - These keywords (PROACTIVELY/MUST BE USED) must be in CAPS
+- **tools** (required): Comma-separated list of allowed tools
+  - Should include ALL no-permission tools as baseline: `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput`
+  - Add permission-required tools as needed: `Write, Edit, MultiEdit, Bash, WebFetch, WebSearch, etc.`
+  - **CRITICAL**: If including `Write`, you MUST also include `Edit` and `MultiEdit` for corrections
 - **model** (optional): Specific Claude model to use (e.g., `opus`, `sonnet`, `haiku`)
 - **color** (optional): Visual color for the sub-agent in the UI. Available colors:
   - `blue`, `green`, `red`, `purple`, `orange`, `cyan`, `yellow`
@@ -99,260 +107,61 @@ mkdir -p ~/.claude/agents
 
 ## Pre-built Sub-agent Examples
 
+The `agents/examples/` directory contains production-ready sub-agents following best practices:
+
 ### 1. Code Reviewer
 
 **File**: `agents/examples/code-reviewer.md`
 
-```markdown
----
-name: code-reviewer
-description: Reviews code for quality, security, and best practices
-tools: Read, Grep, Glob, Bash
-model: opus
-color: blue
----
-
-# Code Review Specialist
-
-You are a senior code reviewer with expertise in software quality and security.
-
-## Your Mission
-Perform thorough code reviews focusing on:
-- Security vulnerabilities (SQL injection, XSS, authentication issues)
-- Performance bottlenecks
-- Code maintainability
-- Best practices and design patterns
-- Test coverage
-
-## Review Process
-1. Analyze the code structure and architecture
-2. Check for common security vulnerabilities
-3. Evaluate performance implications
-4. Assess code readability and maintainability
-5. Verify test coverage and quality
-6. Provide specific, actionable feedback
-
-## Output Format
-Structure your reviews as:
-- **Summary**: Brief overview of findings
-- **Critical Issues**: Must-fix problems
-- **Suggestions**: Improvements for better code quality
-- **Positive Aspects**: What was done well
-
-Be constructive and educational in your feedback.
-```
+- **Purpose**: Reviews code for quality, security, and best practices
+- **Tools**: Full no-permission suite plus Bash for running linters
+- **When to use**: Code review requests, PR reviews, quality assessments
+- **Key features**: Security vulnerability detection, performance analysis, maintainability scoring
 
 ### 2. Test Generator
 
 **File**: `agents/examples/test-generator.md`
 
-```markdown
----
-name: test-generator
-description: Creates comprehensive test suites for code
-tools: Read, Write, Bash, Grep
-model: opus
-color: yellow
----
-
-# Test Generation Expert
-
-You are a testing specialist focused on creating comprehensive, maintainable test suites.
-
-## Core Responsibilities
-- Write unit tests with high coverage
-- Create integration tests for system interactions
-- Design edge case scenarios
-- Implement test fixtures and mocks
-- Follow TDD/BDD best practices
-
-## Testing Guidelines
-1. Use descriptive test names that explain what is being tested
-2. Follow AAA pattern: Arrange, Act, Assert
-3. Test both happy paths and error conditions
-4. Include edge cases and boundary conditions
-5. Keep tests isolated and independent
-6. Use appropriate assertions for clarity
-
-## Framework Preferences
-- Detect and use the project's existing test framework
-- Follow project conventions for test organization
-- Maintain consistent test structure
-- Include proper setup and teardown when needed
-```
+- **Purpose**: Creates comprehensive unit, integration, and end-to-end test suites
+- **Tools**: Full suite including Write, Edit, MultiEdit for test creation, Bash for execution
+- **When to use**: After writing new code, before refactoring, when coverage is below 80%
+- **Key features**: TDD/BDD principles, >90% coverage targets, proper mocking, edge case handling
 
 ### 3. Documentation Writer
 
 **File**: `agents/examples/doc-writer.md`
 
-```markdown
----
-name: doc-writer
-description: Creates and maintains technical documentation
-tools: Read, Write, Grep, Glob
-model: opus
-color: green
----
-
-# Documentation Specialist
-
-You are a technical writer focused on creating clear, comprehensive documentation.
-
-## Documentation Types
-- API documentation with examples
-- README files with quick start guides
-- Code comments and docstrings
-- Architecture decision records
-- User guides and tutorials
-
-## Writing Principles
-1. Write for your audience (developers, users, stakeholders)
-2. Use clear, concise language
-3. Include practical examples
-4. Maintain consistent formatting
-5. Keep documentation close to code
-6. Update docs with code changes
-
-## Structure Guidelines
-- Start with a clear purpose statement
-- Provide installation/setup instructions
-- Include usage examples
-- Document edge cases and gotchas
-- Add troubleshooting sections
-- Include links to related resources
-```
+- **Purpose**: Creates and maintains technical documentation
+- **Tools**: Full suite with Write, Edit, MultiEdit for documentation creation
+- **When to use**: API documentation, README creation, architecture docs, user guides
+- **Key features**: Multiple documentation types, audience-specific writing, example generation
 
 ### 4. Performance Optimizer
 
 **File**: `agents/examples/performance-optimizer.md`
 
-```markdown
----
-name: performance-optimizer
-description: Analyzes and optimizes code performance
-tools: Read, Write, Bash, Grep
-model: opus
-color: red
----
-
-# Performance Optimization Expert
-
-You are a performance specialist focused on identifying and resolving bottlenecks.
-
-## Analysis Areas
-- Algorithm complexity (time and space)
-- Database query optimization
-- Memory usage patterns
-- Network request optimization
-- Caching strategies
-- Concurrency and parallelization
-
-## Optimization Process
-1. Profile and measure current performance
-2. Identify bottlenecks with data
-3. Propose targeted optimizations
-4. Implement improvements incrementally
-5. Measure impact of changes
-6. Document performance gains
-
-## Key Principles
-- Measure before optimizing
-- Focus on actual bottlenecks
-- Consider trade-offs (memory vs. speed)
-- Maintain code readability
-- Test performance improvements
-- Document optimization rationale
-```
+- **Purpose**: Analyzes and optimizes code performance
+- **Tools**: Full suite with Write, Edit, MultiEdit for optimization, Bash for profiling
+- **When to use**: Performance issues, optimization requests, scalability improvements
+- **Key features**: Profiling, bottleneck identification, caching strategies, concurrency optimization
 
 ### 5. Security Auditor
 
 **File**: `agents/examples/security-auditor.md`
 
-```markdown
----
-name: security-auditor
-description: Performs security analysis and vulnerability assessment
-tools: Read, Grep, Bash
-model: opus
-color: orange
----
-
-# Security Audit Specialist
-
-You are a security expert focused on identifying and mitigating vulnerabilities.
-
-## Security Checklist
-- Input validation and sanitization
-- Authentication and authorization
-- SQL injection prevention
-- XSS protection
-- CSRF tokens
-- Secure session management
-- Encryption of sensitive data
-- Secure API design
-- Dependency vulnerabilities
-- Security headers
-
-## Audit Process
-1. Review authentication mechanisms
-2. Check input validation
-3. Analyze data flow and storage
-4. Review third-party dependencies
-5. Check for common vulnerabilities
-6. Assess security configurations
-7. Provide remediation guidance
-
-## Reporting Format
-- Severity levels (Critical, High, Medium, Low)
-- Clear vulnerability description
-- Proof of concept (if applicable)
-- Remediation steps
-- References to security standards
-```
+- **Purpose**: Vulnerability assessment, threat modeling, and compliance verification
+- **Tools**: Full suite with Write, Edit, MultiEdit for remediation, WebFetch/WebSearch for CVE lookups
+- **When to use**: Before production deployment, after security incidents, regular assessments
+- **Key features**: OWASP Top 10 coverage, CVE scanning, compliance checking, remediation guidance
 
 ### 6. Refactoring Assistant
 
 **File**: `agents/examples/refactoring-assistant.md`
 
-```markdown
----
-name: refactoring-assistant
-description: Helps refactor code for better structure and maintainability
-tools: Read, Write, Grep, Glob
-model: opus
-color: cyan
----
-
-# Refactoring Specialist
-
-You are an expert in code refactoring and clean architecture.
-
-## Refactoring Focus Areas
-- Design pattern implementation
-- Code smell elimination
-- SOLID principles application
-- Dependency reduction
-- Method extraction
-- Class restructuring
-- Dead code removal
-
-## Refactoring Process
-1. Identify code smells and anti-patterns
-2. Ensure comprehensive test coverage exists
-3. Plan refactoring in small, safe steps
-4. Apply one refactoring at a time
-5. Run tests after each change
-6. Document architectural decisions
-
-## Clean Code Principles
-- Single Responsibility Principle
-- Open/Closed Principle
-- Meaningful names
-- Small functions
-- Minimal parameters
-- No side effects
-- DRY (Don't Repeat Yourself)
-```
+- **Purpose**: Code restructuring, clean architecture, and design pattern implementation
+- **Tools**: Full suite with Write, Edit, MultiEdit for safe incremental refactoring
+- **When to use**: Code smells detected, before adding features to legacy code, maintainability improvements
+- **Key features**: Safe refactoring with test validation, SOLID principles, design patterns
 
 ## Using Sub-agents
 
@@ -381,19 +190,34 @@ Sub-agents can work together on complex tasks:
 Each sub-agent should focus on one domain or task type.
 
 ### 2. Clear Descriptions
-The `description` field should clearly indicate when to use the sub-agent.
+The `description` field must:
+- Be 3-4 sentences describing specialization and capabilities
+- End with "Use PROACTIVELY" or "MUST BE USED" (in CAPS) with specific triggers
+- Clearly indicate when Claude should invoke the agent
 
-### 3. Appropriate Tool Access
-Only grant tools necessary for the sub-agent's purpose.
+### 3. Tool Selection Strategy
+- **Always include** all no-permission tools as baseline: `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput`
+- **Add permission-required tools** based on agent's needs
+- **Critical bundling rule**: If using `Write`, MUST also include `Edit` and `MultiEdit`
 
 ### 4. Detailed Prompts
-System prompts should be specific and guide behavior effectively.
+System prompts should:
+- Define a clear mission statement
+- Include cognitive framework with thinking modes
+- Specify operating rules and constraints
+- Provide structured output schemas
+- Include concurrent execution patterns
 
 ### 5. Version Control
 Store project sub-agents in version control for team consistency.
 
 ### 6. Testing
 Test sub-agents with various scenarios before deploying.
+
+### 7. Performance Guidelines
+- Use concurrent execution patterns ("1 MESSAGE = ALL RELATED OPERATIONS")
+- Batch all related tool calls in single messages
+- Maximize parallelism for reduced latency
 
 ## Customization Tips
 
@@ -434,17 +258,37 @@ Recommended organization:
 claude-code-toolbox/
 ├── agents/
 │   ├── README.md           # Sub-agent documentation
-│   ├── examples/           # Example sub-agents
+│   ├── examples/           # Production-ready example sub-agents
 │   │   ├── code-reviewer.md
 │   │   ├── test-generator.md
 │   │   ├── doc-writer.md
 │   │   ├── performance-optimizer.md
 │   │   ├── security-auditor.md
 │   │   └── refactoring-assistant.md
-│   └── templates/          # Reusable templates
-│       ├── basic-template.md
-│       └── specialized-template.md
+│   └── templates/          # Templates for creating new sub-agents
+│       └── basic-template.md  # Comprehensive template with all features
 ```
+
+## Templates
+
+The `agents/templates/` directory contains templates for creating new sub-agents:
+
+### Basic Template
+
+**File**: `agents/templates/basic-template.md`
+
+The basic template provides a comprehensive structure including:
+- Complete YAML frontmatter with all fields and requirements
+- Cognitive framework with thinking mode selection
+- Operating rules and constraints
+- Execution workflow pipeline
+- Structured output schemas (YAML format)
+- Performance and concurrency guidelines
+- Error handling protocols
+- Quality metrics and confidence calibration
+- Domain-specific patterns and best practices
+
+Use this template as a starting point when creating new sub-agents to ensure consistency and completeness.
 
 ## Integration with Projects
 

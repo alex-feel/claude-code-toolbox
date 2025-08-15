@@ -87,6 +87,7 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 - [Quick Start](docs/quickstart.md) - Getting started with Claude Code
 - [Sub-agents Guide](docs/agents.md) - Creating specialized AI assistants
+- [Output Styles Guide](docs/output-styles.md) - Transform Claude Code for different professional domains
 - [Slash Commands](docs/slash-commands.md) - Custom command shortcuts
 - [.claude Directory](docs/claude-directory.md) - Project configuration structure
 
@@ -99,6 +100,9 @@ claude-code-toolbox/
 │   ├── linux/         # Linux shell scripts
 │   └── macos/         # macOS shell scripts
 ├── agents/            # Agent templates and examples
+├── output-styles/     # Output style transformations
+│   ├── examples/      # Ready-to-use professional styles
+│   └── templates/     # Templates for creating new styles
 ├── slash-commands/    # Custom slash command templates
 └── docs/              # Documentation
 ```
