@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.4...v1.2.0) (2025-08-15)
+
+
+### Features
+
+* add cross-platform Python installer scripts ([f9a7ec3](https://github.com/alex-feel/claude-code-toolbox/commit/f9a7ec39d1ebaac1b5b576628afb68d1722fcac5))
+
+
+### Bug Fixes
+
+* configure MCP server without requiring npm in PATH ([30b40b6](https://github.com/alex-feel/claude-code-toolbox/commit/30b40b6e038e5bc7cd74bf1f7e9e054c1fb58c5a))
+* resolve shebang and executable file issues ([51a92a1](https://github.com/alex-feel/claude-code-toolbox/commit/51a92a16eb996879d3da812de670bf2b6d2c5928))
+* use correct setup-node action version v4 ([5d2bd5c](https://github.com/alex-feel/claude-code-toolbox/commit/5d2bd5cca6c13c0b97edff8602e2c92bb75e22c0))
+
 ## [1.1.4](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.3...v1.1.4) (2025-08-15)
 
 
