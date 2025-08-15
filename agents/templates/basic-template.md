@@ -1,3 +1,15 @@
+---
+name: agent-name-kebab-case
+description: |
+  Brief description of this agent's specialization and expertise.
+  What this agent does when invoked (capabilities and deliverables).
+  Optional third sentence for additional capabilities or specializations.
+  Use PROACTIVELY [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"].
+tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput
+model: opus
+color: blue
+---
+
 <!--
 ╔════════════════════════════════════════════════════════════════════════════╗
 ║                     QUICK REFERENCE: HOW TO USE THIS TEMPLATE              ║
@@ -22,7 +34,8 @@
 ║     • Quality Metrics & Standards                                          ║
 ║                                                                            ║
 ║  4. SECTIONS TO CUSTOMIZE:                                                 ║
-║     • YAML frontmatter (name, description, tools, model, color)            ║
+║     • YAML frontmatter (name, description, model, color)                   ║
+║     • Tools list (start with ALL no-permission tools, add others as needed)║
 ║     • Agent Title and Mission Statement                                    ║
 ║     • Cognitive Framework (choose thinking mode)                           ║
 ║     • Execution Workflow (adapt phases)                                    ║
@@ -39,52 +52,26 @@
 ║     □ All HTML comments <!-- --> removed                                   ║
 ║     □ Unnecessary sections deleted                                         ║
 ║     □ Thinking mode selected and specified                                 ║
-║     □ Tools list matches agent's needs                                     ║
+║     □ Tools list includes ALL no-permission tools + needed permission ones ║
 ║     □ Domain-specific sections added                                       ║
 ║                                                                            ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 -->
 
----
-# SUB-AGENT CONFIGURATION (YAML Frontmatter)
-# CUSTOMIZE: Replace all example values with your agent's specific configuration
-#
-# REQUIRED: Unique identifier for your agent (lowercase, hyphens/underscores only)
-name: agent-name-kebab-case  # REPLACE with your agent name
-
-# REQUIRED: 2-4 crisp sentences describing role and invocation triggers
-# This helps Claude decide when to automatically delegate to this agent
-description: |
-  Brief description of this agent's specialization and expertise.
-  When this agent should be invoked (e.g., "for X tasks", "when Y is needed").
-  What unique capabilities it provides compared to the main conversation.
-  Optional fourth sentence for additional context or constraints.
-
-# OPTIONAL: Comma-separated list of allowed Claude Code tools
-# Full list: <https://docs.anthropic.com/en/docs/claude-code/settings#tools-available-to-claude>
-# Core tools: Bash, BashOutput, KillBash, Edit, MultiEdit, Read, Write
-# Glob, Grep, LS, NotebookEdit, NotebookRead, Task, TodoWrite
-# WebFetch, WebSearch, ExitPlanMode
-# MCP tools: mcp__<serverName>__<toolName> or mcp__<serverName>
-# If omitted, agent has same tool access as main conversation
-tools: Edit, Glob, Grep, LS, MultiEdit, Read, Task, TodoWrite, Write
-
-# OPTIONAL: Model selection (if different from main conversation)
-# Options: opus | sonnet | haiku
-# Omit to use same model as main conversation
-model: opus  # DELETE this line or REPLACE with your choice
-
-# OPTIONAL: Agent color in UI
-# Options: red | blue | green | yellow | purple | orange | pink | cyan
-# Omit for automatic color assignment
-color: blue  # DELETE this line or REPLACE with your choice
-
----
-
 <!--
-============================================================================
 UNIVERSAL SUB-AGENT TEMPLATE - HOW TO USE THIS TEMPLATE
-============================================================================
+
+YAML FRONTMATTER CONFIGURATION:
+- name: Unique identifier (lowercase, hyphens/underscores)
+- description: Must be 3-4 sentences, LAST sentence MUST contain "Use PROACTIVELY" or "MUST BE USED" in CAPS
+  Example: "Expert code reviewer. Reviews for bugs. Produces reports. Use PROACTIVELY after code changes."
+- tools: Start with ALL no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
+  CRITICAL: If using Write, MUST also include Edit and MultiEdit for corrections!
+  Example: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit
+- model: Optional - opus | sonnet | haiku (delete if using main conversation model)
+- color: Optional - red | blue | green | yellow | purple | orange | pink | cyan
+
+TEMPLATE INSTRUCTIONS:
 1. REPLACE all [bracketed] placeholders with your specific content
 2. DELETE sections marked with "DELETE THIS" or "(OPTIONAL - DELETE IF NOT NEEDED)"
 3. KEEP sections marked as "(KEEP THIS SECTION)" - they contain best practices
@@ -97,7 +84,6 @@ Template Legend:
 - (KEEP THIS SECTION) = Universal best practice, keep as-is
 - (OPTIONAL - DELETE IF NOT NEEDED) = Remove if not applicable
 - <!-- EXAMPLE: --> = Example for reference, replace with your content
-============================================================================
 -->
 
 # [Agent Title - e.g., "Performance Analyzer", "Security Auditor", "Migration Assistant"]
@@ -115,9 +101,7 @@ Your mission is to [describe the concrete, verifiable deliverable the caller wil
 ## 🧠 Cognitive Framework
 
 <!--
-============================================================================
 THINKING MODE SELECTION GUIDE
-============================================================================
 Claude offers different levels of reasoning through "thinking" modes.
 Choose ONE mode based on your agent's complexity and include the exact
 phrase in your agent's instructions.
@@ -141,7 +125,6 @@ Selection Guidelines:
 
 DELETE THIS ENTIRE GUIDE SECTION when creating your agent.
 Only keep the "Cognitive Workflow" section below with your chosen thinking mode.
-============================================================================
 
 ### Reasoning Depth by Agent Type (EXAMPLES - DELETE THIS SECTION)
 
@@ -165,9 +148,7 @@ Only keep the "Cognitive Workflow" section below with your chosen thinking mode.
 - **Migration Planner**: `Ultrathink` - Multi-phase migration with rollback plans
 - **Optimizer**: `Think a lot` - Algorithm selection and performance trade-offs
 
-============================================================================
 END OF GUIDANCE SECTION - ACTUAL AGENT INSTRUCTIONS CONTINUE BELOW
-============================================================================
 -->
 
 ### Cognitive Workflow
@@ -308,11 +289,9 @@ __[CHOSEN_THINKING_MODE] throughout your entire workflow:__
      DELETE any fields that don't apply to your agent's domain -->
 
 ```yaml
-# ============================================================================
-# STRUCTURED AGENT RESPONSE
+# # STRUCTURED AGENT RESPONSE
 # Customize this schema based on your agent's specific outputs
-# ============================================================================
-
+#
 metadata:
   agent: [agent-name]
   version: [template-version]
@@ -668,9 +647,7 @@ After each execution, evaluate:
 ---
 
 <!--
-============================================================================
 TEMPLATE USAGE NOTES
-============================================================================
 1. This template is intentionally comprehensive - DELETE sections that don't
    apply to your specific agent to keep it focused and maintainable.
 
@@ -690,5 +667,4 @@ TEMPLATE USAGE NOTES
 
 7. Remember: Focused, single-responsibility agents are more effective than
    trying to create one agent that does everything.
-============================================================================
 -->
