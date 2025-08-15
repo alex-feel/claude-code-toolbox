@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.3](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.2...v1.1.3) (2025-08-15)
+
+
+### Bug Fixes
+
+* allow full Bash access in commit slash command ([8a85bc7](https://github.com/alex-feel/claude-code-toolbox/commit/8a85bc7380c37cbb586589abb7ac52ea77340d00))
+* prevent Release Please PRs from blocking due to skipped required checks ([b7e37f4](https://github.com/alex-feel/claude-code-toolbox/commit/b7e37f4efb4ed9bc42497e7e7b1dc485d6b93b77))
+* use proper claude mcp add command for Context7 server ([ddc0f04](https://github.com/alex-feel/claude-code-toolbox/commit/ddc0f0421c08ca4b58cc6dea7f71a02075b4fc1e))
+
 ## [1.1.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.1...v1.1.2) (2025-08-15)
 
 
