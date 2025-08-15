@@ -204,30 +204,43 @@ Write-Host ""
 Write-Host "Step 6: Configuring Context7 MCP server..." -ForegroundColor Cyan
 
 try {
-    # Run the command in a new PowerShell process that will have the updated PATH
-    $mcpCommand = "claude mcp add --transport http context7 https://mcp.context7.com/mcp"
+    # Find the claude command location (npm global install path)
+    $npmPath = (npm config get prefix 2>$null)
+    if (!$npmPath) {
+        # Fallback to default npm path
+        $npmPath = Join-Path $env:APPDATA "npm"
+    }
 
-    $mcpProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
-        "-NoProfile",
-        "-Command",
-        $mcpCommand
-    ) -Wait -PassThru -NoNewWindow
+    $claudePath = Join-Path $npmPath "claude.ps1"
+    $claudeCmd = Join-Path $npmPath "claude.cmd"
 
-    if ($mcpProcess.ExitCode -eq 0) {
-        Write-Success "Context7 MCP server configured successfully"
-    } else {
-        # Try with cmd as a fallback (sometimes works better for npm global commands)
-        $cmdProcess = Start-Process -FilePath "cmd.exe" -ArgumentList @(
-            "/c",
+    # Check which claude executable exists
+    $claudeExe = $null
+    if (Test-Path $claudePath) {
+        $claudeExe = $claudePath
+    } elseif (Test-Path $claudeCmd) {
+        $claudeExe = $claudeCmd
+    }
+
+    if ($claudeExe) {
+        # Run the MCP command with full path
+        $mcpCommand = "& `"$claudeExe`" mcp add --transport http context7 https://mcp.context7.com/mcp"
+
+        $mcpProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+            "-NoProfile",
+            "-Command",
             $mcpCommand
         ) -Wait -PassThru -NoNewWindow
 
-        if ($cmdProcess.ExitCode -eq 0) {
+        if ($mcpProcess.ExitCode -eq 0) {
             Write-Success "Context7 MCP server configured successfully"
         } else {
-            Write-Warn "MCP server may not have been configured (exit code: $($cmdProcess.ExitCode))"
+            Write-Warn "MCP server may not have been configured (exit code: $($mcpProcess.ExitCode))"
             Write-Info "To verify or add manually, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
         }
+    } else {
+        Write-Warn "Could not locate claude command"
+        Write-Info "To add manually after opening a new terminal, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
     }
 } catch {
     Write-Warn "Could not configure MCP server automatically: $_"
