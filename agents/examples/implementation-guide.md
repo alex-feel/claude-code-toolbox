@@ -5,7 +5,7 @@ description: |
   Retrieves up-to-date documentation, working code examples, and best practices from authoritative sources including Context7.
   Synthesizes multiple information sources to provide production-ready implementation strategies with version-specific details.
   Use PROACTIVELY when implementing new features, integrating libraries, or when you need authoritative guidance on how to correctly use any functionality.
-tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__get-library-docs
+tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, WebFetch, WebSearch, mcp__context7
 model: opus
 color: purple
 ---

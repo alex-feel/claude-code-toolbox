@@ -67,7 +67,9 @@ YAML FRONTMATTER CONFIGURATION:
   Example: "Expert code reviewer. Reviews for bugs. Produces reports. Use PROACTIVELY after code changes."
 - tools: Start with ALL no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
   CRITICAL: If using Write, MUST also include Edit and MultiEdit for corrections!
+  MCP SERVERS: To allow all tools from an MCP server, use just the server name: mcp__<serverName>
   Example: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit
+  MCP Example: mcp__context7 (allows all Context7 tools like resolve-library-id and get-library-docs)
 - model: Optional - opus | sonnet | haiku (delete if using main conversation model)
 - color: Optional - red | blue | green | yellow | purple | orange | pink | cyan
 
@@ -526,7 +528,7 @@ Dispatch every set of logically related operations __in a single message that ru
 3. __File operations__ – batch _all_ file-system actions (`Read`, `Write`, `Edit`, `MultiEdit`, `Notebook*`) in __one__ message
 4. __Bash commands__ – batch _all_ terminal operations for the same build/run step in __one__ message
 5. __Web operations__ – batch _all_ related `WebSearch` / `WebFetch` requests that answer the same research question
-6. __MCP operations__ – batch _all_ MCP tool calls, especially `mcp__context7__get-library-docs` calls for multiple libraries
+6. __MCP operations__ – batch _all_ MCP tool calls, especially when using multiple tools from the same server
 
 #### CRITICAL: GOLDEN RULE: "1 MESSAGE = ALL RELATED OPERATIONS"
 
@@ -539,7 +541,7 @@ Dispatch every set of logically related operations __in a single message that ru
   - Read("api.py"), Read("models.py"), Read("tests/test_api.py")
   - Write("api_refactored.py", content), MultiEdit("models.py", edits)
   - Bash("uv pip install -r requirements.txt && pytest && uv run pre-commit run --all-files")
-  - mcp__context7__get-library-docs("/fastapi/fastapi", "/langchain-ai/langchain", "/pydantic/pydantic")
+  - mcp__context7__get-library-docs("/fastapi/fastapi", "/langchain-ai/langchain", "/pydantic/pydantic")  // If mcp__context7 is in tools list
   - WebSearch("best practices X"), WebFetch("https://docs.example.com/feature")
 ```
 
@@ -563,7 +565,7 @@ Before sending __any__ message, run through this checklist:
 - [ ] Are __all__ Task-spawning operations in one message?
 - [ ] Are __all__ file operations (`Read`, `Write`, `Edit`, `MultiEdit`) batched?
 - [ ] Are __all__ Bash commands for the same workflow grouped?
-- [ ] Are __all__ MCP tool calls (especially `mcp__context7__get-library-docs`) combined?
+- [ ] Are __all__ MCP tool calls combined?
 - [ ] Are __all__ memory/context operations concurrent?
 - [ ] Are __all__ WebFetch/WebSearch calls for the same topic batched?
 - [ ] Are __all__ Glob/Grep/LS operations for discovery batched?
