@@ -9,134 +9,76 @@ permissions:
   security-events: write
 
 jobs:
+  pre-commit:
+    name: Run Pre-Commit Checks
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Set up Node.js for markdownlint
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Install markdownlint-cli2
+        run: npm install -g markdownlint-cli2
+
+      - name: Run pre-commit hooks (except PSScriptAnalyzer)
+        run: |
+          # Skip PSScriptAnalyzer as it requires Windows
+          SKIP=psscriptanalyzer pre-commit run --all-files --show-diff-on-failure
+
   powershell:
     name: PowerShell Script Analysis
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: windows-latest
 
     steps:
-    - name: Skip for Release Please
-      if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-      run: echo "Skipping PowerShell analysis for Release Please PR"
+      - uses: actions/checkout@v5
 
-    - uses: actions/checkout@v5
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+      - name: Run PSScriptAnalyzer
+        uses: microsoft/psscriptanalyzer-action@v1.1
+        with:
+          path: ./scripts/windows
+          recurse: true
+          output: results.sarif
+          ignorePattern: '\.git|\.github'
 
-    - name: Run PSScriptAnalyzer
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      uses: microsoft/psscriptanalyzer-action@v1.1
-      with:
-        path: ./scripts/windows
-        recurse: true
-        output: results.sarif
-        ignorePattern: '\.git|\.github'
-
-    - name: Upload PSScriptAnalyzer results
-      uses: github/codeql-action/upload-sarif@v3
-      if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
-      with:
-        sarif_file: results.sarif
-
-  shellcheck:
-    name: Shell Script Analysis
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Skip for Release Please
-      if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-      run: echo "Skipping Shell Script analysis for Release Please PR"
-
-    - uses: actions/checkout@v5
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-
-    - name: Run ShellCheck
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      uses: ludeeus/action-shellcheck@master
-      with:
-        scandir: './scripts'
-        ignore_paths: 'scripts/windows'
-        severity: warning
-
-  markdown:
-    name: Markdown Lint
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Skip for Release Please
-      if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-      run: echo "Skipping Markdown lint for Release Please PR"
-
-    - uses: actions/checkout@v5
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-
-    - name: Run markdownlint
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      uses: DavidAnson/markdownlint-cli2-action@v20
-      with:
-        globs: |
-          **/*.md
-          !node_modules/**
-          !CHANGELOG.md
-
-  json-yaml:
-    name: JSON/YAML Validation
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Skip for Release Please
-      if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-      run: echo "Skipping JSON/YAML validation for Release Please PR"
-
-    - uses: actions/checkout@v5
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-
-    - name: Validate JSON files
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      run: |
-        find . -name "*.json" -type f -not -path "./node_modules/*" | while read file; do
-          echo "Validating $file"
-          python -m json.tool "$file" > /dev/null || exit 1
-        done
-        echo "All JSON files are valid"
-
-    - name: Setup Python
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.x'
-
-    - name: Validate YAML files
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      run: |
-        pip install pyyaml
-        find . -name "*.yml" -o -name "*.yaml" -type f -not -path "./node_modules/*" | while read file; do
-          echo "Validating $file"
-          python -c "import yaml; yaml.safe_load(open('$file'))" || exit 1
-        done
-        echo "All YAML files are valid"
+      - name: Upload PSScriptAnalyzer results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: results.sarif
 
   security:
     name: Security Scan
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
-    - name: Skip for Release Please
-      if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-      run: echo "Skipping Trivy security scan for Release Please PR"
+      - uses: actions/checkout@v5
 
-    - uses: actions/checkout@v5
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+      - name: Run Trivy security scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
 
-    - name: Run Trivy security scanner
-      if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-
-    - name: Upload Trivy results to GitHub Security
-      uses: github/codeql-action/upload-sarif@v3
-      if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
-      with:
-        sarif_file: 'trivy-results.sarif'
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
