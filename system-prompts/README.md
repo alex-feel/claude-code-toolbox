@@ -18,7 +18,33 @@ system-prompts/
 
 ## 🚀 Quick Start
 
-### Using System Prompts in Interactive Mode
+### Automated Setup (Recommended)
+
+Use our setup scripts to automatically configure Claude Code with system prompts:
+
+#### Python Developer Environment
+```bash
+# Windows
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1')"
+
+# macOS
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-python-environment.sh | bash
+
+# Linux
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-python-environment.sh | bash
+```
+
+This installs:
+- Claude Code (if needed)
+- Python developer system prompt
+- All related subagents and commands
+- Convenience launcher scripts
+
+[See the Python Setup Guide](../docs/python-setup.md) for details.
+
+### Manual Usage
+
+#### Using System Prompts in Interactive Mode
 
 As of Claude Code v1.0.51, the `--append-system-prompt` flag works in interactive mode:
 
@@ -168,6 +194,44 @@ Define which tools to use and when:
 ### CRITICAL: Package Management with `uv`
 - Work only inside virtual environments
 - Use `uv` for all operations
+```
+
+## 🤖 Automation and Integration
+
+### Setup Scripts
+
+Automated setup scripts are available for each system prompt:
+
+#### Python Developer
+- **Script**: `scripts/*/setup-python-environment.sh/ps1`
+- **Installs**: System prompt + 7 subagents + 6 commands + MCP server
+- **Usage**: See [Python Setup Guide](../docs/python-setup.md)
+
+#### Future Additions
+Setup scripts for other roles are planned:
+- Frontend Developer setup
+- DevOps Engineer setup
+- Full-stack Developer setup
+
+### CI/CD Integration
+
+Use system prompts in automated workflows:
+
+```yaml
+# GitHub Actions example
+- name: Code Review with Python Prompt
+  run: |
+    claude --append-system-prompt @system-prompts/examples/python-developer.md \
+      -p "Review the changes in this PR for Python best practices"
+```
+
+### Docker Integration
+
+```dockerfile
+# Include system prompt in container
+FROM ubuntu:22.04
+COPY system-prompts/examples/python-developer.md /claude/prompts/
+ENV CLAUDE_SYSTEM_PROMPT=/claude/prompts/python-developer.md
 ```
 
 ## 📖 Advanced Usage
