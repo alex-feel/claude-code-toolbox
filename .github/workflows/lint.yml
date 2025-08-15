@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   powershell:
@@ -14,23 +15,21 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Install PSScriptAnalyzer
-      shell: powershell
-      run: |
-        Set-PSRepository PSGallery -InstallationPolicy Trusted
-        Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser
+    - uses: actions/checkout@v5
 
     - name: Run PSScriptAnalyzer
-      shell: powershell
-      run: |
-        $results = Invoke-ScriptAnalyzer -Path ./scripts/windows -Recurse -ReportSummary
-        if ($results) {
-          $results | Format-Table -AutoSize
-          throw "PSScriptAnalyzer found issues"
-        }
-        Write-Host "PowerShell scripts passed analysis" -ForegroundColor Green
+      uses: microsoft/psscriptanalyzer-action@v1.1
+      with:
+        path: ./scripts/windows
+        recurse: true
+        output: results.sarif
+        ignorePattern: '\.git|\.github'
+
+    - name: Upload PSScriptAnalyzer results
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: results.sarif
 
   shellcheck:
     name: Shell Script Analysis
@@ -38,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Run ShellCheck
       uses: ludeeus/action-shellcheck@master
@@ -53,10 +52,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Run markdownlint
-      uses: DavidAnson/markdownlint-cli2-action@v16
+      uses: DavidAnson/markdownlint-cli2-action@v20
       with:
         globs: |
           **/*.md
@@ -69,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Validate JSON files
       run: |
@@ -99,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Run Trivy security scanner
       uses: aquasecurity/trivy-action@master
