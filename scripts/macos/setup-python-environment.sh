@@ -265,7 +265,7 @@ prompt_destination="$PROMPTS_DIR/python-developer.md"
 download_file "$prompt_url" "$prompt_destination"
 
 # Step 6: Create a convenience script for starting Claude with the Python prompt
-write_step "Creating convenience launcher..."
+write_step "Creating convenience launcher and global command..."
 
 launcher_path="$CLAUDE_USER_DIR/start-python-claude.sh"
 cat > "$launcher_path" << 'EOF'
@@ -286,6 +286,54 @@ EOF
 
 chmod +x "$launcher_path"
 write_success "Created launcher script: start-python-claude.sh"
+
+# Create a global command - macOS typically uses /usr/local/bin
+local_bin_path="/usr/local/bin"
+# Fall back to ~/.local/bin if /usr/local/bin is not writable
+if [[ ! -w "$local_bin_path" ]]; then
+    local_bin_path="$HOME/.local/bin"
+    if [[ ! -d "$local_bin_path" ]]; then
+        mkdir -p "$local_bin_path"
+        write_success "Created $local_bin_path directory"
+    fi
+fi
+
+# Create symlink for easy execution
+if ln -sf "$launcher_path" "$local_bin_path/claude-python" 2>/dev/null; then
+    write_success "Created global command: claude-python"
+else
+    write_info "Could not create symlink in $local_bin_path (may need sudo)"
+    write_info "Trying user directory instead..."
+    local_bin_path="$HOME/.local/bin"
+    mkdir -p "$local_bin_path"
+    ln -sf "$launcher_path" "$local_bin_path/claude-python"
+    write_success "Created global command in user directory: claude-python"
+fi
+
+# Add ~/.local/bin to PATH if we used it and it's not already there
+if [[ "$local_bin_path" == "$HOME/.local/bin" ]] && [[ ":$PATH:" != *":$local_bin_path:"* ]]; then
+    # Detect shell and update appropriate config
+    USER_SHELL=$(detect_shell)
+    case "$USER_SHELL" in
+        zsh)
+            echo "export PATH=\"$local_bin_path:\$PATH\"" >> ~/.zshrc
+            write_success "Added $local_bin_path to PATH in ~/.zshrc"
+            ;;
+        bash)
+            echo "export PATH=\"$local_bin_path:\$PATH\"" >> ~/.bash_profile
+            write_success "Added $local_bin_path to PATH in ~/.bash_profile"
+            ;;
+        fish)
+            echo "set -x PATH $local_bin_path \$PATH" >> ~/.config/fish/config.fish
+            write_success "Added $local_bin_path to PATH in fish config"
+            ;;
+        *)
+            write_info "Please add $local_bin_path to your PATH manually"
+            ;;
+    esac
+    export PATH="$local_bin_path:$PATH"
+    write_info "You may need to restart Terminal for PATH changes to take effect"
+fi
 
 # Step 7: Create macOS-specific app launcher (optional)
 write_step "Creating macOS app launcher (optional)..."
@@ -320,20 +368,22 @@ echo -e "━━━━━━━━━━━━━━━━━━━━━━━�
 echo -e "\n1. Open a ${YELLOW}NEW terminal window${NC} (to ensure PATH is updated)"
 echo -e "   ${MAGENTA}Tip: Press ⌘+N in Terminal or iTerm2${NC}"
 
-echo -e "\n2. Start Claude Code with Python configuration using ONE of these methods:"
-echo -e "\n   ${CYAN}Option A - Using the convenience script:${NC}"
-echo -e "   ${BOLD}   $launcher_path${NC}"
+echo -e "\n2. Start Claude Code with Python configuration:"
+echo -e "\n   ${CYAN}Simply run:${NC}"
+echo -e "   ${BOLD}   claude-python${NC}"
+echo -e "   ${GREEN}That's it! The command is now available globally.${NC}"
 
-echo -e "\n   ${CYAN}Option B - Direct command:${NC}"
-echo -e "   ${BOLD}   claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\"${NC}"
-
-echo -e "\n   ${CYAN}Option C - With additional flags:${NC}"
-echo -e "   ${BOLD}   claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\" --model opus --max-turns 20${NC}"
+echo -e "\n   ${CYAN}With additional flags:${NC}"
+echo -e "   ${BOLD}   claude-python --model opus --max-turns 20${NC}"
 
 if [[ -d "$applescript_path" ]]; then
-    echo -e "\n   ${CYAN}Option D - Double-click the app:${NC}"
+    echo -e "\n   ${CYAN}Or double-click the app:${NC}"
     echo -e "   ${BOLD}   $applescript_path${NC}"
 fi
+
+echo -e "\n   ${CYAN}Alternative methods:${NC}"
+echo -e "   • Full path: $launcher_path"
+echo -e "   • Manual: claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\""
 
 echo -e "\n3. ${CYAN}Available features:${NC}"
 echo "   • 7 Python-optimized subagents (code review, testing, docs, etc.)"

@@ -212,7 +212,7 @@ $promptDestination = Join-Path $PromptsDir "python-developer.md"
 Download-File -Url $promptUrl -Destination $promptDestination
 
 # Step 6: Create a convenience script for starting Claude with the Python prompt
-Write-Step "Creating convenience launcher..."
+Write-Step "Creating convenience launcher and global command..."
 
 $launcherPath = Join-Path $ClaudeUserDir "start-python-claude.ps1"
 $launcherContent = @'
@@ -223,7 +223,7 @@ $promptFile = Join-Path $env:USERPROFILE ".claude\prompts\python-developer.md"
 
 if (Test-Path $promptFile) {
     Write-Host "Starting Claude Code with Python Developer configuration..." -ForegroundColor Green
-    claude --append-system-prompt "@$promptFile"
+    claude --append-system-prompt "@$promptFile" $args
 } else {
     Write-Host "Python developer prompt not found at: $promptFile" -ForegroundColor Red
     Write-Host "Please run setup-python-environment.ps1 first" -ForegroundColor Yellow
@@ -233,6 +233,31 @@ if (Test-Path $promptFile) {
 
 $launcherContent | Out-File -FilePath $launcherPath -Encoding UTF8
 Write-Success "Created launcher script: start-python-claude.ps1"
+
+# Create a global command by adding a batch file to a PATH directory
+$localBinPath = Join-Path $env:USERPROFILE ".local\bin"
+if (-not (Test-Path $localBinPath)) {
+    New-Item -ItemType Directory -Path $localBinPath -Force | Out-Null
+}
+
+# Create batch file for easy execution
+$batchPath = Join-Path $localBinPath "claude-python.cmd"
+$batchContent = @"
+@echo off
+powershell -NoProfile -ExecutionPolicy Bypass -File "$launcherPath" %*
+"@
+$batchContent | Out-File -FilePath $batchPath -Encoding ASCII
+Write-Success "Created global command: claude-python"
+
+# Add .local\bin to PATH if not already there
+$currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($currentPath -notlike "*$localBinPath*") {
+    $newPath = "$localBinPath;$currentPath"
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    $env:Path = "$localBinPath;$env:Path"
+    Write-Success "Added $localBinPath to PATH"
+    Write-Info "You may need to restart your terminal for PATH changes to take effect"
+}
 
 # Final message
 Write-Host "`n" -NoNewline
@@ -249,19 +274,20 @@ Write-Host "`n1. Open a " -NoNewline
 Write-Host "NEW terminal window" -ForegroundColor Yellow -NoNewline
 Write-Host " (to ensure PATH is updated)"
 
-Write-Host "`n2. Start Claude Code with Python configuration using ONE of these methods:"
-Write-Host "`n   Option A - Using the convenience script:" -ForegroundColor Cyan
-Write-Host "   " -NoNewline
-Write-Host "   & `"$launcherPath`"" -ForegroundColor White -BackgroundColor DarkGray
+Write-Host "`n2. Start Claude Code with Python configuration:" -ForegroundColor Cyan
 
-Write-Host "`n   Option B - Direct command:" -ForegroundColor Cyan
+Write-Host "`n   " -NoNewline
+Write-Host "   claude-python" -ForegroundColor White -BackgroundColor DarkGray
+Write-Host "   That's it! The command is now available globally." -ForegroundColor Green
+
+Write-Host "`n   You can also pass additional flags:" -ForegroundColor Cyan
 Write-Host "   " -NoNewline
+Write-Host "   claude-python --model opus --max-turns 20" -ForegroundColor White -BackgroundColor DarkGray
+
+Write-Host "`n   Alternative methods:" -ForegroundColor DarkCyan
+Write-Host "   • Full path: & `"$launcherPath`""
 $promptPath = Join-Path $PromptsDir "python-developer.md"
-Write-Host "   claude --append-system-prompt `"@$promptPath`"" -ForegroundColor White -BackgroundColor DarkGray
-
-Write-Host "`n   Option C - With additional flags:" -ForegroundColor Cyan
-Write-Host "   " -NoNewline
-Write-Host "   claude --append-system-prompt `"@$promptPath`" --model opus --max-turns 20" -ForegroundColor White -BackgroundColor DarkGray
+Write-Host "   • Manual: claude --append-system-prompt `"@$promptPath`""
 
 Write-Host "`n3. Available features:" -ForegroundColor Cyan
 Write-Host "   • 7 Python-optimized subagents (code review, testing, docs, etc.)"

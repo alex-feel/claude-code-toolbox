@@ -207,7 +207,7 @@ prompt_destination="$PROMPTS_DIR/python-developer.md"
 download_file "$prompt_url" "$prompt_destination"
 
 # Step 6: Create a convenience script for starting Claude with the Python prompt
-write_step "Creating convenience launcher..."
+write_step "Creating convenience launcher and global command..."
 
 launcher_path="$CLAUDE_USER_DIR/start-python-claude.sh"
 cat > "$launcher_path" << 'EOF'
@@ -229,6 +229,42 @@ EOF
 chmod +x "$launcher_path"
 write_success "Created launcher script: start-python-claude.sh"
 
+# Create a global command by symlinking to ~/.local/bin (standard user bin directory)
+local_bin_path="$HOME/.local/bin"
+if [[ ! -d "$local_bin_path" ]]; then
+    mkdir -p "$local_bin_path"
+    write_success "Created $local_bin_path directory"
+fi
+
+# Create symlink for easy execution
+ln -sf "$launcher_path" "$local_bin_path/claude-python"
+write_success "Created global command: claude-python"
+
+# Add ~/.local/bin to PATH if not already there
+if [[ ":$PATH:" != *":$local_bin_path:"* ]]; then
+    # Detect shell and update appropriate config
+    SHELL_NAME=$(basename "$SHELL")
+    case "$SHELL_NAME" in
+        bash)
+            echo "export PATH=\"$local_bin_path:\$PATH\"" >> ~/.bashrc
+            write_success "Added $local_bin_path to PATH in ~/.bashrc"
+            ;;
+        zsh)
+            echo "export PATH=\"$local_bin_path:\$PATH\"" >> ~/.zshrc
+            write_success "Added $local_bin_path to PATH in ~/.zshrc"
+            ;;
+        fish)
+            echo "set -x PATH $local_bin_path \$PATH" >> ~/.config/fish/config.fish
+            write_success "Added $local_bin_path to PATH in fish config"
+            ;;
+        *)
+            write_info "Please add $local_bin_path to your PATH manually"
+            ;;
+    esac
+    export PATH="$local_bin_path:$PATH"
+    write_info "You may need to restart your terminal or run 'source ~/.bashrc' for PATH changes"
+fi
+
 # Final message
 echo -e "\n${GREEN}╔══════════════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║                                                                      ║${NC}"
@@ -241,15 +277,17 @@ echo -e "━━━━━━━━━━━━━━━━━━━━━━━�
 
 echo -e "\n1. Open a ${YELLOW}NEW terminal window${NC} (to ensure PATH is updated)"
 
-echo -e "\n2. Start Claude Code with Python configuration using ONE of these methods:"
-echo -e "\n   ${CYAN}Option A - Using the convenience script:${NC}"
-echo -e "   ${BOLD}   $launcher_path${NC}"
+echo -e "\n2. Start Claude Code with Python configuration:"
+echo -e "\n   ${CYAN}Simply run:${NC}"
+echo -e "   ${BOLD}   claude-python${NC}"
+echo -e "   ${GREEN}That's it! The command is now available globally.${NC}"
 
-echo -e "\n   ${CYAN}Option B - Direct command:${NC}"
-echo -e "   ${BOLD}   claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\"${NC}"
+echo -e "\n   ${CYAN}With additional flags:${NC}"
+echo -e "   ${BOLD}   claude-python --model opus --max-turns 20${NC}"
 
-echo -e "\n   ${CYAN}Option C - With additional flags:${NC}"
-echo -e "   ${BOLD}   claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\" --model opus --max-turns 20${NC}"
+echo -e "\n   ${CYAN}Alternative methods:${NC}"
+echo -e "   • Full path: $launcher_path"
+echo -e "   • Manual: claude --append-system-prompt \"@$PROMPTS_DIR/python-developer.md\""
 
 echo -e "\n3. ${CYAN}Available features:${NC}"
 echo "   • 7 Python-optimized subagents (code review, testing, docs, etc.)"
