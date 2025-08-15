@@ -8,6 +8,7 @@ import contextlib
 import os
 import platform
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -121,8 +122,17 @@ def download_file(url: str, destination: Path, force: bool = False) -> bool:
         return True
 
     try:
-        response = urlopen(url)
-        content = response.read()
+        try:
+            response = urlopen(url)
+            content = response.read()
+        except ssl.SSLError:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            response = urlopen(url, context=ctx)
+            content = response.read()
+
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
         success(f'Downloaded: {filename}')
@@ -143,8 +153,17 @@ def install_claude() -> bool:
         if system == 'Windows':
             installer_url = f'{REPO_BASE_URL}/scripts/windows/install-claude-windows.ps1'
             with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
-                response = urlopen(installer_url)
-                tmp.write(response.read().decode('utf-8'))
+                try:
+                    response = urlopen(installer_url)
+                    content = response.read().decode('utf-8')
+                except ssl.SSLError:
+                    warning('SSL certificate verification failed, trying with unverified context')
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(installer_url, context=ctx)
+                    content = response.read().decode('utf-8')
+                tmp.write(content)
                 temp_installer = tmp.name
 
             # Run PowerShell installer
