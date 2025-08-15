@@ -265,7 +265,7 @@ def configure_mcp_server() -> bool:
 $userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
 $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
 $env:Path = $userPath + ";" + $machinePath
-& "{claude_cmd}" mcp add --transport http context7 {CONTEXT7_MCP_URL}
+& "{claude_cmd}" mcp add --scope user --transport http context7 {CONTEXT7_MCP_URL}
 $LASTEXITCODE
 '''
             result = run_command([
@@ -285,7 +285,7 @@ $LASTEXITCODE
             parent_dir = Path(claude_cmd).parent
             bash_cmd = (
                 f'export PATH="{parent_dir}:$PATH" && '
-                f'{claude_cmd} mcp add --transport http context7 {CONTEXT7_MCP_URL}'
+                f'{claude_cmd} mcp add --scope user --transport http context7 {CONTEXT7_MCP_URL}'
             )
             result = run_command([
                 'bash', '-l', '-c', bash_cmd,
