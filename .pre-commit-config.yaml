@@ -1,7 +1,24 @@
 repos:
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.7
+  hooks:
+    - id: ruff-check
+      name: Ruff (lint + autofix)
+      description: Fast Python linter (Flake8, isort, quotes, etc.) with --fix enabled
+      args: [--fix]
+
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v5.0.0
   hooks:
+    - id: check-json
+      name: Check JSON
+      description: Verify JSON syntax
+      exclude: ^CHANGELOG\.md$
+
+    - id: check-yaml
+      name: Check YAML
+      description: Verify YAML syntax
+
     - id: end-of-file-fixer
       name: End-of-file fixer (non-Python)
       description: Ensures every *non-Python* file is empty or ends with a single newline
