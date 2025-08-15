@@ -14,6 +14,7 @@ agents/
 │   ├── code-reviewer.md
 │   ├── test-generator.md
 │   ├── doc-writer.md
+│   ├── implementation-guide.md
 │   ├── performance-optimizer.md
 │   ├── security-auditor.md
 │   └── refactoring-assistant.md
@@ -97,6 +98,9 @@ Creates comprehensive test suites with high coverage.
 
 ### Documentation Writer
 Generates and maintains technical documentation.
+
+### Implementation Guide
+Finds and prepares comprehensive implementation guidance using Context7 and authoritative sources.
 
 ### Performance Optimizer
 Analyzes and optimizes code performance.
