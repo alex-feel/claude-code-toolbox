@@ -214,9 +214,11 @@ def configure_mcp_server() -> bool:
     """Configure Context7 MCP server."""
     info('Configuring Context7 MCP server...')
 
+    system = platform.system()
+
     # Find claude command
     claude_cmd = find_command('claude')
-    if not claude_cmd and platform.system() == 'Windows':
+    if not claude_cmd and system == 'Windows':
         # Check common locations on Windows
         npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
         for exe in ['claude.cmd', 'claude.ps1', 'claude']:
@@ -232,25 +234,43 @@ def configure_mcp_server() -> bool:
         return False
 
     try:
-        # Run MCP configuration command
-        result = run_command([
-            claude_cmd, 'mcp', 'add',
-            '--transport', 'http',
-            'context7', CONTEXT7_MCP_URL,
-        ], capture_output=True)
+        # MCP configuration needs to run in a separate shell
+        mcp_command = f'claude mcp add --transport http context7 {CONTEXT7_MCP_URL}'
 
-        if result.returncode == 0 or 'already exists' in result.stderr.lower():
+        if system == 'Windows':
+            # Use cmd.exe to run in a new shell context on Windows
+            result = run_command([
+                'cmd', '/c', mcp_command,
+            ], capture_output=True, shell=False)
+        else:
+            # Use bash to run in a new shell context on Unix
+            result = run_command([
+                'bash', '-c', mcp_command,
+            ], capture_output=True, shell=False)
+
+        # Check result
+        if result.returncode == 0:
             success('Context7 MCP server configured successfully')
             return True
-        warning(f'MCP server may not have been configured (exit code: {result.returncode})')
-        info('To verify or add manually, run:')
-        info(f'  claude mcp add --transport http context7 {CONTEXT7_MCP_URL}')
+        if result.stderr and 'already exists' in result.stderr.lower():
+            success('Context7 MCP server already configured')
+            return True
+        # MCP configuration often needs a fresh terminal, provide manual instructions
+        warning('MCP configuration requires a new terminal session')
+        info('')
+        info('Please open a NEW terminal/PowerShell window and run:')
+        info(f'  {mcp_command}')
+        info('')
+        info('This is needed because Claude Code was just installed')
+        info('and requires a fresh shell to load properly.')
         return False
 
     except Exception as e:
         warning(f'Could not configure MCP server automatically: {e}')
-        info('To add manually, run:')
+        info('')
+        info('Please open a NEW terminal/PowerShell window and run:')
         info(f'  claude mcp add --transport http context7 {CONTEXT7_MCP_URL}')
+        info('')
         return False
 
 
@@ -435,7 +455,7 @@ def main() -> None:
         # Step 6: Configure Context7 MCP server
         print()
         print(f'{Colors.CYAN}Step 6: Configuring Context7 MCP server...{Colors.NC}')
-        configure_mcp_server()
+        mcp_configured = configure_mcp_server()
 
         # Step 7: Create launcher script
         print()
@@ -460,7 +480,10 @@ def main() -> None:
         print(f'   * Python subagents: {len(AGENTS)} installed')
         print(f'   * Slash commands: {len(COMMANDS)} installed')
         print('   * System prompt: Configured')
-        print('   * MCP server: Context7 configured')
+        if 'mcp_configured' in locals() and mcp_configured:
+            print('   * MCP server: Context7 configured')
+        else:
+            print('   * MCP server: Manual configuration needed (see instructions above)')
         print('   * Global command: claude-python registered')
 
         print()
@@ -477,7 +500,10 @@ def main() -> None:
         print(f"{Colors.YELLOW}What's Installed:{Colors.NC}")
         print('   * 7 Python-optimized subagents (code review, testing, docs, etc.)')
         print('   * 6 custom slash commands (/commit, /debug, /test, etc.)')
-        print('   * Context7 MCP server for up-to-date library documentation')
+        if 'mcp_configured' in locals() and mcp_configured:
+            print('   * Context7 MCP server for up-to-date library documentation')
+        else:
+            print('   * Context7 MCP server (pending manual configuration)')
         print('   * Comprehensive Python development system prompt')
 
         print()
