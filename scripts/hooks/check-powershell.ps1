@@ -7,13 +7,9 @@ param(
 
 # Check if PSScriptAnalyzer is installed
 if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
-    Write-Host "PSScriptAnalyzer is not installed." -ForegroundColor Red
-    Write-Host "Install it with: Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "To install automatically, run:" -ForegroundColor Cyan
-    Write-Host "  Set-PSRepository PSGallery -InstallationPolicy Trusted" -ForegroundColor White
-    Write-Host "  Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser" -ForegroundColor White
-    exit 1  # Fail if not installed
+    Write-Warning "PSScriptAnalyzer is not installed."
+    Write-Warning "Install it with: Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser"
+    exit 0  # Don't fail if not installed, just warn
 }
 
 $hasErrors = $false
@@ -22,21 +18,13 @@ foreach ($file in $Files) {
     if (Test-Path $file) {
         Write-Host "Checking $file..." -ForegroundColor Cyan
 
-        # Run PSScriptAnalyzer with all severity levels like CI does
-        $allResults = Invoke-ScriptAnalyzer -Path $file -ReportSummary
-
-        # Filter for only Error and ParseError severities
-        $results = $allResults | Where-Object { $_.Severity -in 'Error', 'ParseError' }
+        # Run PSScriptAnalyzer
+        $results = Invoke-ScriptAnalyzer -Path $file -Severity Warning,Error
 
         if ($results) {
             $hasErrors = $true
-            Write-Host "Critical issues found in ${file}:" -ForegroundColor Red
+            Write-Host "Issues found in ${file}:" -ForegroundColor Yellow
             $results | Format-Table -AutoSize
-        } elseif ($allResults) {
-            Write-Host "[OK] No critical issues in $file (warnings exist but are allowed)" -ForegroundColor Green
-            # Optionally show warnings for information
-            Write-Host "Warnings:" -ForegroundColor Yellow
-            $allResults | Where-Object { $_.Severity -eq 'Warning' } | Format-Table -AutoSize
         } else {
             Write-Host "[OK] No issues found in $file" -ForegroundColor Green
         }
