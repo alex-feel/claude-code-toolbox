@@ -401,6 +401,15 @@ def install_nodejs_direct() -> bool:
         if system == 'Windows':
             info('Installing Node.js silently...')
             result = run_command(['msiexec', '/i', temp_path, '/quiet', '/norestart'])
+
+            # After MSI installation, add Node.js to PATH for current process
+            if result.returncode == 0:
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH for current session')
         elif system == 'Darwin':
             info('Installing Node.js (may require password)...')
             result = run_command(['sudo', 'installer', '-pkg', temp_path, '-target', '/'])
@@ -474,6 +483,15 @@ def ensure_nodejs() -> bool:
     """Ensure Node.js is installed and meets minimum version."""
     info('Checking Node.js installation...')
 
+    # On Windows, check standard installation location even if not in PATH
+    if platform.system() == 'Windows':
+        nodejs_path = r'C:\Program Files\nodejs'
+        if Path(nodejs_path).exists():
+            current_path = os.environ.get('PATH', '')
+            if nodejs_path not in current_path:
+                os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                info(f'Found Node.js at {nodejs_path}, adding to PATH')
+
     current_version = get_node_version()
     if current_version:
         info(f'Node.js {current_version} found')
@@ -503,7 +521,17 @@ def ensure_nodejs() -> bool:
         # Fallback to direct download
         if install_nodejs_direct():
             time.sleep(2)
-            if get_node_version() and compare_versions(get_node_version(), MIN_NODE_VERSION):
+            # After installation, check standard location on Windows
+            if platform.system() == 'Windows':
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after installation')
+
+            version = get_node_version()
+            if version and compare_versions(version, MIN_NODE_VERSION):
                 return True
 
     elif system == 'Darwin':
@@ -536,6 +564,15 @@ def ensure_nodejs() -> bool:
 # Claude Code installation
 def install_claude_npm() -> bool:
     """Install Claude Code using npm."""
+    # On Windows, check if npm is in Program Files even if not in PATH
+    if platform.system() == 'Windows' and not find_command('npm'):
+        nodejs_path = r'C:\Program Files\nodejs'
+        if Path(nodejs_path).exists():
+            current_path = os.environ.get('PATH', '')
+            if nodejs_path not in current_path:
+                os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                info(f'Added {nodejs_path} to PATH for npm access')
+
     if not find_command('npm'):
         error('npm not found. Please install Node.js with npm')
         return False
