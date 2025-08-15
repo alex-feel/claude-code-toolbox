@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.4](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.3...v1.1.4) (2025-08-15)
+
+
+### Bug Fixes
+
+* use full path to claude command for MCP server configuration ([ae1552f](https://github.com/alex-feel/claude-code-toolbox/commit/ae1552f551aee5b113adff6e60f57386e280d1e9))
+
 ## [1.1.3](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.2...v1.1.3) (2025-08-15)
 
 
