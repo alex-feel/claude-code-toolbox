@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -192,9 +193,17 @@ def install_git_windows_download() -> bool:
     try:
         info('Downloading Git for Windows installer...')
 
-        # Get the download page
-        with urlopen(GIT_WINDOWS_URL) as response:
-            html = response.read().decode('utf-8')
+        # Get the download page (with SSL fallback)
+        try:
+            with urlopen(GIT_WINDOWS_URL) as response:
+                html = response.read().decode('utf-8')
+        except ssl.SSLError:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urlopen(GIT_WINDOWS_URL, context=ctx) as response:
+                html = response.read().decode('utf-8')
 
         # Find the installer link
         match = re.search(r'href="([^"]+Git-[\d.]+-64-bit\.exe)"', html)
@@ -210,7 +219,17 @@ def install_git_windows_download() -> bool:
             temp_path = tmp.name
 
         info(f'Downloading {installer_url}')
-        urlretrieve(installer_url, temp_path)
+        try:
+            urlretrieve(installer_url, temp_path)
+        except ssl.SSLError:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            import urllib.request
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            urllib.request.install_opener(opener)
+            urlretrieve(installer_url, temp_path)
 
         # Run installer silently
         info('Running Git installer silently...')
@@ -360,9 +379,17 @@ def install_nodejs_direct() -> bool:
     try:
         info('Downloading Node.js LTS installer...')
 
-        # Get LTS version info
-        with urlopen(NODE_LTS_API) as response:
-            versions = json.loads(response.read())
+        # Get LTS version info (with SSL fallback)
+        try:
+            with urlopen(NODE_LTS_API) as response:
+                versions = json.loads(response.read())
+        except ssl.SSLError:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urlopen(NODE_LTS_API, context=ctx) as response:
+                versions = json.loads(response.read())
 
         lts_version = None
         for v in versions:
@@ -395,7 +422,17 @@ def install_nodejs_direct() -> bool:
             temp_path = tmp.name
 
         info(f'Downloading {installer_url}')
-        urlretrieve(installer_url, temp_path)
+        try:
+            urlretrieve(installer_url, temp_path)
+        except ssl.SSLError:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            import urllib.request
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            urllib.request.install_opener(opener)
+            urlretrieve(installer_url, temp_path)
 
         # Install based on OS
         if system == 'Windows':
@@ -579,8 +616,8 @@ def install_claude_npm() -> bool:
 
     info('Installing Claude Code CLI via npm...')
 
-    # Try without sudo first
-    result = run_command(['npm', 'install', '-g', CLAUDE_NPM_PACKAGE])
+    # Try without sudo first (show output for debugging)
+    result = run_command(['npm', 'install', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
 
     if result.returncode == 0:
         success('Claude Code installed successfully')
@@ -589,7 +626,7 @@ def install_claude_npm() -> bool:
     # Try with sudo on Unix systems
     if platform.system() != 'Windows':
         warning('Trying with sudo...')
-        result = run_command(['sudo', 'npm', 'install', '-g', CLAUDE_NPM_PACKAGE])
+        result = run_command(['sudo', 'npm', 'install', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
         if result.returncode == 0:
             success('Claude Code installed successfully')
             return True
@@ -606,20 +643,29 @@ def install_claude_native() -> bool:
     try:
         info('Trying official native installer...')
 
-        # Download installer script
-        with urlopen(CLAUDE_INSTALLER_URL) as response:
-            installer_script = response.read().decode('utf-8')
+        # Download installer script (with SSL fallback)
+        try:
+            with urlopen(CLAUDE_INSTALLER_URL) as response:
+                installer_script = response.read().decode('utf-8')
+        except ssl.SSLError:
+            # Fallback: create unverified SSL context for corporate environments
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with urlopen(CLAUDE_INSTALLER_URL, context=ctx) as response:
+                installer_script = response.read().decode('utf-8')
 
         # Save to temp file and execute
         with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
             tmp.write(installer_script)
             temp_path = tmp.name
 
-        # Execute installer
+        # Execute installer (show output for debugging)
         result = run_command([
             'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', temp_path,
-        ])
+        ], capture_output=False)
 
         # Clean up
         with contextlib.suppress(Exception):
