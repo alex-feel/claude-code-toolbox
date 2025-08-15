@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Cross-platform Python environment setup for Claude Code.
 Downloads and configures Python development tools for Claude Code.

@@ -29,6 +29,10 @@ repos:
       description: Trims trailing whitespace in non-Python text files
       exclude: ^.*\.(pyi?|py)$
 
+    - id: check-shebang-scripts-are-executable
+      name: Check shebang scripts
+      description: Check that text files with a shebang are executable
+
 - repo: local
   hooks:
     - id: markdownlint

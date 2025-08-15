@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Cross-platform Claude Code installer.
 Handles Git Bash (Windows), Node.js, and Claude Code CLI installation.
