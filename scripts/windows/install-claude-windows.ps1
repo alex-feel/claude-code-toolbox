@@ -26,8 +26,8 @@ if (-not $uvPath) {
         # Install uv using the official installer
         Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
 
-        # Update PATH for current session
-        $env:Path = "$env:LOCALAPPDATA\uv\bin;$env:Path"
+        # Update PATH for current session (uv installs to .local\bin)
+        $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
 
         Write-Host "[OK]   uv installed successfully" -ForegroundColor Green
     } catch {
