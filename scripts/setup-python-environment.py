@@ -12,6 +12,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -215,62 +216,109 @@ def configure_mcp_server() -> bool:
     info('Configuring Context7 MCP server...')
 
     system = platform.system()
+    claude_cmd = None
 
-    # Find claude command
+    # First try to find claude in PATH
     claude_cmd = find_command('claude')
-    if not claude_cmd and system == 'Windows':
-        # Check common locations on Windows
-        npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
-        for exe in ['claude.cmd', 'claude.ps1', 'claude']:
-            claude_path = npm_path / exe
-            if claude_path.exists():
-                claude_cmd = str(claude_path)
-                break
+
+    # If not in PATH, look for it where npm installs it
+    if not claude_cmd:
+        if system == 'Windows':
+            # On Windows, npm installs to %APPDATA%\npm
+            npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
+            claude_cmd_path = npm_path / 'claude.cmd'
+            if claude_cmd_path.exists():
+                claude_cmd = str(claude_cmd_path)
+                info(f'Found claude at: {claude_cmd}')
+            else:
+                # Also check without .cmd extension
+                claude_path = npm_path / 'claude'
+                if claude_path.exists():
+                    claude_cmd = str(claude_path)
+                    info(f'Found claude at: {claude_cmd}')
+        else:
+            # On Unix, check common npm global locations
+            possible_paths = [
+                Path.home() / '.npm-global' / 'bin' / 'claude',
+                Path('/usr/local/bin/claude'),
+                Path('/usr/bin/claude'),
+            ]
+            for path in possible_paths:
+                if path.exists():
+                    claude_cmd = str(path)
+                    info(f'Found claude at: {claude_cmd}')
+                    break
 
     if not claude_cmd:
-        warning('Could not locate claude command')
-        info('To add manually after opening a new terminal, run:')
-        info(f'  claude mcp add --transport http context7 {CONTEXT7_MCP_URL}')
+        error('Claude command not found even after installation!')
+        error('This should not happen. Something went wrong with npm installation.')
         return False
 
     try:
-        # MCP configuration needs to run in a separate shell
-        mcp_command = f'claude mcp add --transport http context7 {CONTEXT7_MCP_URL}'
+        # Run the MCP configuration using the full path to claude
+        info(f'Running MCP configuration with: {claude_cmd}')
 
         if system == 'Windows':
-            # Use cmd.exe to run in a new shell context on Windows
+            # On Windows, we need to spawn a completely new shell process
+            # Use start /wait to spawn a new cmd window and wait for it
+            ps_script = f'''
+$userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+$machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+$env:Path = $userPath + ";" + $machinePath
+& "{claude_cmd}" mcp add --transport http context7 {CONTEXT7_MCP_URL}
+$LASTEXITCODE
+'''
             result = run_command([
-                'cmd', '/c', mcp_command,
-            ], capture_output=True, shell=False)
-        else:
-            # Use bash to run in a new shell context on Unix
-            result = run_command([
-                'bash', '-c', mcp_command,
-            ], capture_output=True, shell=False)
+                'powershell', '-NoProfile', '-Command', ps_script,
+            ], capture_output=True)
 
-        # Check result
+            # Also try with direct execution
+            if result.returncode != 0:
+                info('Trying direct execution...')
+                result = run_command([
+                    str(claude_cmd), 'mcp', 'add',
+                    '--transport', 'http',
+                    'context7', CONTEXT7_MCP_URL,
+                ], capture_output=True)
+        else:
+            # On Unix, spawn new bash with updated PATH
+            parent_dir = Path(claude_cmd).parent
+            bash_cmd = (
+                f'export PATH="{parent_dir}:$PATH" && '
+                f'{claude_cmd} mcp add --transport http context7 {CONTEXT7_MCP_URL}'
+            )
+            result = run_command([
+                'bash', '-l', '-c', bash_cmd,
+            ], capture_output=True)
+
+        # Check if successful
         if result.returncode == 0:
-            success('Context7 MCP server configured successfully')
+            success('Context7 MCP server configured successfully!')
             return True
         if result.stderr and 'already exists' in result.stderr.lower():
-            success('Context7 MCP server already configured')
+            success('Context7 MCP server already configured!')
             return True
-        # MCP configuration often needs a fresh terminal, provide manual instructions
-        warning('MCP configuration requires a new terminal session')
-        info('')
-        info('Please open a NEW terminal/PowerShell window and run:')
-        info(f'  {mcp_command}')
-        info('')
-        info('This is needed because Claude Code was just installed')
-        info('and requires a fresh shell to load properly.')
+        # If it still fails, try one more time with a delay
+        info('First attempt failed, waiting 2 seconds and retrying...')
+        time.sleep(2)
+
+        # Direct execution with full path
+        result = run_command([
+            str(claude_cmd), 'mcp', 'add',
+            '--transport', 'http',
+            'context7', CONTEXT7_MCP_URL,
+        ], capture_output=False)  # Show output for debugging
+
+        if result.returncode == 0:
+            success('Context7 MCP server configured successfully!')
+            return True
+        error(f'MCP configuration failed with exit code: {result.returncode}')
+        if result.stderr:
+            error(f'Error: {result.stderr}')
         return False
 
     except Exception as e:
-        warning(f'Could not configure MCP server automatically: {e}')
-        info('')
-        info('Please open a NEW terminal/PowerShell window and run:')
-        info(f'  claude mcp add --transport http context7 {CONTEXT7_MCP_URL}')
-        info('')
+        error(f'Failed to configure MCP server: {e}')
         return False
 
 
