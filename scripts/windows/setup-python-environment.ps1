@@ -202,23 +202,36 @@ Save-FileFromUrl -Url $promptUrl -Destination $promptPath
 # Step 6: Configure Context7 MCP server
 Write-Host ""
 Write-Host "Step 6: Configuring Context7 MCP server..." -ForegroundColor Cyan
-$mcpConfigPath = Join-Path $ClaudeUserDir "mcp.json"
-$mcpConfig = @'
-{
-  "servers": {
-    "context7": {
-      "transport": "http",
-      "url": "https://mcp.context7.com/mcp"
-    }
-  }
-}
-'@
 
 try {
-    [System.IO.File]::WriteAllText($mcpConfigPath, $mcpConfig)
-    Write-Success "Created MCP configuration"
+    # Run the command in a new PowerShell process that will have the updated PATH
+    $mcpCommand = "claude mcp add --transport http context7 https://mcp.context7.com/mcp"
+
+    $mcpProcess = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+        "-NoProfile",
+        "-Command",
+        $mcpCommand
+    ) -Wait -PassThru -NoNewWindow
+
+    if ($mcpProcess.ExitCode -eq 0) {
+        Write-Success "Context7 MCP server configured successfully"
+    } else {
+        # Try with cmd as a fallback (sometimes works better for npm global commands)
+        $cmdProcess = Start-Process -FilePath "cmd.exe" -ArgumentList @(
+            "/c",
+            $mcpCommand
+        ) -Wait -PassThru -NoNewWindow
+
+        if ($cmdProcess.ExitCode -eq 0) {
+            Write-Success "Context7 MCP server configured successfully"
+        } else {
+            Write-Warn "MCP server may not have been configured (exit code: $($cmdProcess.ExitCode))"
+            Write-Info "To verify or add manually, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
+        }
+    }
 } catch {
-    Write-Warn "Failed to create MCP configuration: $_"
+    Write-Warn "Could not configure MCP server automatically: $_"
+    Write-Info "To add manually, run: claude mcp add --transport http context7 https://mcp.context7.com/mcp"
 }
 
 # Step 7: Create launcher script

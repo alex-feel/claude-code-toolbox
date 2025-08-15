@@ -1,7 +1,7 @@
 ---
 description: Create conventional commits with automatic staging and pre-commit validation
 argument-hint: "[issue-id] [additional context]"
-allowed-tools: Bash(git *), Read, Grep
+allowed-tools: Bash, Read, Grep
 ---
 
 # Git Commit Workflow
