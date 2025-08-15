@@ -38,12 +38,14 @@ Base installer for Claude Code on Windows.
 Complete Python development environment setup for Claude Code.
 
 **Features:**
-- Runs base installer if Claude Code not present
-- Downloads 7 Python-optimized subagents
-- Installs 6 custom slash commands
-- Configures Context7 MCP server
-- Sets up Python developer system prompt
-- Creates convenience launcher script
+- Runs base installer if Claude Code not present (Step 1)
+- Creates configuration directories (Step 2)
+- Downloads 7 Python-optimized subagents (Step 3)
+- Installs 6 custom slash commands (Step 4)
+- Downloads Python developer system prompt (Step 5)
+- Configures Context7 MCP server (Step 6)
+- Creates convenience launcher script (Step 7)
+- Registers global `claude-python` command (Step 8)
 
 **Usage:**
 ```powershell
@@ -210,6 +212,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.gi
 curl -L -o setup-python.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1
 powershell -ExecutionPolicy Bypass .\setup-python.ps1
 ```
+
+**What to Expect:**
+The script will execute 8 steps in sequence:
+1. **Install Claude Code** (if needed) - includes Git Bash and Node.js
+2. **Create directories** - `.claude/agents`, `.claude/commands`, etc.
+3. **Download subagents** - 7 Python-specific AI agents
+4. **Install slash commands** - `/commit`, `/debug`, `/test`, etc.
+5. **Setup system prompt** - Python developer configuration
+6. **Configure MCP server** - Context7 for library documentation
+7. **Create launcher script** - Quick start script
+8. **Register global command** - `claude-python` available system-wide
 
 **⚠️ After Setup - IMPORTANT:**
 ```powershell

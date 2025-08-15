@@ -3,7 +3,6 @@
 # Usage: .\setup-python-environment.ps1 [-SkipInstall] [-Force]
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '', Justification='Required for remote script execution')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '', Justification='Force parameter is used conditionally')]
 param(
     [switch]$SkipInstall,
@@ -124,10 +123,32 @@ if (-not $SkipInstall) {
     Write-Host "Step 1: Installing Claude Code..." -ForegroundColor Cyan
 
     try {
+        # Download and save the installer script to a temp file
         $installUrl = "$RepoBaseUrl/scripts/windows/install-claude-windows.ps1"
-        $installScript = (New-Object Net.WebClient).DownloadString($installUrl)
-        Invoke-Expression $installScript
-        Write-Success "Claude Code installation complete"
+        $tempInstaller = [System.IO.Path]::GetTempFileName() + ".ps1"
+
+        try {
+            $installScript = (New-Object Net.WebClient).DownloadString($installUrl)
+            [System.IO.File]::WriteAllText($tempInstaller, $installScript)
+
+            # Run in a separate PowerShell process to prevent exit from terminating our script
+            $process = Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", $tempInstaller
+            ) -Wait -PassThru -NoNewWindow
+
+            if ($process.ExitCode -eq 0) {
+                Write-Success "Claude Code installation complete"
+            } else {
+                throw "Installation failed with exit code: $($process.ExitCode)"
+            }
+        } finally {
+            # Clean up temp file
+            if (Test-Path $tempInstaller) {
+                Remove-Item $tempInstaller -Force -ErrorAction SilentlyContinue
+            }
+        }
     } catch {
         Write-ErrorMsg "Failed to install Claude Code"
         Write-ErrorMsg $_.Exception.Message
