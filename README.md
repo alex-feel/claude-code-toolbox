@@ -36,12 +36,12 @@ This automated setup includes:
 - 🔧 Comprehensive Python developer system prompt
 - 🚀 Convenience launchers for quick startup
 
-**⚠️ IMPORTANT: After setup, use the simple command:**
+**✅ After setup, use the simple command:**
 ```bash
-claude-python  # Works only in Git Bash on Windows
+claude-python  # Works in all Windows shells (PowerShell, CMD, Git Bash)
 ```
 
-**Windows Users**: The `claude-python` command ONLY works in Git Bash. PowerShell and CMD cannot properly pass the system prompt due to shell limitations. You MUST use Git Bash.
+The setup automatically creates properly escaped wrappers for each Windows shell, ensuring the Python developer system prompt loads correctly regardless of which shell you use.
 
 ---
 

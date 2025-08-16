@@ -329,38 +329,82 @@ def create_launcher_script(claude_user_dir: Path) -> Path | None:
     system = platform.system()
 
     try:
-        # Create bash launcher for all platforms
-        launcher_path = launcher_path.with_suffix('.sh')
         if system == 'Windows':
-            # Windows-specific bash launcher
-            launcher_content = '''#!/usr/bin/env bash
-# Claude Code Python Environment Launcher for Windows Git Bash
+            # Create PowerShell launcher for Windows
+            launcher_path = launcher_path.with_suffix('.ps1')
+            launcher_content = '''# Claude Code Python Environment Launcher
 # This script starts Claude Code with the Python developer system prompt
 
-CLAUDE_USER_DIR="$HOME/.claude"
-PROMPT_PATH="$CLAUDE_USER_DIR/prompts/python-developer.md"
+$claudeUserDir = Join-Path $env:USERPROFILE ".claude"
+$promptPath = Join-Path $claudeUserDir "prompts\\python-developer.md"
 
-if [ ! -f "$PROMPT_PATH" ]; then
-    echo -e "\\033[0;31mError: Python developer prompt not found at $PROMPT_PATH\\033[0m"
-    echo -e "\\033[1;33mPlease run setup-python-environment.py first\\033[0m"
+if (-not (Test-Path $promptPath)) {
+    Write-Host "Error: Python developer prompt not found at $promptPath" -ForegroundColor Red
+    Write-Host "Please run setup-python-environment.py first" -ForegroundColor Yellow
     exit 1
-fi
+}
 
-echo -e "\\033[0;32mStarting Claude Code with Python developer configuration...\\033[0m"
+Write-Host "Starting Claude Code with Python developer configuration..." -ForegroundColor Green
 
-# Read the prompt content
-PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+# Find Git Bash (required for Claude Code on Windows)
+$bashPath = $null
+if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {
+    $bashPath = "C:\\Program Files\\Git\\bin\\bash.exe"
+} elseif (Test-Path "C:\\Program Files (x86)\\Git\\bin\\bash.exe") {
+    $bashPath = "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+} else {
+    Write-Host "Error: Git Bash not found! Please install Git for Windows." -ForegroundColor Red
+    exit 1
+}
 
-# Pass any additional arguments to Claude
-if [ $# -gt 0 ]; then
-    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
-    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
-else
-    claude --append-system-prompt "$PROMPT_CONTENT"
-fi
+# Build the bash command with all arguments
+if ($args.Count -gt 0) {
+    Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
+    # When we have arguments, we can't use --% so we escape properly
+    $argsString = ($args -join ' ')
+    $bashCmd = "p=`$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
+    $bashCmd += "exec claude --append-system-prompt=\\`"`$p\\`" $argsString"
+    $bashCommand = $bashCmd
+    & $bashPath -lc $bashCommand
+} else {
+    $cmd = "p=$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
+    $cmd += "exec claude --append-system-prompt=\"$p\""
+    & $bashPath --% -lc "$cmd"
+}
 '''
+            launcher_path.write_text(launcher_content)
+
+            # Also create a CMD batch file wrapper
+            batch_path = claude_user_dir / 'start-python-claude.cmd'
+            batch_content = '''@echo off
+REM Claude Code Python Environment Launcher for CMD
+REM This script starts Claude Code with the Python developer system prompt
+
+set PROMPT_PATH=%USERPROFILE%\\.claude\\prompts\\python-developer.md
+
+if not exist "%PROMPT_PATH%" (
+    echo Error: Python developer prompt not found at %PROMPT_PATH%
+    echo Please run setup-python-environment.py first
+    exit /b 1
+)
+
+echo Starting Claude Code with Python developer configuration...
+
+REM Build the command with all arguments
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/python-developer.md)
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    echo Passing additional arguments: %*
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
+            batch_path.write_text(batch_content)
+
         else:
-            # Unix-like systems bash launcher
+            # Create bash launcher for Unix-like systems
+            launcher_path = launcher_path.with_suffix('.sh')
             launcher_content = '''#!/usr/bin/env bash
 # Claude Code Python Environment Launcher
 # This script starts Claude Code with the Python developer system prompt
@@ -410,7 +454,29 @@ def register_global_command(launcher_path: Path) -> bool:
             local_bin = Path.home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            # Only create a bash wrapper for Git Bash (no PowerShell/CMD wrappers)
+            # Create wrappers for all Windows shells
+            # CMD wrapper
+            batch_path = local_bin / 'claude-python.cmd'
+            batch_content = '''@echo off
+REM Global claude-python command for CMD
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/python-developer.md)
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
+            batch_path.write_text(batch_content)
+
+            # PowerShell wrapper (as a simple forwarder to the PS1 launcher)
+            ps1_wrapper_path = local_bin / 'claude-python.ps1'
+            ps1_wrapper_content = f'''# Global claude-python command for PowerShell
+& "{launcher_path}" @args
+'''
+            ps1_wrapper_path.write_text(ps1_wrapper_content)
+
+            # Git Bash wrapper
             bash_wrapper_path = local_bin / 'claude-python'
             bash_content = '''#!/bin/bash
 # Bash wrapper for claude-python to work in Git Bash
@@ -441,8 +507,7 @@ fi
             # Make it executable (Git Bash respects this even on Windows)
             bash_wrapper_path.chmod(0o755)
 
-            info('Created bash wrapper for Git Bash')
-            warning('Note: claude-python command only works in Git Bash on Windows, not in PowerShell/CMD')
+            info('Created wrappers for all Windows shells (PowerShell, CMD, Git Bash)')
 
             # Add .local/bin to PATH if not already there
             user_path = os.environ.get('PATH', '')
@@ -472,9 +537,8 @@ fi
             info('  export PATH="$HOME/.local/bin:$PATH"')
 
         if system == 'Windows':
-            success('Created global command: claude-python (Git Bash only)')
-            info('For PowerShell/CMD, use the full command:')
-            info('  claude --append-system-prompt "$(Get-Content ~\\.claude\\prompts\\python-developer.md -Raw)"')
+            success('Created global command: claude-python (works in PowerShell, CMD, and Git Bash)')
+            info('The command now works in all Windows shells!')
         else:
             success('Created global command: claude-python')
         return True
