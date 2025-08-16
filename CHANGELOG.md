@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.0...v1.4.1) (2025-08-16)
+
+
+### Bug Fixes
+
+* bash wrapper now executes directly instead of going through PowerShell ([ce7a6d3](https://github.com/alex-feel/claude-code-toolbox/commit/ce7a6d3df8a66cb0865de40077d42406845a2f76))
+* escape backslash in PowerShell regex pattern ([6508fd5](https://github.com/alex-feel/claude-code-toolbox/commit/6508fd51bc85bdebcfc677fbbc51a90ac49b76ac))
+* use Git Bash to pass system prompt content on Windows ([d7105c2](https://github.com/alex-feel/claude-code-toolbox/commit/d7105c22fd74f6f5527fe1c824df59cb288e7c68))
+* use Unix-style paths for system prompt loading on Windows ([7408a05](https://github.com/alex-feel/claude-code-toolbox/commit/7408a05924a537f6623c23d9c1c466a7e1b43a6f))
+
 ## [1.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.3.0...v1.4.0) (2025-08-16)
 
 
