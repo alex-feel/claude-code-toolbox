@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.2.0...v1.3.0) (2025-08-16)
+
+
+### Features
+
+* incorporate YAGNI, DRY, KISS, and SOLID principles into Python developer prompt ([19b75ef](https://github.com/alex-feel/claude-code-toolbox/commit/19b75efad0f450ee130da3ba5f34439d70706d87))
+
+
+### Bug Fixes
+
+* add --scope user flag to MCP configuration commands ([d937ceb](https://github.com/alex-feel/claude-code-toolbox/commit/d937ceb251ec25ba2eedace41fbace16901eec10))
+* add Node.js to PATH after MSI installation on Windows ([3f59280](https://github.com/alex-feel/claude-code-toolbox/commit/3f592809b73428f898ded33195d961bdeae90c71))
+* correct Python version specifier syntax for uv ([df89b94](https://github.com/alex-feel/claude-code-toolbox/commit/df89b9482a042a95bf1c62dff378eba907ad47ee))
+* correct uv PATH configuration in Windows PowerShell scripts ([4d1aa7e](https://github.com/alex-feel/claude-code-toolbox/commit/4d1aa7e0d107a36c3a9416a96f0c3fece717ed95))
+* properly execute MCP configuration with full claude path ([c18f608](https://github.com/alex-feel/claude-code-toolbox/commit/c18f6083a461251893b51f159e8aa974cd4b3c58))
+* properly handle SSL errors and npm path resolution ([d47ccee](https://github.com/alex-feel/claude-code-toolbox/commit/d47cceeb5c98856a9908bd88f88c841fe912cdd5))
+* properly pass command-line arguments in PowerShell launcher ([587273d](https://github.com/alex-feel/claude-code-toolbox/commit/587273df2aba7989c8363f39e68dec01c6a8a9a4))
+* resolve npm install failures and SSL certificate errors ([d3c80b4](https://github.com/alex-feel/claude-code-toolbox/commit/d3c80b4d8f39feeb2756578c78678ba58cebfaab))
+* run MCP configuration in separate shell context ([e97f0dd](https://github.com/alex-feel/claude-code-toolbox/commit/e97f0ddb4f0acf5c027f4bcedbb6b66b5431198a))
+
 ## [1.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.1.4...v1.2.0) (2025-08-15)
 
 
