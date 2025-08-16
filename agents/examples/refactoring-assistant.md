@@ -4,7 +4,7 @@ description: |
   Refactoring specialist for code restructuring, clean architecture, and design pattern implementation.
   Transforms complex, legacy, or poorly structured code into maintainable, testable, and extensible systems.
   Ensures safe refactoring through incremental changes with comprehensive test coverage validation.
-  Use PROACTIVELY when code smells are detected, before adding features to legacy code, or for maintainability improvements.
+  It should be used proactively when code smells are detected, before adding features to legacy code, or for maintainability improvements.
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash
 model: opus
 color: cyan

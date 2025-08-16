@@ -4,7 +4,7 @@ description: |
   Brief description of this agent's specialization and expertise.
   What this agent does when invoked (capabilities and deliverables).
   Optional third sentence for additional capabilities or specializations.
-  Use PROACTIVELY [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"].
+  It should be used proactively [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"].
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput
 model: opus
 color: blue
@@ -63,8 +63,8 @@ UNIVERSAL SUB-AGENT TEMPLATE - HOW TO USE THIS TEMPLATE
 
 YAML FRONTMATTER CONFIGURATION:
 - name: Unique identifier (lowercase, hyphens/underscores)
-- description: Must be 3-4 sentences, LAST sentence MUST contain "Use PROACTIVELY" or "MUST BE USED" in CAPS
-  Example: "Expert code reviewer. Reviews for bugs. Produces reports. Use PROACTIVELY after code changes."
+- description: Must be 3-4 sentences, LAST sentence MUST contain "It should be used proactively"
+  Example: "Expert code reviewer. Reviews for bugs. Produces reports. It should be used proactively after code changes."
 - tools: Start with ALL no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
   CRITICAL: If using Write, MUST also include Edit and MultiEdit for corrections!
   MCP SERVERS: To allow all tools from an MCP server, use just the server name: mcp__<serverName>
