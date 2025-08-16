@@ -345,7 +345,14 @@ if (-not (Test-Path $promptPath)) {
 }
 
 Write-Host "Starting Claude Code with Python developer configuration..." -ForegroundColor Green
-& claude --append-system-prompt "@$promptPath" $args
+
+# Pass any additional arguments to Claude
+if ($args.Count -gt 0) {
+    Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
+    & claude --append-system-prompt "@$promptPath" @args
+} else {
+    & claude --append-system-prompt "@$promptPath"
+}
 '''
             launcher_path.write_text(launcher_content)
 

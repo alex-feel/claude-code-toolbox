@@ -11,8 +11,7 @@ system-prompts/
 │   ├── frontend-developer.md  # React/TypeScript/Vite specialist
 │   └── devops-engineer.md     # Infrastructure and CI/CD expert
 ├── templates/         # Templates for creating custom system prompts
-│   ├── base-template.md       # Full-featured template with all sections
-│   └── minimal-template.md    # Simplified template for basic use cases
+│   └── base-template.md       # Full-featured template with all sections
 └── README.md         # This file
 ```
 
@@ -39,8 +38,6 @@ This installs:
 - Python developer system prompt
 - All related subagents and commands
 - Convenience launcher scripts
-
-[See the Python Setup Guide](../docs/python-setup.md) for details.
 
 ### Manual Usage
 
@@ -115,9 +112,8 @@ Infrastructure and deployment specialist:
 
 ### Using Templates
 
-1. **Choose a template:**
-   - `base-template.md` - Full-featured with all sections
-   - `minimal-template.md` - Simplified for basic needs
+1. **Start with the base template:**
+   - `base-template.md` - Full-featured template with all sections
 
 2. **Copy the template:**
    ```bash
@@ -205,7 +201,6 @@ Automated setup scripts are available for each system prompt:
 #### Python Developer
 - **Script**: `scripts/*/setup-python-environment.sh/ps1`
 - **Installs**: System prompt + 7 subagents + 6 commands + MCP server
-- **Usage**: See [Python Setup Guide](../docs/python-setup.md)
 
 #### Future Additions
 Setup scripts for other roles are planned:
@@ -331,7 +326,3 @@ To contribute new system prompts:
 - [SDK Usage](https://docs.anthropic.com/en/docs/claude-code/sdk)
 - [Output Styles](https://docs.anthropic.com/en/docs/claude-code/output-styles)
 - [Security Best Practices](https://docs.anthropic.com/en/docs/claude-code/security)
-
-## 📄 License
-
-These system prompts are provided as examples and can be freely modified for your use cases.

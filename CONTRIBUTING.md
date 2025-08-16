@@ -131,6 +131,32 @@ docs: add macOS installation guide
 5. Push to your fork
 6. Open a Pull Request with a clear description
 
+## Development Setup
+
+### Pre-commit Hooks
+
+This project uses pre-commit hooks to ensure code quality. Install them locally:
+
+```bash
+# Install pre-commit
+pip install pre-commit
+
+# Install the git hooks
+pre-commit install
+
+# Run manually on all files
+pre-commit run --all-files
+```
+
+**Configured hooks:**
+- **Ruff**: Python linting and auto-formatting (Flake8, isort, quotes)
+- **Markdownlint**: Markdown formatting and style checking
+- **PSScriptAnalyzer**: PowerShell script analysis (Windows only)
+- **Shellcheck**: Shell script linting
+- **Commitizen**: Commit message format validation
+- **JSON/YAML validators**: Syntax checking
+- **File formatting**: End-of-file fixing, trailing whitespace removal
+
 ## Development Guidelines
 
 ### PowerShell Scripts (Windows)
@@ -139,7 +165,8 @@ docs: add macOS installation guide
 2. **Error Handling**: Use proper try-catch blocks
 3. **Logging**: Use consistent Write-Info/Ok/Warn/Err functions
 4. **Testing**: Test on Windows 10 and 11
-5. **Documentation**: Include clear comments and usage examples
+5. **Linting**: Must pass PSScriptAnalyzer checks
+6. **Documentation**: Include clear comments and usage examples
 
 ### Shell Scripts (Linux/macOS)
 
@@ -147,22 +174,46 @@ docs: add macOS installation guide
 2. **Portability**: Test on multiple distributions/versions
 3. **Error Handling**: Use `set -euo pipefail`
 4. **Style**: Follow Google Shell Style Guide
-5. **Cross-platform**: Consider differences between Linux and macOS
+5. **Linting**: Must pass shellcheck with `--severity=warning`
+6. **Cross-platform**: Consider differences between Linux and macOS
+
+### Python Scripts
+
+1. **Compatibility**: Python 3.12+ (managed by uv)
+2. **Style**: Must pass Ruff linting and formatting
+3. **Error Handling**: Comprehensive try-except blocks
+4. **Cross-platform**: Test on Windows, Linux, and macOS
+5. **Dependencies**: Use uv for package management
 
 ### Sub-agents
 
 1. **Format**: Markdown files with YAML frontmatter
 2. **Required Fields**: name, description
 3. **Optional Fields**: tools, model, color
-4. **Location**: Store in `agents/examples/` or `agents/templates/`
-5. **Testing**: Verify in Claude Code before submitting
+4. **Description**: Last sentence MUST contain "Use PROACTIVELY" or "MUST BE USED"
+5. **Location**: Store in `agents/examples/` or `agents/templates/`
+6. **Testing**: Verify in Claude Code before submitting
 
 ### Slash Commands
 
-1. **Format**: Simple Markdown files without frontmatter
+1. **Format**: Markdown files with optional YAML frontmatter
 2. **Naming**: Use descriptive filenames (becomes command name)
 3. **Arguments**: Use `$ARGUMENTS` for dynamic content
-4. **Location**: Store in `slash-commands/examples/` or `slash-commands/templates/`
+4. **Frontmatter fields**: description, argument-hint, model, allowed-tools
+5. **Location**: Store in `slash-commands/examples/` or `slash-commands/templates/`
+
+### System Prompts
+
+1. **Format**: Markdown files for comprehensive role definitions
+2. **Structure**: Role definition, core practices, subagent integration
+3. **Location**: Store in `system-prompts/examples/` or `system-prompts/templates/`
+4. **Testing**: Verify with `--append-system-prompt` flag
+
+### Output Styles
+
+1. **Format**: Markdown transformation rules
+2. **Purpose**: Transform Claude's output for different professional domains
+3. **Location**: Store in `output-styles/examples/` or `output-styles/templates/`
 
 ### General Guidelines
 
@@ -190,26 +241,37 @@ docs: add macOS installation guide
 
 Test your changes:
 
-1. **Installation Scripts**
-   ```powershell
-   # Windows
-   .\install-claude-windows.ps1 -Verbose
-
-   # Linux/macOS
-   bash install-claude-linux.sh
+1. **Run Pre-commit Hooks**
+   ```bash
+   # Run all hooks on your changes
+   pre-commit run --all-files
    ```
 
-2. **Sub-agents**
+2. **Installation Scripts**
+   ```powershell
+   # Windows
+   .\scripts\windows\install-claude-windows.ps1 -Verbose
+   .\scripts\windows\setup-python-environment.ps1
+
+   # Linux/macOS
+   bash scripts/linux/install-claude-linux.sh
+   bash scripts/linux/setup-python-environment.sh
+   ```
+
+3. **Sub-agents**
    - Copy to `.claude/agents/`
    - Test in Claude Code
    - Verify tool permissions work correctly
+   - Ensure "Use PROACTIVELY" or "MUST BE USED" triggers are present
 
-3. **Slash Commands**
+4. **Slash Commands**
    - Copy to `.claude/commands/`
    - Test with various arguments
    - Ensure `$ARGUMENTS` substitution works
+   - Verify frontmatter fields if present
 
-4. **Documentation**
+5. **Documentation**
+   - Run markdownlint: `markdownlint-cli2 "**/*.md"`
    - Check for broken links
    - Verify code examples work
    - Ensure formatting is correct
@@ -219,18 +281,33 @@ Test your changes:
 ```text
 claude-code-toolbox/
 ├── scripts/
-│   ├── windows/          # Windows PowerShell scripts
-│   ├── linux/            # Linux shell scripts
-│   ├── macos/            # macOS shell scripts
-│   └── common/           # Shared utilities
+│   ├── install-claude.py            # Cross-platform Claude installer
+│   ├── setup-python-environment.py  # Cross-platform Python setup
+│   ├── windows/                     # Windows bootstrap scripts
+│   ├── linux/                       # Linux bootstrap scripts
+│   ├── macos/                       # macOS bootstrap scripts
+│   └── hooks/                       # Git hooks and validators
 ├── agents/
-│   ├── examples/         # Example sub-agents
-│   └── templates/        # Sub-agent templates
+│   ├── examples/                    # 7 general-purpose sub-agents
+│   └── templates/                   # Sub-agent templates
 ├── slash-commands/
-│   ├── examples/         # Example commands
-│   └── templates/        # Command templates
-├── docs/                 # All documentation
-└── .github/              # GitHub workflows and templates
+│   ├── examples/                    # 6 ready-to-use commands
+│   └── templates/                   # Command templates
+├── system-prompts/
+│   ├── examples/                    # 3 role-specific prompts
+│   └── templates/                   # Prompt templates
+├── output-styles/
+│   ├── examples/                    # 6 professional styles
+│   └── templates/                   # Style templates
+├── mcp/                             # Model Context Protocol config
+├── docs/                            # All documentation
+├── .github/                         # GitHub workflows and templates
+│   └── workflows/
+│       ├── lint.yml                 # Linting and validation
+│       └── release-please.yml       # Automated releases
+├── .pre-commit-config.yaml          # Pre-commit hook configuration
+├── release-please-config.json       # Release automation config
+└── .release-please-manifest.json   # Version tracking
 ```
 
 ## Adding New Features
@@ -257,13 +334,19 @@ claude-code-toolbox/
 
 ## Pull Request Process
 
-1. Ensure all tests pass
-2. Update documentation as needed
-3. Use conventional commits for automatic changelog generation
-4. Request review from maintainers
-5. Address review feedback
-6. Squash commits if requested
-7. Merge after approval
+1. Run pre-commit hooks: `pre-commit run --all-files`
+2. Ensure all tests pass
+3. Update documentation as needed
+4. Use conventional commits for automatic changelog generation
+5. Push to your fork and open PR
+6. Wait for CI checks to pass:
+   - Pre-commit validation (Ubuntu)
+   - PSScriptAnalyzer (Windows)
+   - Security scanning (Trivy)
+7. Request review from maintainers
+8. Address review feedback
+9. Squash commits if requested
+10. Merge after approval
 
 **Release Please Workflow**:
 
@@ -287,11 +370,33 @@ claude-code-toolbox/
 
 ## Review Process
 
-1. Automated checks must pass
+1. Automated checks must pass:
+   - Pre-commit hooks (Ruff, markdownlint, shellcheck, etc.)
+   - PSScriptAnalyzer for PowerShell
+   - Trivy security scanning
+   - Commitizen validation
 2. Code review by maintainers
 3. Testing in relevant environments
 4. Documentation review
 5. Final approval and merge
+
+## CI/CD Pipeline
+
+### GitHub Actions Workflows
+
+1. **Lint and Validate** (`lint.yml`):
+   - Triggers on pull requests
+   - Runs pre-commit hooks on Ubuntu
+   - Runs PSScriptAnalyzer on Windows
+   - Performs security scanning with Trivy
+   - Skips Release Please PRs
+
+2. **Release Please** (`release-please.yml`):
+   - Triggers on pushes to main
+   - Automatically creates release PRs
+   - Generates CHANGELOG.md from commits
+   - Bumps version numbers
+   - Creates GitHub releases
 
 ## Questions?
 

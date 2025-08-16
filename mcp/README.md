@@ -227,7 +227,3 @@ When adding new agents or slash commands that use MCP servers:
 2. Include installation instructions
 3. Add example usage in your agent/command documentation
 4. Update the "Required MCP Servers" section if needed
-
-## License
-
-MCP is an open-source protocol. Individual MCP servers may have their own licenses.
