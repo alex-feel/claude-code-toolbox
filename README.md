@@ -42,8 +42,6 @@ claude-python
 ```
 That's it! The setup script registers this command globally.
 
-[See the Python Setup Guide](docs/python-setup.md) for complete usage instructions.
-
 ---
 
 ### Standard Installation
@@ -91,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
 ```
 
-**Note**: macOS and Linux installers are in beta. For manual installation steps, see [docs/installing.md](docs/installing.md).
+**Note**: macOS and Linux installers are in beta.
 
 ## 📋 Requirements
 
@@ -127,42 +125,43 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 
 ## 📚 Documentation
 
-- [Python Setup Guide](docs/python-setup.md) - Complete Python development environment setup
-- [Installation Guide](docs/installing.md) - Detailed installation instructions
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
-- [Quick Start](docs/quickstart.md) - Getting started with Claude Code
-- [Sub-agents Guide](docs/agents.md) - Creating specialized AI assistants
+- [Sub-agents Guide](agents/README.md) - Creating specialized AI assistants
 - [System Prompts Guide](system-prompts/README.md) - Comprehensive role-based configurations
-- [Output Styles Guide](docs/output-styles.md) - Transform Claude Code for different professional domains
-- [Slash Commands](docs/slash-commands.md) - Custom command shortcuts
-- [.claude Directory](docs/claude-directory.md) - Project configuration structure
+- [Output Styles Guide](output-styles/README.md) - Transform Claude Code for different professional domains
+- [Slash Commands Guide](slash-commands/README.md) - Custom command shortcuts
+- [MCP Configuration Guide](mcp/README.md) - Model Context Protocol setup
+- [Scripts Documentation](scripts/README.md) - Installation and setup scripts
 
 ## 🛠️ Repository Structure
 
 ```text
 claude-code-toolbox/
 ├── scripts/                     # Installation and utility scripts
-│   ├── windows/                 # Windows PowerShell scripts
+│   ├── install-claude.py        # Cross-platform Claude installer
+│   ├── setup-python-environment.py  # Cross-platform Python setup
+│   ├── windows/                 # Windows bootstrap scripts
 │   │   ├── install-claude-windows.ps1
 │   │   └── setup-python-environment.ps1
-│   ├── linux/                   # Linux shell scripts
+│   ├── linux/                   # Linux bootstrap scripts
 │   │   ├── install-claude-linux.sh
 │   │   └── setup-python-environment.sh
-│   └── macos/                   # macOS shell scripts
+│   └── macos/                   # macOS bootstrap scripts
 │       ├── install-claude-macos.sh
 │       └── setup-python-environment.sh
 ├── agents/                      # Agent templates and examples
-│   ├── examples/                # Ready-to-use subagents
+│   ├── examples/                # Ready-to-use subagents (7 specialized agents)
 │   └── templates/               # Templates for creating new agents
 ├── system-prompts/              # Comprehensive system prompts
-│   ├── examples/                # Role-specific configurations
+│   ├── examples/                # Role-specific configurations (3 roles)
 │   └── templates/               # Templates for custom prompts
 ├── output-styles/               # Output style transformations
-│   ├── examples/                # Ready-to-use professional styles
+│   ├── examples/                # Ready-to-use professional styles (6 styles)
 │   └── templates/               # Templates for creating new styles
 ├── slash-commands/              # Custom slash command templates
-│   ├── examples/                # Ready-to-use commands
+│   ├── examples/                # Ready-to-use commands (6 commands)
 │   └── templates/               # Command templates
+├── mcp/                         # Model Context Protocol configuration
+│   └── README.md                # MCP setup and usage guide
 └── docs/                        # Documentation
 ```
 
@@ -180,7 +179,6 @@ This is a community project and is not officially affiliated with Anthropic. Cla
 
 ## 🆘 Getting Help
 
-- **Installation issues**: Check [docs/troubleshooting.md](docs/troubleshooting.md)
 - **Bug reports**: [Open an issue](https://github.com/alex-feel/claude-code-toolbox/issues)
 - **Claude Code documentation**: [Official docs](https://docs.anthropic.com/claude-code)
 

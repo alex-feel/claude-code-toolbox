@@ -6,18 +6,51 @@ This directory contains installation and setup scripts for Claude Code across di
 
 ```text
 scripts/
-├── windows/                     # Windows PowerShell scripts
-│   ├── install-claude-windows.ps1      # Base Claude Code installer
-│   └── setup-python-environment.ps1    # Python development environment setup
-├── linux/                       # Linux shell scripts
-│   ├── install-claude-linux.sh         # Base Claude Code installer
-│   └── setup-python-environment.sh     # Python development environment setup
-├── macos/                       # macOS shell scripts
-│   ├── install-claude-macos.sh         # Base Claude Code installer
-│   └── setup-python-environment.sh     # Python development environment setup
+├── install-claude.py            # Cross-platform Claude Code installer (Python)
+├── setup-python-environment.py  # Cross-platform Python environment setup (Python)
+├── windows/                     # Windows bootstrap scripts
+│   ├── install-claude-windows.ps1      # Bootstrap: installs uv, runs install-claude.py
+│   └── setup-python-environment.ps1    # Bootstrap: installs uv, runs setup-python-environment.py
+├── linux/                       # Linux bootstrap scripts
+│   ├── install-claude-linux.sh         # Bootstrap: installs uv, runs install-claude.py
+│   └── setup-python-environment.sh     # Bootstrap: installs uv, runs setup-python-environment.py
+├── macos/                       # macOS bootstrap scripts
+│   ├── install-claude-macos.sh         # Bootstrap: installs uv, runs install-claude.py
+│   └── setup-python-environment.sh     # Bootstrap: installs uv, runs setup-python-environment.py
 └── hooks/                       # Git hooks and validation scripts
     └── check-powershell.ps1            # PowerShell script analyzer
 ```
+
+## 🏗️ Architecture
+
+The installation system uses a two-tier architecture:
+
+1. **Platform-specific bootstrap scripts** (minimal ~60 lines each)
+   - Install `uv` (Astral's fast Python package manager)
+   - Download and run the appropriate Python script
+   - Handle platform-specific PATH setup
+
+2. **Cross-platform Python scripts** (comprehensive installers)
+   - `install-claude.py`: Handles Git Bash, Node.js, and Claude Code installation
+   - `setup-python-environment.py`: Sets up complete Python development environment
+   - Work identically across Windows, Linux, and macOS
+   - Require Python 3.12+ (automatically handled by uv)
+
+## 📦 Requirements
+
+### Automatic Installation
+The scripts automatically install all requirements, including:
+- **uv** - Astral's fast Python package and project manager
+- **Python 3.12+** - Managed automatically by uv
+- **Node.js 18+** - For Claude Code CLI
+- **Git** (Windows only) - For Git Bash
+
+### Manual Prerequisites
+If you prefer manual installation:
+- **uv**: Install from [docs.astral.sh/uv](https://docs.astral.sh/uv/)
+- **Python**: Version 3.12 or higher
+- **Node.js**: Version 18.0.0 or higher
+- **Git**: Required on Windows for Git Bash
 
 ## 🚀 Quick Start
 
@@ -59,56 +92,73 @@ bash scripts/linux/install-claude-linux.sh
 bash scripts/macos/install-claude-macos.sh
 ```
 
-## 📋 Script Types
+## 📋 Script Functionality
 
-### Installation Scripts (`install-claude-*`)
+### Installation Scripts (`install-claude.py`)
 
-Basic Claude Code installation scripts that:
-- Install system dependencies (Git, Node.js)
-- Download and install Claude Code CLI
-- Configure environment variables
-- Verify installation with `claude doctor`
+Comprehensive Claude Code installer that:
+- **Windows**: Installs Git Bash via winget or direct download
+- **All Platforms**: Installs Node.js LTS (>= 18.0.0) if needed
+- Downloads and installs Claude Code CLI via npm
+- Configures PowerShell execution policy (Windows)
+- Sets up environment variables (PATH, CLAUDE_CODE_GIT_BASH_PATH)
+- Handles SSL certificate issues in corporate environments
+- Provides fallback installation methods
 
-### Environment Setup Scripts (`setup-*-environment`)
+### Environment Setup Scripts (`setup-python-environment.py`)
 
-Comprehensive setup scripts that:
-- Run the base installer (if needed)
-- Download and configure subagents
-- Install custom slash commands
-- Configure MCP servers
-- Set up system prompts
-- Create convenience launchers
+Complete Python development environment that installs:
+- Claude Code (if not already installed)
+- **7 general-purpose subagents**:
+  - code-reviewer (code quality analysis)
+  - doc-writer (documentation generation)
+  - implementation-guide (library usage guidance)
+  - performance-optimizer (performance analysis)
+  - refactoring-assistant (code refactoring)
+  - security-auditor (security analysis)
+  - test-generator (test creation)
+- **6 Custom slash commands**:
+  - /commit (smart Git commits)
+  - /debug (debugging assistance)
+  - /document (documentation generation)
+  - /refactor (code refactoring)
+  - /review (code review)
+  - /test (test generation)
+- **Python developer system prompt** with SOLID, DRY, KISS, YAGNI principles
+- **Context7 MCP server** for up-to-date library documentation
+- **Global `claude-python` command** for quick Python-focused sessions
 
 ## 🔧 Script Options
 
-### Windows Scripts
+### Python Scripts (All Platforms)
 
-PowerShell scripts support these parameters:
-
-```powershell
-# Skip Claude Code installation (if already installed)
-.\setup-python-environment.ps1 -SkipInstall
-
-# Force overwrite existing configuration files
-.\setup-python-environment.ps1 -Force
-
-# Combine options
-.\setup-python-environment.ps1 -SkipInstall -Force
-```
-
-### Linux/macOS Scripts
-
-Shell scripts support these options:
+The Python scripts support command-line arguments:
 
 ```bash
-# Skip Claude Code installation
-bash setup-python-environment.sh --skip-install
+# Skip Claude Code installation (if already installed)
+python setup-python-environment.py --skip-install
 
-# Force overwrite existing files
-bash setup-python-environment.sh --force
+# Force overwrite existing configuration files
+python setup-python-environment.py --force
 
-# Show help
-bash setup-python-environment.sh --help
+# Combine options
+python setup-python-environment.py --skip-install --force
+```
+
+### Bootstrap Scripts
+
+The platform-specific bootstrap scripts automatically:
+1. Install uv if not present
+2. Download the Python script from GitHub
+3. Run it with Python 3.12+ via uv
+4. Pass any arguments through to the Python script
+
+```bash
+# Linux/macOS - arguments are passed to Python script
+bash setup-python-environment.sh --skip-install --force
+
+# Windows - arguments are passed to Python script
+.\setup-python-environment.ps1
 ```
 
 ## 🔒 Security Considerations
@@ -139,25 +189,38 @@ chmod +x setup-python-environment.sh
 
 ### Cross-Platform Compatibility
 
-- **Windows**: PowerShell 5.1+ compatible
-- **Linux**: Bash 4.0+ compatible, tested on major distributions
+- **Python Scripts**: Work identically on Windows, Linux, and macOS
+- **Python Version**: Requires Python 3.12+ (automatically handled by uv)
+- **Package Manager**: Uses uv for fast, reliable Python management
+- **Windows**: PowerShell 5.1+ for bootstrap, full Windows 10/11 support
+- **Linux**: Bash 4.0+ for bootstrap, tested on Ubuntu, Debian, Fedora, Arch
 - **macOS**: Compatible with macOS 10.15+ (Catalina and later)
+
+### Advanced Features
+
+- **SSL Certificate Handling**: Automatic fallback for corporate environments
+- **Multiple Installation Methods**: winget, direct download, package managers
+- **Intelligent Path Management**: Automatic PATH configuration
+- **Git Bash Detection**: Multiple detection strategies on Windows
+- **Node.js Management**: Automatic LTS installation if needed
 
 ### Error Handling
 
 All scripts include:
 - Comprehensive error checking
-- Graceful fallbacks
-- Clear error messages
+- Graceful fallbacks for network issues
+- SSL certificate verification with fallback
+- Clear error messages with solutions
 - Rollback capabilities (where applicable)
 
 ### Logging
 
 Scripts provide detailed output with:
-- Color-coded status messages
-- Progress indicators
+- Color-coded status messages (cross-platform)
+- Progress indicators for long operations
 - Success/failure summaries
 - Next steps guidance
+- Detailed installation reports
 
 ## 🛠️ Customization
 
@@ -170,8 +233,11 @@ Scripts respect these environment variables:
 HTTP_PROXY=http://proxy:port
 HTTPS_PROXY=http://proxy:port
 
-# Custom Claude directory (all platforms)
-CLAUDE_USER_DIR=/custom/path/.claude
+# Custom Git Bash path (Windows only)
+CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe
+
+# Terminal session detection (Windows)
+WT_SESSION=1  # Windows Terminal detection for ANSI colors
 ```
 
 ### Configuration Files
@@ -179,6 +245,15 @@ CLAUDE_USER_DIR=/custom/path/.claude
 Scripts create configuration in:
 - **Windows**: `%USERPROFILE%\.claude\`
 - **Linux/macOS**: `~/.claude/`
+
+Directory structure created:
+```text
+~/.claude/
+├── agents/          # Subagent configurations
+├── commands/        # Slash command definitions
+├── prompts/         # System prompts
+└── start-python-claude.{ps1,sh}  # Launcher script
+```
 
 ## 🤝 Contributing
 
@@ -191,12 +266,3 @@ When adding new scripts:
 5. Update this README
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
-
-## 📚 Related Documentation
-
-- [Python Setup Guide](../docs/python-setup.md)
-- [Installation Guide](../docs/installing.md)
-- [Troubleshooting](../docs/troubleshooting.md)
-- [Windows Script Details](windows/README.md)
-- [Linux Script Details](linux/README.md)
-- [macOS Script Details](macos/README.md)

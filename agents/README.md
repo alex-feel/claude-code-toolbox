@@ -4,7 +4,7 @@ This directory contains example sub-agents and templates for Claude Code.
 
 ## What are Sub-agents?
 
-Sub-agents are specialized AI assistants that operate in isolated contexts within Claude Code. They are Markdown files with YAML frontmatter that define custom prompts and tool permissions.
+Sub-agents are specialized AI assistants that operate in isolated contexts within Claude Code. They are Markdown files with YAML frontmatter that define custom prompts, tool permissions, thinking modes, and invocation patterns. Each agent is designed for specific tasks and can be invoked proactively or on-demand based on defined triggers.
 
 ## Directory Structure
 
@@ -78,54 +78,84 @@ cp agents/examples/*.md ~/.claude/agents/
 Sub-agents are Markdown files with three parts:
 
 1. **YAML Frontmatter**: Metadata
-   - `name`: Identifier for the sub-agent
-   - `description`: When to use this sub-agent (last sentence should specify invocation trigger)
-   - `tools`: Optional comma-separated tool list (supports MCP server shortcuts like `mcp__context7`)
-   - `model`: Optional model to use (opus, sonnet, haiku)
-   - `color`: Optional agent color
+   - `name`: Identifier for the sub-agent (kebab-case)
+   - `description`: Multi-line description (3-4 sentences):
+     - First 2-3 sentences describe capabilities
+     - **CRITICAL**: Last sentence MUST contain either "Use PROACTIVELY" or "MUST BE USED" in CAPS with specific triggers
+   - `tools`: Comma-separated tool list (start with no-permission tools, add others as needed)
+     - MCP server shortcuts supported (e.g., `mcp__context7` for all Context7 tools)
+     - **IMPORTANT**: If using Write, must also include Edit and MultiEdit
+   - `model`: Optional model preference (opus, sonnet, haiku) - most agents use opus
+   - `color`: Optional agent color (red, blue, green, yellow, purple, orange, pink, cyan)
 
-2. **System Prompt**: Markdown content defining the agent's behavior
+2. **System Prompt**: Markdown content with:
+   - Mission statement
+   - Cognitive framework with thinking mode (Think, Think more, Think a lot, Think longer, Ultrathink)
+   - Operating rules and constraints
+   - Execution workflow
+   - Concurrent execution patterns (CRITICAL)
+   - Error handling protocol
+   - Quality metrics
 
 3. **File Extension**: Must be `.md`
 
 ## Example Sub-agents
 
-### Code Reviewer
-Reviews code for quality, security, and best practices.
+### Code Reviewer (model: opus, color: blue)
+**Purpose**: Expert code review specialist focusing on security, performance, and best practices. Reviews code for bugs, vulnerabilities, and improvement opportunities with actionable feedback. Produces detailed reports with risk assessments and specific remediation steps.
+**Invocation**: Use PROACTIVELY after writing or modifying code, for pull requests, or when code quality assessment is needed.
+**Tools**: Read-only analysis tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
 
-### Test Generator
-Creates comprehensive test suites with high coverage.
+### Test Generator (model: opus, color: yellow)
+**Purpose**: Test generation specialist creating comprehensive unit, integration, and end-to-end test suites. Develops tests following TDD/BDD principles with high coverage, proper mocking, and edge case handling. Ensures test maintainability through clear naming, isolated fixtures, and comprehensive assertions.
+**Invocation**: Use PROACTIVELY after writing new code, before refactoring, or when test coverage is below 80%.
+**Tools**: Full testing toolkit (includes Write, Edit, MultiEdit, Bash for test creation and execution)
 
-### Documentation Writer
-Generates and maintains technical documentation.
+### Documentation Writer (model: sonnet, color: green)
+**Purpose**: Documentation specialist for technical writing and API documentation. Creates and maintains comprehensive documentation for codebases, APIs, and systems. Ensures documentation stays synchronized with code and follows industry best practices.
+**Invocation**: MUST BE USED after implementing new features, making API changes, or when documentation gaps are detected.
+**Tools**: Full documentation toolkit (includes Write, Edit, MultiEdit, WebFetch, WebSearch)
 
-### Implementation Guide
-Finds and prepares comprehensive implementation guidance using Context7 and authoritative sources.
+### Implementation Guide (model: opus, color: purple)
+**Purpose**: Expert at finding and preparing comprehensive implementation guidance for any feature using existing libraries, frameworks, and modules. Retrieves up-to-date documentation, working code examples, and best practices from authoritative sources including Context7. Synthesizes multiple information sources to provide production-ready implementation strategies.
+**Invocation**: Use PROACTIVELY when implementing new features, integrating libraries, or when you need authoritative guidance on how to correctly use any functionality.
+**Tools**: Research and documentation tools (includes WebFetch, WebSearch, mcp__context7)
 
-### Performance Optimizer
-Analyzes and optimizes code performance.
+### Performance Optimizer (model: opus, color: red)
+**Purpose**: Performance optimization expert specializing in profiling, bottleneck identification, and targeted optimization. Analyzes and optimizes application performance with measurable improvements and implementation strategies. Specializes in algorithm optimization, database tuning, caching strategies, and resource management.
+**Invocation**: Use PROACTIVELY for performance issues, slow queries, high memory usage, or optimization requests.
+**Tools**: Full optimization toolkit (includes Write, Edit, MultiEdit, Bash, WebFetch, WebSearch)
 
-### Security Auditor
-Performs security analysis and vulnerability assessment.
+### Security Auditor (model: opus, color: orange)
+**Purpose**: Security audit specialist for vulnerability assessment, threat modeling, and compliance verification. Identifies security vulnerabilities, configuration issues, and compliance gaps with actionable remediation guidance. Performs comprehensive security analysis including OWASP Top 10, dependency scanning, and penetration testing.
+**Invocation**: MUST BE USED before deploying to production, after security incidents, or for regular security assessments.
+**Tools**: Full security toolkit (includes Write, Edit, MultiEdit, Bash, WebFetch, WebSearch)
 
-### Refactoring Assistant
-Helps refactor code for better maintainability.
+### Refactoring Assistant (model: opus, color: cyan)
+**Purpose**: Refactoring specialist for code restructuring, clean architecture, and design pattern implementation. Transforms complex, legacy, or poorly structured code into maintainable, testable, and extensible systems. Ensures safe refactoring through incremental changes with comprehensive test coverage validation.
+**Invocation**: Use PROACTIVELY when code smells are detected, before adding features to legacy code, or for maintainability improvements.
+**Tools**: Full refactoring toolkit (includes Write, Edit, MultiEdit, Bash)
 
 ## Best Practices
 
 1. **Single Responsibility**: Each sub-agent should focus on one domain
-2. **Clear Descriptions**: Make it obvious when to use each sub-agent
-3. **Appropriate Tools**: Only grant necessary tool access
-4. **Detailed Prompts**: Provide specific guidance in system prompts
-5. **Version Control**: Commit project sub-agents to your repository
+2. **Clear Invocation Triggers**: Last sentence of description MUST specify "Use PROACTIVELY" or "MUST BE USED" with specific conditions
+3. **Appropriate Tools**: Start with no-permission tools, add others only as needed
+4. **Thinking Modes**: Choose appropriate cognitive depth (Think, Think more, Think a lot, Think longer, Ultrathink)
+5. **Concurrent Execution**: ALWAYS batch related operations in single messages for performance
+6. **Detailed Prompts**: Include mission statement, workflows, and quality metrics
+7. **Version Control**: Commit project sub-agents to your repository
 
 ## Tool Permissions
 
-Common tool configurations:
+Common tool configurations used by actual agents:
 
-- **Read-only**: `tools: Read, Grep, Glob`
-- **Read-write**: `tools: Read, Write, Edit`
-- **Full access**: `tools: Read, Write, Bash, Edit, Grep, Glob`
+- **Analysis-only** (code-reviewer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput`
+- **Content creation** (doc-writer): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch`
+- **Full development** (test-generator, refactoring): `Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash`
+- **Research-focused** (implementation-guide): Includes `mcp__context7` for library documentation access
+
+**CRITICAL**: Always start with no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput), then add others as needed.
 
 ### MCP Server Tools
 
@@ -143,7 +173,8 @@ This is equivalent to listing all Context7 tools individually but is more concis
 
 ## Documentation
 
-For detailed documentation, see [docs/agents.md](../docs/agents.md)
+For detailed documentation on creating and using sub-agents, see:
+- [Official Claude Code Sub-agents Documentation](https://docs.anthropic.com/en/docs/claude-code/sub-agents)
 
 ## Contributing
 
@@ -153,7 +184,3 @@ To contribute new sub-agents:
 2. Place it in `agents/examples/`
 3. Update this README
 4. Submit a pull request
-
-## License
-
-These sub-agents are provided under the MIT License.

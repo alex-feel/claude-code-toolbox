@@ -52,31 +52,66 @@ cp slash-commands/examples/*.md ~/.claude/commands/
 
 ## Command Format
 
-Commands are simple Markdown files:
+Commands are Markdown files with optional YAML frontmatter:
+
+### YAML Frontmatter (Optional)
+
+Commands can include frontmatter at the top to configure behavior:
+
+```yaml
+---
+description: Brief description of what this command does
+argument-hint: "[expected format] [example: file.txt]"
+model: opus|sonnet|haiku  # Force specific model (optional)
+allowed-tools: Bash, Read, Write  # Restrict tools (optional)
+---
+```
+
+**Frontmatter Fields:**
+- **description**: Brief description shown in command list
+- **argument-hint**: Hints for expected arguments format
+- **model**: Force a specific Claude model (defaults to current)
+- **allowed-tools**: Comma-separated list of allowed tools
+
+### Command Structure
 
 1. **Filename**: The command name (without `.md` extension)
-2. **Content**: Markdown with instructions
-3. **Arguments**: Use `$ARGUMENTS` for dynamic content
+2. **Frontmatter**: Optional YAML configuration (see above)
+3. **Content**: Markdown instructions for Claude
+4. **Arguments**: Use `$ARGUMENTS` to access user input
 
 ## Example Commands
 
-### /review
-Reviews code for quality, security, and best practices.
-
-### /test
-Generates comprehensive test suites.
-
-### /document
-Creates technical documentation.
-
-### /refactor
-Refactors code for better structure.
+### /commit
+Creates proper git commits with conventional format.
+- **Tools**: `Bash`, `Read`, `Grep` only
+- **Arguments**: `[issue-id] [additional context]`
 
 ### /debug
-Debugs and fixes issues.
+Systematic debugging with root cause analysis.
+- **Model**: Forces `opus` for complex analysis
+- **Arguments**: `[error message/issue] [file:line] [context]`
 
-### /commit
-Creates proper git commits.
+### /document
+Generates comprehensive technical documentation.
+- **Tools**: `Read`, `Write`, `Grep`, `Glob` only
+- **Arguments**: `[component/API/project] [doc-type]`
+
+### /refactor
+Refactors code with design patterns and SOLID principles.
+- **Model**: Forces `opus` for complex refactoring
+- **Tools**: `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Grep`
+- **Arguments**: `[file/module] [goal: performance|readability]`
+
+### /review
+Comprehensive code review with security and performance analysis.
+- **Model**: Forces `opus` for thorough analysis
+- **Arguments**: `[file/PR/commit] [focus: security|performance]`
+
+### /test
+Generates comprehensive test suites following TDD principles.
+- **Tools**: `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Grep`
+- **Arguments**: `[file/module] [test-type] [coverage-target]`
 
 ## Creating Custom Commands
 
@@ -85,7 +120,13 @@ Creates proper git commits.
    cp slash-commands/templates/basic-template.md my-command.md
    ```
 
-2. Write the command content using `$ARGUMENTS`
+2. Configure the frontmatter (optional):
+   - Set `description` for command list
+   - Add `argument-hint` to guide users
+   - Specify `model` if needed
+   - Restrict `allowed-tools` for safety
+
+3. Write the command content using `$ARGUMENTS` for user input
 
 4. Save to `.claude/commands/` or `~/.claude/commands/`
 
@@ -122,7 +163,7 @@ Analyze the architecture...
 
 ## Documentation
 
-For detailed documentation, see [docs/slash-commands.md](../docs/slash-commands.md)
+For detailed documentation on slash commands, see the [Official Claude Code Documentation](https://docs.anthropic.com/en/docs/claude-code/slash-commands)
 
 ## Contributing
 
@@ -132,7 +173,3 @@ To contribute new commands:
 2. Place it in `slash-commands/examples/`
 3. Update this README
 4. Submit a pull request
-
-## License
-
-These commands are provided under the MIT License.

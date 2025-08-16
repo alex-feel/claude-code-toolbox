@@ -12,6 +12,8 @@ Output styles completely modify Claude Code's system prompt to change how it:
 
 Unlike agents (which handle specific delegated tasks), output styles change Claude Code's entire personality and approach.
 
+**Note**: Claude Code has built-in output styles (default, explanatory, learning) available via the `/output-style` command. This repository provides additional custom output styles for specialized use cases beyond software engineering.
+
 ## Key Differences from Other Features
 
 | Feature | Purpose | Scope |
@@ -27,12 +29,12 @@ Unlike agents (which handle specific delegated tasks), output styles change Clau
 output-styles/
 ├── README.md           # This file
 ├── examples/           # Ready-to-use output styles
-│   ├── explanatory.md  # Educational mode with insights
-│   ├── learning.md     # Collaborative with TODO(human)
-│   ├── concise.md      # Ultra-brief responses
-│   ├── verbose.md      # Detailed explanations
-│   ├── teaching.md     # Step-by-step tutorial mode
-│   └── review.md       # Code review focused
+│   ├── business-analyst.md    # Business requirements and process analysis
+│   ├── content-creator.md     # Content marketing and copywriting
+│   ├── creative-writer.md     # Creative writing and storytelling
+│   ├── data-scientist.md      # Statistical analysis and ML
+│   ├── research-analyst.md    # Research and evidence-based reporting
+│   └── system-administrator.md # Infrastructure and operations
 └── templates/          # Templates for creating new styles
     └── basic-template.md
 ```
@@ -93,23 +95,23 @@ You are Claude Code with [specific characteristics].
 
 ## Example Output Styles
 
-### Explanatory
-Provides educational insights and explanations during task execution.
+### Business Analyst
+Transforms Claude Code into a business analyst for requirements gathering, process documentation, stakeholder management, and business case development.
 
-### Learning
-Collaborative mode that creates TODO(human) markers for learning opportunities.
+### Content Creator
+Content marketing specialist for blog posts, social media, email campaigns, and content strategy using file operations for content management.
 
-### Concise
-Ultra-brief responses focusing only on essential information.
+### Creative Writer
+Creative writing assistant for novels, stories, scripts, and world-building using file operations for manuscript management.
 
-### Verbose
-Detailed explanations with comprehensive context and reasoning.
+### Data Scientist
+Focused on statistical analysis, machine learning, visualization, and extracting insights from data using Python's scientific stack.
 
-### Teaching
-Step-by-step tutorial mode for educational purposes.
+### Research Analyst
+Conducts systematic investigations, synthesizes information from multiple sources, and produces evidence-based reports with academic rigor.
 
-### Review
-Focused on code review with emphasis on quality and best practices.
+### System Administrator
+Infrastructure management focus with automation, monitoring, and operational excellence using shell scripts and configuration management.
 
 ## Contributing
 
@@ -132,5 +134,3 @@ Before using an output style in production:
 ## See Also
 
 - [Output Styles Documentation](https://docs.anthropic.com/en/docs/claude-code/output-styles)
-- [Templates](templates/)
-- [Examples](examples/)
