@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.1...v1.4.2) (2025-08-16)
+
+
+### Bug Fixes
+
+* implement working PowerShell/CMD wrappers for claude-python command ([9a74e53](https://github.com/alex-feel/claude-code-toolbox/commit/9a74e5314c162655327d2e20cf7e1c0e0f0ecc12))
+* properly escape PowerShell arguments with spaces in claude-python wrapper ([2b66ba5](https://github.com/alex-feel/claude-code-toolbox/commit/2b66ba51fee2ac8c4395d4e77550d4a9b4aee8a0))
+
 ## [1.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.0...v1.4.1) (2025-08-16)
 
 
