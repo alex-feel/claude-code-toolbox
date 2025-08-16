@@ -330,7 +330,7 @@ def create_launcher_script(claude_user_dir: Path) -> Path | None:
 
     try:
         if system == 'Windows':
-            # PowerShell launcher
+            # Create PowerShell launcher for Windows
             launcher_path = launcher_path.with_suffix('.ps1')
             launcher_content = '''# Claude Code Python Environment Launcher
 # This script starts Claude Code with the Python developer system prompt
@@ -346,51 +346,64 @@ if (-not (Test-Path $promptPath)) {
 
 Write-Host "Starting Claude Code with Python developer configuration..." -ForegroundColor Green
 
-# Find Git Bash (it's required for Claude Code on Windows)
+# Find Git Bash (required for Claude Code on Windows)
 $bashPath = $null
-if ($env:CLAUDE_CODE_GIT_BASH_PATH) {
-    $bashPath = $env:CLAUDE_CODE_GIT_BASH_PATH
-} elseif (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {
+if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {
     $bashPath = "C:\\Program Files\\Git\\bin\\bash.exe"
 } elseif (Test-Path "C:\\Program Files (x86)\\Git\\bin\\bash.exe") {
     $bashPath = "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 } else {
-    $bashCmd = Get-Command bash -ErrorAction SilentlyContinue
-    if ($bashCmd) {
-        $bashPath = $bashCmd.Source
-    }
-}
-
-if (-not $bashPath) {
     Write-Host "Error: Git Bash not found! Please install Git for Windows." -ForegroundColor Red
     exit 1
 }
 
-# Convert Windows path to Unix path for bash
-$unixPromptPath = $promptPath -replace '\\\\', '/' -replace 'C:', '/c'
-
-# Build the bash command with proper escaping
-# The inner quotes need to be escaped for bash -c
-$bashCommand = "claude --append-system-prompt \\`"\\$`(cat '$unixPromptPath'`)\\`""
+# Build the bash command with all arguments
 if ($args.Count -gt 0) {
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
-    $bashCommand += " " + ($args -join " ")
+    # When we have arguments, we can't use --% so we escape properly
+    $argsString = ($args -join ' ')
+    $bashCmd = "p=`$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
+    $bashCmd += "exec claude --append-system-prompt=\\`"`$p\\`" $argsString"
+    $bashCommand = $bashCmd
+    & $bashPath -lc $bashCommand
+} else {
+    $cmd = "p=$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
+    $cmd += "exec claude --append-system-prompt=\"$p\""
+    & $bashPath --% -lc "$cmd"
 }
-
-Write-Host "Executing command via Git Bash..." -ForegroundColor Yellow
-
-# Execute via Git Bash
-& $bashPath -c $bashCommand
 '''
             launcher_path.write_text(launcher_content)
 
-            # Also create a batch file wrapper
+            # Also create a CMD batch file wrapper
             batch_path = claude_user_dir / 'start-python-claude.cmd'
-            batch_content = f'@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File "{launcher_path}" %*'
+            batch_content = '''@echo off
+REM Claude Code Python Environment Launcher for CMD
+REM This script starts Claude Code with the Python developer system prompt
+
+set PROMPT_PATH=%USERPROFILE%\\.claude\\prompts\\python-developer.md
+
+if not exist "%PROMPT_PATH%" (
+    echo Error: Python developer prompt not found at %PROMPT_PATH%
+    echo Please run setup-python-environment.py first
+    exit /b 1
+)
+
+echo Starting Claude Code with Python developer configuration...
+
+REM Build the command with all arguments
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/python-developer.md)
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    echo Passing additional arguments: %*
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
             batch_path.write_text(batch_content)
 
         else:
-            # Bash launcher
+            # Create bash launcher for Unix-like systems
             launcher_path = launcher_path.with_suffix('.sh')
             launcher_content = '''#!/usr/bin/env bash
 # Claude Code Python Environment Launcher
@@ -441,11 +454,29 @@ def register_global_command(launcher_path: Path) -> bool:
             local_bin = Path.home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
+            # Create wrappers for all Windows shells
+            # CMD wrapper
             batch_path = local_bin / 'claude-python.cmd'
-            batch_content = f'@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File "{launcher_path}" %*'
+            batch_content = '''@echo off
+REM Global claude-python command for CMD
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/python-developer.md)
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
             batch_path.write_text(batch_content)
 
-            # Also create a bash wrapper for Git Bash compatibility
+            # PowerShell wrapper (as a simple forwarder to the PS1 launcher)
+            ps1_wrapper_path = local_bin / 'claude-python.ps1'
+            ps1_wrapper_content = f'''# Global claude-python command for PowerShell
+& "{launcher_path}" @args
+'''
+            ps1_wrapper_path.write_text(ps1_wrapper_content)
+
+            # Git Bash wrapper
             bash_wrapper_path = local_bin / 'claude-python'
             bash_content = '''#!/bin/bash
 # Bash wrapper for claude-python to work in Git Bash
@@ -476,7 +507,7 @@ fi
             # Make it executable (Git Bash respects this even on Windows)
             bash_wrapper_path.chmod(0o755)
 
-            info('Created both .cmd (for PowerShell/CMD) and bash wrapper (for Git Bash)')
+            info('Created wrappers for all Windows shells (PowerShell, CMD, Git Bash)')
 
             # Add .local/bin to PATH if not already there
             user_path = os.environ.get('PATH', '')
@@ -507,6 +538,7 @@ fi
 
         if system == 'Windows':
             success('Created global command: claude-python (works in PowerShell, CMD, and Git Bash)')
+            info('The command now works in all Windows shells!')
         else:
             success('Created global command: claude-python')
         return True
