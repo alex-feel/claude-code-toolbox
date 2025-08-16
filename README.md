@@ -38,9 +38,10 @@ This automated setup includes:
 
 **⚠️ IMPORTANT: After setup, use the simple command:**
 ```bash
-claude-python
+claude-python  # Works only in Git Bash on Windows
 ```
-That's it! The setup script registers this command globally.
+
+**Windows Users**: The `claude-python` command ONLY works in Git Bash. PowerShell and CMD cannot properly pass the system prompt due to shell limitations. You MUST use Git Bash.
 
 ---
 
@@ -205,12 +206,14 @@ After running the Python setup script:
 claude doctor
 
 # 2. Start Claude with Python configuration - just run:
-claude-python
+claude-python  # Windows: Git Bash ONLY!
 
 # That's it! The command is registered globally during setup
 ```
 
-**⚠️ Common Mistake:** Running `claude` directly won't load the Python system prompt! Always use `claude-python` command.
+**⚠️ Common Mistakes:**
+- Running `claude` directly won't load the Python system prompt!
+- On Windows: `claude-python` ONLY works in Git Bash, NOT in PowerShell or CMD!
 
 For IDE integration:
 - **VS Code**: Configure terminal to use the launcher script

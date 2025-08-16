@@ -126,7 +126,7 @@ Complete Python development environment that installs:
   - /test (test generation)
 - **Python developer system prompt** with SOLID, DRY, KISS, YAGNI principles
 - **Context7 MCP server** for up-to-date library documentation
-- **Global `claude-python` command** that works in all terminals (PowerShell, CMD, Git Bash)
+- **Global `claude-python` command** (Git Bash only on Windows)
 
 ## 🔧 Script Options
 
@@ -193,8 +193,8 @@ chmod +x setup-python-environment.sh
 - **Python Version**: Requires Python 3.12+ (automatically handled by uv)
 - **Package Manager**: Uses uv for fast, reliable Python management
 - **Windows**: PowerShell 5.1+ for bootstrap, full Windows 10/11 support
-  - `claude-python` command works in PowerShell, CMD, and Git Bash
-  - Automatic creation of both .cmd and bash wrappers
+  - `claude-python` command works **only in Git Bash** due to shell escaping limitations
+  - PowerShell/CMD cannot properly pass the system prompt - Git Bash is REQUIRED
 - **Linux**: Bash 4.0+ for bootstrap, tested on Ubuntu, Debian, Fedora, Arch
 - **macOS**: Compatible with macOS 10.15+ (Catalina and later)
 
@@ -205,10 +205,9 @@ chmod +x setup-python-environment.sh
 - **Intelligent Path Management**: Automatic PATH configuration
 - **Git Bash Detection**: Multiple detection strategies on Windows
 - **Node.js Management**: Automatic LTS installation if needed
-- **Cross-Terminal Support**: Windows commands work in all terminal types
-  - Creates both .cmd files for PowerShell/CMD
-  - Creates bash wrappers for Git Bash compatibility
-  - Single `claude-python` command works everywhere
+- **Git Bash Requirement on Windows**: Due to command-line escaping limitations
+  - `claude-python` command is available only in Git Bash
+  - PowerShell/CMD users must use the full command syntax
 
 ### Error Handling
 

@@ -46,26 +46,30 @@ This installs:
 As of Claude Code v1.0.51, the `--append-system-prompt` flag works in interactive mode:
 
 ```bash
-# Start Claude Code with a specific role
+# Start Claude Code with a specific role (Git Bash/Linux/macOS)
 claude --append-system-prompt "$(cat system-prompts/examples/python-developer.md)"
 
-# Or reference the file directly
+# Or reference the file directly (may not work on all systems)
 claude --append-system-prompt @system-prompts/examples/python-developer.md
 ```
+
+**⚠️ Windows Users**: These commands ONLY work in Git Bash. PowerShell and CMD cannot properly pass system prompts.
 
 ### Using System Prompts in Non-Interactive Mode
 
 ```bash
-# Execute a task with a specific system prompt
+# Execute a task with a specific system prompt (Git Bash/Linux/macOS)
 claude -p "Review this codebase for security issues" \
-  --append-system-prompt @system-prompts/examples/python-developer.md
+  --append-system-prompt "$(cat system-prompts/examples/python-developer.md)"
 
 # Combine with other flags
 claude -p "Optimize database queries" \
-  --append-system-prompt @system-prompts/examples/python-developer.md \
+  --append-system-prompt "$(cat system-prompts/examples/python-developer.md)" \
   --model opus \
   --max-turns 10
 ```
+
+**Note**: The `@file` syntax may not work reliably. Use `$(cat file)` for better compatibility.
 
 ## 📚 Available System Prompts
 
