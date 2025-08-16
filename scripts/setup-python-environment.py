@@ -407,6 +407,18 @@ def register_global_command(launcher_path: Path) -> bool:
             batch_content = f'@echo off\npowershell -NoProfile -ExecutionPolicy Bypass -File "{launcher_path}" %*'
             batch_path.write_text(batch_content)
 
+            # Also create a bash wrapper for Git Bash compatibility
+            bash_wrapper_path = local_bin / 'claude-python'
+            bash_content = '''#!/bin/bash
+# Bash wrapper for claude-python to work in Git Bash
+exec ~/.local/bin/claude-python.cmd "$@"
+'''
+            bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
+            # Make it executable (Git Bash respects this even on Windows)
+            bash_wrapper_path.chmod(0o755)
+
+            info('Created both .cmd (for PowerShell/CMD) and bash wrapper (for Git Bash)')
+
             # Add .local/bin to PATH if not already there
             user_path = os.environ.get('PATH', '')
             local_bin_str = str(local_bin)
@@ -434,7 +446,10 @@ def register_global_command(launcher_path: Path) -> bool:
             info('Add this to your ~/.bashrc or ~/.zshrc if needed:')
             info('  export PATH="$HOME/.local/bin:$PATH"')
 
-        success('Created global command: claude-python')
+        if system == 'Windows':
+            success('Created global command: claude-python (works in PowerShell, CMD, and Git Bash)')
+        else:
+            success('Created global command: claude-python')
         return True
 
     except Exception as e:
