@@ -360,16 +360,27 @@ if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {
 # Build the bash command with all arguments
 if ($args.Count -gt 0) {
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
-    # When we have arguments, we can't use --% so we escape properly
-    $argsString = ($args -join ' ')
-    $bashCmd = "p=`$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
-    $bashCmd += "exec claude --append-system-prompt=\\`"`$p\\`" $argsString"
-    $bashCommand = $bashCmd
+    # Properly escape arguments for bash (quote args with spaces)
+    $escapedArgs = @()
+    foreach ($arg in $args) {
+        if ($arg -match ' ') {
+            # If arg contains spaces, wrap in single quotes for bash
+            $escapedArgs += "'$arg'"
+        } else {
+            $escapedArgs += $arg
+        }
+    }
+    $argsString = $escapedArgs -join ' '
+    # Use a here-string to avoid complex quote escaping
+    $bashCommand = @"
+p=`$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); exec claude --append-system-prompt=\\"`$p\\" $argsString
+"@
     & $bashPath -lc $bashCommand
 } else {
-    $cmd = "p=$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); "
-    $cmd += "exec claude --append-system-prompt=\"$p\""
-    & $bashPath --% -lc "$cmd"
+    # Use --% to stop PowerShell parsing, with literal command string
+    # Line split for length limit
+    & $bashPath `
+      --% -lc "p=$(tr -d '\\\\r' < ~/.claude/prompts/python-developer.md); exec claude --append-system-prompt=\\"$p\\""
 }
 '''
             launcher_path.write_text(launcher_content)
