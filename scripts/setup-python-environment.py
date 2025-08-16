@@ -346,12 +346,17 @@ if (-not (Test-Path $promptPath)) {
 
 Write-Host "Starting Claude Code with Python developer configuration..." -ForegroundColor Green
 
-# Pass any additional arguments to Claude
+# Convert Windows path to Unix-style path for Git Bash compatibility
+# Claude Code handles Unix paths better even on Windows
+$unixPath = $promptPath -replace '\\', '/' -replace 'C:', '/c'
+Write-Host "Using prompt file: $unixPath" -ForegroundColor Yellow
+
+# Use @file syntax with Unix-style path (works on Windows!)
 if ($args.Count -gt 0) {
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
-    & claude --append-system-prompt "@$promptPath" @args
+    & claude --append-system-prompt "@$unixPath" @args
 } else {
-    & claude --append-system-prompt "@$promptPath"
+    & claude --append-system-prompt "@$unixPath"
 }
 '''
             launcher_path.write_text(launcher_content)
@@ -378,7 +383,17 @@ if [ ! -f "$PROMPT_PATH" ]; then
 fi
 
 echo -e "\\033[0;32mStarting Claude Code with Python developer configuration...\\033[0m"
-claude --append-system-prompt "@$PROMPT_PATH" "$@"
+
+# Read the prompt content
+PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+# Pass any additional arguments to Claude
+if [ $# -gt 0 ]; then
+    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
+    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+else
+    claude --append-system-prompt "$PROMPT_CONTENT"
+fi
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
