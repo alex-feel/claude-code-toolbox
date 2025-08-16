@@ -348,7 +348,7 @@ Write-Host "Starting Claude Code with Python developer configuration..." -Foregr
 
 # Convert Windows path to Unix-style path for Git Bash compatibility
 # Claude Code handles Unix paths better even on Windows
-$unixPath = $promptPath -replace '\\', '/' -replace 'C:', '/c'
+$unixPath = $promptPath -replace '\\\\', '/' -replace 'C:', '/c'
 Write-Host "Using prompt file: $unixPath" -ForegroundColor Yellow
 
 # Use @file syntax with Unix-style path (works on Windows!)
