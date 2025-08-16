@@ -346,18 +346,41 @@ if (-not (Test-Path $promptPath)) {
 
 Write-Host "Starting Claude Code with Python developer configuration..." -ForegroundColor Green
 
-# Convert Windows path to Unix-style path for Git Bash compatibility
-# Claude Code handles Unix paths better even on Windows
-$unixPath = $promptPath -replace '\\\\', '/' -replace 'C:', '/c'
-Write-Host "Using prompt file: $unixPath" -ForegroundColor Yellow
+# Find Git Bash (it's required for Claude Code on Windows)
+$bashPath = $null
+if ($env:CLAUDE_CODE_GIT_BASH_PATH) {
+    $bashPath = $env:CLAUDE_CODE_GIT_BASH_PATH
+} elseif (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {
+    $bashPath = "C:\\Program Files\\Git\\bin\\bash.exe"
+} elseif (Test-Path "C:\\Program Files (x86)\\Git\\bin\\bash.exe") {
+    $bashPath = "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+} else {
+    $bashCmd = Get-Command bash -ErrorAction SilentlyContinue
+    if ($bashCmd) {
+        $bashPath = $bashCmd.Source
+    }
+}
 
-# Use @file syntax with Unix-style path (works on Windows!)
+if (-not $bashPath) {
+    Write-Host "Error: Git Bash not found! Please install Git for Windows." -ForegroundColor Red
+    exit 1
+}
+
+# Convert Windows path to Unix path for bash
+$unixPromptPath = $promptPath -replace '\\\\', '/' -replace 'C:', '/c'
+
+# Build the bash command with proper escaping
+# The inner quotes need to be escaped for bash -c
+$bashCommand = "claude --append-system-prompt \\`"\\$`(cat '$unixPromptPath'`)\\`""
 if ($args.Count -gt 0) {
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
-    & claude --append-system-prompt "@$unixPath" @args
-} else {
-    & claude --append-system-prompt "@$unixPath"
+    $bashCommand += " " + ($args -join " ")
 }
+
+Write-Host "Executing command via Git Bash..." -ForegroundColor Yellow
+
+# Execute via Git Bash
+& $bashPath -c $bashCommand
 '''
             launcher_path.write_text(launcher_content)
 
