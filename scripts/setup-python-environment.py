@@ -449,7 +449,28 @@ def register_global_command(launcher_path: Path) -> bool:
             bash_wrapper_path = local_bin / 'claude-python'
             bash_content = '''#!/bin/bash
 # Bash wrapper for claude-python to work in Git Bash
-exec ~/.local/bin/claude-python.cmd "$@"
+
+# Path to the Python developer prompt
+PROMPT_PATH="$HOME/.claude/prompts/python-developer.md"
+
+if [ ! -f "$PROMPT_PATH" ]; then
+    echo "Error: Python developer prompt not found at $PROMPT_PATH"
+    echo "Please run setup-python-environment.py first"
+    exit 1
+fi
+
+echo "Starting Claude Code with Python developer configuration..."
+
+# Read the prompt content and pass it directly to claude
+PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+# Pass all arguments to claude with the system prompt
+if [ $# -gt 0 ]; then
+    echo "Passing additional arguments: $@"
+    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+else
+    claude --append-system-prompt "$PROMPT_CONTENT"
+fi
 '''
             bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
             # Make it executable (Git Bash respects this even on Windows)
