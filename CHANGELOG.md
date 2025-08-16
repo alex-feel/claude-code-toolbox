@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.3.0...v1.4.0) (2025-08-16)
+
+
+### Features
+
+* add Git Bash support for claude-python command on Windows ([4720a8f](https://github.com/alex-feel/claude-code-toolbox/commit/4720a8f1285da7f43da055dfea11110df4f41681))
+
 ## [1.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.2.0...v1.3.0) (2025-08-16)
 
 
