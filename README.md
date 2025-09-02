@@ -10,22 +10,22 @@ Set up a complete Python development environment with one command:
 
 #### Windows
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1')"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 Or using CMD:
 ```cmd
-curl -L -o %TEMP%\setup-python.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-python.ps1
+curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; & '%TEMP%\setup-env.ps1'"
 ```
 
 #### macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-python-environment.sh | bash
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 #### Linux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-python-environment.sh | bash
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 This automated setup includes:
@@ -139,16 +139,16 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 claude-code-toolbox/
 ├── scripts/                     # Installation and utility scripts
 │   ├── install-claude.py        # Cross-platform Claude installer
-│   ├── setup-python-environment.py  # Cross-platform Python setup
+│   ├── setup-environment.py     # Cross-platform environment setup
 │   ├── windows/                 # Windows bootstrap scripts
 │   │   ├── install-claude-windows.ps1
-│   │   └── setup-python-environment.ps1
+│   │   └── setup-environment.ps1
 │   ├── linux/                   # Linux bootstrap scripts
 │   │   ├── install-claude-linux.sh
-│   │   └── setup-python-environment.sh
+│   │   └── setup-environment.sh
 │   └── macos/                   # macOS bootstrap scripts
 │       ├── install-claude-macos.sh
-│       └── setup-python-environment.sh
+│       └── setup-environment.sh
 ├── agents/                      # Agent templates and examples
 │   ├── examples/                # Ready-to-use subagents (7 specialized agents)
 │   └── templates/               # Templates for creating new agents
@@ -161,6 +161,11 @@ claude-code-toolbox/
 ├── slash-commands/              # Custom slash command templates
 │   ├── examples/                # Ready-to-use commands (6 commands)
 │   └── templates/               # Command templates
+├── hooks/                       # Git hooks and event handlers
+│   └── examples/                # Ready-to-use hooks
+├── environments/                # Environment configurations
+│   ├── examples/                # Ready-to-use environments
+│   └── templates/               # Environment templates
 ├── mcp/                         # Model Context Protocol configuration
 │   └── README.md                # MCP setup and usage guide
 └── docs/                        # Documentation

@@ -129,6 +129,8 @@ def download_file(url: str, destination: Path, force: bool = True) -> bool:
 def parse_yaml(content: str) -> dict[str, Any]:
     """Parse YAML content without external dependencies."""
     # Simple YAML parser for our specific use case
+    # Convert tabs to spaces for consistent indentation handling
+    content = content.replace('\t', '    ')
 
     lines = content.strip().split('\n')
     result = {}
@@ -142,6 +144,9 @@ def parse_yaml(content: str) -> dict[str, Any]:
         if line.strip().startswith('#') or not line.strip():
             continue
 
+        # Replace tabs with spaces for consistent indentation
+        line = line.replace('\t', '    ')
+
         # Calculate indentation
         indent = len(line) - len(line.lstrip())
 
@@ -154,8 +159,8 @@ def parse_yaml(content: str) -> dict[str, Any]:
 
                 # Check if it's a simple list item or complex object
                 item_content = line.strip()[2:].strip()
-                if ':' in item_content and not item_content.startswith('http'):
-                    # Complex object
+                if ':' in item_content and not item_content.startswith('http') and not item_content.startswith('X-'):
+                    # Complex object (but not URLs or headers like X-API-Key)
                     parts = item_content.split(':', 1)
                     key = parts[0].strip()
                     value = parts[1].strip() if len(parts) > 1 else ''
@@ -165,8 +170,8 @@ def parse_yaml(content: str) -> dict[str, Any]:
                     # Simple string item
                     current_list.append(item_content)
                     current_item = None
-        elif ':' in line:
-            # Key-value pair
+        elif ':' in line and not line.strip().startswith('#'):
+            # Key-value pair (not a comment)
             parts = line.split(':', 1)
             key = parts[0].strip()
             value = parts[1].strip() if len(parts) > 1 else ''
@@ -239,7 +244,7 @@ def install_dependencies(dependencies: list[str]) -> bool:
 
         # Handle platform-specific commands
         if system == 'Windows':
-            if parts[0] == 'winget' or parts[0] == 'npm':
+            if parts[0] in ['winget', 'npm', 'uv', 'pip', 'pipx']:
                 result = run_command(parts, capture_output=False)
             else:
                 # Try PowerShell for other commands
@@ -797,8 +802,9 @@ def main() -> None:
         commands_dir = claude_user_dir / 'commands'
         prompts_dir = claude_user_dir / 'prompts'
         output_styles_dir = claude_user_dir / 'output-styles'
+        hooks_dir = claude_user_dir / 'hooks'
 
-        # Step 1: Install Claude Code if needed
+        # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
         if not args.skip_install:
             print(f'{Colors.CYAN}Step 1: Installing Claude Code...{Colors.NC}')
             if not install_claude():
@@ -812,18 +818,18 @@ def main() -> None:
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
 
-        # Step 2: Install dependencies
+        # Step 2: Create directories
         print()
-        print(f'{Colors.CYAN}Step 2: Installing dependencies...{Colors.NC}')
-        dependencies = config.get('dependencies', [])
-        install_dependencies(dependencies)
-
-        # Step 3: Create directories
-        print()
-        print(f'{Colors.CYAN}Step 3: Creating configuration directories...{Colors.NC}')
-        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, output_styles_dir]:
+        print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
+        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, output_styles_dir, hooks_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
+
+        # Step 3: Install dependencies (after Claude Code which provides tools)
+        print()
+        print(f'{Colors.CYAN}Step 3: Installing dependencies...{Colors.NC}')
+        dependencies = config.get('dependencies', [])
+        install_dependencies(dependencies)
 
         # Step 4: Download agents
         print()

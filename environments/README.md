@@ -6,8 +6,8 @@ This directory contains YAML configuration files that define complete developmen
 
 ### Windows (PowerShell)
 ```powershell
-# Using environment variable
-$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+# Using environment variable (from any shell)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
 # Or pass as argument (after downloading)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/setup-environment.ps1 python
@@ -33,23 +33,9 @@ A Python development environment with:
 - Context7 MCP server for library documentation
 - Python developer system prompt
 
-### full-stack.yaml
-**Command:** `claude-fullstack`
+### Additional Configurations
 
-A comprehensive full-stack development environment with:
-- All development subagents
-- Multiple MCP servers (Context7, Playwright, MCP Control)
-- TypeScript and Python linting hooks
-- Full-stack developer system prompt
-
-### business-analyst.yaml
-**Command:** `claude-pm`
-
-A business analysis and project management environment with:
-- Research-focused subagents (YouTrack, web, protocols)
-- YouTrack MCP server integration
-- Context7 for documentation
-- Business analyst system prompt
+More environment configurations are coming soon. You can create your own by following the structure below.
 
 ## Configuration Structure
 

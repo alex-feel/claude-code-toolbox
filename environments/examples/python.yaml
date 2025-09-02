@@ -1,9 +1,7 @@
 name: Python Development
 command-name: claude-python
 dependencies:
-    # No platform-specific dependencies for basic Python setup
-    # Add more as needed, e.g.:
-    # - npm install -g mcp-control
+    - uv tool install ruff@latest
 agents:
     - agents/examples/code-reviewer.md
     - agents/examples/doc-writer.md
@@ -29,11 +27,10 @@ slash-commands:
 output-styles:
     # Add output styles if needed
 hooks:
-    # Add hooks if needed, e.g.:
-    # - event: PostToolUse
-    #   matcher: Edit|MultiEdit|Write
-    #   type: command
-    #   command: .claude/hooks/python_ruff_lint.py
-    #   files:
-    #     - hooks/examples/python_ruff_lint.py
+    - event: PostToolUse
+      matcher: Edit|MultiEdit|Write
+      type: command
+      command: .claude/hooks/python_ruff_lint.py
+      files:
+        - hooks/examples/python_ruff_lint.py
 system-prompt: system-prompts/examples/python-developer.md
