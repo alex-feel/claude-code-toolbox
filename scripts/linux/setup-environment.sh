@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 
-# Setup-Python-Environment-Linux.sh
-# Purpose: Bootstrap uv and run the cross-platform Python environment setup
-# Usage: curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-python-environment.sh | bash
+# Setup-Environment-Linux.sh
+# Purpose: Bootstrap uv and run the cross-platform environment setup
+# Usage: curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+# To specify configuration:
+#   CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 set -euo pipefail
 
@@ -15,7 +17,7 @@ NC='\033[0m' # No Color
 
 echo ""
 echo -e "${CYAN}============================================${NC}"
-echo -e "${CYAN}  Python Environment Setup (Bootstrap)${NC}"
+echo -e "${CYAN}  Claude Code Environment Setup (Bootstrap)${NC}"
 echo -e "${CYAN}============================================${NC}"
 echo ""
 
@@ -44,16 +46,25 @@ else
     echo -e "${GREEN}[OK]${NC}   uv is already installed"
 fi
 
-# Run the Python setup script
-echo -e "${CYAN}[INFO]${NC} Running Python environment setup..."
+# Run the setup script
+echo -e "${CYAN}[INFO]${NC} Running environment setup..."
 echo ""
 
-SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-python-environment.py"
+SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-environment.py"
+
+# Check if configuration is specified
+CONFIG="${CLAUDE_ENV_CONFIG:-$1}"
+
+if [ -z "$CONFIG" ]; then
+    echo -e "${RED}[ERROR]${NC} No configuration specified!"
+    echo -e "${YELLOW}Usage: setup-environment.sh <config_name>${NC}"
+    echo -e "${YELLOW}   or: CLAUDE_ENV_CONFIG=python ./setup-environment.sh${NC}"
+    exit 1
+fi
 
 # Download and run the Python script with uv
 # uv will handle Python installation automatically
-# Pass any arguments to the Python script
-if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' - "$@"; then
+if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' - "$CONFIG"; then
     exit 0
 else
     echo -e "${RED}[FAIL]${NC} Setup failed"

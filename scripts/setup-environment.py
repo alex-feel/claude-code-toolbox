@@ -1,0 +1,936 @@
+"""
+Cross-platform environment setup for Claude Code.
+Downloads and configures development tools for Claude Code based on YAML configuration.
+"""
+
+import argparse
+import contextlib
+import json
+import os
+import platform
+import shutil
+import ssl
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+from urllib.request import urlopen
+
+
+# ANSI color codes for pretty output
+class Colors:
+    """ANSI color codes for terminal output."""
+    RED = '\033[0;31m'
+    GREEN = '\033[0;32m'
+    YELLOW = '\033[1;33m'
+    BLUE = '\033[0;34m'
+    CYAN = '\033[0;36m'
+    NC = '\033[0m'  # No Color
+    BOLD = '\033[1m'
+
+    @staticmethod
+    def strip():
+        """Strip colors for Windows cmd that doesn't support ANSI."""
+        if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
+            Colors.RED = Colors.GREEN = Colors.YELLOW = Colors.BLUE = Colors.CYAN = Colors.NC = Colors.BOLD = ''
+
+
+# Initialize colors based on terminal support
+Colors.strip()
+
+# Configuration
+REPO_BASE_URL = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main'
+
+
+# Logging functions
+def info(msg: str) -> None:
+    """Print info message."""
+    print(f'  {Colors.YELLOW}INFO:{Colors.NC} {msg}')
+
+
+def success(msg: str) -> None:
+    """Print success message."""
+    print(f'  {Colors.GREEN}OK:{Colors.NC} {msg}')
+
+
+def warning(msg: str) -> None:
+    """Print warning message."""
+    print(f'  {Colors.YELLOW}WARN:{Colors.NC} {msg}')
+
+
+def error(msg: str) -> None:
+    """Print error message."""
+    print(f'  {Colors.RED}ERROR:{Colors.NC} {msg}', file=sys.stderr)
+
+
+def header(environment_name: str = 'Development') -> None:
+    """Print setup header."""
+    print()
+    print(f'{Colors.BLUE}========================================================================{Colors.NC}')
+    print(f'{Colors.BLUE}     Claude Code {environment_name} Environment Setup{Colors.NC}')
+    print(f'{Colors.BLUE}========================================================================{Colors.NC}')
+    print()
+
+
+def run_command(cmd: list, capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
+    """Run a command and return the result."""
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=capture_output,
+            text=True,
+            **kwargs,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
+
+
+def find_command(cmd: str) -> str | None:
+    """Find a command in PATH."""
+    return shutil.which(cmd)
+
+
+def download_file(url: str, destination: Path, force: bool = True) -> bool:
+    """Download a file from URL to destination."""
+    filename = destination.name
+
+    # Always overwrite by default unless force is explicitly False
+    if destination.exists() and not force:
+        info(f'File already exists: {filename} (skipping)')
+        return True
+
+    try:
+        try:
+            response = urlopen(url)
+            content = response.read()
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                response = urlopen(url, context=ctx)
+                content = response.read()
+            else:
+                raise
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+        success(f'Downloaded: {filename}')
+        return True
+    except Exception as e:
+        error(f'Failed to download {filename}: {e}')
+        return False
+
+
+def parse_yaml(content: str) -> dict[str, Any]:
+    """Parse YAML content without external dependencies."""
+    # Simple YAML parser for our specific use case
+
+    lines = content.strip().split('\n')
+    result = {}
+    current_key = None
+    current_list = None
+    current_item = None
+    indent_stack = [0]
+
+    for line in lines:
+        # Skip comments and empty lines
+        if line.strip().startswith('#') or not line.strip():
+            continue
+
+        # Calculate indentation
+        indent = len(line) - len(line.lstrip())
+
+        # Handle list items
+        if line.strip().startswith('- '):
+            if current_key:
+                if current_key not in result:
+                    result[current_key] = []
+                    current_list = result[current_key]
+
+                # Check if it's a simple list item or complex object
+                item_content = line.strip()[2:].strip()
+                if ':' in item_content and not item_content.startswith('http'):
+                    # Complex object
+                    parts = item_content.split(':', 1)
+                    key = parts[0].strip()
+                    value = parts[1].strip() if len(parts) > 1 else ''
+                    current_item = {key: value}
+                    current_list.append(current_item)
+                else:
+                    # Simple string item
+                    current_list.append(item_content)
+                    current_item = None
+        elif ':' in line:
+            # Key-value pair
+            parts = line.split(':', 1)
+            key = parts[0].strip()
+            value = parts[1].strip() if len(parts) > 1 else ''
+
+            # Check indentation to determine if it's a sub-key
+            if indent > indent_stack[-1] and current_item:
+                # Sub-key of current item
+                current_item[key] = value
+            else:
+                # Top-level or new key
+                if value:
+                    result[key] = value
+                else:
+                    current_key = key
+                    current_list = None
+                    current_item = None
+                # Update indent stack
+                while len(indent_stack) > 1 and indent <= indent_stack[-1]:
+                    indent_stack.pop()
+                if indent > indent_stack[-1]:
+                    indent_stack.append(indent)
+
+    return result
+
+
+def download_config(config_name: str) -> dict[str, Any]:
+    """Download and parse configuration file."""
+    if not config_name.endswith('.yaml'):
+        config_name += '.yaml'
+
+    config_url = f'{REPO_BASE_URL}/environments/examples/{config_name}'
+    info(f'Downloading configuration: {config_name}')
+
+    try:
+        try:
+            response = urlopen(config_url)
+            content = response.read().decode('utf-8')
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                response = urlopen(config_url, context=ctx)
+                content = response.read().decode('utf-8')
+            else:
+                raise
+
+        config = parse_yaml(content)
+        success(f'Configuration loaded: {config.get("name", config_name)}')
+        return config
+    except Exception as e:
+        error(f'Failed to download configuration: {e}')
+        raise
+
+
+def install_dependencies(dependencies: list[str]) -> bool:
+    """Install dependencies from configuration."""
+    if not dependencies:
+        return True
+
+    info('Installing dependencies...')
+    system = platform.system()
+
+    for dep in dependencies:
+        info(f'Running: {dep}')
+
+        # Parse the command
+        parts = dep.split()
+
+        # Handle platform-specific commands
+        if system == 'Windows':
+            if parts[0] == 'winget' or parts[0] == 'npm':
+                result = run_command(parts, capture_output=False)
+            else:
+                # Try PowerShell for other commands
+                result = run_command(['powershell', '-Command', dep], capture_output=False)
+        else:
+            # Unix-like systems
+            result = run_command(['bash', '-c', dep], capture_output=False)
+
+        if result.returncode != 0:
+            error(f'Failed to install dependency: {dep}')
+            warning('Continuing with other dependencies...')
+
+    return True
+
+
+def download_resources(resources: list[str], destination_dir: Path, resource_type: str) -> bool:
+    """Download resources (agents, commands, output-styles) from configuration."""
+    if not resources:
+        return True
+
+    info(f'Downloading {resource_type}...')
+
+    for resource in resources:
+        url = f'{REPO_BASE_URL}/{resource}'
+        filename = Path(resource).name
+        destination = destination_dir / filename
+        download_file(url, destination)
+
+    return True
+
+
+def install_claude() -> bool:
+    """Install Claude Code if needed."""
+    info('Installing Claude Code...')
+
+    system = platform.system()
+
+    try:
+        # Download the appropriate installer script
+        if system == 'Windows':
+            installer_url = f'{REPO_BASE_URL}/scripts/windows/install-claude-windows.ps1'
+            with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
+                try:
+                    response = urlopen(installer_url)
+                    content = response.read().decode('utf-8')
+                except urllib.error.URLError as e:
+                    if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                        warning('SSL certificate verification failed, trying with unverified context')
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        response = urlopen(installer_url, context=ctx)
+                        content = response.read().decode('utf-8')
+                    else:
+                        raise
+                tmp.write(content)
+                temp_installer = tmp.name
+
+            # Run PowerShell installer
+            result = run_command([
+                'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                '-File', temp_installer,
+            ], capture_output=False)
+
+        elif system == 'Darwin':  # macOS
+            installer_url = f'{REPO_BASE_URL}/scripts/macos/install-claude-macos.sh'
+            result = run_command([
+                'bash', '-c',
+                f'curl -fsSL {installer_url} | bash',
+            ], capture_output=False)
+
+        else:  # Linux
+            installer_url = f'{REPO_BASE_URL}/scripts/linux/install-claude-linux.sh'
+            result = run_command([
+                'bash', '-c',
+                f'curl -fsSL {installer_url} | bash',
+            ], capture_output=False)
+
+        # Clean up temp file on Windows
+        if system == 'Windows' and 'temp_installer' in locals():
+            with contextlib.suppress(Exception):
+                os.unlink(temp_installer)
+
+        if result.returncode == 0:
+            success('Claude Code installation complete')
+            return True
+        raise Exception(f'Installation failed with exit code: {result.returncode}')
+
+    except Exception as e:
+        error(f'Failed to install Claude Code: {e}')
+        info('You can retry manually or use --skip-install if Claude Code is already installed')
+        return False
+
+
+def configure_mcp_server(server: dict[str, Any]) -> bool:
+    """Configure a single MCP server."""
+    name = server.get('name')
+    scope = server.get('scope', 'user')
+    transport = server.get('transport')
+    url = server.get('url')
+    command = server.get('command')
+    header = server.get('header')
+    env = server.get('env')
+
+    if not name:
+        error('MCP server configuration missing name')
+        return False
+
+    info(f'Configuring MCP server: {name}')
+
+    system = platform.system()
+    claude_cmd = find_command('claude')
+
+    # If not in PATH, look for it where npm installs it
+    if not claude_cmd:
+        if system == 'Windows':
+            npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
+            claude_cmd_path = npm_path / 'claude.cmd'
+            if claude_cmd_path.exists():
+                claude_cmd = str(claude_cmd_path)
+            else:
+                claude_path = npm_path / 'claude'
+                if claude_path.exists():
+                    claude_cmd = str(claude_path)
+        else:
+            possible_paths = [
+                Path.home() / '.npm-global' / 'bin' / 'claude',
+                Path('/usr/local/bin/claude'),
+                Path('/usr/bin/claude'),
+            ]
+            for path in possible_paths:
+                if path.exists():
+                    claude_cmd = str(path)
+                    break
+
+    if not claude_cmd:
+        error('Claude command not found!')
+        return False
+
+    try:
+        # Build the command
+        cmd = [str(claude_cmd), 'mcp', 'add', name]
+
+        if scope:
+            cmd.extend(['--scope', scope])
+
+        if transport and url:
+            # HTTP or SSE transport
+            cmd.extend(['--transport', transport, url])
+            if header:
+                cmd.extend(['--header', header])
+        elif command:
+            # Stdio transport (command)
+            if env:
+                cmd.extend(['--env', env])
+            cmd.append('--')
+
+            # Platform-specific command handling
+            if system == 'Windows' and 'npx' in command:
+                # Windows needs cmd /c wrapper for npx
+                cmd.extend(['cmd', '/c', command])
+            else:
+                # Unix-like systems can run command directly
+                cmd.extend(command.split())
+        else:
+            error(f'MCP server {name} missing url or command')
+            return False
+
+        # Run the command
+        result = run_command(cmd, capture_output=True)
+
+        if result.returncode == 0:
+            success(f'MCP server {name} configured successfully')
+            return True
+        if result.stderr and 'already exists' in result.stderr.lower():
+            success(f'MCP server {name} already configured')
+            return True
+        error(f'Failed to configure MCP server {name}: {result.stderr}')
+        return False
+
+    except Exception as e:
+        error(f'Failed to configure MCP server {name}: {e}')
+        return False
+
+
+def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
+    """Configure all MCP servers from configuration."""
+    if not servers:
+        return True
+
+    info('Configuring MCP servers...')
+
+    for server in servers:
+        configure_mcp_server(server)
+
+    return True
+
+
+def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) -> bool:
+    """Update hooks in settings.json."""
+    if not hooks:
+        return True
+
+    info('Configuring hooks...')
+
+    settings_path = claude_user_dir / 'settings.json'
+
+    # Load existing settings or create new
+    if settings_path.exists():
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            settings = {}
+    else:
+        settings = {}
+
+    # Ensure hooks key exists
+    if 'hooks' not in settings:
+        settings['hooks'] = {}
+
+    # Process each hook
+    for hook in hooks:
+        event = hook.get('event')
+        matcher = hook.get('matcher', '')
+        hook_type = hook.get('type', 'command')
+        command = hook.get('command')
+        files = hook.get('files', [])
+
+        if not event or not command:
+            warning('Invalid hook configuration, skipping')
+            continue
+
+        # Download hook files if specified
+        if files:
+            hooks_dir = claude_user_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+            for file in files:
+                url = f'{REPO_BASE_URL}/{file}'
+                filename = Path(file).name
+                destination = hooks_dir / filename
+                download_file(url, destination)
+
+        # Add to settings
+        if event not in settings['hooks']:
+            settings['hooks'][event] = []
+
+        # Find or create matcher group
+        matcher_group = None
+        for group in settings['hooks'][event]:
+            if group.get('matcher') == matcher:
+                matcher_group = group
+                break
+
+        if not matcher_group:
+            matcher_group = {
+                'matcher': matcher,
+                'hooks': [],
+            }
+            settings['hooks'][event].append(matcher_group)
+
+        # Add hook if not already present
+        hook_config = {
+            'type': hook_type,
+            'command': command,
+        }
+
+        if hook_config not in matcher_group['hooks']:
+            matcher_group['hooks'].append(hook_config)
+
+    # Save settings
+    try:
+        with open(settings_path, 'w') as f:
+            json.dump(settings, f, indent=2)
+        success('Hooks configured successfully')
+        return True
+    except Exception as e:
+        error(f'Failed to save settings.json: {e}')
+        return False
+
+
+def create_launcher_script(claude_user_dir: Path, command_name: str, system_prompt_file: str) -> Path | None:
+    """Create launcher script for starting Claude with specified prompt."""
+    launcher_path = claude_user_dir / f'start-{command_name}'
+
+    system = platform.system()
+
+    try:
+        if system == 'Windows':
+            # Create PowerShell launcher for Windows
+            launcher_path = launcher_path.with_suffix('.ps1')
+            launcher_content = f'''# Claude Code Environment Launcher
+# This script starts Claude Code with the configured system prompt
+
+$claudeUserDir = Join-Path $env:USERPROFILE ".claude"
+$promptPath = Join-Path $claudeUserDir "prompts\\{system_prompt_file}"
+
+if (-not (Test-Path $promptPath)) {{
+    Write-Host "Error: System prompt not found at $promptPath" -ForegroundColor Red
+    Write-Host "Please run setup-environment.py first" -ForegroundColor Yellow
+    exit 1
+}}
+
+Write-Host "Starting Claude Code with {command_name} configuration..." -ForegroundColor Green
+
+# Find Git Bash (required for Claude Code on Windows)
+$bashPath = $null
+if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {{
+    $bashPath = "C:\\Program Files\\Git\\bin\\bash.exe"
+}} elseif (Test-Path "C:\\Program Files (x86)\\Git\\bin\\bash.exe") {{
+    $bashPath = "C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+}} else {{
+    Write-Host "Error: Git Bash not found! Please install Git for Windows." -ForegroundColor Red
+    exit 1
+}}
+
+# Build the bash command with all arguments
+if ($args.Count -gt 0) {{
+    Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
+    # Properly escape arguments for bash (quote args with spaces)
+    $escapedArgs = @()
+    foreach ($arg in $args) {{
+        if ($arg -match ' ') {{
+            # If arg contains spaces, wrap in single quotes for bash
+            $escapedArgs += "'$arg'"
+        }} else {{
+            $escapedArgs += $arg
+        }}
+    }}
+    $argsString = $escapedArgs -join ' '
+    # Use a here-string to avoid complex quote escaping
+    $bashCommand = @"
+p=`$(tr -d '\\\\r' < ~/.claude/prompts/{system_prompt_file}); exec claude --append-system-prompt=\\"`$p\\" $argsString
+"@
+    & $bashPath -lc $bashCommand
+}} else {{
+    # Use --% to stop PowerShell parsing, with literal command string
+    & $bashPath `
+      --% -lc "p=$(tr -d '\\r' < ~/.claude/prompts/{system_prompt_file}); exec claude --append-system-prompt=\\"$p\\""
+}}
+'''
+            launcher_path.write_text(launcher_content)
+
+            # Also create a CMD batch file wrapper
+            batch_path = claude_user_dir / f'start-{command_name}.cmd'
+            batch_content = f'''@echo off
+REM Claude Code Environment Launcher for CMD
+REM This script starts Claude Code with the configured system prompt
+
+set PROMPT_PATH=%USERPROFILE%\\.claude\\prompts\\{system_prompt_file}
+
+if not exist "%PROMPT_PATH%" (
+    echo Error: System prompt not found at %PROMPT_PATH%
+    echo Please run setup-environment.py first
+    exit /b 1
+)
+
+echo Starting Claude Code with {command_name} configuration...
+
+REM Build the command with all arguments
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    echo Passing additional arguments: %*
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
+            batch_path.write_text(batch_content)
+
+        else:
+            # Create bash launcher for Unix-like systems
+            launcher_path = launcher_path.with_suffix('.sh')
+            launcher_content = f'''#!/usr/bin/env bash
+# Claude Code Environment Launcher
+# This script starts Claude Code with the configured system prompt
+
+CLAUDE_USER_DIR="$HOME/.claude"
+PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
+
+if [ ! -f "$PROMPT_PATH" ]; then
+    echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
+    echo -e "\\033[1;33mPlease run setup-environment.py first\\033[0m"
+    exit 1
+fi
+
+echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+
+# Read the prompt content
+PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+# Pass any additional arguments to Claude
+if [ $# -gt 0 ]; then
+    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
+    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+else
+    claude --append-system-prompt "$PROMPT_CONTENT"
+fi
+'''
+            launcher_path.write_text(launcher_content)
+            launcher_path.chmod(0o755)
+
+        success('Created launcher script')
+        return launcher_path
+
+    except Exception as e:
+        warning(f'Failed to create launcher script: {e}')
+        return None
+
+
+def register_global_command(launcher_path: Path, command_name: str, system_prompt_file: str) -> bool:
+    """Register global command."""
+    info(f'Registering global {command_name} command...')
+
+    system = platform.system()
+
+    try:
+        if system == 'Windows':
+            # Create batch file in .local/bin
+            local_bin = Path.home() / '.local' / 'bin'
+            local_bin.mkdir(parents=True, exist_ok=True)
+
+            # Create wrappers for all Windows shells
+            # CMD wrapper
+            batch_path = local_bin / f'{command_name}.cmd'
+            batch_content = f'''@echo off
+REM Global {command_name} command for CMD
+set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
+set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
+if "%~1"=="" (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+) else (
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+)
+'''
+            batch_path.write_text(batch_content)
+
+            # PowerShell wrapper (as a simple forwarder to the PS1 launcher)
+            ps1_wrapper_path = local_bin / f'{command_name}.ps1'
+            ps1_wrapper_content = f'''# Global {command_name} command for PowerShell
+& "{launcher_path}" @args
+'''
+            ps1_wrapper_path.write_text(ps1_wrapper_content)
+
+            # Git Bash wrapper
+            bash_wrapper_path = local_bin / command_name
+            bash_content = f'''#!/bin/bash
+# Bash wrapper for {command_name} to work in Git Bash
+
+# Path to the system prompt
+PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
+
+if [ ! -f "$PROMPT_PATH" ]; then
+    echo "Error: System prompt not found at $PROMPT_PATH"
+    echo "Please run setup-environment.py first"
+    exit 1
+fi
+
+echo "Starting Claude Code with {command_name} configuration..."
+
+# Read the prompt content and pass it directly to claude
+PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+# Pass all arguments to claude with the system prompt
+if [ $# -gt 0 ]; then
+    echo "Passing additional arguments: $@"
+    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+else
+    claude --append-system-prompt "$PROMPT_CONTENT"
+fi
+'''
+            bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
+            # Make it executable (Git Bash respects this even on Windows)
+            bash_wrapper_path.chmod(0o755)
+
+            info('Created wrappers for all Windows shells (PowerShell, CMD, Git Bash)')
+
+            # Add .local/bin to PATH if not already there
+            user_path = os.environ.get('PATH', '')
+            local_bin_str = str(local_bin)
+            if local_bin_str not in user_path:
+                # Update current session
+                os.environ['PATH'] = f'{local_bin_str};{user_path}'
+
+                # Update persistent user PATH (Windows only)
+                run_command(['setx', 'PATH', f'{local_bin_str};%PATH%'], capture_output=True)
+                success(f'Added {local_bin_str} to PATH')
+                info('You may need to restart your terminal for PATH changes to take effect')
+
+        else:
+            # Create symlink in ~/.local/bin
+            local_bin = Path.home() / '.local' / 'bin'
+            local_bin.mkdir(parents=True, exist_ok=True)
+
+            symlink_path = local_bin / command_name
+            if symlink_path.exists():
+                symlink_path.unlink()
+            symlink_path.symlink_to(launcher_path)
+
+            # Ensure ~/.local/bin is in PATH
+            info('Make sure ~/.local/bin is in your PATH')
+            info('Add this to your ~/.bashrc or ~/.zshrc if needed:')
+            info('  export PATH="$HOME/.local/bin:$PATH"')
+
+        if system == 'Windows':
+            success(f'Created global command: {command_name} (works in PowerShell, CMD, and Git Bash)')
+            info('The command now works in all Windows shells!')
+        else:
+            success(f'Created global command: {command_name}')
+        return True
+
+    except Exception as e:
+        warning(f'Failed to register global command: {e}')
+        return False
+
+
+def main() -> None:
+    """Main setup flow."""
+    parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
+    parser.add_argument('config', nargs='?',
+                        help='Configuration file name (e.g., python.yaml)')
+    parser.add_argument('--skip-install', action='store_true',
+                        help='Skip Claude Code installation')
+    parser.add_argument('--force', action='store_true',
+                        help='Force overwrite existing files')
+    args = parser.parse_args()
+
+    # Get configuration from args or environment
+    config_name = args.config or os.environ.get('CLAUDE_ENV_CONFIG')
+
+    if not config_name:
+        error('No configuration specified!')
+        info('Usage: setup-environment.py <config_name>')
+        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup-environment.py')
+        info('Example: setup-environment.py python')
+        sys.exit(1)
+
+    try:
+        # Download and parse configuration
+        config = download_config(config_name)
+
+        environment_name = config.get('name', 'Development')
+        command_name = config.get('command-name', 'claude-env')
+        system_prompt = config.get('system-prompt', '')
+
+        header(environment_name)
+
+        system = platform.system()
+
+        # Set up directories
+        home = Path.home()
+        claude_user_dir = home / '.claude'
+        agents_dir = claude_user_dir / 'agents'
+        commands_dir = claude_user_dir / 'commands'
+        prompts_dir = claude_user_dir / 'prompts'
+        output_styles_dir = claude_user_dir / 'output-styles'
+
+        # Step 1: Install Claude Code if needed
+        if not args.skip_install:
+            print(f'{Colors.CYAN}Step 1: Installing Claude Code...{Colors.NC}')
+            if not install_claude():
+                raise Exception('Claude Code installation failed')
+        else:
+            print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
+
+            # Verify Claude Code is available
+            if not find_command('claude'):
+                error('Claude Code is not available in PATH')
+                info('Please install Claude Code first or remove the --skip-install flag')
+                raise Exception('Claude Code not found')
+
+        # Step 2: Install dependencies
+        print()
+        print(f'{Colors.CYAN}Step 2: Installing dependencies...{Colors.NC}')
+        dependencies = config.get('dependencies', [])
+        install_dependencies(dependencies)
+
+        # Step 3: Create directories
+        print()
+        print(f'{Colors.CYAN}Step 3: Creating configuration directories...{Colors.NC}')
+        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, output_styles_dir]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+            success(f'Created: {dir_path}')
+
+        # Step 4: Download agents
+        print()
+        print(f'{Colors.CYAN}Step 4: Downloading agents...{Colors.NC}')
+        agents = config.get('agents', [])
+        download_resources(agents, agents_dir, 'agents')
+
+        # Step 5: Download slash commands
+        print()
+        print(f'{Colors.CYAN}Step 5: Downloading slash commands...{Colors.NC}')
+        commands = config.get('slash-commands', [])
+        download_resources(commands, commands_dir, 'slash commands')
+
+        # Step 6: Download output styles
+        print()
+        print(f'{Colors.CYAN}Step 6: Downloading output styles...{Colors.NC}')
+        output_styles = config.get('output-styles', [])
+        download_resources(output_styles, output_styles_dir, 'output styles')
+
+        # Step 7: Download system prompt
+        print()
+        print(f'{Colors.CYAN}Step 7: Downloading system prompt...{Colors.NC}')
+        prompt_path = None
+        if system_prompt:
+            prompt_url = f'{REPO_BASE_URL}/{system_prompt}'
+            prompt_filename = Path(system_prompt).name
+            prompt_path = prompts_dir / prompt_filename
+            download_file(prompt_url, prompt_path)
+
+        # Step 8: Configure MCP servers
+        print()
+        print(f'{Colors.CYAN}Step 8: Configuring MCP servers...{Colors.NC}')
+        mcp_servers = config.get('mcp-servers', [])
+        configure_all_mcp_servers(mcp_servers)
+
+        # Step 9: Configure hooks
+        print()
+        print(f'{Colors.CYAN}Step 9: Configuring hooks...{Colors.NC}')
+        hooks = config.get('hooks', [])
+        update_hooks_settings(hooks, claude_user_dir)
+
+        # Step 10: Create launcher script
+        print()
+        print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
+        prompt_filename = Path(system_prompt).name if system_prompt else 'system.md'
+        launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
+
+        # Step 11: Register global command
+        if launcher_path:
+            print()
+            print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
+            register_global_command(launcher_path, command_name, prompt_filename)
+
+        # Final message
+        print()
+        print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+        print(f'{Colors.GREEN}                    Setup Complete!{Colors.NC}')
+        print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+        print()
+
+        print(f'{Colors.YELLOW}Summary:{Colors.NC}')
+        print(f'   * Environment: {environment_name}')
+        print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
+        print(f'   * Agents: {len(agents)} installed')
+        print(f'   * Slash commands: {len(commands)} installed')
+        print(f'   * Output styles: {len(output_styles)} installed')
+        print('   * System prompt: Configured')
+        print(f'   * MCP servers: {len(mcp_servers)} configured')
+        print(f'   * Hooks: {len(hooks)} configured')
+        print(f'   * Global command: {command_name} registered')
+
+        print()
+        print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
+        print(f'   * Global command: {command_name}')
+        if launcher_path:
+            if system == 'Windows':
+                print(f"   * Full path: powershell -File '{launcher_path}'")
+            else:
+                print(f'   * Full path: {launcher_path}')
+        if prompt_path:
+            print(f"   * Manual: claude --append-system-prompt '@{prompt_path}'")
+
+        print()
+        print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')
+        print('   * /help - See all available commands')
+        print('   * /agents - List available subagents')
+
+        print()
+        print(f'{Colors.YELLOW}Examples:{Colors.NC}')
+        print(f'   {command_name}')
+        print(f'   > Start working with {environment_name} environment')
+
+        print()
+        print(f'{Colors.YELLOW}Documentation:{Colors.NC}')
+        print('   * Setup Guide: https://github.com/alex-feel/claude-code-toolbox')
+        print('   * Claude Code Docs: https://docs.anthropic.com/claude-code')
+        print()
+
+    except Exception as e:
+        print()
+        error(str(e))
+        print()
+        print(f'{Colors.RED}Setup failed. Please check the error above.{Colors.NC}')
+        print(f'{Colors.YELLOW}For help, visit: https://github.com/alex-feel/claude-code-toolbox{Colors.NC}')
+        print()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

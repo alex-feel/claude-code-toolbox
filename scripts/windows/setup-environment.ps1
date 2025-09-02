@@ -1,8 +1,11 @@
 <#
-    Setup-Python-Environment-Windows.ps1
-    Purpose: Bootstrap uv and run the cross-platform Python environment setup
+    Setup-Environment-Windows.ps1
+    Purpose: Bootstrap uv and run the cross-platform environment setup
     Usage:
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1')"
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+
+    To specify configuration:
+      $env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]
@@ -13,7 +16,7 @@ $ErrorActionPreference = 'Stop'
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  Python Environment Setup (Bootstrap)" -ForegroundColor Cyan
+Write-Host "  Claude Code Environment Setup (Bootstrap)" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -44,15 +47,25 @@ if (-not $uvPath) {
 Write-Host "[INFO] Running Python environment setup..." -ForegroundColor Cyan
 Write-Host ""
 
-$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-python-environment.py"
+$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-environment.py"
 
 try {
     # Download the Python script to a temp file
     $tempScript = [System.IO.Path]::GetTempFileName() + ".py"
     Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
 
+    # Check if configuration is specified
+    $config = if ($env:CLAUDE_ENV_CONFIG) { $env:CLAUDE_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
+
+    if (-not $config) {
+        Write-Host "[ERROR] No configuration specified!" -ForegroundColor Red
+        Write-Host "Usage: setup-environment.ps1 <config_name>" -ForegroundColor Yellow
+        Write-Host "   or: `$env:CLAUDE_ENV_CONFIG='python'; ./setup-environment.ps1" -ForegroundColor Yellow
+        exit 1
+    }
+
     # Run with uv (it will handle Python installation automatically)
-    & uv run --python '>=3.12' $tempScript $args
+    & uv run --python '>=3.12' $tempScript $config
     $exitCode = $LASTEXITCODE
 
     # Clean up

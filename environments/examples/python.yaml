@@ -1,0 +1,39 @@
+name: Python Development
+command-name: claude-python
+dependencies:
+    # No platform-specific dependencies for basic Python setup
+    # Add more as needed, e.g.:
+    # - npm install -g mcp-control
+agents:
+    - agents/examples/code-reviewer.md
+    - agents/examples/doc-writer.md
+    - agents/examples/implementation-guide.md
+    - agents/examples/performance-optimizer.md
+    - agents/examples/refactoring-assistant.md
+    - agents/examples/security-auditor.md
+    - agents/examples/test-generator.md
+mcp-servers:
+    - name: context7
+      scope: user
+      transport: http
+      url: https://mcp.context7.com/mcp
+      # Note: Add your API key here if you have one
+      # header: X-API-Key: your-key-here
+slash-commands:
+    - slash-commands/examples/commit.md
+    - slash-commands/examples/debug.md
+    - slash-commands/examples/document.md
+    - slash-commands/examples/refactor.md
+    - slash-commands/examples/review.md
+    - slash-commands/examples/test.md
+output-styles:
+    # Add output styles if needed
+hooks:
+    # Add hooks if needed, e.g.:
+    # - event: PostToolUse
+    #   matcher: Edit|MultiEdit|Write
+    #   type: command
+    #   command: .claude/hooks/python_ruff_lint.py
+    #   files:
+    #     - hooks/examples/python_ruff_lint.py
+system-prompt: system-prompts/examples/python-developer.md
