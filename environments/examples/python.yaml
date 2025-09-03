@@ -30,7 +30,7 @@ hooks:
     - event: PostToolUse
       matcher: Edit|MultiEdit|Write
       type: command
-      command: .claude/hooks/python_ruff_lint.py
+      command: python_ruff_lint.py
       files:
         - hooks/examples/python_ruff_lint.py
 system-prompt: system-prompts/examples/python-developer.md

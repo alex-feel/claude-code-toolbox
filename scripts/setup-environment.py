@@ -614,32 +614,14 @@ if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {{
     exit 1
 }}
 
-# Build the bash command with all arguments
+# Call the shared script instead of building complex command
+$scriptPath = Join-Path $claudeUserDir "launch-{command_name}.sh"
+
 if ($args.Count -gt 0) {{
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
-    # Properly escape arguments for bash (quote args with spaces)
-    $escapedArgs = @()
-    foreach ($arg in $args) {{
-        if ($arg -match ' ') {{
-            # If arg contains spaces, wrap in single quotes for bash
-            $escapedArgs += "'$arg'"
-        }} else {{
-            $escapedArgs += $arg
-        }}
-    }}
-    $argsString = $escapedArgs -join ' '
-    # Use a here-string to avoid complex quote escaping
-    $bashCommand = @"
-p=`$(tr -d '\\\\r' < ~/.claude/prompts/{system_prompt_file}); s=~/.claude/additional-settings.json; \\
-exec claude --append-system-prompt=\\"`$p\\" --settings=\\"`$s\\" $argsString
-"@
-    & $bashPath -lc $bashCommand
+    & $bashPath --login $scriptPath @args
 }} else {{
-    # Use --% to stop PowerShell parsing, with literal command string
-    $bashCommand = "p=`$(tr -d '\\r' < ~/.claude/prompts/{system_prompt_file}); " + `
-                   "s=~/.claude/additional-settings.json; " + `
-                   "exec claude --append-system-prompt=\\`"`$p\\`" --settings=\\`"`$s\\`""
-    & $bashPath --% -lc $bashCommand
+    & $bashPath --login $scriptPath
 }}
 '''
             launcher_path.write_text(launcher_content)
@@ -660,18 +642,44 @@ if not exist "%PROMPT_PATH%" (
 
 echo Starting Claude Code with {command_name} configuration...
 
-REM Build the command with all arguments
-set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
-set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
-set SETTINGS_PATH=~/.claude/additional-settings.json
+REM Call shared script instead of complex command
+set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
+if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+
+set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
+
 if "%~1"=="" (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\""
+    "%BASH_EXE%" --login "%SCRIPT_WIN%"
 ) else (
     echo Passing additional arguments: %*
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\" %*"
+    "%BASH_EXE%" --login "%SCRIPT_WIN%" %*
 )
 '''
             batch_path.write_text(batch_content)
+
+            # Create shared POSIX script that actually launches Claude
+            shared_sh = claude_user_dir / f'launch-{command_name}.sh'
+            shared_sh_content = f'''#!/usr/bin/env bash
+set -euo pipefail
+
+PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
+if [ ! -f "$PROMPT_PATH" ]; then
+  echo "Error: System prompt not found at $PROMPT_PATH" >&2
+  exit 1
+fi
+
+# Read prompt and get Windows path for settings
+PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
+# Try to get Windows path format; fallback to Unix path if cygpath is not available
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/additional-settings.json")"
+
+exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
+'''
+            shared_sh.write_text(shared_sh_content, newline='\n')
+            # Make it executable for bash
+            with contextlib.suppress(Exception):
+                shared_sh.chmod(0o755)
 
         else:
             # Create bash launcher for Unix-like systems
@@ -731,13 +739,13 @@ def register_global_command(launcher_path: Path, command_name: str, system_promp
             batch_path = local_bin / f'{command_name}.cmd'
             batch_content = f'''@echo off
 REM Global {command_name} command for CMD
-set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
-set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
-set SETTINGS_PATH=~/.claude/additional-settings.json
+set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
+if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
 if "%~1"=="" (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\""
+    "%BASH_EXE%" --login "%SCRIPT_WIN%"
 ) else (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\" %*"
+    "%BASH_EXE%" --login "%SCRIPT_WIN%" %*
 )
 '''
             batch_path.write_text(batch_content)
@@ -767,14 +775,14 @@ echo "Starting Claude Code with {command_name} configuration..."
 
 # Read the prompt content and pass it directly to claude
 PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-SETTINGS_PATH="$HOME/.claude/additional-settings.json"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json")"
 
 # Pass all arguments to claude with the system prompt
 if [ $# -gt 0 ]; then
     echo "Passing additional arguments: $@"
-    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
+    claude --settings "$SETTINGS_WIN" --append-system-prompt "$PROMPT_CONTENT" "$@"
 else
-    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
+    claude --settings "$SETTINGS_WIN" --append-system-prompt "$PROMPT_CONTENT"
 fi
 '''
             bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
