@@ -9,23 +9,32 @@ A community toolbox for Claude Code - automated installers, scripts, agent templ
 Set up a complete Python development environment with one command:
 
 #### Windows
+
+##### Option 1: Simple approach (recommended)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1')"
+# First set the environment variable, then run the installer
+$env:CLAUDE_ENV_CONFIG='python'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-Or using CMD:
+##### Option 2: One-liner (requires escaping)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
+
+##### Option 3: Using CMD
 ```cmd
-curl -L -o %TEMP%\setup-python.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-python-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-python.ps1
+curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 python
 ```
 
 #### macOS
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-python-environment.sh | bash
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 #### Linux
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-python-environment.sh | bash
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 This automated setup includes:
@@ -139,16 +148,16 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 claude-code-toolbox/
 ├── scripts/                     # Installation and utility scripts
 │   ├── install-claude.py        # Cross-platform Claude installer
-│   ├── setup-python-environment.py  # Cross-platform Python setup
+│   ├── setup-environment.py     # Cross-platform environment setup
 │   ├── windows/                 # Windows bootstrap scripts
 │   │   ├── install-claude-windows.ps1
-│   │   └── setup-python-environment.ps1
+│   │   └── setup-environment.ps1
 │   ├── linux/                   # Linux bootstrap scripts
 │   │   ├── install-claude-linux.sh
-│   │   └── setup-python-environment.sh
+│   │   └── setup-environment.sh
 │   └── macos/                   # macOS bootstrap scripts
 │       ├── install-claude-macos.sh
-│       └── setup-python-environment.sh
+│       └── setup-environment.sh
 ├── agents/                      # Agent templates and examples
 │   ├── examples/                # Ready-to-use subagents (7 specialized agents)
 │   └── templates/               # Templates for creating new agents
@@ -161,6 +170,11 @@ claude-code-toolbox/
 ├── slash-commands/              # Custom slash command templates
 │   ├── examples/                # Ready-to-use commands (6 commands)
 │   └── templates/               # Command templates
+├── hooks/                       # Git hooks and event handlers
+│   └── examples/                # Ready-to-use hooks
+├── environments/                # Environment configurations
+│   ├── examples/                # Ready-to-use environments
+│   └── templates/               # Environment templates
 ├── mcp/                         # Model Context Protocol configuration
 │   └── README.md                # MCP setup and usage guide
 └── docs/                        # Documentation
@@ -206,14 +220,13 @@ After running the Python setup script:
 claude doctor
 
 # 2. Start Claude with Python configuration - just run:
-claude-python  # Windows: Git Bash ONLY!
+claude-python
 
 # That's it! The command is registered globally during setup
 ```
 
 **⚠️ Common Mistakes:**
 - Running `claude` directly won't load the Python system prompt!
-- On Windows: `claude-python` ONLY works in Git Bash, NOT in PowerShell or CMD!
 
 For IDE integration:
 - **VS Code**: Configure terminal to use the launcher script

@@ -7,16 +7,16 @@ This directory contains installation and setup scripts for Claude Code across di
 ```text
 scripts/
 ├── install-claude.py            # Cross-platform Claude Code installer (Python)
-├── setup-python-environment.py  # Cross-platform Python environment setup (Python)
+├── setup-environment.py         # Cross-platform environment setup (Python)
 ├── windows/                     # Windows bootstrap scripts
 │   ├── install-claude-windows.ps1      # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-python-environment.ps1    # Bootstrap: installs uv, runs setup-python-environment.py
+│   └── setup-environment.ps1            # Bootstrap: installs uv, runs setup-environment.py
 ├── linux/                       # Linux bootstrap scripts
 │   ├── install-claude-linux.sh         # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-python-environment.sh     # Bootstrap: installs uv, runs setup-python-environment.py
+│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup-environment.py
 ├── macos/                       # macOS bootstrap scripts
 │   ├── install-claude-macos.sh         # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-python-environment.sh     # Bootstrap: installs uv, runs setup-python-environment.py
+│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup-environment.py
 └── hooks/                       # Git hooks and validation scripts
     └── check-powershell.ps1            # PowerShell script analyzer
 ```
@@ -32,7 +32,7 @@ The installation system uses a two-tier architecture:
 
 2. **Cross-platform Python scripts** (comprehensive installers)
    - `install-claude.py`: Handles Git Bash, Node.js, and Claude Code installation
-   - `setup-python-environment.py`: Sets up complete Python development environment
+   - `setup-environment.py`: Sets up complete development environment based on YAML configuration
    - Work identically across Windows, Linux, and macOS
    - Require Python 3.12+ (automatically handled by uv)
 
@@ -54,23 +54,35 @@ If you prefer manual installation:
 
 ## 🚀 Quick Start
 
-### Python Developer Setup (Recommended)
+### Environment Setup (Recommended)
 
-The Python environment setup scripts provide a complete development environment with one command:
+The environment setup scripts provide complete development environments based on YAML configurations:
 
 #### Windows
 ```powershell
-.\scripts\windows\setup-python-environment.ps1
+# For Python environment
+.\scripts\windows\setup-environment.ps1 python
+
+# Or using environment variable
+$env:CLAUDE_ENV_CONFIG='python'; .\scripts\windows\setup-environment.ps1
 ```
 
 #### Linux
 ```bash
-bash scripts/linux/setup-python-environment.sh
+# For Python environment
+bash scripts/linux/setup-environment.sh python
+
+# Or using environment variable
+CLAUDE_ENV_CONFIG=python bash scripts/linux/setup-environment.sh
 ```
 
 #### macOS
 ```bash
-bash scripts/macos/setup-python-environment.sh
+# For Python environment
+bash scripts/macos/setup-environment.sh python
+
+# Or using environment variable
+CLAUDE_ENV_CONFIG=python bash scripts/macos/setup-environment.sh
 ```
 
 ### Standard Installation
@@ -105,28 +117,24 @@ Comprehensive Claude Code installer that:
 - Handles SSL certificate issues in corporate environments
 - Provides fallback installation methods
 
-### Environment Setup Scripts (`setup-python-environment.py`)
+### Environment Setup Scripts (`setup-environment.py`)
 
-Complete Python development environment that installs:
+Configuration-driven environment setup that installs based on YAML files:
 - Claude Code (if not already installed)
-- **7 general-purpose subagents**:
-  - code-reviewer (code quality analysis)
-  - doc-writer (documentation generation)
-  - implementation-guide (library usage guidance)
-  - performance-optimizer (performance analysis)
-  - refactoring-assistant (code refactoring)
-  - security-auditor (security analysis)
-  - test-generator (test creation)
-- **6 Custom slash commands**:
-  - /commit (smart Git commits)
-  - /debug (debugging assistance)
-  - /document (documentation generation)
-  - /refactor (code refactoring)
-  - /review (code review)
-  - /test (test generation)
-- **Python developer system prompt** with SOLID, DRY, KISS, YAGNI principles
-- **Context7 MCP server** for up-to-date library documentation
-- **Global `claude-python` command** (works in PowerShell, CMD, and Git Bash on Windows)
+- **Custom agents** defined in configuration
+- **Slash commands** specified in YAML
+- **MCP servers** with support for HTTP, SSE, and stdio transports
+- **Hooks** for automatic actions on events
+- **System prompts** for role-specific behavior
+- **Output styles** for formatted responses
+- **Global commands** (e.g., `claude-python`) that work in all shells
+
+Example Python environment includes:
+- 7 Python-optimized subagents
+- 6 custom slash commands
+- Context7 MCP server for documentation
+- Python developer system prompt
+- Ruff linting hook
 
 ## 🔧 Script Options
 
@@ -135,14 +143,17 @@ Complete Python development environment that installs:
 The Python scripts support command-line arguments:
 
 ```bash
+# Specify configuration
+python setup-environment.py python
+
 # Skip Claude Code installation (if already installed)
-python setup-python-environment.py --skip-install
+python setup-environment.py python --skip-install
 
 # Force overwrite existing configuration files
-python setup-python-environment.py --force
+python setup-environment.py python --force
 
-# Combine options
-python setup-python-environment.py --skip-install --force
+# Use environment variable
+CLAUDE_ENV_CONFIG=python python setup-environment.py --skip-install
 ```
 
 ### Bootstrap Scripts
@@ -154,11 +165,11 @@ The platform-specific bootstrap scripts automatically:
 4. Pass any arguments through to the Python script
 
 ```bash
-# Linux/macOS - arguments are passed to Python script
-bash setup-python-environment.sh --skip-install --force
+# Linux/macOS - configuration and arguments are passed to Python script
+bash setup-environment.sh python --skip-install --force
 
-# Windows - arguments are passed to Python script
-.\setup-python-environment.ps1
+# Windows - configuration and arguments are passed to Python script
+.\setup-environment.ps1 python --skip-install --force
 ```
 
 ## 🔒 Security Considerations
@@ -257,7 +268,9 @@ Directory structure created:
 ├── agents/          # Subagent configurations
 ├── commands/        # Slash command definitions
 ├── prompts/         # System prompts
-└── start-python-claude.{ps1,sh}  # Launcher script
+├── output-styles/   # Output style configurations
+├── hooks/           # Event handler scripts
+└── start-<command-name>.{ps1,sh}  # Launcher script
 ```
 
 ## 🤝 Contributing
