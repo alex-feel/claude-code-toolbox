@@ -5,11 +5,20 @@ This directory contains YAML configuration files that define complete developmen
 ## Quick Start
 
 ### Windows (PowerShell)
-```powershell
-# Using environment variable (from any shell)
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
-# Or pass as argument (after downloading)
+#### Simplest approach (in PowerShell)
+```powershell
+$env:CLAUDE_ENV_CONFIG='python'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
+#### One-liner (from any shell, requires escaping)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
+
+#### Local file (after downloading)
+```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/setup-environment.ps1 python
 ```
 

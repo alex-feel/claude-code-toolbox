@@ -9,13 +9,22 @@ A community toolbox for Claude Code - automated installers, scripts, agent templ
 Set up a complete Python development environment with one command:
 
 #### Windows
+
+##### Option 1: Simple approach (recommended)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+# First set the environment variable, then run the installer
+$env:CLAUDE_ENV_CONFIG='python'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-Or using CMD:
+##### Option 2: One-liner (requires escaping)
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
+
+##### Option 3: Using CMD
 ```cmd
-curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_ENV_CONFIG='python'; & '%TEMP%\setup-env.ps1'"
+curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 python
 ```
 
 #### macOS

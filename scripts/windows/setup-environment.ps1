@@ -5,7 +5,11 @@
       powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
     To specify configuration:
+      # In PowerShell:
       $env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+      # One-liner from CMD or external PowerShell:
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]
@@ -60,9 +64,15 @@ try {
     if (-not $config) {
         Write-Host "[ERROR] No configuration specified!" -ForegroundColor Red
         Write-Host "Usage: setup-environment.ps1 <config_name>" -ForegroundColor Yellow
-        Write-Host "   or: `$env:CLAUDE_ENV_CONFIG='python'; ./setup-environment.ps1" -ForegroundColor Yellow
+        Write-Host "   or: Set-Item Env:CLAUDE_ENV_CONFIG 'python'; ./setup-environment.ps1" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Available configurations:" -ForegroundColor Cyan
+        Write-Host "  - python    : Python development environment" -ForegroundColor Gray
+        Write-Host ""
         exit 1
     }
+
+    Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
 
     # Run with uv (it will handle Python installation automatically)
     & uv run --python '>=3.12' $tempScript $config

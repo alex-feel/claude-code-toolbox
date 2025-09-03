@@ -209,6 +209,16 @@ def download_config(config_name: str) -> dict[str, Any]:
         try:
             response = urlopen(config_url)
             content = response.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                error(f'Configuration file not found: {config_name}')
+                info('Available configurations:')
+                info('  - python.yaml: Python development environment')
+                info('')
+                info('Make sure the configuration exists in the repository.')
+                info('You can also create custom configurations in environments/examples/')
+                raise Exception(f'Configuration not found: {config_name}') from None
+            raise
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
                 warning('SSL certificate verification failed, trying with unverified context')
@@ -224,7 +234,8 @@ def download_config(config_name: str) -> dict[str, Any]:
         success(f'Configuration loaded: {config.get("name", config_name)}')
         return config
     except Exception as e:
-        error(f'Failed to download configuration: {e}')
+        if 'Configuration not found' not in str(e):
+            error(f'Failed to download configuration: {e}')
         raise
 
 
