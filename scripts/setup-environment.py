@@ -860,8 +860,6 @@ def main() -> None:
 
         header(environment_name)
 
-        system = platform.system()
-
         # Set up directories
         home = Path.home()
         claude_user_dir = home / '.claude'
@@ -976,19 +974,15 @@ def main() -> None:
         print()
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
         print(f'   * Global command: {command_name}')
-        if launcher_path:
-            if system == 'Windows':
-                print(f"   * Full path: powershell -File '{launcher_path}'")
-            else:
-                print(f'   * Full path: {launcher_path}')
-        if prompt_path:
-            settings_path = claude_user_dir / 'additional-settings.json'
-            print(f"   * Manual: claude --append-system-prompt '@{prompt_path}' --settings '{settings_path}'")
 
         print()
         print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')
         print('   * /help - See all available commands')
-        print('   * /agents - List available subagents')
+        print('   * /agents - Manage subagents')
+        print('   * /hooks - Manage hooks')
+        print('   * /mcp - Manage MCP servers')
+        print('   * /output-style - Choose or manage output styles')
+        print('   * /<slash-command> - Run specific slash command')
 
         print()
         print(f'{Colors.YELLOW}Examples:{Colors.NC}')
