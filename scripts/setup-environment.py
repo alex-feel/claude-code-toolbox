@@ -464,7 +464,7 @@ def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
     return True
 
 
-def create_additional_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) -> bool:
+def create_additional_settings(hooks: dict[str, Any], claude_user_dir: Path) -> bool:
     """Create additional-settings.json with environment-specific hooks.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
@@ -492,32 +492,31 @@ def create_additional_settings(hooks: list[dict[str, Any]], claude_user_dir: Pat
         'hooks': {},
     }
 
-    # Process each hook
-    for hook in hooks:
-        # Ensure hook is a dict (should be with PyYAML)
-        if not isinstance(hook, dict):
-            warning(f'Unexpected hook format: {type(hook)} - {hook}')
-            continue
+    # Extract files and events from the hooks configuration
+    hook_files = hooks.get('files', [])
+    hook_events = hooks.get('events', [])
+
+    # Download all hook files first
+    if hook_files:
+        hooks_dir = claude_user_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        for file in hook_files:
+            url = f'{REPO_BASE_URL}/{file}'
+            filename = Path(file).name
+            destination = hooks_dir / filename
+            download_file(url, destination)
+
+    # Process each hook event
+    for hook in hook_events:
 
         event = hook.get('event')
         matcher = hook.get('matcher', '')
         hook_type = hook.get('type', 'command')
         command = hook.get('command')
-        files = hook.get('files', [])
 
         if not event or not command:
             warning('Invalid hook configuration, skipping')
             continue
-
-        # Download hook files if specified
-        if files:
-            hooks_dir = claude_user_dir / 'hooks'
-            hooks_dir.mkdir(parents=True, exist_ok=True)
-            for file in files:
-                url = f'{REPO_BASE_URL}/{file}'
-                filename = Path(file).name
-                destination = hooks_dir / filename
-                download_file(url, destination)
 
         # Add to settings
         if event not in settings['hooks']:
@@ -939,11 +938,8 @@ def main() -> None:
         # Step 9: Configure hooks
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks...{Colors.NC}')
-        hooks = config.get('hooks', [])
-        if hooks:
-            create_additional_settings(hooks, claude_user_dir)
-        else:
-            info('No hooks configured')
+        hooks = config.get('hooks', {})
+        create_additional_settings(hooks, claude_user_dir)
 
         # Step 10: Create launcher script
         print()
@@ -974,7 +970,7 @@ def main() -> None:
         print(f'   * Output styles: {len(output_styles) if output_styles else 0} installed')
         print('   * System prompt: Configured')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
-        print(f'   * Hooks: {len(hooks) if hooks else 0} configured')
+        print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
 
         print()

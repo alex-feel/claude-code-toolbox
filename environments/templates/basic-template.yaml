@@ -58,18 +58,29 @@ output-styles:
 
 # Hooks for automatic actions (optional)
 hooks:
-    # Example: Run linter on file changes
-    # - event: PostToolUse
-    #   matcher: Edit|MultiEdit|Write  # Regex pattern
-    #   type: command
-    #   command: .claude/hooks/your-script.py
-    #   files:  # Files to download for this hook
-    #     - hooks/examples/your-script.py
+    # Files to download for all hooks (listed once, used by multiple events)
+    files:
+        # - hooks/examples/your-script.py
+        # - hooks/examples/another-script.py
 
-    # Example: Notification hook
-    # - event: Notification
-    #   type: command
-    #   command: notify-send 'Claude Code' 'Task Complete'
+    # Hook events configuration
+    events:
+        # Example: Run linter on file changes
+        # - event: PostToolUse
+        #   matcher: Edit|MultiEdit|Write  # Regex pattern
+        #   type: command
+        #   command: your-script.py  # Reference the filename from 'files' section above
+
+        # Example: Type checking on Python files
+        # - event: PostToolUse
+        #   matcher: "\.py$"  # Only Python files
+        #   type: command
+        #   command: another-script.py
+
+        # Example: Notification hook
+        # - event: Notification
+        #   type: command
+        #   command: notify-send 'Claude Code' 'Task Complete'
 
 # System prompt file (required)
 # Path is relative to the repository root

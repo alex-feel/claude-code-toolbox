@@ -27,10 +27,11 @@ slash-commands:
 output-styles:
     # Add output styles if needed
 hooks:
-    - event: PostToolUse
-      matcher: Edit|MultiEdit|Write
-      type: command
-      command: python_ruff_lint.py
-      files:
+    files:
         - hooks/examples/python_ruff_lint.py
+    events:
+        - event: PostToolUse
+          matcher: Edit|MultiEdit|Write
+          type: command
+          command: python_ruff_lint.py
 system-prompt: system-prompts/examples/python-developer.md
