@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.2...v1.5.0) (2025-09-03)
+
+
+### Features
+
+* transform setup system to be configuration-driven via YAML ([8751e1c](https://github.com/alex-feel/claude-code-toolbox/commit/8751e1c44ef7592bb2cc2a6b72d43fc4bbdd4651))
+
+
+### Bug Fixes
+
+* correct PowerShell command syntax and improve error handling ([274c642](https://github.com/alex-feel/claude-code-toolbox/commit/274c6426a2f7a8bfd22cc840a2c7da6f8e4a3a3e))
+* resolve setup-environment.py runtime errors and improve reliability ([108fda5](https://github.com/alex-feel/claude-code-toolbox/commit/108fda54e69d7cdac8e93eb70601391f310cabdc))
+* use uv's inline script dependencies for PyYAML ([abddc3e](https://github.com/alex-feel/claude-code-toolbox/commit/abddc3ef1a4343038656620bfef2b45a0287c6dd))
+
 ## [1.4.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.1...v1.4.2) (2025-08-16)
 
 
