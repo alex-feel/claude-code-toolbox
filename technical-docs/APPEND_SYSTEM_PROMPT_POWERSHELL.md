@@ -1,3 +1,5 @@
+> **Note**: This document explains the PowerShell one-liner approach for directly passing system prompts. For a more robust solution that handles additional flags like `--settings` and works consistently across all Windows shells, see [SHARED_POSIX_SCRIPT_APPROACH.md](SHARED_POSIX_SCRIPT_APPROACH.md).
+
 Here is a precise, end-to-end explanation of what every character in your working line does, why earlier attempts failed, and why this one succeeds.
 
 ```powershell
