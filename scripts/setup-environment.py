@@ -13,11 +13,31 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
+
+# Ensure PyYAML is installed using uv
+try:
+    import yaml
+except ImportError:
+    print('Installing PyYAML for configuration parsing...')
+    result = subprocess.run(
+        ['uv', 'pip', 'install', 'PyYAML'],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f'ERROR: Failed to install PyYAML: {result.stderr}')
+        print('PyYAML is required for configuration parsing.')
+        print('Please ensure uv is installed and working correctly.')
+        sys.exit(1)
+    else:
+        import yaml
+        print('PyYAML installed successfully')
 
 
 # ANSI color codes for pretty output
@@ -126,77 +146,6 @@ def download_file(url: str, destination: Path, force: bool = True) -> bool:
         return False
 
 
-def parse_yaml(content: str) -> dict[str, Any]:
-    """Parse YAML content without external dependencies."""
-    # Simple YAML parser for our specific use case
-    # Convert tabs to spaces for consistent indentation handling
-    content = content.replace('\t', '    ')
-
-    lines = content.strip().split('\n')
-    result = {}
-    current_key = None
-    current_list = None
-    current_item = None
-    indent_stack = [0]
-
-    for line in lines:
-        # Skip comments and empty lines
-        if line.strip().startswith('#') or not line.strip():
-            continue
-
-        # Replace tabs with spaces for consistent indentation
-        line = line.replace('\t', '    ')
-
-        # Calculate indentation
-        indent = len(line) - len(line.lstrip())
-
-        # Handle list items
-        if line.strip().startswith('- '):
-            if current_key:
-                if current_key not in result:
-                    result[current_key] = []
-                    current_list = result[current_key]
-
-                # Check if it's a simple list item or complex object
-                item_content = line.strip()[2:].strip()
-                if ':' in item_content and not item_content.startswith('http') and not item_content.startswith('X-'):
-                    # Complex object (but not URLs or headers like X-API-Key)
-                    parts = item_content.split(':', 1)
-                    key = parts[0].strip()
-                    value = parts[1].strip() if len(parts) > 1 else ''
-                    current_item = {key: value}
-                    current_list.append(current_item)
-                else:
-                    # Simple string item
-                    current_list.append(item_content)
-                    current_item = None
-        elif ':' in line and not line.strip().startswith('#'):
-            # Key-value pair (not a comment)
-            parts = line.split(':', 1)
-            key = parts[0].strip()
-            value = parts[1].strip() if len(parts) > 1 else ''
-
-            # Check indentation to determine if it's a sub-key
-            if indent > indent_stack[-1] and current_item:
-                # Sub-key of current item
-                current_item[key] = value
-            else:
-                # Top-level or new key
-                if value:
-                    result[key] = value
-                else:
-                    current_key = key
-                    current_list = None
-                    current_item = None
-                # Update indent stack
-                while len(indent_stack) > 1 and indent <= indent_stack[-1]:
-                    indent_stack.pop()
-                if indent > indent_stack[-1]:
-                    indent_stack.append(indent)
-
-    return result
-
-
 def download_config(config_name: str) -> dict[str, Any]:
     """Download and parse configuration file."""
     if not config_name.endswith('.yaml'):
@@ -230,7 +179,7 @@ def download_config(config_name: str) -> dict[str, Any]:
             else:
                 raise
 
-        config = parse_yaml(content)
+        config = yaml.safe_load(content)
         success(f'Configuration loaded: {config.get("name", config_name)}')
         return config
     except Exception as e:
@@ -255,14 +204,23 @@ def install_dependencies(dependencies: list[str]) -> bool:
 
         # Handle platform-specific commands
         if system == 'Windows':
-            if parts[0] in ['winget', 'npm', 'uv', 'pip', 'pipx']:
+            if parts[0] in ['winget', 'npm', 'pip', 'pipx']:
                 result = run_command(parts, capture_output=False)
+            elif parts[0] == 'uv' and parts[1] == 'tool' and parts[2] == 'install':
+                # For uv tool install, add --force to update if already installed
+                parts_with_force = parts[:3] + ['--force'] + parts[3:]
+                result = run_command(parts_with_force, capture_output=False)
             else:
                 # Try PowerShell for other commands
                 result = run_command(['powershell', '-Command', dep], capture_output=False)
         else:
             # Unix-like systems
-            result = run_command(['bash', '-c', dep], capture_output=False)
+            if parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
+                # For uv tool install, add --force to update if already installed
+                dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
+                result = run_command(['bash', '-c', dep_with_force], capture_output=False)
+            else:
+                result = run_command(['bash', '-c', dep], capture_output=False)
 
         if result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
@@ -367,20 +325,28 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
     info(f'Configuring MCP server: {name}')
 
     system = platform.system()
+    claude_cmd = None
+
+    # First try to find claude in PATH
     claude_cmd = find_command('claude')
 
     # If not in PATH, look for it where npm installs it
     if not claude_cmd:
         if system == 'Windows':
+            # On Windows, npm installs to %APPDATA%\npm
             npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
             claude_cmd_path = npm_path / 'claude.cmd'
             if claude_cmd_path.exists():
                 claude_cmd = str(claude_cmd_path)
+                info(f'Found claude at: {claude_cmd}')
             else:
+                # Also check without .cmd extension
                 claude_path = npm_path / 'claude'
                 if claude_path.exists():
                     claude_cmd = str(claude_path)
+                    info(f'Found claude at: {claude_cmd}')
         else:
+            # On Unix, check common npm global locations
             possible_paths = [
                 Path.home() / '.npm-global' / 'bin' / 'claude',
                 Path('/usr/local/bin/claude'),
@@ -389,51 +355,106 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             for path in possible_paths:
                 if path.exists():
                     claude_cmd = str(path)
+                    info(f'Found claude at: {claude_cmd}')
                     break
 
     if not claude_cmd:
-        error('Claude command not found!')
+        error('Claude command not found even after installation!')
+        error('This should not happen. Something went wrong with npm installation.')
         return False
 
     try:
-        # Build the command
-        cmd = [str(claude_cmd), 'mcp', 'add', name]
+        # Build the base command
+        base_cmd = [str(claude_cmd), 'mcp', 'add']
 
         if scope:
-            cmd.extend(['--scope', scope])
+            base_cmd.extend(['--scope', scope])
 
+        base_cmd.append(name)
+
+        # Handle different transport types
         if transport and url:
             # HTTP or SSE transport
-            cmd.extend(['--transport', transport, url])
+            base_cmd.extend(['--transport', transport, url])
             if header:
-                cmd.extend(['--header', header])
+                base_cmd.extend(['--header', header])
+
+            # Try with PowerShell environment reload on Windows
+            if system == 'Windows':
+                # On Windows, we need to spawn a completely new shell process
+                ps_script = f'''
+$userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+$machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+$env:Path = $userPath + ";" + $machinePath
+& "{claude_cmd}" mcp add --scope {scope} --transport {transport} {name} {url}
+$LASTEXITCODE
+'''
+                if header:
+                    ps_script = f'''
+$userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
+$machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+$env:Path = $userPath + ";" + $machinePath
+& "{claude_cmd}" mcp add --scope {scope} --transport {transport} --header "{header}" {name} {url}
+$LASTEXITCODE
+'''
+                result = run_command([
+                    'powershell', '-NoProfile', '-Command', ps_script,
+                ], capture_output=True)
+
+                # Also try with direct execution
+                if result.returncode != 0:
+                    info('Trying direct execution...')
+                    result = run_command(base_cmd, capture_output=True)
+            else:
+                # On Unix, spawn new bash with updated PATH
+                parent_dir = Path(claude_cmd).parent
+                bash_cmd = (
+                    f'export PATH="{parent_dir}:$PATH" && '
+                    f'{" ".join(base_cmd)}'
+                )
+                result = run_command([
+                    'bash', '-l', '-c', bash_cmd,
+                ], capture_output=True)
         elif command:
             # Stdio transport (command)
             if env:
-                cmd.extend(['--env', env])
-            cmd.append('--')
+                base_cmd.extend(['--env', env])
+            base_cmd.append('--')
 
             # Platform-specific command handling
             if system == 'Windows' and 'npx' in command:
                 # Windows needs cmd /c wrapper for npx
-                cmd.extend(['cmd', '/c', command])
+                base_cmd.extend(['cmd', '/c', command])
             else:
                 # Unix-like systems can run command directly
-                cmd.extend(command.split())
+                base_cmd.extend(command.split())
+
+            result = run_command(base_cmd, capture_output=True)
         else:
             error(f'MCP server {name} missing url or command')
             return False
 
-        # Run the command
-        result = run_command(cmd, capture_output=True)
-
+        # Check if successful
         if result.returncode == 0:
-            success(f'MCP server {name} configured successfully')
+            success(f'MCP server {name} configured successfully!')
             return True
         if result.stderr and 'already exists' in result.stderr.lower():
-            success(f'MCP server {name} already configured')
+            success(f'MCP server {name} already configured!')
             return True
-        error(f'Failed to configure MCP server {name}: {result.stderr}')
+
+        # If it still fails, try one more time with a delay
+        info('First attempt failed, waiting 2 seconds and retrying...')
+        time.sleep(2)
+
+        # Direct execution with full path
+        result = run_command(base_cmd, capture_output=False)  # Show output for debugging
+
+        if result.returncode == 0:
+            success(f'MCP server {name} configured successfully!')
+            return True
+        error(f'MCP configuration failed with exit code: {result.returncode}')
+        if result.stderr:
+            error(f'Error: {result.stderr}')
         return False
 
     except Exception as e:
@@ -479,6 +500,11 @@ def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) ->
 
     # Process each hook
     for hook in hooks:
+        # Ensure hook is a dict (should be with PyYAML)
+        if not isinstance(hook, dict):
+            warning(f'Unexpected hook format: {type(hook)} - {hook}')
+            continue
+
         event = hook.get('event')
         matcher = hook.get('matcher', '')
         hook_type = hook.get('type', 'command')
@@ -858,7 +884,10 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 6: Downloading output styles...{Colors.NC}')
         output_styles = config.get('output-styles', [])
-        download_resources(output_styles, output_styles_dir, 'output styles')
+        if output_styles:
+            download_resources(output_styles, output_styles_dir, 'output styles')
+        else:
+            info('No output styles configured')
 
         # Step 7: Download system prompt
         print()
@@ -880,7 +909,10 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks...{Colors.NC}')
         hooks = config.get('hooks', [])
-        update_hooks_settings(hooks, claude_user_dir)
+        if hooks:
+            update_hooks_settings(hooks, claude_user_dir)
+        else:
+            info('No hooks configured')
 
         # Step 10: Create launcher script
         print()
@@ -893,6 +925,8 @@ def main() -> None:
             print()
             print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
             register_global_command(launcher_path, command_name, prompt_filename)
+        else:
+            warning('Launcher script was not created')
 
         # Final message
         print()
@@ -906,10 +940,10 @@ def main() -> None:
         print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
-        print(f'   * Output styles: {len(output_styles)} installed')
+        print(f'   * Output styles: {len(output_styles) if output_styles else 0} installed')
         print('   * System prompt: Configured')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
-        print(f'   * Hooks: {len(hooks)} configured')
+        print(f'   * Hooks: {len(hooks) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
 
         print()
