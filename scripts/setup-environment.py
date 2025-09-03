@@ -542,7 +542,9 @@ def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) ->
                 # Windows needs explicit Python interpreter
                 # Use 'py' which is more reliable on Windows, fallback to 'python'
                 python_cmd = 'py' if shutil.which('py') else 'python'
-                full_command = f'{python_cmd} "{str(hook_path)}"'
+                # Use forward slashes for the path (works on Windows and avoids JSON escaping issues)
+                hook_path_str = hook_path.as_posix()
+                full_command = f'{python_cmd} {hook_path_str}'
             else:
                 # Unix-like systems can use shebang directly
                 # Make script executable
