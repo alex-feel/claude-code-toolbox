@@ -532,10 +532,31 @@ def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) ->
             }
             settings['hooks'][event].append(matcher_group)
 
+        # Build the proper command based on OS and file type
+        if command.endswith('.py'):
+            # Python script - need to handle cross-platform execution
+            # Use the absolute path to the downloaded hook file
+            hook_path = claude_user_dir / 'hooks' / Path(command).name
+
+            if platform.system() == 'Windows':
+                # Windows needs explicit Python interpreter
+                # Use 'py' which is more reliable on Windows, fallback to 'python'
+                python_cmd = 'py' if shutil.which('py') else 'python'
+                full_command = f'{python_cmd} "{str(hook_path)}"'
+            else:
+                # Unix-like systems can use shebang directly
+                # Make script executable
+                if hook_path.exists():
+                    hook_path.chmod(0o755)
+                full_command = str(hook_path)
+        else:
+            # Not a Python script, use command as-is
+            full_command = command
+
         # Add hook if not already present
         hook_config = {
             'type': hook_type,
-            'command': command,
+            'command': full_command,
         }
 
         if hook_config not in matcher_group['hooks']:
