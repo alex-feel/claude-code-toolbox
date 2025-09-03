@@ -464,28 +464,33 @@ def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
     return True
 
 
-def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) -> bool:
-    """Update hooks in settings.json."""
+def create_additional_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) -> bool:
+    """Create additional-settings.json with environment-specific hooks.
+
+    This file is always overwritten to avoid duplicate hooks when re-running the installer.
+    It's loaded via --settings flag when launching Claude.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
     if not hooks:
-        return True
-
-    info('Configuring hooks...')
-
-    settings_path = claude_user_dir / 'settings.json'
-
-    # Load existing settings or create new
-    if settings_path.exists():
+        # Still create an empty additional-settings.json for consistency
+        additional_settings_path = claude_user_dir / 'additional-settings.json'
         try:
-            with open(settings_path) as f:
-                settings = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            settings = {}
-    else:
-        settings = {}
+            with open(additional_settings_path, 'w') as f:
+                json.dump({}, f, indent=2)
+            info('Created empty additional-settings.json (no hooks configured)')
+            return True
+        except Exception as e:
+            error(f'Failed to create additional-settings.json: {e}')
+            return False
 
-    # Ensure hooks key exists
-    if 'hooks' not in settings:
-        settings['hooks'] = {}
+    info('Configuring hooks in additional-settings.json...')
+
+    # Create fresh settings structure for this environment
+    settings = {
+        'hooks': {},
+    }
 
     # Process each hook
     for hook in hooks:
@@ -542,7 +547,9 @@ def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) ->
                 # Windows needs explicit Python interpreter
                 # Use 'py' which is more reliable on Windows, fallback to 'python'
                 python_cmd = 'py' if shutil.which('py') else 'python'
-                full_command = f'{python_cmd} "{str(hook_path)}"'
+                # Use forward slashes for the path (works on Windows and avoids JSON escaping issues)
+                hook_path_str = hook_path.as_posix()
+                full_command = f'{python_cmd} {hook_path_str}'
             else:
                 # Unix-like systems can use shebang directly
                 # Make script executable
@@ -553,23 +560,22 @@ def update_hooks_settings(hooks: list[dict[str, Any]], claude_user_dir: Path) ->
             # Not a Python script, use command as-is
             full_command = command
 
-        # Add hook if not already present
+        # Add hook configuration
         hook_config = {
             'type': hook_type,
             'command': full_command,
         }
+        matcher_group['hooks'].append(hook_config)
 
-        if hook_config not in matcher_group['hooks']:
-            matcher_group['hooks'].append(hook_config)
-
-    # Save settings
+    # Save additional settings (always overwrite)
+    additional_settings_path = claude_user_dir / 'additional-settings.json'
     try:
-        with open(settings_path, 'w') as f:
+        with open(additional_settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
-        success('Hooks configured successfully')
+        success('Created additional-settings.json with environment hooks')
         return True
     except Exception as e:
-        error(f'Failed to save settings.json: {e}')
+        error(f'Failed to save additional-settings.json: {e}')
         return False
 
 
@@ -624,13 +630,16 @@ if ($args.Count -gt 0) {{
     $argsString = $escapedArgs -join ' '
     # Use a here-string to avoid complex quote escaping
     $bashCommand = @"
-p=`$(tr -d '\\\\r' < ~/.claude/prompts/{system_prompt_file}); exec claude --append-system-prompt=\\"`$p\\" $argsString
+p=`$(tr -d '\\\\r' < ~/.claude/prompts/{system_prompt_file}); s=~/.claude/additional-settings.json; \\
+exec claude --append-system-prompt=\\"`$p\\" --settings=\\"`$s\\" $argsString
 "@
     & $bashPath -lc $bashCommand
 }} else {{
     # Use --% to stop PowerShell parsing, with literal command string
-    & $bashPath `
-      --% -lc "p=$(tr -d '\\r' < ~/.claude/prompts/{system_prompt_file}); exec claude --append-system-prompt=\\"$p\\""
+    $bashCommand = "p=`$(tr -d '\\r' < ~/.claude/prompts/{system_prompt_file}); " + `
+                   "s=~/.claude/additional-settings.json; " + `
+                   "exec claude --append-system-prompt=\\`"`$p\\`" --settings=\\`"`$s\\`""
+    & $bashPath --% -lc $bashCommand
 }}
 '''
             launcher_path.write_text(launcher_content)
@@ -654,11 +663,12 @@ echo Starting Claude Code with {command_name} configuration...
 REM Build the command with all arguments
 set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
 set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
+set SETTINGS_PATH=~/.claude/additional-settings.json
 if "%~1"=="" (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\""
 ) else (
     echo Passing additional arguments: %*
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\" %*"
 )
 '''
             batch_path.write_text(batch_content)
@@ -683,13 +693,14 @@ echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\0
 
 # Read the prompt content
 PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+SETTINGS_PATH="$CLAUDE_USER_DIR/additional-settings.json"
 
 # Pass any additional arguments to Claude
 if [ $# -gt 0 ]; then
     echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
-    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
 else
-    claude --append-system-prompt "$PROMPT_CONTENT"
+    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
 fi
 '''
             launcher_path.write_text(launcher_content)
@@ -722,10 +733,11 @@ def register_global_command(launcher_path: Path, command_name: str, system_promp
 REM Global {command_name} command for CMD
 set BASH_EXE="C:\\Program Files\\Git\\bin\\bash.exe"
 set CMD_PREFIX=p=$(tr -d '\\r' ^< ~/.claude/prompts/{system_prompt_file})
+set SETTINGS_PATH=~/.claude/additional-settings.json
 if "%~1"=="" (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\""
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\""
 ) else (
-    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" %*"
+    %BASH_EXE% -lc "%CMD_PREFIX%; exec claude --append-system-prompt=\\"$p\\" --settings=\\"%SETTINGS_PATH%\\" %*"
 )
 '''
             batch_path.write_text(batch_content)
@@ -755,13 +767,14 @@ echo "Starting Claude Code with {command_name} configuration..."
 
 # Read the prompt content and pass it directly to claude
 PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+SETTINGS_PATH="$HOME/.claude/additional-settings.json"
 
 # Pass all arguments to claude with the system prompt
 if [ $# -gt 0 ]; then
     echo "Passing additional arguments: $@"
-    claude --append-system-prompt "$PROMPT_CONTENT" "$@"
+    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
 else
-    claude --append-system-prompt "$PROMPT_CONTENT"
+    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
 fi
 '''
             bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
@@ -920,7 +933,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 9: Configuring hooks...{Colors.NC}')
         hooks = config.get('hooks', [])
         if hooks:
-            update_hooks_settings(hooks, claude_user_dir)
+            create_additional_settings(hooks, claude_user_dir)
         else:
             info('No hooks configured')
 
@@ -965,7 +978,8 @@ def main() -> None:
             else:
                 print(f'   * Full path: {launcher_path}')
         if prompt_path:
-            print(f"   * Manual: claude --append-system-prompt '@{prompt_path}'")
+            settings_path = claude_user_dir / 'additional-settings.json'
+            print(f"   * Manual: claude --append-system-prompt '@{prompt_path}' --settings '{settings_path}'")
 
         print()
         print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')
