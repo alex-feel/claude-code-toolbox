@@ -3,6 +3,12 @@ Cross-platform environment setup for Claude Code.
 Downloads and configures development tools for Claude Code based on YAML configuration.
 """
 
+# /// script
+# dependencies = [
+#   "pyyaml",
+# ]
+# ///
+
 import argparse
 import contextlib
 import json
@@ -20,24 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
-# Ensure PyYAML is installed using uv
-try:
-    import yaml
-except ImportError:
-    print('Installing PyYAML for configuration parsing...')
-    result = subprocess.run(
-        ['uv', 'pip', 'install', 'PyYAML'],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f'ERROR: Failed to install PyYAML: {result.stderr}')
-        print('PyYAML is required for configuration parsing.')
-        print('Please ensure uv is installed and working correctly.')
-        sys.exit(1)
-    else:
-        import yaml
-        print('PyYAML installed successfully')
+import yaml
 
 
 # ANSI color codes for pretty output
