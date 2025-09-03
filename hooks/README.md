@@ -179,6 +179,30 @@ Hooks have access to standard environment variables plus:
 
 ### Chaining Hooks
 Multiple hooks can run for the same event:
+
+**In environment YAML configuration:**
+```yaml
+hooks:
+  files:
+    - hooks/examples/format_check.py
+    - hooks/examples/type_check.py
+    - hooks/examples/run_tests.py
+  events:
+    - event: PostToolUse
+      matcher: "\.py$"
+      type: command
+      command: format_check.py
+    - event: PostToolUse
+      matcher: "\.py$"
+      type: command
+      command: type_check.py
+    - event: PostToolUse
+      matcher: "\.py$"
+      type: command
+      command: run_tests.py
+```
+
+**Resulting settings.json:**
 ```json
 {
   "hooks": {
@@ -186,9 +210,9 @@ Multiple hooks can run for the same event:
       {
         "matcher": "\.py$",
         "hooks": [
-          {"type": "command", "command": "black --check"},
-          {"type": "command", "command": "mypy"},
-          {"type": "command", "command": "pytest"}
+          {"type": "command", "command": "py C:/Users/user/.claude/hooks/format_check.py"},
+          {"type": "command", "command": "py C:/Users/user/.claude/hooks/type_check.py"},
+          {"type": "command", "command": "py C:/Users/user/.claude/hooks/run_tests.py"}
         ]
       }
     ]
