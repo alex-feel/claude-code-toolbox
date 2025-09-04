@@ -139,10 +139,57 @@ hooks:
           type: Hook type (command)
           command: Command to execute
 
+model: opus
+
+permissions:
+    defaultMode: acceptEdits
+    allow:
+        - WebFetch
+        - mcp__context7
+        - Bash(git diff:*)
+    deny:
+        - Bash(rm:*)
+        - Read(.env)
+    ask:
+        - Bash(git push:*)
+    additionalDirectories:
+        - ../other-project/
+
 command-defaults:
     output-style: Name of output style to use (optional)
     system-prompt: Path to additional system prompt file (optional)
 ```
+
+### Model Configuration
+
+**Available model aliases:**
+- `default` - Recommended model based on your account
+- `sonnet` - Latest Sonnet model for daily coding tasks
+- `opus` - Most capable Opus model for complex reasoning
+- `haiku` - Fast and efficient model for simple tasks
+- `sonnet[1m]` - Sonnet with 1 million token context window
+- `opusplan` - Hybrid mode (Opus for planning, Sonnet for execution)
+
+You can also specify custom model names like `claude-opus-4-1-20250805`.
+
+### Permissions Configuration
+
+Controls how Claude Code interacts with your system:
+
+**Permission Modes:**
+- `default` - Prompts for permission on first use of each tool
+- `acceptEdits` - Automatically accepts file edit permissions
+- `plan` - Plan Mode - analyze without modifying files
+- `bypassPermissions` - Skips all permission prompts (use with caution)
+
+**Permission Rules:**
+- `allow` - Explicitly allowed actions
+- `deny` - Prohibited actions
+- `ask` - Actions requiring user confirmation
+- `additionalDirectories` - Extra directories Claude can access
+
+**Smart MCP Server Auto-Allow:**
+MCP servers are automatically added to the allow list UNLESS they're explicitly mentioned in deny/ask lists. This reduces friction while respecting your security preferences.
 
 ## Creating Custom Configurations
 

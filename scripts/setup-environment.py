@@ -540,8 +540,10 @@ def create_additional_settings(
     claude_user_dir: Path,
     output_style: str | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    permissions: dict[str, Any] | None = None,
 ) -> bool:
-    """Create additional-settings.json with environment-specific hooks, output style, and permissions.
+    """Create additional-settings.json with environment-specific settings.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
@@ -551,6 +553,8 @@ def create_additional_settings(
         claude_user_dir: Path to Claude user directory
         output_style: Optional output style filename (without extension) to set as default
         mcp_servers: Optional list of MCP server configurations to pre-allow
+        model: Optional model alias or custom model name
+        permissions: Optional permissions configuration dict
 
     Returns:
         bool: True if successful, False otherwise.
@@ -560,6 +564,11 @@ def create_additional_settings(
     # Create fresh settings structure for this environment
     settings = {}
 
+    # Add model if specified
+    if model:
+        settings['model'] = model
+        info(f'Setting model: {model}')
+
     # Add output style if specified
     if output_style:
         # Remove .md extension if present
@@ -567,20 +576,58 @@ def create_additional_settings(
         settings['outputStyle'] = style_name
         info(f'Setting default output style: {style_name}')
 
-    # Add MCP server permissions if specified
+    # Handle permissions with smart MCP server auto-allowing
+    final_permissions = {}
+
+    # Start with env config permissions if provided
+    if permissions:
+        final_permissions = permissions.copy()
+        info('Using permissions from environment configuration')
+
+    # Auto-allow MCP servers if not explicitly mentioned in permissions
     if mcp_servers:
-        permissions_allow = []
+        # Get existing allow list from env config (or create empty)
+        existing_allow = final_permissions.get('allow', [])
+        existing_deny = final_permissions.get('deny', [])
+
+        # Convert to sets for efficient lookups
+        allow_set = set(existing_allow) if isinstance(existing_allow, list) else set()
+
         for server in mcp_servers:
             if isinstance(server, dict) and 'name' in server:
-                # Format as mcp__servername for permissions
                 server_permission = f"mcp__{server['name']}"
-                permissions_allow.append(server_permission)
-                info(f'Pre-allowing MCP server: {server["name"]}')
 
-        if permissions_allow:
-            settings['permissions'] = {
-                'allow': permissions_allow,
-            }
+                # Check if this server is explicitly mentioned anywhere in permissions
+                server_mentioned = False
+
+                # Check in allow list
+                if any(server_permission in str(item) for item in existing_allow):
+                    server_mentioned = True
+                    info(f'MCP server {server["name"]} already in allow list')
+
+                # Check in deny list
+                if any(server_permission in str(item) for item in existing_deny):
+                    server_mentioned = True
+                    warning(f'MCP server {server["name"]} is in deny list - not auto-allowing')
+
+                # Check in ask list
+                existing_ask = final_permissions.get('ask', [])
+                if any(server_permission in str(item) for item in existing_ask):
+                    server_mentioned = True
+                    info(f'MCP server {server["name"]} is in ask list - not auto-allowing')
+
+                # Only auto-allow if not mentioned anywhere
+                if not server_mentioned:
+                    allow_set.add(server_permission)
+                    info(f'Auto-allowing MCP server: {server["name"]}')
+
+        # Update allow list if we added any
+        if allow_set:
+            final_permissions['allow'] = list(allow_set)
+
+    # Add permissions to settings if we have any
+    if final_permissions:
+        settings['permissions'] = final_permissions
 
     # Handle hooks if present
     hook_files = []
@@ -972,6 +1019,12 @@ def main() -> None:
         output_style = command_defaults.get('output-style')
         system_prompt = command_defaults.get('system-prompt')
 
+        # Extract model configuration
+        model = config.get('model')
+
+        # Extract permissions configuration
+        permissions = config.get('permissions')
+
         header(environment_name)
 
         # Set up directories
@@ -1053,7 +1106,7 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers)
+        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers, model, permissions)
 
         # Step 10: Create launcher script
         print()
@@ -1086,7 +1139,21 @@ def main() -> None:
             print(f'   * Default output style: {output_style}')
         if system_prompt:
             print('   * Additional system prompt: Configured')
+        if model:
+            print(f'   * Model: {model}')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
+        if permissions:
+            perm_items = []
+            if 'defaultMode' in permissions:
+                perm_items.append(f"defaultMode={permissions['defaultMode']}")
+            if 'allow' in permissions:
+                perm_items.append(f"{len(permissions['allow'])} allow rules")
+            if 'deny' in permissions:
+                perm_items.append(f"{len(permissions['deny'])} deny rules")
+            if 'ask' in permissions:
+                perm_items.append(f"{len(permissions['ask'])} ask rules")
+            if perm_items:
+                print(f'   * Permissions: {", ".join(perm_items)}')
         print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
 
