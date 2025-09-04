@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.6.0...v1.7.0) (2025-09-04)
+
+
+### Features
+
+* add flexible URL support for environment configurations ([179084a](https://github.com/alex-feel/claude-code-toolbox/commit/179084a5ed8c5d101df8bd1ca1e0ae6b7877d973))
+
+
+### Bug Fixes
+
+* auto-append {path} to base-url if not present ([d4ebbc7](https://github.com/alex-feel/claude-code-toolbox/commit/d4ebbc7964672e8ffc20bcbfabfb9fd6c6395f22))
+
 ## [1.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.5.0...v1.6.0) (2025-09-04)
 
 
