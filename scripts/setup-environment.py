@@ -264,7 +264,113 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     return {}
 
 
-def load_config_from_source(config_spec: str, auth_param: str | None = None) -> dict[str, Any]:
+def derive_base_url(config_source: str) -> str:
+    """Derive base URL from a configuration source URL.
+
+    For example:
+    - https://gitlab.company.com/api/v4/projects/123/repository/files/configs%2Fenv.yaml/raw?ref=main
+      -> https://gitlab.company.com/api/v4/projects/123/repository/files/{path}/raw?ref=main
+    - https://raw.githubusercontent.com/user/repo/main/configs/env.yaml
+      -> https://raw.githubusercontent.com/user/repo/main/{path}
+
+    Args:
+        config_source: The configuration source URL
+
+    Returns:
+        Base URL with {path} placeholder
+    """
+    # GitLab API pattern
+    if '/api/v4/projects/' in config_source and '/repository/files/' in config_source:
+        # Extract everything before the encoded path
+        parts = config_source.split('/repository/files/')
+        if len(parts) == 2:
+            base = parts[0] + '/repository/files/'
+            # Extract the ref parameter if present
+            if '/raw?' in parts[1]:
+                ref_part = parts[1].split('/raw?')[1]
+                return base + '{path}/raw?' + ref_part
+            return base + '{path}/raw'
+
+    # GitHub raw content pattern
+    if 'raw.githubusercontent.com' in config_source:
+        # Remove the specific file path, keeping up to branch/tag
+        # Example: https://raw.githubusercontent.com/user/repo/main/configs/env.yaml
+        #       -> https://raw.githubusercontent.com/user/repo/main/{path}
+        parts = config_source.split('/')
+        if len(parts) >= 7:  # Must have at least: https, '', raw.githubusercontent.com, user, repo, branch, path
+            # Keep everything up to and including the branch/tag (index 5, which is 6 elements)
+            base_parts = parts[:6]
+            return '/'.join(base_parts) + '/{path}'
+        # Fallback to removing last component
+        parts = config_source.rsplit('/', 1)
+        if len(parts) == 2:
+            return parts[0] + '/{path}'
+
+    # GitHub API pattern
+    if 'api.github.com' in config_source and '/repos/' in config_source and '/contents/' in config_source:
+        # Extract base up to /contents/
+        parts = config_source.split('/contents/')
+        if len(parts) == 2:
+            return parts[0] + '/contents/{path}'
+
+    # Generic pattern - remove last path component
+    parts = config_source.rsplit('/', 1)
+    if len(parts) == 2:
+        return parts[0] + '/{path}'
+
+    return config_source
+
+
+def resolve_resource_url(resource_path: str, config_source: str, base_url: str | None = None) -> str:
+    """Resolve a resource path to a full URL based on priority rules.
+
+    Priority:
+    1. If resource_path is already a full URL, return as-is
+    2. If base_url is configured, combine with resource_path
+    3. If config was loaded from URL, derive base from it
+    4. Fall back to default repo URL
+
+    Args:
+        resource_path: The resource path from config (e.g., 'agents/code-reviewer.md' or full URL)
+        config_source: Where the config was loaded from (URL, path, or name)
+        base_url: Optional base URL override from config
+
+    Returns:
+        Full URL to the resource
+    """
+    # 1. If full URL, return as-is
+    if resource_path.startswith(('http://', 'https://')):
+        return resource_path
+
+    # 2. If base-url configured, use it
+    if base_url:
+        # Auto-append {path} if not present
+        if '{path}' not in base_url:
+            # Add {path} placeholder appropriately
+            base_url = base_url + '{path}' if base_url.endswith('/') else base_url + '/{path}'
+
+        # Handle GitLab URL encoding for paths
+        if '/api/v4/projects/' in base_url and '/repository/files/' in base_url:
+            # URL encode the path for GitLab API
+            encoded_path = urllib.parse.quote(resource_path, safe='')
+            return base_url.replace('{path}', encoded_path)
+        # For other URLs, just replace the placeholder
+        return base_url.replace('{path}', resource_path)
+
+    # 3. If config from URL, derive base from it
+    if config_source.startswith(('http://', 'https://')):
+        derived_base = derive_base_url(config_source)
+        # Handle GitLab URL encoding
+        if '/api/v4/projects/' in derived_base and '/repository/files/' in derived_base:
+            encoded_path = urllib.parse.quote(resource_path, safe='')
+            return derived_base.replace('{path}', encoded_path)
+        return derived_base.replace('{path}', resource_path)
+
+    # 4. Default to main repo
+    return f'{REPO_BASE_URL}/{resource_path}'
+
+
+def load_config_from_source(config_spec: str, auth_param: str | None = None) -> tuple[dict[str, Any], str]:
     """Load configuration from URL, local path, or repository.
 
     Supports three sources:
@@ -277,69 +383,13 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         auth_param: Optional authentication parameter for private repos
 
     Returns:
-        dict[str, Any]: Parsed YAML configuration.
+        tuple[dict[str, Any], str]: Parsed YAML configuration and source path/URL.
 
     Raises:
         FileNotFoundError: If local file doesn't exist.
         urllib.error.HTTPError: If HTTP request fails.
         Exception: If configuration is not found or parsing fails.
     """
-
-    def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None) -> str:
-        """Fetch URL content, trying without auth first, then with auth if needed."""
-        # First try without auth (for public repos)
-        try:
-            request = Request(url)
-            response = urlopen(request)
-            return response.read().decode('utf-8')
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403, 404):
-                # Authentication might be needed
-                if not auth_headers:
-                    # Get auth headers if not already provided
-                    auth_headers = get_auth_headers(url, auth_param)
-
-                if auth_headers:
-                    # Retry with authentication
-                    info('Retrying with authentication...')
-                    request = Request(url)
-                    for header, value in auth_headers.items():
-                        request.add_header(header, value)
-                    try:
-                        response = urlopen(request)
-                        return response.read().decode('utf-8')
-                    except urllib.error.HTTPError as auth_e:
-                        if auth_e.code == 401:
-                            error('Authentication failed. Check your token.')
-                        elif auth_e.code == 403:
-                            error('Access forbidden. Token may lack permissions.')
-                        elif auth_e.code == 404:
-                            error('Resource not found. Check URL and permissions.')
-                        raise
-                elif e.code == 404:
-                    # 404 without auth headers available - likely just not found
-                    raise
-                else:
-                    # 401/403 but no auth headers available
-                    warning('Authentication may be required for this URL')
-                    raise
-            else:
-                raise
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-
-                request = Request(url)
-                if auth_headers:
-                    for header, value in auth_headers.items():
-                        request.add_header(header, value)
-
-                response = urlopen(request, context=ctx)
-                return response.read().decode('utf-8')
-            raise
 
     # Source 1: Direct URL
     if config_spec.startswith(('http://', 'https://')):
@@ -354,10 +404,10 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
             warning('⚠️  Only use configs from trusted sources!')
 
         try:
-            content = fetch_url_with_auth(config_spec)
+            content = fetch_url_with_auth(config_spec, auth_param=auth_param)
             config = yaml.safe_load(content)
             success(f'Configuration loaded from URL: {config.get("name", "Remote Config")}')
-            return config
+            return config, config_spec
         except Exception as e:
             error(f'Failed to load configuration from URL: {e}')
             raise
@@ -381,7 +431,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
             with open(config_path, encoding='utf-8') as f:
                 config = yaml.safe_load(f)
             success(f'Configuration loaded: {config.get("name", config_path.name)}')
-            return config
+            return config, str(config_path)
         except Exception as e:
             error(f'Failed to load local configuration: {e}')
             raise
@@ -395,10 +445,10 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
 
     try:
         # Use the same fetch function for consistency
-        content = fetch_url_with_auth(config_url)
+        content = fetch_url_with_auth(config_url, auth_param=auth_param)
         config = yaml.safe_load(content)
         success(f'Configuration loaded: {config.get("name", config_spec)}')
-        return config
+        return config, config_spec
     except urllib.error.HTTPError as e:
         if e.code == 404:
             error(f'Configuration not found in repository: {config_spec}')
@@ -459,18 +509,147 @@ def install_dependencies(dependencies: list[str]) -> bool:
     return True
 
 
-def download_resources(resources: list[str], destination_dir: Path, resource_type: str) -> bool:
-    """Download resources (agents, commands, output-styles) from configuration."""
+def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, auth_param: str | None = None) -> str:
+    """Fetch URL content, trying without auth first, then with auth if needed.
+
+    Args:
+        url: URL to fetch
+        auth_headers: Optional pre-computed auth headers
+        auth_param: Optional auth parameter for getting headers
+
+    Returns:
+        str: Content of the URL
+
+    Raises:
+        HTTPError: If the HTTP request fails after authentication attempts
+        URLError: If there's a URL/network error (including SSL issues)
+    """
+    # First try without auth (for public repos)
+    try:
+        request = Request(url)
+        response = urlopen(request)
+        return response.read().decode('utf-8')
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403, 404):
+            # Authentication might be needed
+            if not auth_headers:
+                # Get auth headers if not already provided
+                auth_headers = get_auth_headers(url, auth_param)
+
+            if auth_headers:
+                # Retry with authentication
+                info('Retrying with authentication...')
+                request = Request(url)
+                for header, value in auth_headers.items():
+                    request.add_header(header, value)
+                try:
+                    response = urlopen(request)
+                    return response.read().decode('utf-8')
+                except urllib.error.HTTPError as auth_e:
+                    if auth_e.code == 401:
+                        error('Authentication failed. Check your token.')
+                    elif auth_e.code == 403:
+                        error('Access forbidden. Token may lack permissions.')
+                    elif auth_e.code == 404:
+                        error('Resource not found. Check URL and permissions.')
+                    raise
+            elif e.code == 404:
+                # 404 without auth headers available - likely just not found
+                raise
+            else:
+                # 401/403 but no auth headers available
+                warning('Authentication may be required for this URL')
+                raise
+        else:
+            raise
+    except urllib.error.URLError as e:
+        if 'SSL' in str(e) or 'certificate' in str(e).lower():
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+
+            request = Request(url)
+            if auth_headers:
+                for header, value in auth_headers.items():
+                    request.add_header(header, value)
+
+            response = urlopen(request, context=ctx)
+            return response.read().decode('utf-8')
+        raise
+
+
+def download_resource_with_url(
+    resource_path: str,
+    destination: Path,
+    config_source: str,
+    base_url: str | None = None,
+    auth_param: str | None = None,
+) -> bool:
+    """Download a single resource with URL resolution.
+
+    Args:
+        resource_path: Resource path from config (can be relative path or full URL)
+        destination: Local destination path
+        config_source: Where the config was loaded from
+        base_url: Optional base URL from config
+        auth_param: Optional auth parameter for private repos
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Resolve the full URL based on priority rules
+    url = resolve_resource_url(resource_path, config_source, base_url)
+    filename = destination.name
+
+    # Check if destination already exists
+    if destination.exists():
+        info(f'File already exists: {filename} (overwriting)')
+
+    try:
+        # Fetch content with authentication if needed
+        content = fetch_url_with_auth(url, auth_param=auth_param)
+
+        # Write to destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(content, encoding='utf-8')
+        success(f'Downloaded: {filename}')
+        return True
+    except Exception as e:
+        error(f'Failed to download {filename} from {url}: {e}')
+        return False
+
+
+def download_resources(
+    resources: list[str],
+    destination_dir: Path,
+    resource_type: str,
+    config_source: str,
+    base_url: str | None = None,
+    auth_param: str | None = None,
+) -> bool:
+    """Download resources (agents, commands, output-styles) from configuration.
+
+    Args:
+        resources: List of resource paths from config
+        destination_dir: Directory to save resources
+        resource_type: Type of resources (for logging)
+        config_source: Where the config was loaded from
+        base_url: Optional base URL from config
+        auth_param: Optional auth parameter for private repos
+
+    Returns:
+        bool: True if all successful
+    """
     if not resources:
         return True
 
     info(f'Downloading {resource_type}...')
 
     for resource in resources:
-        url = f'{REPO_BASE_URL}/{resource}'
         filename = Path(resource).name
         destination = destination_dir / filename
-        download_file(url, destination)
+        download_resource_with_url(resource, destination, config_source, base_url, auth_param)
 
     return True
 
@@ -713,6 +892,9 @@ def create_additional_settings(
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
+    config_source: str | None = None,
+    base_url: str | None = None,
+    auth_param: str | None = None,
 ) -> bool:
     """Create additional-settings.json with environment-specific settings.
 
@@ -823,10 +1005,15 @@ def create_additional_settings(
         hooks_dir = claude_user_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
         for file in hook_files:
-            url = f'{REPO_BASE_URL}/{file}'
             filename = Path(file).name
             destination = hooks_dir / filename
-            download_file(url, destination)
+            # Use the new URL resolution for hook files
+            if config_source:
+                download_resource_with_url(file, destination, config_source, base_url, auth_param)
+            else:
+                # Fallback to old method if no config_source (shouldn't happen)
+                url = f'{REPO_BASE_URL}/{file}'
+                download_file(url, destination)
 
     # Process each hook event
     for hook in hook_events:
@@ -1190,10 +1377,11 @@ def main() -> None:
 
     try:
         # Load configuration from source (URL, local file, or repository)
-        config = load_config_from_source(config_name, args.auth)
+        config, config_source = load_config_from_source(config_name, args.auth)
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name', 'claude-env')
+        base_url = config.get('base-url')  # Optional base URL override from config
 
         # Extract command defaults
         command_defaults = config.get('command-defaults', {})
@@ -1251,20 +1439,20 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 4: Downloading agents...{Colors.NC}')
         agents = config.get('agents', [])
-        download_resources(agents, agents_dir, 'agents')
+        download_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
 
         # Step 5: Download slash commands
         print()
         print(f'{Colors.CYAN}Step 5: Downloading slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
-        download_resources(commands, commands_dir, 'slash commands')
+        download_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
         # Step 6: Download output styles
         print()
         print(f'{Colors.CYAN}Step 6: Downloading output styles...{Colors.NC}')
         output_styles = config.get('output-styles', [])
         if output_styles:
-            download_resources(output_styles, output_styles_dir, 'output styles')
+            download_resources(output_styles, output_styles_dir, 'output styles', config_source, base_url, args.auth)
         else:
             info('No output styles configured')
 
@@ -1273,10 +1461,9 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 7: Downloading system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
-            prompt_url = f'{REPO_BASE_URL}/{system_prompt}'
             prompt_filename = Path(system_prompt).name
             prompt_path = prompts_dir / prompt_filename
-            download_file(prompt_url, prompt_path)
+            download_resource_with_url(system_prompt, prompt_path, config_source, base_url, args.auth)
         else:
             info('No additional system prompt configured')
 
@@ -1290,7 +1477,10 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers, model, permissions, env_variables)
+        create_additional_settings(
+            hooks, claude_user_dir, output_style, mcp_servers, model, permissions, env_variables,
+            config_source, base_url, args.auth,
+        )
 
         # Step 10: Create launcher script
         print()

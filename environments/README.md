@@ -268,6 +268,45 @@ Controls how Claude Code interacts with your system:
 **Smart MCP Server Auto-Allow:**
 MCP servers are automatically added to the allow list UNLESS they're explicitly mentioned in deny/ask lists. This reduces friction while respecting your security preferences.
 
+### URL Support in Configurations
+
+Environment configurations support flexible URL resolution for all file resources (agents, slash commands, output styles, hooks, and system prompts). This allows you to:
+- Load configurations from one repository while fetching resources from others
+- Mix resources from multiple sources in a single configuration
+- Override the default resource location with custom URLs
+
+**Priority order for resource resolution:**
+
+1. **Full URLs** (highest priority) - Resources specified as full URLs are used as-is
+2. **base-url override** - If `base-url` is set in the config, all relative paths use it
+3. **Config source derivation** - If loading config from a URL, resources inherit that base
+4. **Default repository** - Falls back to the main claude-code-toolbox repository
+
+**Examples:**
+
+```yaml
+# Option 1: Use base-url to override default source for all resources
+# Note: {path} is optional - it's automatically added if not present
+base-url: https://raw.githubusercontent.com/my-org/my-configs/main
+# Or explicitly with {path} for custom placement:
+# base-url: https://my-server.com/v2/{path}/latest
+
+agents:
+    - agents/my-agent.md  # Uses base-url
+    - https://example.com/special-agent.md  # Full URL takes priority
+
+# Option 2: Mix resources from different sources
+agents:
+    - agents/examples/code-reviewer.md  # Uses default or derived base
+    - https://gitlab.company.com/api/v4/projects/123/repository/files/agents%2Fcustom.md/raw?ref=main
+
+# Option 3: Load config from URL - resources inherit that base automatically
+# If you load config from https://example.com/configs/env.yaml
+# Then agents/my-agent.md resolves to https://example.com/agents/my-agent.md
+```
+
+**Authentication:** When fetching from private repositories, the same authentication (environment variables or --auth parameter) is used for all resources, regardless of their source.
+
 ## Creating Custom Configurations
 
 ### For Repository (Public)
