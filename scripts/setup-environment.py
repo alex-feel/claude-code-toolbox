@@ -21,9 +21,11 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.request import Request
 from urllib.request import urlopen
 
 import yaml
@@ -135,7 +137,134 @@ def download_file(url: str, destination: Path, force: bool = True) -> bool:
         return False
 
 
-def load_config_from_source(config_spec: str) -> dict[str, Any]:
+def detect_repo_type(url: str) -> str | None:
+    """Detect the repository type from URL.
+
+    Returns:
+        'gitlab' for GitLab URLs
+        'github' for GitHub URLs
+        None for other URLs
+    """
+    url_lower = url.lower()
+
+    # GitLab detection (including self-hosted)
+    if 'gitlab' in url_lower or '/api/v4/projects/' in url:
+        return 'gitlab'
+
+    # GitHub detection
+    if 'github.com' in url_lower or 'api.github.com' in url_lower:
+        return 'github'
+
+    # Bitbucket detection (future expansion)
+    if 'bitbucket' in url_lower:
+        return 'bitbucket'
+
+    return None
+
+
+def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
+    """Get authentication headers using multiple fallback methods.
+
+    Precedence order:
+    1. Command-line --auth parameter
+    2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
+    3. Auth config file (~/.claude/auth.yaml) - future expansion
+    4. Interactive prompt (if terminal is interactive)
+
+    Args:
+        url: The URL to authenticate for
+        auth_param: Optional auth parameter in format "header:value" or "header=value"
+
+    Returns:
+        Dictionary of headers to use for authentication
+    """
+    repo_type = detect_repo_type(url)
+
+    # Method 1: Command-line parameter (highest priority)
+    if auth_param:
+        # Support both : and = as separators
+        if ':' in auth_param:
+            header_name, token = auth_param.split(':', 1)
+        elif '=' in auth_param:
+            header_name, token = auth_param.split('=', 1)
+        else:
+            # Assume it's just a token, use default header based on repo type
+            token = auth_param
+            if repo_type == 'gitlab':
+                header_name = 'PRIVATE-TOKEN'
+            elif repo_type == 'github':
+                header_name = 'Authorization'
+                token = f'Bearer {token}' if not token.startswith('Bearer ') else token
+            else:
+                error('Cannot determine auth header type. Use format: --auth "header:value"')
+                return {}
+
+        info('Using authentication from command-line parameter')
+        return {header_name: token}
+
+    # Method 2: Environment variables
+    tokens_checked = []
+
+    # Check repo-specific tokens first
+    if repo_type == 'gitlab':
+        token = os.environ.get('GITLAB_TOKEN')
+        tokens_checked.append('GITLAB_TOKEN')
+        if token:
+            info('Using GitLab token from GITLAB_TOKEN environment variable')
+            return {'PRIVATE-TOKEN': token}
+    elif repo_type == 'github':
+        token = os.environ.get('GITHUB_TOKEN')
+        tokens_checked.append('GITHUB_TOKEN')
+        if token:
+            info('Using GitHub token from GITHUB_TOKEN environment variable')
+            return {'Authorization': f'Bearer {token}'}
+
+    # Check generic REPO_TOKEN as fallback
+    token = os.environ.get('REPO_TOKEN')
+    tokens_checked.append('REPO_TOKEN')
+    if token:
+        info('Using token from REPO_TOKEN environment variable')
+        if repo_type == 'gitlab':
+            return {'PRIVATE-TOKEN': token}
+        if repo_type == 'github':
+            return {'Authorization': f'Bearer {token}'}
+
+    # Method 3: Auth config file (future expansion)
+    # auth_file = Path.home() / '.claude' / 'auth.yaml'
+    # if auth_file.exists():
+    #     # Implementation for auth file would go here
+    #     pass
+
+    # Method 4: Interactive prompt (only if repo type detected and terminal is interactive)
+    if repo_type and sys.stdin.isatty():
+        warning(f'Private {repo_type.title()} repository detected but no authentication found')
+        info(f'Checked environment variables: {", ".join(tokens_checked)}')
+        info('You can provide authentication by:')
+        info(f'  1. Setting environment variable: {tokens_checked[0]}')
+        info('  2. Using --auth parameter: --auth "token_here"')
+
+        # Ask if they want to enter it now
+        try:
+            response = input('Would you like to enter the token now? (y/N): ').strip().lower()
+            if response == 'y':
+                import getpass
+                token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
+                if token:
+                    if repo_type == 'gitlab':
+                        return {'PRIVATE-TOKEN': token}
+                    if repo_type == 'github':
+                        return {'Authorization': f'Bearer {token}'}
+        except (KeyboardInterrupt, EOFError):
+            print()  # New line after Ctrl+C
+    elif repo_type:
+        # Non-interactive terminal but auth might be needed
+        info(f'Private {repo_type.title()} repository detected')
+        info(f'If authentication is required, set one of: {", ".join(tokens_checked)}')
+
+    return {}
+
+
+def load_config_from_source(config_spec: str, auth_param: str | None = None) -> dict[str, Any]:
     """Load configuration from URL, local path, or repository.
 
     Supports three sources:
@@ -143,37 +272,89 @@ def load_config_from_source(config_spec: str) -> dict[str, Any]:
     2. Local file: ./config.yaml, ../configs/env.yaml, /absolute/path.yaml
     3. Repository config: just a name like 'python'
 
+    Args:
+        config_spec: Configuration specification (URL, path, or name)
+        auth_param: Optional authentication parameter for private repos
+
     Returns:
         dict[str, Any]: Parsed YAML configuration.
 
     Raises:
         FileNotFoundError: If local file doesn't exist.
-        urllib.error.URLError: If URL download fails.
         urllib.error.HTTPError: If HTTP request fails.
         Exception: If configuration is not found or parsing fails.
     """
 
+    def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None) -> str:
+        """Fetch URL content, trying without auth first, then with auth if needed."""
+        # First try without auth (for public repos)
+        try:
+            request = Request(url)
+            response = urlopen(request)
+            return response.read().decode('utf-8')
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 404):
+                # Authentication might be needed
+                if not auth_headers:
+                    # Get auth headers if not already provided
+                    auth_headers = get_auth_headers(url, auth_param)
+
+                if auth_headers:
+                    # Retry with authentication
+                    info('Retrying with authentication...')
+                    request = Request(url)
+                    for header, value in auth_headers.items():
+                        request.add_header(header, value)
+                    try:
+                        response = urlopen(request)
+                        return response.read().decode('utf-8')
+                    except urllib.error.HTTPError as auth_e:
+                        if auth_e.code == 401:
+                            error('Authentication failed. Check your token.')
+                        elif auth_e.code == 403:
+                            error('Access forbidden. Token may lack permissions.')
+                        elif auth_e.code == 404:
+                            error('Resource not found. Check URL and permissions.')
+                        raise
+                elif e.code == 404:
+                    # 404 without auth headers available - likely just not found
+                    raise
+                else:
+                    # 401/403 but no auth headers available
+                    warning('Authentication may be required for this URL')
+                    raise
+            else:
+                raise
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                request = Request(url)
+                if auth_headers:
+                    for header, value in auth_headers.items():
+                        request.add_header(header, value)
+
+                response = urlopen(request, context=ctx)
+                return response.read().decode('utf-8')
+            raise
+
     # Source 1: Direct URL
     if config_spec.startswith(('http://', 'https://')):
         info(f'Loading configuration from URL: {config_spec}')
-        warning('⚠️  Loading configuration from remote URL')
-        warning('⚠️  Only use configs from trusted sources!')
+
+        # Check if it's a known private repo pattern
+        repo_type = detect_repo_type(config_spec)
+        if repo_type:
+            info(f'Detected {repo_type.title()} repository URL')
+        else:
+            warning('⚠️  Loading configuration from remote URL')
+            warning('⚠️  Only use configs from trusted sources!')
 
         try:
-            try:
-                response = urlopen(config_spec)
-                content = response.read().decode('utf-8')
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    response = urlopen(config_spec, context=ctx)
-                    content = response.read().decode('utf-8')
-                else:
-                    raise
-
+            content = fetch_url_with_auth(config_spec)
             config = yaml.safe_load(content)
             success(f'Configuration loaded from URL: {config.get("name", "Remote Config")}')
             return config
@@ -213,35 +394,24 @@ def load_config_from_source(config_spec: str) -> dict[str, Any]:
     info(f'Loading configuration from repository: {config_spec}')
 
     try:
-        try:
-            response = urlopen(config_url)
-            content = response.read().decode('utf-8')
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                error(f'Configuration not found in repository: {config_spec}')
-                info('Available configurations:')
-                info('  - python: Python development environment')
-                info('')
-                info('You can also:')
-                info('  - Create custom configs in environments/examples/')
-                info('  - Use a local file: ./my-config.yaml')
-                info('  - Use a URL: https://example.com/config.yaml')
-                raise Exception(f'Configuration not found: {config_spec}') from None
-            raise
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(config_url, context=ctx)
-                content = response.read().decode('utf-8')
-            else:
-                raise
-
+        # Use the same fetch function for consistency
+        content = fetch_url_with_auth(config_url)
         config = yaml.safe_load(content)
         success(f'Configuration loaded: {config.get("name", config_spec)}')
         return config
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            error(f'Configuration not found in repository: {config_spec}')
+            info('Available configurations:')
+            info('  - python: Python development environment')
+            info('')
+            info('You can also:')
+            info('  - Create custom configs in environments/examples/')
+            info('  - Use a local file: ./my-config.yaml')
+            info('  - Use a URL: https://example.com/config.yaml')
+            raise Exception(f'Configuration not found: {config_spec}') from None
+        error(f'Failed to load repository configuration: {e}')
+        raise
     except Exception as e:
         if 'Configuration not found' not in str(e):
             error(f'Failed to load repository configuration: {e}')
@@ -1004,6 +1174,8 @@ def main() -> None:
                         help='Skip Claude Code installation')
     parser.add_argument('--force', action='store_true',
                         help='Force overwrite existing files')
+    parser.add_argument('--auth', type=str,
+                        help='Authentication for private repos (e.g., "token" or "header:token")')
     args = parser.parse_args()
 
     # Get configuration from args or environment
@@ -1018,7 +1190,7 @@ def main() -> None:
 
     try:
         # Load configuration from source (URL, local file, or repository)
-        config = load_config_from_source(config_name)
+        config = load_config_from_source(config_name, args.auth)
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name', 'claude-env')

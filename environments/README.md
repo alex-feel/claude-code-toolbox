@@ -55,6 +55,79 @@ CLAUDE_ENV_CONFIG=https://example.com/my-env.yaml curl -fsSL https://raw.githubu
 
 **⚠️ WARNING:** The script will display a warning when loading from URLs. Review the configuration carefully!
 
+## Private Repository Support
+
+The setup script supports loading configurations from private GitLab and GitHub repositories with authentication.
+
+### Authentication Methods (in order of precedence)
+
+1. **Command-line parameter** (highest priority)
+2. **Environment variables**
+3. **Interactive prompt** (fallback)
+
+### GitLab Private Repositories
+
+```powershell
+# Windows - Using environment variable
+$env:GITLAB_TOKEN='glpat-YOUR_TOKEN_HERE'
+$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - Using --auth parameter
+python scripts/setup-environment.py "https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main" --auth "glpat-YOUR_TOKEN_HERE"
+
+# Linux/macOS - Using environment variable
+export GITLAB_TOKEN='glpat-YOUR_TOKEN_HERE'
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main' \
+  curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### GitHub Private Repositories
+
+```powershell
+# Windows - Using environment variable
+$env:GITHUB_TOKEN='ghp_YOUR_TOKEN_HERE'
+$env:CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - Using --auth parameter
+python scripts/setup-environment.py "https://api.github.com/repos/owner/repo/contents/config.yaml" --auth "ghp_YOUR_TOKEN_HERE"
+
+# Linux/macOS - Using environment variable
+export GITHUB_TOKEN='ghp_YOUR_TOKEN_HERE'
+CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml' \
+  curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### Generic Token Support
+
+You can also use `REPO_TOKEN` as a generic environment variable that works for both GitLab and GitHub:
+
+```powershell
+# Windows
+$env:REPO_TOKEN='your-token-here'
+
+# Linux/macOS
+export REPO_TOKEN='your-token-here'
+```
+
+### One-liner with Authentication
+
+```powershell
+# Windows PowerShell - GitLab with token
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main'; `$env:GITLAB_TOKEN='glpat-xxx'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+
+# Linux/macOS - GitHub with token
+GITHUB_TOKEN='ghp_xxx' CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### Authentication Notes
+
+- The script tries to access public repositories first, only using authentication if needed (401/403 errors)
+- Tokens are never stored or logged by the setup script
+- For CI/CD pipelines, use environment variables rather than --auth parameter
+- Interactive prompt is only available when running in a terminal (not in CI/CD)
+
 ## Quick Start Examples
 
 ### Windows (PowerShell)
