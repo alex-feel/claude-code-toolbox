@@ -468,8 +468,9 @@ def create_additional_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
     output_style: str | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
 ) -> bool:
-    """Create additional-settings.json with environment-specific hooks and output style.
+    """Create additional-settings.json with environment-specific hooks, output style, and permissions.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
@@ -478,6 +479,7 @@ def create_additional_settings(
         hooks: Hooks configuration dictionary with 'files' and 'events' keys
         claude_user_dir: Path to Claude user directory
         output_style: Optional output style filename (without extension) to set as default
+        mcp_servers: Optional list of MCP server configurations to pre-allow
 
     Returns:
         bool: True if successful, False otherwise.
@@ -493,6 +495,21 @@ def create_additional_settings(
         style_name = output_style.replace('.md', '')
         settings['outputStyle'] = style_name
         info(f'Setting default output style: {style_name}')
+
+    # Add MCP server permissions if specified
+    if mcp_servers:
+        permissions_allow = []
+        for server in mcp_servers:
+            if isinstance(server, dict) and 'name' in server:
+                # Format as mcp__servername for permissions
+                server_permission = f"mcp__{server['name']}"
+                permissions_allow.append(server_permission)
+                info(f'Pre-allowing MCP server: {server["name"]}')
+
+        if permissions_allow:
+            settings['permissions'] = {
+                'allow': permissions_allow,
+            }
 
     # Handle hooks if present
     hook_files = []
@@ -965,7 +982,7 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir, output_style)
+        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers)
 
         # Step 10: Create launcher script
         print()
