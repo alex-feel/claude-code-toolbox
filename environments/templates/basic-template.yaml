@@ -76,6 +76,48 @@ hooks:
         #   type: command
         #   command: notify-send 'Claude Code' 'Task Complete'
 
+# Model configuration (optional)
+# Use one of the official aliases or a custom model name
+# Aliases: default, sonnet, opus, haiku, sonnet[1m], opusplan
+# Custom: claude-opus-4-1-20250805
+# model: opus
+
+# Environment variables (optional)
+# Sets environment variables for each Claude Code session
+env-variables:
+    # BASH_DEFAULT_TIMEOUT_MS: "5000"
+    # MAX_MCP_OUTPUT_TOKENS: "50000"
+    # CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+    # OTEL_METRICS_EXPORTER: "otlp"
+
+# Permissions configuration (optional)
+# Controls how Claude Code interacts with your system
+permissions:
+    # Default permission mode (optional)
+    # Options: default, acceptEdits, plan, bypassPermissions
+    # defaultMode: acceptEdits
+
+    # Explicitly allowed actions (optional)
+    # allow:
+    #     - WebFetch
+    #     - mcp__context7
+    #     - Bash(git diff:*)
+
+    # Explicitly denied actions (optional)
+    # deny:
+    #     - WebFetch
+    #     - Bash(curl:*)
+    #     - Read(./.env)
+
+    # Actions requiring confirmation (optional)
+    # ask:
+    #     - Bash(git push:*)
+
+    # Additional accessible directories (optional)
+    # additionalDirectories:
+    #     - ../docs/
+    #     - /external/project/
+
 # Command launch configuration
 command-defaults:
     # Default output style (optional)

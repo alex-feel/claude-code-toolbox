@@ -21,9 +21,11 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.request import Request
 from urllib.request import urlopen
 
 import yaml
@@ -135,45 +137,284 @@ def download_file(url: str, destination: Path, force: bool = True) -> bool:
         return False
 
 
-def download_config(config_name: str) -> dict[str, Any]:
-    """Download and parse configuration file."""
-    if not config_name.endswith('.yaml'):
-        config_name += '.yaml'
+def detect_repo_type(url: str) -> str | None:
+    """Detect the repository type from URL.
 
-    config_url = f'{REPO_BASE_URL}/environments/examples/{config_name}'
-    info(f'Downloading configuration: {config_name}')
+    Returns:
+        'gitlab' for GitLab URLs
+        'github' for GitHub URLs
+        None for other URLs
+    """
+    url_lower = url.lower()
 
-    try:
+    # GitLab detection (including self-hosted)
+    if 'gitlab' in url_lower or '/api/v4/projects/' in url:
+        return 'gitlab'
+
+    # GitHub detection
+    if 'github.com' in url_lower or 'api.github.com' in url_lower:
+        return 'github'
+
+    # Bitbucket detection (future expansion)
+    if 'bitbucket' in url_lower:
+        return 'bitbucket'
+
+    return None
+
+
+def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
+    """Get authentication headers using multiple fallback methods.
+
+    Precedence order:
+    1. Command-line --auth parameter
+    2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
+    3. Auth config file (~/.claude/auth.yaml) - future expansion
+    4. Interactive prompt (if terminal is interactive)
+
+    Args:
+        url: The URL to authenticate for
+        auth_param: Optional auth parameter in format "header:value" or "header=value"
+
+    Returns:
+        Dictionary of headers to use for authentication
+    """
+    repo_type = detect_repo_type(url)
+
+    # Method 1: Command-line parameter (highest priority)
+    if auth_param:
+        # Support both : and = as separators
+        if ':' in auth_param:
+            header_name, token = auth_param.split(':', 1)
+        elif '=' in auth_param:
+            header_name, token = auth_param.split('=', 1)
+        else:
+            # Assume it's just a token, use default header based on repo type
+            token = auth_param
+            if repo_type == 'gitlab':
+                header_name = 'PRIVATE-TOKEN'
+            elif repo_type == 'github':
+                header_name = 'Authorization'
+                token = f'Bearer {token}' if not token.startswith('Bearer ') else token
+            else:
+                error('Cannot determine auth header type. Use format: --auth "header:value"')
+                return {}
+
+        info('Using authentication from command-line parameter')
+        return {header_name: token}
+
+    # Method 2: Environment variables
+    tokens_checked = []
+
+    # Check repo-specific tokens first
+    if repo_type == 'gitlab':
+        token = os.environ.get('GITLAB_TOKEN')
+        tokens_checked.append('GITLAB_TOKEN')
+        if token:
+            info('Using GitLab token from GITLAB_TOKEN environment variable')
+            return {'PRIVATE-TOKEN': token}
+    elif repo_type == 'github':
+        token = os.environ.get('GITHUB_TOKEN')
+        tokens_checked.append('GITHUB_TOKEN')
+        if token:
+            info('Using GitHub token from GITHUB_TOKEN environment variable')
+            return {'Authorization': f'Bearer {token}'}
+
+    # Check generic REPO_TOKEN as fallback
+    token = os.environ.get('REPO_TOKEN')
+    tokens_checked.append('REPO_TOKEN')
+    if token:
+        info('Using token from REPO_TOKEN environment variable')
+        if repo_type == 'gitlab':
+            return {'PRIVATE-TOKEN': token}
+        if repo_type == 'github':
+            return {'Authorization': f'Bearer {token}'}
+
+    # Method 3: Auth config file (future expansion)
+    # auth_file = Path.home() / '.claude' / 'auth.yaml'
+    # if auth_file.exists():
+    #     # Implementation for auth file would go here
+    #     pass
+
+    # Method 4: Interactive prompt (only if repo type detected and terminal is interactive)
+    if repo_type and sys.stdin.isatty():
+        warning(f'Private {repo_type.title()} repository detected but no authentication found')
+        info(f'Checked environment variables: {", ".join(tokens_checked)}')
+        info('You can provide authentication by:')
+        info(f'  1. Setting environment variable: {tokens_checked[0]}')
+        info('  2. Using --auth parameter: --auth "token_here"')
+
+        # Ask if they want to enter it now
         try:
-            response = urlopen(config_url)
-            content = response.read().decode('utf-8')
+            response = input('Would you like to enter the token now? (y/N): ').strip().lower()
+            if response == 'y':
+                import getpass
+                token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
+                if token:
+                    if repo_type == 'gitlab':
+                        return {'PRIVATE-TOKEN': token}
+                    if repo_type == 'github':
+                        return {'Authorization': f'Bearer {token}'}
+        except (KeyboardInterrupt, EOFError):
+            print()  # New line after Ctrl+C
+    elif repo_type:
+        # Non-interactive terminal but auth might be needed
+        info(f'Private {repo_type.title()} repository detected')
+        info(f'If authentication is required, set one of: {", ".join(tokens_checked)}')
+
+    return {}
+
+
+def load_config_from_source(config_spec: str, auth_param: str | None = None) -> dict[str, Any]:
+    """Load configuration from URL, local path, or repository.
+
+    Supports three sources:
+    1. Direct URL: http://... or https://...
+    2. Local file: ./config.yaml, ../configs/env.yaml, /absolute/path.yaml
+    3. Repository config: just a name like 'python'
+
+    Args:
+        config_spec: Configuration specification (URL, path, or name)
+        auth_param: Optional authentication parameter for private repos
+
+    Returns:
+        dict[str, Any]: Parsed YAML configuration.
+
+    Raises:
+        FileNotFoundError: If local file doesn't exist.
+        urllib.error.HTTPError: If HTTP request fails.
+        Exception: If configuration is not found or parsing fails.
+    """
+
+    def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None) -> str:
+        """Fetch URL content, trying without auth first, then with auth if needed."""
+        # First try without auth (for public repos)
+        try:
+            request = Request(url)
+            response = urlopen(request)
+            return response.read().decode('utf-8')
         except urllib.error.HTTPError as e:
-            if e.code == 404:
-                error(f'Configuration file not found: {config_name}')
-                info('Available configurations:')
-                info('  - python.yaml: Python development environment')
-                info('')
-                info('Make sure the configuration exists in the repository.')
-                info('You can also create custom configurations in environments/examples/')
-                raise Exception(f'Configuration not found: {config_name}') from None
-            raise
+            if e.code in (401, 403, 404):
+                # Authentication might be needed
+                if not auth_headers:
+                    # Get auth headers if not already provided
+                    auth_headers = get_auth_headers(url, auth_param)
+
+                if auth_headers:
+                    # Retry with authentication
+                    info('Retrying with authentication...')
+                    request = Request(url)
+                    for header, value in auth_headers.items():
+                        request.add_header(header, value)
+                    try:
+                        response = urlopen(request)
+                        return response.read().decode('utf-8')
+                    except urllib.error.HTTPError as auth_e:
+                        if auth_e.code == 401:
+                            error('Authentication failed. Check your token.')
+                        elif auth_e.code == 403:
+                            error('Access forbidden. Token may lack permissions.')
+                        elif auth_e.code == 404:
+                            error('Resource not found. Check URL and permissions.')
+                        raise
+                elif e.code == 404:
+                    # 404 without auth headers available - likely just not found
+                    raise
+                else:
+                    # 401/403 but no auth headers available
+                    warning('Authentication may be required for this URL')
+                    raise
+            else:
+                raise
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
                 warning('SSL certificate verification failed, trying with unverified context')
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(config_url, context=ctx)
-                content = response.read().decode('utf-8')
-            else:
-                raise
 
+                request = Request(url)
+                if auth_headers:
+                    for header, value in auth_headers.items():
+                        request.add_header(header, value)
+
+                response = urlopen(request, context=ctx)
+                return response.read().decode('utf-8')
+            raise
+
+    # Source 1: Direct URL
+    if config_spec.startswith(('http://', 'https://')):
+        info(f'Loading configuration from URL: {config_spec}')
+
+        # Check if it's a known private repo pattern
+        repo_type = detect_repo_type(config_spec)
+        if repo_type:
+            info(f'Detected {repo_type.title()} repository URL')
+        else:
+            warning('⚠️  Loading configuration from remote URL')
+            warning('⚠️  Only use configs from trusted sources!')
+
+        try:
+            content = fetch_url_with_auth(config_spec)
+            config = yaml.safe_load(content)
+            success(f'Configuration loaded from URL: {config.get("name", "Remote Config")}')
+            return config
+        except Exception as e:
+            error(f'Failed to load configuration from URL: {e}')
+            raise
+
+    # Source 2: Local file (has path separators, starts with . or exists)
+    if ('/' in config_spec or '\\' in config_spec or
+        config_spec.startswith(('./', '.\\', '../', '..\\')) or
+        os.path.isabs(config_spec) or os.path.exists(config_spec)):
+
+        # Normalize path
+        config_path = Path(config_spec).resolve()
+
+        if not config_path.exists():
+            error(f'Local configuration file not found: {config_spec}')
+            info('Make sure the file path is correct and the file exists.')
+            raise FileNotFoundError(f'Configuration not found: {config_spec}')
+
+        info(f'Loading local configuration: {config_path}')
+
+        try:
+            with open(config_path, encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            success(f'Configuration loaded: {config.get("name", config_path.name)}')
+            return config
+        except Exception as e:
+            error(f'Failed to load local configuration: {e}')
+            raise
+
+    # Source 3: Repository config (just a name)
+    if not config_spec.endswith('.yaml'):
+        config_spec += '.yaml'
+
+    config_url = f'{REPO_BASE_URL}/environments/examples/{config_spec}'
+    info(f'Loading configuration from repository: {config_spec}')
+
+    try:
+        # Use the same fetch function for consistency
+        content = fetch_url_with_auth(config_url)
         config = yaml.safe_load(content)
-        success(f'Configuration loaded: {config.get("name", config_name)}')
+        success(f'Configuration loaded: {config.get("name", config_spec)}')
         return config
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            error(f'Configuration not found in repository: {config_spec}')
+            info('Available configurations:')
+            info('  - python: Python development environment')
+            info('')
+            info('You can also:')
+            info('  - Create custom configs in environments/examples/')
+            info('  - Use a local file: ./my-config.yaml')
+            info('  - Use a URL: https://example.com/config.yaml')
+            raise Exception(f'Configuration not found: {config_spec}') from None
+        error(f'Failed to load repository configuration: {e}')
+        raise
     except Exception as e:
         if 'Configuration not found' not in str(e):
-            error(f'Failed to download configuration: {e}')
+            error(f'Failed to load repository configuration: {e}')
         raise
 
 
@@ -468,8 +709,12 @@ def create_additional_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
     output_style: str | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    model: str | None = None,
+    permissions: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
 ) -> bool:
-    """Create additional-settings.json with environment-specific hooks and output style.
+    """Create additional-settings.json with environment-specific settings.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
@@ -478,6 +723,10 @@ def create_additional_settings(
         hooks: Hooks configuration dictionary with 'files' and 'events' keys
         claude_user_dir: Path to Claude user directory
         output_style: Optional output style filename (without extension) to set as default
+        mcp_servers: Optional list of MCP server configurations to pre-allow
+        model: Optional model alias or custom model name
+        permissions: Optional permissions configuration dict
+        env: Optional environment variables dict
 
     Returns:
         bool: True if successful, False otherwise.
@@ -487,12 +736,77 @@ def create_additional_settings(
     # Create fresh settings structure for this environment
     settings = {}
 
+    # Add model if specified
+    if model:
+        settings['model'] = model
+        info(f'Setting model: {model}')
+
     # Add output style if specified
     if output_style:
         # Remove .md extension if present
         style_name = output_style.replace('.md', '')
         settings['outputStyle'] = style_name
         info(f'Setting default output style: {style_name}')
+
+    # Handle permissions with smart MCP server auto-allowing
+    final_permissions = {}
+
+    # Start with env config permissions if provided
+    if permissions:
+        final_permissions = permissions.copy()
+        info('Using permissions from environment configuration')
+
+    # Auto-allow MCP servers if not explicitly mentioned in permissions
+    if mcp_servers:
+        # Get existing allow list from env config (or create empty)
+        existing_allow = final_permissions.get('allow', [])
+        existing_deny = final_permissions.get('deny', [])
+
+        # Convert to sets for efficient lookups
+        allow_set = set(existing_allow) if isinstance(existing_allow, list) else set()
+
+        for server in mcp_servers:
+            if isinstance(server, dict) and 'name' in server:
+                server_permission = f"mcp__{server['name']}"
+
+                # Check if this server is explicitly mentioned anywhere in permissions
+                server_mentioned = False
+
+                # Check in allow list
+                if any(server_permission in str(item) for item in existing_allow):
+                    server_mentioned = True
+                    info(f'MCP server {server["name"]} already in allow list')
+
+                # Check in deny list
+                if any(server_permission in str(item) for item in existing_deny):
+                    server_mentioned = True
+                    warning(f'MCP server {server["name"]} is in deny list - not auto-allowing')
+
+                # Check in ask list
+                existing_ask = final_permissions.get('ask', [])
+                if any(server_permission in str(item) for item in existing_ask):
+                    server_mentioned = True
+                    info(f'MCP server {server["name"]} is in ask list - not auto-allowing')
+
+                # Only auto-allow if not mentioned anywhere
+                if not server_mentioned:
+                    allow_set.add(server_permission)
+                    info(f'Auto-allowing MCP server: {server["name"]}')
+
+        # Update allow list if we added any
+        if allow_set:
+            final_permissions['allow'] = list(allow_set)
+
+    # Add permissions to settings if we have any
+    if final_permissions:
+        settings['permissions'] = final_permissions
+
+    # Add environment variables if specified
+    if env:
+        settings['env'] = env
+        info(f'Setting {len(env)} environment variables')
+        for key in env:
+            info(f'  - {key}')
 
     # Handle hooks if present
     hook_files = []
@@ -860,6 +1174,8 @@ def main() -> None:
                         help='Skip Claude Code installation')
     parser.add_argument('--force', action='store_true',
                         help='Force overwrite existing files')
+    parser.add_argument('--auth', type=str,
+                        help='Authentication for private repos (e.g., "token" or "header:token")')
     args = parser.parse_args()
 
     # Get configuration from args or environment
@@ -873,8 +1189,8 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        # Download and parse configuration
-        config = download_config(config_name)
+        # Load configuration from source (URL, local file, or repository)
+        config = load_config_from_source(config_name, args.auth)
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name', 'claude-env')
@@ -883,6 +1199,15 @@ def main() -> None:
         command_defaults = config.get('command-defaults', {})
         output_style = command_defaults.get('output-style')
         system_prompt = command_defaults.get('system-prompt')
+
+        # Extract model configuration
+        model = config.get('model')
+
+        # Extract permissions configuration
+        permissions = config.get('permissions')
+
+        # Extract environment variables configuration
+        env_variables = config.get('env-variables')
 
         header(environment_name)
 
@@ -965,7 +1290,7 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir, output_style)
+        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers, model, permissions, env_variables)
 
         # Step 10: Create launcher script
         print()
@@ -998,7 +1323,23 @@ def main() -> None:
             print(f'   * Default output style: {output_style}')
         if system_prompt:
             print('   * Additional system prompt: Configured')
+        if model:
+            print(f'   * Model: {model}')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
+        if permissions:
+            perm_items = []
+            if 'defaultMode' in permissions:
+                perm_items.append(f"defaultMode={permissions['defaultMode']}")
+            if 'allow' in permissions:
+                perm_items.append(f"{len(permissions['allow'])} allow rules")
+            if 'deny' in permissions:
+                perm_items.append(f"{len(permissions['deny'])} deny rules")
+            if 'ask' in permissions:
+                perm_items.append(f"{len(permissions['ask'])} ask rules")
+            if perm_items:
+                print(f'   * Permissions: {", ".join(perm_items)}')
+        if env_variables:
+            print(f'   * Environment variables: {len(env_variables)} configured')
         print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
 

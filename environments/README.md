@@ -2,33 +2,160 @@
 
 This directory contains YAML configuration files that define complete development environments for Claude Code. Each configuration can install dependencies, configure agents, set up MCP servers, add slash commands, and more.
 
-## Quick Start
+## ⚠️ Security Notice
+
+Environment configurations can execute commands and download scripts. **Only use configurations from trusted sources!**
+
+Configurations can contain:
+- **API keys and secrets** for MCP servers
+- **System commands** executed during installation
+- **Hook scripts** that run automatically on Claude Code events
+- **Remote dependencies** downloaded from the internet
+
+## Configuration Sources
+
+The setup script supports three types of configuration sources:
+
+### 1. Repository Configurations (Trusted)
+Pre-defined configurations from this repository:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='python'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### 2. Local Files (Your Control)
+Use your own configuration files with sensitive data:
+```powershell
+# Windows - relative path
+$env:CLAUDE_ENV_CONFIG='./my-config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - absolute path
+$env:CLAUDE_ENV_CONFIG='C:/projects/configs/team-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=./my-config.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### 3. Remote URLs (⚠️ Verify Source!)
+Load configurations from any web server:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='https://example.com/my-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=https://example.com/my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+**⚠️ WARNING:** The script will display a warning when loading from URLs. Review the configuration carefully!
+
+## Private Repository Support
+
+The setup script supports loading configurations from private GitLab and GitHub repositories with authentication.
+
+### Authentication Methods (in order of precedence)
+
+1. **Command-line parameter** (highest priority)
+2. **Environment variables**
+3. **Interactive prompt** (fallback)
+
+### GitLab Private Repositories
+
+```powershell
+# Windows - Using environment variable
+$env:GITLAB_TOKEN='glpat-YOUR_TOKEN_HERE'
+$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - Using --auth parameter
+python scripts/setup-environment.py "https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main" --auth "glpat-YOUR_TOKEN_HERE"
+
+# Linux/macOS - Using environment variable
+export GITLAB_TOKEN='glpat-YOUR_TOKEN_HERE'
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main' \
+  curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### GitHub Private Repositories
+
+```powershell
+# Windows - Using environment variable
+$env:GITHUB_TOKEN='ghp_YOUR_TOKEN_HERE'
+$env:CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - Using --auth parameter
+python scripts/setup-environment.py "https://api.github.com/repos/owner/repo/contents/config.yaml" --auth "ghp_YOUR_TOKEN_HERE"
+
+# Linux/macOS - Using environment variable
+export GITHUB_TOKEN='ghp_YOUR_TOKEN_HERE'
+CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml' \
+  curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### Generic Token Support
+
+You can also use `REPO_TOKEN` as a generic environment variable that works for both GitLab and GitHub:
+
+```powershell
+# Windows
+$env:REPO_TOKEN='your-token-here'
+
+# Linux/macOS
+export REPO_TOKEN='your-token-here'
+```
+
+### One-liner with Authentication
+
+```powershell
+# Windows PowerShell - GitLab with token
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main'; `$env:GITLAB_TOKEN='glpat-xxx'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+
+# Linux/macOS - GitHub with token
+GITHUB_TOKEN='ghp_xxx' CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.yaml' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### Authentication Notes
+
+- The script tries to access public repositories first, only using authentication if needed (401/403 errors)
+- Tokens are never stored or logged by the setup script
+- For CI/CD pipelines, use environment variables rather than --auth parameter
+- Interactive prompt is only available when running in a terminal (not in CI/CD)
+
+## Quick Start Examples
 
 ### Windows (PowerShell)
 
-#### Simplest approach (in PowerShell)
 ```powershell
+# Repository config (recommended for standard setups)
 $env:CLAUDE_ENV_CONFIG='python'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-```
 
-#### One-liner (from any shell, requires escaping)
-```powershell
+# Local config with API keys (for team/personal setups)
+$env:CLAUDE_ENV_CONFIG='./team-config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# One-liner for any shell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
-#### Local file (after downloading)
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/setup-environment.ps1 python
-```
-
 ### macOS/Linux
+
 ```bash
-# Using environment variable
+# Repository config
 CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Or pass as argument (after downloading)
-./scripts/linux/setup-environment.sh python
+# Local config
+CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+
+# Remote URL (verify source first!)
+CLAUDE_ENV_CONFIG=https://trusted-site.com/config.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 ## Available Configurations
@@ -85,17 +212,132 @@ hooks:
           type: Hook type (command)
           command: Command to execute
 
+model: opus
+
+env-variables:
+    BASH_DEFAULT_TIMEOUT_MS: "5000"
+    MAX_MCP_OUTPUT_TOKENS: "50000"
+
+permissions:
+    defaultMode: acceptEdits
+    allow:
+        - WebFetch
+        - mcp__context7
+        - Bash(git diff:*)
+    deny:
+        - Bash(rm:*)
+        - Read(.env)
+    ask:
+        - Bash(git push:*)
+    additionalDirectories:
+        - ../other-project/
+
 command-defaults:
     output-style: Name of output style to use (optional)
     system-prompt: Path to additional system prompt file (optional)
 ```
 
+### Model Configuration
+
+**Available model aliases:**
+- `default` - Recommended model based on your account
+- `sonnet` - Latest Sonnet model for daily coding tasks
+- `opus` - Most capable Opus model for complex reasoning
+- `haiku` - Fast and efficient model for simple tasks
+- `sonnet[1m]` - Sonnet with 1 million token context window
+- `opusplan` - Hybrid mode (Opus for planning, Sonnet for execution)
+
+You can also specify custom model names like `claude-opus-4-1-20250805`.
+
+### Permissions Configuration
+
+Controls how Claude Code interacts with your system:
+
+**Permission Modes:**
+- `default` - Prompts for permission on first use of each tool
+- `acceptEdits` - Automatically accepts file edit permissions
+- `plan` - Plan Mode - analyze without modifying files
+- `bypassPermissions` - Skips all permission prompts (use with caution)
+
+**Permission Rules:**
+- `allow` - Explicitly allowed actions
+- `deny` - Prohibited actions
+- `ask` - Actions requiring user confirmation
+- `additionalDirectories` - Extra directories Claude can access
+
+**Smart MCP Server Auto-Allow:**
+MCP servers are automatically added to the allow list UNLESS they're explicitly mentioned in deny/ask lists. This reduces friction while respecting your security preferences.
+
 ## Creating Custom Configurations
+
+### For Repository (Public)
 
 1. Create a new YAML file in `environments/examples/`
 2. Define your environment using the structure above
-3. Run the setup script with your configuration name
-4. Your custom command will be registered globally
+3. **Do NOT include sensitive data like API keys**
+4. Run the setup script with your configuration name
+5. Your custom command will be registered globally
+
+### For Local Use (Private)
+
+Create a local YAML file for configurations with sensitive data:
+
+```yaml
+# my-team-env.yaml
+name: Team Development Environment
+command-name: claude-team
+
+dependencies:
+    - uv tool install ruff@latest
+
+agents:
+    - agents/examples/code-reviewer.md
+    - agents/examples/test-generator.md
+
+# MCP servers with API keys (keep these private!)
+mcp-servers:
+    - name: my-api-server
+      scope: user
+      transport: http
+      url: https://api.mycompany.com/mcp
+      header: X-API-Key: sk-abc123xyz789...  # SENSITIVE - DO NOT COMMIT!
+
+    - name: database-tools
+      scope: user
+      transport: sse
+      url: https://db.internal.com/mcp
+      header: Authorization: Bearer eyJhbGc...  # SENSITIVE!
+
+slash-commands:
+    - slash-commands/examples/commit.md
+    - slash-commands/examples/test.md
+
+hooks:
+    files:
+        - hooks/examples/python_ruff_lint.py
+    events:
+        - event: PostToolUse
+          matcher: Edit|MultiEdit|Write
+          type: command
+          command: python_ruff_lint.py
+```
+
+Then use it:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='./my-team-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=./my-team-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+**Security Best Practices:**
+- Store local configs in a secure location
+- Add `*.local.yaml` or `*-private.yaml` to `.gitignore`
+- Never commit files containing API keys or secrets
+- Use environment variables for extra sensitive data
+- Share config templates without actual keys
 
 ## Features
 

@@ -27,14 +27,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG=
 curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 python
 ```
 
+##### Option 4: Using local configuration (for sensitive configs)
+```powershell
+# Use a local file containing API keys or other sensitive data
+$env:CLAUDE_ENV_CONFIG='./my-python-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
 #### macOS
 ```bash
+# Repository config
 CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+
+# Local config file
+CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 #### Linux
 ```bash
+# Repository config
 CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+
+# Local config file
+CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 This automated setup includes:
@@ -51,6 +66,25 @@ claude-python  # Works in all Windows shells (PowerShell, CMD, Git Bash)
 ```
 
 The setup automatically creates properly escaped wrappers for each Windows shell, ensuring the Python developer system prompt loads correctly regardless of which shell you use.
+
+---
+
+### ⚠️ Security Warning: Environment Configurations
+
+**IMPORTANT:** Environment configurations can contain:
+- 🔑 **API Keys** for MCP servers
+- 📝 **System commands** that will be executed during setup
+- 🪝 **Hook scripts** that run automatically on Claude Code events
+- 🌐 **Remote dependencies** that will be downloaded and installed
+
+**Only use environment configurations from trusted sources!**
+
+When loading configurations:
+- ✅ **Repository configs** (`python`) - Reviewed and maintained by the community
+- ✅ **Your local files** (`./my-config.yaml`) - Under your control
+- ⚠️ **Remote URLs** (`https://example.com/config.yaml`) - **VERIFY THE SOURCE FIRST!**
+
+The setup script will warn you when loading from remote URLs. Always review the configuration content before proceeding.
 
 ---
 
