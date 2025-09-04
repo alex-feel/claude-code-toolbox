@@ -82,6 +82,14 @@ hooks:
 # Custom: claude-opus-4-1-20250805
 # model: opus
 
+# Environment variables (optional)
+# Sets environment variables for each Claude Code session
+env-variables:
+    # BASH_DEFAULT_TIMEOUT_MS: "5000"
+    # MAX_MCP_OUTPUT_TOKENS: "50000"
+    # CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+    # OTEL_METRICS_EXPORTER: "otlp"
+
 # Permissions configuration (optional)
 # Controls how Claude Code interacts with your system
 permissions:

@@ -141,6 +141,10 @@ hooks:
 
 model: opus
 
+env-variables:
+    BASH_DEFAULT_TIMEOUT_MS: "5000"
+    MAX_MCP_OUTPUT_TOKENS: "50000"
+
 permissions:
     defaultMode: acceptEdits
     allow:

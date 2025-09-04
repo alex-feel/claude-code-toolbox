@@ -542,6 +542,7 @@ def create_additional_settings(
     mcp_servers: list[dict[str, Any]] | None = None,
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
 ) -> bool:
     """Create additional-settings.json with environment-specific settings.
 
@@ -555,6 +556,7 @@ def create_additional_settings(
         mcp_servers: Optional list of MCP server configurations to pre-allow
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
+        env: Optional environment variables dict
 
     Returns:
         bool: True if successful, False otherwise.
@@ -628,6 +630,13 @@ def create_additional_settings(
     # Add permissions to settings if we have any
     if final_permissions:
         settings['permissions'] = final_permissions
+
+    # Add environment variables if specified
+    if env:
+        settings['env'] = env
+        info(f'Setting {len(env)} environment variables')
+        for key in env:
+            info(f'  - {key}')
 
     # Handle hooks if present
     hook_files = []
@@ -1025,6 +1034,9 @@ def main() -> None:
         # Extract permissions configuration
         permissions = config.get('permissions')
 
+        # Extract environment variables configuration
+        env_variables = config.get('env-variables')
+
         header(environment_name)
 
         # Set up directories
@@ -1106,7 +1118,7 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers, model, permissions)
+        create_additional_settings(hooks, claude_user_dir, output_style, mcp_servers, model, permissions, env_variables)
 
         # Step 10: Create launcher script
         print()
@@ -1154,6 +1166,8 @@ def main() -> None:
                 perm_items.append(f"{len(permissions['ask'])} ask rules")
             if perm_items:
                 print(f'   * Permissions: {", ".join(perm_items)}')
+        if env_variables:
+            print(f'   * Environment variables: {len(env_variables)} configured')
         print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
 
