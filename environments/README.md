@@ -286,7 +286,10 @@ Environment configurations support flexible URL resolution for all file resource
 
 ```yaml
 # Option 1: Use base-url to override default source for all resources
-base-url: https://raw.githubusercontent.com/my-org/my-configs/main/{path}
+# Note: {path} is optional - it's automatically added if not present
+base-url: https://raw.githubusercontent.com/my-org/my-configs/main
+# Or explicitly with {path} for custom placement:
+# base-url: https://my-server.com/v2/{path}/latest
 
 agents:
     - agents/my-agent.md  # Uses base-url

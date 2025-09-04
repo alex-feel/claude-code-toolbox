@@ -344,6 +344,11 @@ def resolve_resource_url(resource_path: str, config_source: str, base_url: str |
 
     # 2. If base-url configured, use it
     if base_url:
+        # Auto-append {path} if not present
+        if '{path}' not in base_url:
+            # Add {path} placeholder appropriately
+            base_url = base_url + '{path}' if base_url.endswith('/') else base_url + '/{path}'
+
         # Handle GitLab URL encoding for paths
         if '/api/v4/projects/' in base_url and '/repository/files/' in base_url:
             # URL encode the path for GitLab API
