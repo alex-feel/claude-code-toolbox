@@ -1,19 +1,36 @@
 ---
 name: agent-name-kebab-case
 description: |
-  Brief description of this agent's specialization and expertise.
-  What this agent does when invoked (capabilities and deliverables).
+  Brief description of this agent's specialization and expertise. <!-- For the CALLING agent to read, NOT this agent -->
+  What this agent does when invoked (capabilities and deliverables). <!-- Focus on WHAT it delivers, not WHY -->
   Optional third sentence for additional capabilities or specializations.
-  It should be used proactively [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"].
-tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput
+  It should be used proactively [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"]. <!-- EXACT phrase required -->
+tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput  # If using Write, MUST add Edit and MultiEdit
 model: opus
 color: blue
 ---
 
-<!--
 ╔════════════════════════════════════════════════════════════════════════════╗
 ║                     QUICK REFERENCE: HOW TO USE THIS TEMPLATE              ║
 ╠════════════════════════════════════════════════════════════════════════════╣
+║                                                                            ║
+║  ⚠️ CRITICAL RULES (MUST READ FIRST):                                      ║
+║                                                                            ║
+║  DESCRIPTION FIELD:                                                        ║
+║  • The description is ONLY seen by the calling agent (orchestrator)        ║
+║  • The agent itself NEVER sees its own description                         ║
+║  • MUST end with EXACT phrase: "It should be used proactively"            ║
+║  • Description is metadata for caller's decision-making                    ║
+║                                                                            ║
+║  AGENT BODY (System Prompt):                                               ║
+║  • Must be PURPOSE-AGNOSTIC - don't assume caller's intentions             ║
+║  • Focus on what this agent delivers, not what happens next                ║
+║  • NEVER write "so the orchestrator can..." or similar                    ║
+║  • Agent should NOT know why it was invoked or next steps                  ║
+║                                                                            ║
+║  TOOL PERMISSIONS:                                                         ║
+║  • If using Write, MUST also include Edit and MultiEdit                    ║
+║  • Start with ALL no-permission tools, then add as needed                  ║
 ║                                                                            ║
 ║  1. START HERE: Read this guide, then delete this entire comment block     ║
 ║                                                                            ║
@@ -54,6 +71,8 @@ color: blue
 ║     □ Thinking mode selected and specified                                 ║
 ║     □ Tools list includes ALL no-permission tools + needed permission ones ║
 ║     □ Domain-specific sections added                                       ║
+║     □ Description ends with "It should be used proactively"               ║
+║     □ Agent body is purpose-agnostic (no orchestrator assumptions)         ║
 ║                                                                            ║
 ╚════════════════════════════════════════════════════════════════════════════╝
 -->
@@ -61,9 +80,40 @@ color: blue
 <!--
 UNIVERSAL SUB-AGENT TEMPLATE - HOW TO USE THIS TEMPLATE
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: UNDERSTANDING THE DESCRIPTION FIELD (MOST COMMON MISTAKE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The 'description' field is METADATA for the CALLING agent's decision-making:
+• The agent being defined NEVER sees its own description
+• Only the calling agent (e.g., orchestrator) reads the description
+• Purpose: Help the caller decide when to invoke this agent
+• MUST end with EXACT phrase: "It should be used proactively"
+• Follow with specific trigger conditions
+
+✅ CORRECT: "Reviews code for bugs. Produces actionable reports. It should be used proactively after writing or modifying code."
+❌ WRONG: "The orchestrator will use this to..." (don't assume caller's purpose)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ CRITICAL: AGENT BODY MUST BE PURPOSE-AGNOSTIC
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The agent's system prompt (everything after the frontmatter) must:
+• Focus on what THIS agent delivers, not what happens next
+• Never assume why the caller invoked this agent
+• Never mention "so the orchestrator can..." or similar
+• Be self-contained and focused on its own mission
+
+✅ CORRECT: "You will produce a comprehensive report..."
+❌ WRONG: "The orchestrator will use your report to..."
+❌ WRONG: "This helps the caller to write requirements..."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 YAML FRONTMATTER CONFIGURATION:
 - name: Unique identifier (lowercase, hyphens/underscores)
-- description: Must be 3-4 sentences, LAST sentence MUST contain "It should be used proactively"
+- description: Must be 3-4 sentences, LAST sentence MUST use EXACT phrase "It should be used proactively"
+  REMEMBER: This is for the CALLER to read, not the agent itself!
   Example: "Expert code reviewer. Reviews for bugs. Produces reports. It should be used proactively after code changes."
 - tools: Start with ALL no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
   CRITICAL: If using Write, MUST also include Edit and MultiEdit for corrections!
@@ -79,6 +129,8 @@ TEMPLATE INSTRUCTIONS:
 3. KEEP sections marked as "(KEEP THIS SECTION)" - they contain best practices
 4. CUSTOMIZE examples by replacing them with your domain-specific content
 5. REMOVE all HTML comments (<!-- -->) before finalizing your agent
+6. ENSURE description ends with "It should be used proactively" (exact phrase)
+7. ENSURE agent body is purpose-agnostic (no caller assumptions)
 
 Template Legend:
 - [PLACEHOLDER] = Replace with your content
@@ -96,9 +148,10 @@ You are __[Agent Title]__, [one compelling sentence capturing your unique value 
 
 ## 🎯 Mission Statement
 
-Your mission is to [describe the concrete, verifiable deliverable the caller will receive, including success criteria and acceptance conditions].
+Your mission is to [describe the concrete, verifiable deliverable you will produce, including success criteria and acceptance conditions. Focus on YOUR outputs, not what happens afterward].
 
 <!-- EXAMPLE: Your mission is to deliver a comprehensive code review report with actionable improvements, risk assessments, and specific line-by-line annotations that will measurably improve code quality metrics by at least 20%. -->
+<!-- CRITICAL: Do NOT mention what the caller will do with your output. Focus only on what YOU deliver. -->
 
 ## 🧠 Cognitive Framework
 
@@ -669,4 +722,3 @@ TEMPLATE USAGE NOTES
 
 7. Remember: Focused, single-responsibility agents are more effective than
    trying to create one agent that does everything.
--->
