@@ -2,33 +2,87 @@
 
 This directory contains YAML configuration files that define complete development environments for Claude Code. Each configuration can install dependencies, configure agents, set up MCP servers, add slash commands, and more.
 
-## Quick Start
+## ⚠️ Security Notice
+
+Environment configurations can execute commands and download scripts. **Only use configurations from trusted sources!**
+
+Configurations can contain:
+- **API keys and secrets** for MCP servers
+- **System commands** executed during installation
+- **Hook scripts** that run automatically on Claude Code events
+- **Remote dependencies** downloaded from the internet
+
+## Configuration Sources
+
+The setup script supports three types of configuration sources:
+
+### 1. Repository Configurations (Trusted)
+Pre-defined configurations from this repository:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='python'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### 2. Local Files (Your Control)
+Use your own configuration files with sensitive data:
+```powershell
+# Windows - relative path
+$env:CLAUDE_ENV_CONFIG='./my-config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Windows - absolute path
+$env:CLAUDE_ENV_CONFIG='C:/projects/configs/team-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=./my-config.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+### 3. Remote URLs (⚠️ Verify Source!)
+Load configurations from any web server:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='https://example.com/my-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=https://example.com/my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+**⚠️ WARNING:** The script will display a warning when loading from URLs. Review the configuration carefully!
+
+## Quick Start Examples
 
 ### Windows (PowerShell)
 
-#### Simplest approach (in PowerShell)
 ```powershell
+# Repository config (recommended for standard setups)
 $env:CLAUDE_ENV_CONFIG='python'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-```
 
-#### One-liner (from any shell, requires escaping)
-```powershell
+# Local config with API keys (for team/personal setups)
+$env:CLAUDE_ENV_CONFIG='./team-config.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# One-liner for any shell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
-#### Local file (after downloading)
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/setup-environment.ps1 python
-```
-
 ### macOS/Linux
+
 ```bash
-# Using environment variable
+# Repository config
 CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Or pass as argument (after downloading)
-./scripts/linux/setup-environment.sh python
+# Local config
+CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+
+# Remote URL (verify source first!)
+CLAUDE_ENV_CONFIG=https://trusted-site.com/config.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 ## Available Configurations
@@ -92,10 +146,74 @@ command-defaults:
 
 ## Creating Custom Configurations
 
+### For Repository (Public)
+
 1. Create a new YAML file in `environments/examples/`
 2. Define your environment using the structure above
-3. Run the setup script with your configuration name
-4. Your custom command will be registered globally
+3. **Do NOT include sensitive data like API keys**
+4. Run the setup script with your configuration name
+5. Your custom command will be registered globally
+
+### For Local Use (Private)
+
+Create a local YAML file for configurations with sensitive data:
+
+```yaml
+# my-team-env.yaml
+name: Team Development Environment
+command-name: claude-team
+
+dependencies:
+    - uv tool install ruff@latest
+
+agents:
+    - agents/examples/code-reviewer.md
+    - agents/examples/test-generator.md
+
+# MCP servers with API keys (keep these private!)
+mcp-servers:
+    - name: my-api-server
+      scope: user
+      transport: http
+      url: https://api.mycompany.com/mcp
+      header: X-API-Key: sk-abc123xyz789...  # SENSITIVE - DO NOT COMMIT!
+
+    - name: database-tools
+      scope: user
+      transport: sse
+      url: https://db.internal.com/mcp
+      header: Authorization: Bearer eyJhbGc...  # SENSITIVE!
+
+slash-commands:
+    - slash-commands/examples/commit.md
+    - slash-commands/examples/test.md
+
+hooks:
+    files:
+        - hooks/examples/python_ruff_lint.py
+    events:
+        - event: PostToolUse
+          matcher: Edit|MultiEdit|Write
+          type: command
+          command: python_ruff_lint.py
+```
+
+Then use it:
+```powershell
+# Windows
+$env:CLAUDE_ENV_CONFIG='./my-team-env.yaml'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# Linux/macOS
+CLAUDE_ENV_CONFIG=./my-team-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+**Security Best Practices:**
+- Store local configs in a secure location
+- Add `*.local.yaml` or `*-private.yaml` to `.gitignore`
+- Never commit files containing API keys or secrets
+- Use environment variables for extra sensitive data
+- Share config templates without actual keys
 
 ## Features
 

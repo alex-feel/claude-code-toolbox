@@ -135,13 +135,82 @@ def download_file(url: str, destination: Path, force: bool = True) -> bool:
         return False
 
 
-def download_config(config_name: str) -> dict[str, Any]:
-    """Download and parse configuration file."""
-    if not config_name.endswith('.yaml'):
-        config_name += '.yaml'
+def load_config_from_source(config_spec: str) -> dict[str, Any]:
+    """Load configuration from URL, local path, or repository.
 
-    config_url = f'{REPO_BASE_URL}/environments/examples/{config_name}'
-    info(f'Downloading configuration: {config_name}')
+    Supports three sources:
+    1. Direct URL: http://... or https://...
+    2. Local file: ./config.yaml, ../configs/env.yaml, /absolute/path.yaml
+    3. Repository config: just a name like 'python'
+
+    Returns:
+        dict[str, Any]: Parsed YAML configuration.
+
+    Raises:
+        FileNotFoundError: If local file doesn't exist.
+        urllib.error.URLError: If URL download fails.
+        urllib.error.HTTPError: If HTTP request fails.
+        Exception: If configuration is not found or parsing fails.
+    """
+
+    # Source 1: Direct URL
+    if config_spec.startswith(('http://', 'https://')):
+        info(f'Loading configuration from URL: {config_spec}')
+        warning('⚠️  Loading configuration from remote URL')
+        warning('⚠️  Only use configs from trusted sources!')
+
+        try:
+            try:
+                response = urlopen(config_spec)
+                content = response.read().decode('utf-8')
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    warning('SSL certificate verification failed, trying with unverified context')
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(config_spec, context=ctx)
+                    content = response.read().decode('utf-8')
+                else:
+                    raise
+
+            config = yaml.safe_load(content)
+            success(f'Configuration loaded from URL: {config.get("name", "Remote Config")}')
+            return config
+        except Exception as e:
+            error(f'Failed to load configuration from URL: {e}')
+            raise
+
+    # Source 2: Local file (has path separators, starts with . or exists)
+    if ('/' in config_spec or '\\' in config_spec or
+        config_spec.startswith(('./', '.\\', '../', '..\\')) or
+        os.path.isabs(config_spec) or os.path.exists(config_spec)):
+
+        # Normalize path
+        config_path = Path(config_spec).resolve()
+
+        if not config_path.exists():
+            error(f'Local configuration file not found: {config_spec}')
+            info('Make sure the file path is correct and the file exists.')
+            raise FileNotFoundError(f'Configuration not found: {config_spec}')
+
+        info(f'Loading local configuration: {config_path}')
+
+        try:
+            with open(config_path, encoding='utf-8') as f:
+                config = yaml.safe_load(f)
+            success(f'Configuration loaded: {config.get("name", config_path.name)}')
+            return config
+        except Exception as e:
+            error(f'Failed to load local configuration: {e}')
+            raise
+
+    # Source 3: Repository config (just a name)
+    if not config_spec.endswith('.yaml'):
+        config_spec += '.yaml'
+
+    config_url = f'{REPO_BASE_URL}/environments/examples/{config_spec}'
+    info(f'Loading configuration from repository: {config_spec}')
 
     try:
         try:
@@ -149,13 +218,15 @@ def download_config(config_name: str) -> dict[str, Any]:
             content = response.read().decode('utf-8')
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                error(f'Configuration file not found: {config_name}')
+                error(f'Configuration not found in repository: {config_spec}')
                 info('Available configurations:')
-                info('  - python.yaml: Python development environment')
+                info('  - python: Python development environment')
                 info('')
-                info('Make sure the configuration exists in the repository.')
-                info('You can also create custom configurations in environments/examples/')
-                raise Exception(f'Configuration not found: {config_name}') from None
+                info('You can also:')
+                info('  - Create custom configs in environments/examples/')
+                info('  - Use a local file: ./my-config.yaml')
+                info('  - Use a URL: https://example.com/config.yaml')
+                raise Exception(f'Configuration not found: {config_spec}') from None
             raise
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
@@ -169,11 +240,11 @@ def download_config(config_name: str) -> dict[str, Any]:
                 raise
 
         config = yaml.safe_load(content)
-        success(f'Configuration loaded: {config.get("name", config_name)}')
+        success(f'Configuration loaded: {config.get("name", config_spec)}')
         return config
     except Exception as e:
         if 'Configuration not found' not in str(e):
-            error(f'Failed to download configuration: {e}')
+            error(f'Failed to load repository configuration: {e}')
         raise
 
 
@@ -890,8 +961,8 @@ def main() -> None:
         sys.exit(1)
 
     try:
-        # Download and parse configuration
-        config = download_config(config_name)
+        # Load configuration from source (URL, local file, or repository)
+        config = load_config_from_source(config_name)
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name', 'claude-env')
