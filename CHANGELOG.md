@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.5.0...v1.6.0) (2025-09-04)
+
+
+### Features
+
+* add environment variables configuration support ([4c15852](https://github.com/alex-feel/claude-code-toolbox/commit/4c15852ef05074e7cfdace2f60a22bf8718ea882))
+* add model configuration and advanced permissions support ([a650047](https://github.com/alex-feel/claude-code-toolbox/commit/a650047f3469641ddaa8d82ac6d0413e985dbdd7))
+* add private repository authentication support ([f8a157c](https://github.com/alex-feel/claude-code-toolbox/commit/f8a157cf41b3037f4a9f6a8d1c8193614dc5ec31))
+* auto-configure MCP server permissions in additional-settings.json ([78d0a73](https://github.com/alex-feel/claude-code-toolbox/commit/78d0a73800c9ecb1090a42635d986e4cba9ee1b2))
+* refactor environment config to support optional system prompts and output styles ([edd7469](https://github.com/alex-feel/claude-code-toolbox/commit/edd74699b19a384cf8a0dcf75997cd86d86a6acf))
+* refactor hooks configuration to use separate files and events sections ([691304a](https://github.com/alex-feel/claude-code-toolbox/commit/691304af4eee820435c208ad694f9d9acb2a615c))
+* support loading env configs from URLs, local files, or repository ([b8981c7](https://github.com/alex-feel/claude-code-toolbox/commit/b8981c748ac49b35fc1dd80ced06bbf73a486a49))
+* use additional-settings.json for environment-specific hooks ([8d1a746](https://github.com/alex-feel/claude-code-toolbox/commit/8d1a7467c9c13d3028f3ed89415464ea93937dce))
+
+
+### Bug Fixes
+
+* make hooks cross-platform compatible ([fdc9540](https://github.com/alex-feel/claude-code-toolbox/commit/fdc9540d85e30594345dee7efcf23b4de0595281))
+* resolve hook execution in Windows shells ([54d4f44](https://github.com/alex-feel/claude-code-toolbox/commit/54d4f4448d76bc90b3331d78c5e37464e04cb2fb))
+* use forward slashes in hook paths to avoid JSON escaping issues ([7b0ed27](https://github.com/alex-feel/claude-code-toolbox/commit/7b0ed2778e817c15975f4df8df6bcebeb05f6629))
+
 ## [1.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.4.2...v1.5.0) (2025-09-03)
 
 
