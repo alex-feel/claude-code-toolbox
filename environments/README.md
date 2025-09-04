@@ -77,14 +77,17 @@ output-styles:
     - Path to output style file
 
 hooks:
-    - event: Event name (PostToolUse, Notification, etc.)
-      matcher: Regex pattern to match
-      type: Hook type (command)
-      command: Command to execute
-      files:
-        - Files to download for the hook
+    files:
+        - List of hook script files to download
+    events:
+        - event: Event name (PostToolUse, Notification, etc.)
+          matcher: Regex pattern to match
+          type: Hook type (command)
+          command: Command to execute
 
-system-prompt: Path to system prompt file
+command-defaults:
+    output-style: Name of output style to use (optional)
+    system-prompt: Path to additional system prompt file (optional)
 ```
 
 ## Creating Custom Configurations
@@ -119,8 +122,14 @@ Set up automatic actions triggered by events:
 - Notifications for long-running tasks
 - Custom scripts for specific file types
 
-### System Prompts
-Define the core behavior and expertise for Claude in your environment.
+### Command Defaults
+Configure how Claude starts in your environment:
+- **output-style**: Use a complete alternative system prompt (e.g., for non-development roles like business analysis)
+- **system-prompt**: Append additional context to Claude's default development prompt
+
+Choose one or the other:
+- Use `output-style` when you need a completely different persona (replaces entire system prompt)
+- Use `system-prompt` when you want to enhance Claude's development capabilities with domain-specific knowledge
 
 ## Notes
 
