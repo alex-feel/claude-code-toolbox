@@ -1,0 +1,153 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Repository Purpose
+
+This is the Claude Code Toolbox - a community project providing automated installers, environment configurations, agent templates, and utilities for Claude Code across Windows, macOS, and Linux. The toolbox enables users to quickly set up specialized development environments with custom agents, MCP servers, slash commands, and hooks.
+
+## Key Architecture
+
+### Two-Tier Installation System
+
+1. **Platform-specific bootstrap scripts** (minimal ~60 lines each)
+   - Windows: PowerShell scripts in `scripts/windows/`
+   - Linux/macOS: Bash scripts in `scripts/linux/` and `scripts/macos/`
+   - These install `uv` (Astral's Python package manager) and run Python scripts
+
+2. **Cross-platform Python scripts** (comprehensive installers)
+   - `scripts/install-claude.py`: Installs Git Bash, Node.js, and Claude Code
+   - `scripts/setup-environment.py`: Configuration-driven environment setup from YAML
+   - Support three configuration sources:
+     - Repository configs: `python` → downloads from repo
+     - Local files: `./my-config.yaml` → loads from disk
+     - Remote URLs: `https://example.com/config.yaml` → downloads from web
+
+### Environment Configuration System
+
+YAML configurations in `environments/examples/` define complete development environments including:
+- Dependencies to install
+- Agents (subagents for Claude Code)
+- MCP servers (with automatic permission pre-allowing)
+- Slash commands
+- Output styles (complete system prompt replacements)
+- System prompts (append to default prompt)
+- Hooks (event-driven scripts)
+
+### Cross-Shell Command Registration (Windows)
+
+The setup creates global commands (e.g., `claude-python`) that work across all Windows shells through:
+- Shared POSIX script (`~/.claude/launch-{command}.sh`) executed by Git Bash
+- PowerShell wrapper (`~/.local/bin/{command}.ps1`)
+- CMD wrapper (`~/.local/bin/{command}.cmd`)
+- Git Bash wrapper (`~/.local/bin/{command}`)
+
+## Development Commands
+
+### Testing Changes
+```bash
+# Run pre-commit hooks (REQUIRED before commits)
+git add -A
+pre-commit run --all-files
+
+# Test environment setup with local config (prefer if structure changed)
+python scripts/setup-environment.py ./test-config.yaml --skip-install
+
+# Test with repository config (make sure latest changes are merged if structure changed)
+python scripts/setup-environment.py python --skip-install
+```
+
+### Linting and Validation
+```bash
+# Linting (Ruff - automatically fixes issues)
+git add -A
+pre-commit run --all-files
+```
+
+## Commit Conventions
+
+This repository uses Conventional Commits (enforced by commitizen):
+- `feat:` - New features (minor version bump)
+- `fix:` - Bug fixes (patch version bump)
+- `chore:` - Maintenance tasks (no version bump)
+- `docs:` - Documentation improvements
+- `ci:` - CI/CD changes
+- `test:` - Test-related changes
+
+Breaking changes: Add `!` after type or include `BREAKING CHANGE:` in body
+
+## Critical Implementation Details
+
+### Configuration Loading Priority (setup-environment.py)
+
+The `load_config_from_source()` function determines source by checking in order:
+1. URL detection: Starts with `http://` or `https://`
+2. Local file: Contains path separators (`/`, `\`) or starts with `.`
+3. Repository config: Everything else (name only, `.yaml` added if missing)
+
+### MCP Server Permissions
+
+When configuring MCP servers, permissions are automatically added to `additional-settings.json`:
+```json
+{
+  "permissions": {
+    "allow": ["mcp__servername"]
+  }
+}
+```
+
+### Hooks Configuration Structure
+
+As of latest version, hooks use this structure in environment YAML:
+```yaml
+hooks:
+    files:  # Top-level list of files to download
+        - hooks/examples/script.py
+    events:  # Event configurations
+        - event: PostToolUse
+          matcher: Edit|MultiEdit|Write
+          type: command
+          command: script.py  # References filename from 'files'
+```
+
+### System Prompts vs Output Styles
+
+- **system-prompt**: Appends to Claude's default development prompt (use `--append-system-prompt`)
+- **output-style**: Completely replaces the system prompt (use `--output-style`)
+- These are mutually exclusive in `command-defaults`
+
+## Testing Workflows
+
+### When modifying setup-environment.py
+1. Test with repository config: `python scripts/setup-environment.py python --skip-install` (make sure latest changes are merged if structure changed)
+2. Test with local file: Create test YAML, run with `./test.yaml` (prefer if structure changed)
+3. Test with mock URL to verify warning messages appear
+4. Verify global command registration works
+5. Verify additional-settings.json structure
+6. Check that hooks execute properly after setup
+
+### When adding new environment configs
+1. Place in `environments/examples/`
+2. Test local installation flow
+3. Verify all referenced files exist in repo
+4. Verify additional-settings.json structure
+5. Ensure hooks trigger correctly
+
+## File Modification Guidelines
+
+### When editing scripts
+- Must pass linting with zero warnings
+
+## Version Management
+
+- DO NOT manually edit `CHANGELOG.md`, `version.txt`, or `.release-please-manifest.json`
+- Release Please automatically manages versioning based on conventional commits
+- Version bumps happen when release PRs are merged
+
+## Security Considerations
+
+When loading environment configurations:
+- Repository configs are trusted (reviewed by maintainers)
+- Local files are under user control (can contain API keys)
+- Remote URLs show warning messages (verify source first)
+- Never commit configurations with sensitive data to the repo
