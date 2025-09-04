@@ -464,37 +464,45 @@ def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
     return True
 
 
-def create_additional_settings(hooks: dict[str, Any], claude_user_dir: Path) -> bool:
-    """Create additional-settings.json with environment-specific hooks.
+def create_additional_settings(
+    hooks: dict[str, Any],
+    claude_user_dir: Path,
+    output_style: str | None = None,
+) -> bool:
+    """Create additional-settings.json with environment-specific hooks and output style.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
 
+    Args:
+        hooks: Hooks configuration dictionary with 'files' and 'events' keys
+        claude_user_dir: Path to Claude user directory
+        output_style: Optional output style filename (without extension) to set as default
+
     Returns:
         bool: True if successful, False otherwise.
     """
-    if not hooks:
-        # Still create an empty additional-settings.json for consistency
-        additional_settings_path = claude_user_dir / 'additional-settings.json'
-        try:
-            with open(additional_settings_path, 'w') as f:
-                json.dump({}, f, indent=2)
-            info('Created empty additional-settings.json (no hooks configured)')
-            return True
-        except Exception as e:
-            error(f'Failed to create additional-settings.json: {e}')
-            return False
-
-    info('Configuring hooks in additional-settings.json...')
+    info('Creating additional-settings.json...')
 
     # Create fresh settings structure for this environment
-    settings = {
-        'hooks': {},
-    }
+    settings = {}
 
-    # Extract files and events from the hooks configuration
-    hook_files = hooks.get('files', [])
-    hook_events = hooks.get('events', [])
+    # Add output style if specified
+    if output_style:
+        # Remove .md extension if present
+        style_name = output_style.replace('.md', '')
+        settings['outputStyle'] = style_name
+        info(f'Setting default output style: {style_name}')
+
+    # Handle hooks if present
+    hook_files = []
+    hook_events = []
+
+    if hooks:
+        settings['hooks'] = {}
+        # Extract files and events from the hooks configuration
+        hook_files = hooks.get('files', [])
+        hook_events = hooks.get('events', [])
 
     # Download all hook files first
     if hook_files:
@@ -578,8 +586,21 @@ def create_additional_settings(hooks: dict[str, Any], claude_user_dir: Path) -> 
         return False
 
 
-def create_launcher_script(claude_user_dir: Path, command_name: str, system_prompt_file: str) -> Path | None:
-    """Create launcher script for starting Claude with specified prompt."""
+def create_launcher_script(
+    claude_user_dir: Path,
+    command_name: str,
+    system_prompt_file: str | None = None,
+) -> Path | None:
+    """Create launcher script for starting Claude with optional system prompt.
+
+    Args:
+        claude_user_dir: Path to Claude user directory
+        command_name: Name of the command to create launcher for
+        system_prompt_file: Optional system prompt filename (if None, only settings are used)
+
+    Returns:
+        Path to launcher script if created successfully, None otherwise
+    """
     launcher_path = claude_user_dir / f'start-{command_name}'
 
     system = platform.system()
@@ -589,16 +610,9 @@ def create_launcher_script(claude_user_dir: Path, command_name: str, system_prom
             # Create PowerShell launcher for Windows
             launcher_path = launcher_path.with_suffix('.ps1')
             launcher_content = f'''# Claude Code Environment Launcher
-# This script starts Claude Code with the configured system prompt
+# This script starts Claude Code with the configured environment
 
 $claudeUserDir = Join-Path $env:USERPROFILE ".claude"
-$promptPath = Join-Path $claudeUserDir "prompts\\{system_prompt_file}"
-
-if (-not (Test-Path $promptPath)) {{
-    Write-Host "Error: System prompt not found at $promptPath" -ForegroundColor Red
-    Write-Host "Please run setup-environment.py first" -ForegroundColor Yellow
-    exit 1
-}}
 
 Write-Host "Starting Claude Code with {command_name} configuration..." -ForegroundColor Green
 
@@ -613,7 +627,7 @@ if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {{
     exit 1
 }}
 
-# Call the shared script instead of building complex command
+# Call the shared script
 $scriptPath = Join-Path $claudeUserDir "launch-{command_name}.sh"
 
 if ($args.Count -gt 0) {{
@@ -629,19 +643,11 @@ if ($args.Count -gt 0) {{
             batch_path = claude_user_dir / f'start-{command_name}.cmd'
             batch_content = f'''@echo off
 REM Claude Code Environment Launcher for CMD
-REM This script starts Claude Code with the configured system prompt
-
-set PROMPT_PATH=%USERPROFILE%\\.claude\\prompts\\{system_prompt_file}
-
-if not exist "%PROMPT_PATH%" (
-    echo Error: System prompt not found at %PROMPT_PATH%
-    echo Please run setup-environment.py first
-    exit /b 1
-)
+REM This script starts Claude Code with the configured environment
 
 echo Starting Claude Code with {command_name} configuration...
 
-REM Call shared script instead of complex command
+REM Call shared script
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 
@@ -658,22 +664,38 @@ if "%~1"=="" (
 
             # Create shared POSIX script that actually launches Claude
             shared_sh = claude_user_dir / f'launch-{command_name}.sh'
-            shared_sh_content = f'''#!/usr/bin/env bash
+
+            # Build the exec command based on whether system prompt is provided
+            if system_prompt_file:
+                shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
+# Get Windows path for settings
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/additional-settings.json")"
+
+# Read and prepare system prompt
 PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
 fi
 
-# Read prompt and get Windows path for settings
+# Read prompt and remove Windows CRLF
 PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
-# Try to get Windows path format; fallback to Unix path if cygpath is not available
+
+exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
+'''
+            else:
+                # No system prompt, only settings
+                shared_sh_content = '''#!/usr/bin/env bash
+set -euo pipefail
+
+# Get Windows path for settings
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/additional-settings.json")"
 
-exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
+exec claude --settings "$SETTINGS_WIN" "$@"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -683,9 +705,11 @@ exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" 
         else:
             # Create bash launcher for Unix-like systems
             launcher_path = launcher_path.with_suffix('.sh')
-            launcher_content = f'''#!/usr/bin/env bash
+
+            if system_prompt_file:
+                launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
-# This script starts Claude Code with the configured system prompt
+# This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
 PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
@@ -710,6 +734,24 @@ else
     claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
 fi
 '''
+            else:
+                launcher_content = f'''#!/usr/bin/env bash
+# Claude Code Environment Launcher
+# This script starts Claude Code with the configured environment
+
+CLAUDE_USER_DIR="$HOME/.claude"
+SETTINGS_PATH="$CLAUDE_USER_DIR/additional-settings.json"
+
+echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+
+# Pass any additional arguments to Claude
+if [ $# -gt 0 ]; then
+    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
+    claude --settings "$SETTINGS_PATH" "$@"
+else
+    claude --settings "$SETTINGS_PATH"
+fi
+'''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
 
@@ -721,7 +763,7 @@ fi
         return None
 
 
-def register_global_command(launcher_path: Path, command_name: str, system_prompt_file: str) -> bool:
+def register_global_command(launcher_path: Path, command_name: str) -> bool:
     """Register global command."""
     info(f'Registering global {command_name} command...')
 
@@ -756,33 +798,13 @@ if "%~1"=="" (
 '''
             ps1_wrapper_path.write_text(ps1_wrapper_content)
 
-            # Git Bash wrapper
+            # Git Bash wrapper - simply call the shared launch script
             bash_wrapper_path = local_bin / command_name
             bash_content = f'''#!/bin/bash
 # Bash wrapper for {command_name} to work in Git Bash
 
-# Path to the system prompt
-PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
-
-if [ ! -f "$PROMPT_PATH" ]; then
-    echo "Error: System prompt not found at $PROMPT_PATH"
-    echo "Please run setup-environment.py first"
-    exit 1
-fi
-
-echo "Starting Claude Code with {command_name} configuration..."
-
-# Read the prompt content and pass it directly to claude
-PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json")"
-
-# Pass all arguments to claude with the system prompt
-if [ $# -gt 0 ]; then
-    echo "Passing additional arguments: $@"
-    claude --settings "$SETTINGS_WIN" --append-system-prompt "$PROMPT_CONTENT" "$@"
-else
-    claude --settings "$SETTINGS_WIN" --append-system-prompt "$PROMPT_CONTENT"
-fi
+# Call the shared launch script
+exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 '''
             bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
             # Make it executable (Git Bash respects this even on Windows)
@@ -856,11 +878,13 @@ def main() -> None:
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name', 'claude-env')
-        system_prompt = config.get('system-prompt', '')
+
+        # Extract command defaults
+        command_defaults = config.get('command-defaults', {})
+        output_style = command_defaults.get('output-style')
+        system_prompt = command_defaults.get('system-prompt')
 
         header(environment_name)
-
-        system = platform.system()
 
         # Set up directories
         home = Path.home()
@@ -919,7 +943,7 @@ def main() -> None:
         else:
             info('No output styles configured')
 
-        # Step 7: Download system prompt
+        # Step 7: Download system prompt (if specified)
         print()
         print(f'{Colors.CYAN}Step 7: Downloading system prompt...{Colors.NC}')
         prompt_path = None
@@ -928,6 +952,8 @@ def main() -> None:
             prompt_filename = Path(system_prompt).name
             prompt_path = prompts_dir / prompt_filename
             download_file(prompt_url, prompt_path)
+        else:
+            info('No additional system prompt configured')
 
         # Step 8: Configure MCP servers
         print()
@@ -935,23 +961,23 @@ def main() -> None:
         mcp_servers = config.get('mcp-servers', [])
         configure_all_mcp_servers(mcp_servers)
 
-        # Step 9: Configure hooks
+        # Step 9: Configure hooks and output style
         print()
-        print(f'{Colors.CYAN}Step 9: Configuring hooks...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
-        create_additional_settings(hooks, claude_user_dir)
+        create_additional_settings(hooks, claude_user_dir, output_style)
 
         # Step 10: Create launcher script
         print()
         print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
-        prompt_filename = Path(system_prompt).name if system_prompt else 'system.md'
+        prompt_filename = Path(system_prompt).name if system_prompt else None
         launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
 
         # Step 11: Register global command
         if launcher_path:
             print()
             print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
-            register_global_command(launcher_path, command_name, prompt_filename)
+            register_global_command(launcher_path, command_name)
         else:
             warning('Launcher script was not created')
 
@@ -968,7 +994,10 @@ def main() -> None:
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         print(f'   * Output styles: {len(output_styles) if output_styles else 0} installed')
-        print('   * System prompt: Configured')
+        if output_style:
+            print(f'   * Default output style: {output_style}')
+        if system_prompt:
+            print('   * Additional system prompt: Configured')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
         print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
         print(f'   * Global command: {command_name} registered')
@@ -976,19 +1005,15 @@ def main() -> None:
         print()
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
         print(f'   * Global command: {command_name}')
-        if launcher_path:
-            if system == 'Windows':
-                print(f"   * Full path: powershell -File '{launcher_path}'")
-            else:
-                print(f'   * Full path: {launcher_path}')
-        if prompt_path:
-            settings_path = claude_user_dir / 'additional-settings.json'
-            print(f"   * Manual: claude --append-system-prompt '@{prompt_path}' --settings '{settings_path}'")
 
         print()
         print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')
         print('   * /help - See all available commands')
-        print('   * /agents - List available subagents')
+        print('   * /agents - Manage subagents')
+        print('   * /hooks - Manage hooks')
+        print('   * /mcp - Manage MCP servers')
+        print('   * /output-style - Choose or manage output styles')
+        print('   * /<slash-command> - Run specific slash command')
 
         print()
         print(f'{Colors.YELLOW}Examples:{Colors.NC}')

@@ -34,4 +34,7 @@ hooks:
           matcher: Edit|MultiEdit|Write
           type: command
           command: python_ruff_lint.py
-system-prompt: system-prompts/examples/python-developer.md
+command-defaults:
+    # Python developers benefit from the additional system prompt
+    # that enhances Claude's default development capabilities
+    system-prompt: system-prompts/examples/python-developer.md

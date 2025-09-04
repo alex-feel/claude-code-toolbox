@@ -71,17 +71,19 @@ hooks:
         #   type: command
         #   command: your-script.py  # Reference the filename from 'files' section above
 
-        # Example: Type checking on Python files
-        # - event: PostToolUse
-        #   matcher: "\.py$"  # Only Python files
-        #   type: command
-        #   command: another-script.py
-
         # Example: Notification hook
         # - event: Notification
         #   type: command
         #   command: notify-send 'Claude Code' 'Task Complete'
 
-# System prompt file (required)
-# Path is relative to the repository root
-system-prompt: system-prompts/examples/your-prompt.md
+# Command launch configuration
+command-defaults:
+    # Default output style (optional)
+    # References filename from 'output-styles' section above (without extension)
+    # This replaces the entire system prompt with a specialized one
+    # output-style: business-analyst  # Will use business-analyst.md
+
+    # Additional system prompt (optional)
+    # Use this when you want to append to Claude's default development prompt
+    # Path is relative to the repository root
+    # system-prompt: system-prompts/examples/your-prompt.md
