@@ -8,6 +8,11 @@ name: [Your Environment Name]
 # This will be registered as a global command for easy access
 command-name: claude-[your-env]
 
+# Optional: Override the default base URL for all relative resource paths
+# When set, all relative paths (agents, commands, etc.) will be resolved against this base
+# Full URLs in resource lists will still take priority over this setting
+# base-url: https://raw.githubusercontent.com/my-org/my-configs/main/{path}
+
 # Dependencies to install (optional)
 # These are run sequentially before environment setup
 dependencies:
