@@ -10,7 +10,6 @@ A community toolbox for Claude Code - automated installers, scripts, agent templ
   <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fprompts.json&query=%24.message&label=Prompts&color=orange&style=for-the-badge" alt="Prompts" />
   <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fstyles.json&query=%24.message&label=Styles&color=purple&style=for-the-badge" alt="Styles" />
   <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fhooks.json&query=%24.message&label=Hooks&color=red&style=for-the-badge" alt="Hooks" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Ftotal.json&query=%24.message&label=Total%20Components&color=brightgreen&style=for-the-badge" alt="Total Components" />
 </p>
 
 ## 🚀 Quick Install
