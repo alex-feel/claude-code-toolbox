@@ -11,6 +11,10 @@ on:
       - 'scripts/models/environment_config.py'
       - '.github/workflows/validate-configs.yml'
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   validate:
     name: Validate Environment Configurations
