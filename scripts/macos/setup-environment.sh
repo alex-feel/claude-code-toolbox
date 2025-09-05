@@ -62,11 +62,36 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
+# Build auth arguments if tokens are present
+AUTH_ARGS=""
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+    echo -e "${CYAN}[INFO]${NC} GitLab token found, will use for authentication"
+    AUTH_ARGS="--auth PRIVATE-TOKEN:$GITLAB_TOKEN"
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+    echo -e "${CYAN}[INFO]${NC} GitHub token found, will use for authentication"
+    AUTH_ARGS="--auth Authorization:Bearer\ $GITHUB_TOKEN"
+elif [ -n "${REPO_TOKEN:-}" ]; then
+    echo -e "${CYAN}[INFO]${NC} Generic repo token found, will use for authentication"
+    AUTH_ARGS="--auth $REPO_TOKEN"
+elif [ -n "${CLAUDE_ENV_AUTH:-}" ]; then
+    echo -e "${CYAN}[INFO]${NC} Using provided authentication"
+    AUTH_ARGS="--auth $CLAUDE_ENV_AUTH"
+fi
+
 # Download and run the Python script with uv
 # uv will handle Python installation automatically
-if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' - "$CONFIG"; then
-    exit 0
+if [ -n "$AUTH_ARGS" ]; then
+    if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' - "$CONFIG" $AUTH_ARGS; then
+        exit 0
+    else
+        echo -e "${RED}[FAIL]${NC} Setup failed"
+        exit 1
+    fi
 else
-    echo -e "${RED}[FAIL]${NC} Setup failed"
-    exit 1
+    if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' - "$CONFIG"; then
+        exit 0
+    else
+        echo -e "${RED}[FAIL]${NC} Setup failed"
+        exit 1
+    fi
 fi
