@@ -1590,7 +1590,12 @@ def main() -> None:
         # Step 10: Create launcher script
         print()
         print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
-        prompt_filename = Path(system_prompt).name if system_prompt else None
+        # Strip query parameters from system prompt filename (must match download logic)
+        if system_prompt:
+            clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
+            prompt_filename = Path(clean_prompt).name
+        else:
+            prompt_filename = None
         launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
 
         # Step 11: Register global command
