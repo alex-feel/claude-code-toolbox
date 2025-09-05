@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.7.0...v1.8.0) (2025-09-05)
+
+
+### Features
+
+* add automatic Claude Code upgrade functionality ([2685031](https://github.com/alex-feel/claude-code-toolbox/commit/268503179e527c9e4cf4f0c5f8cd9357bd096366))
+* add specialized research agents for code and web investigation ([2467cbf](https://github.com/alex-feel/claude-code-toolbox/commit/2467cbf110d244f6d6f4ff942f2efbfc06573570))
+* support multiple environments with separate settings files ([d371647](https://github.com/alex-feel/claude-code-toolbox/commit/d371647e81db1c53f71f8ea5fd2c6bd2629ae4be))
+
 ## [1.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.6.0...v1.7.0) (2025-09-04)
 
 
