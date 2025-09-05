@@ -2,14 +2,7 @@ name: Validate Environment Configs
 
 on:
   pull_request:
-    paths:
-      - 'environments/library/**/*.yaml'
-      - 'environments/library/**/*.yml'
-      - 'environments/templates/**/*.yaml'
-      - 'environments/templates/**/*.yml'
-      - 'scripts/validate_environment_config.py'
-      - 'scripts/models/environment_config.py'
-      - '.github/workflows/validate-configs.yml'
+    # Remove path filters to ensure workflow always runs
 
 permissions:
   contents: read
@@ -26,33 +19,38 @@ jobs:
         with:
           fetch-depth: 0  # Get full history for diff
 
+      - name: Check for relevant changes
+        id: check-changes
+        run: |
+          # Check if any environment config files were changed
+          git diff --name-only origin/${{ github.base_ref }}..HEAD > all-changes.txt
+
+          # Filter for environment config files
+          grep -E 'environments/.+\.(yaml|yml)$|scripts/validate_environment_config.py|scripts/models/environment_config.py' all-changes.txt > changed-configs.txt || true
+
+          if [ -s changed-configs.txt ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "Environment configuration files were changed:"
+            cat changed-configs.txt
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No environment configuration files were changed - skipping validation"
+          fi
+
       - name: Set up Python 3.12
+        if: steps.check-changes.outputs.has_changes == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
+        if: steps.check-changes.outputs.has_changes == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install pyyaml pydantic
 
-      - name: Get changed config files
-        id: changed-files
-        run: |
-          # Get list of changed YAML files in environments/
-          git diff --name-only origin/${{ github.base_ref }}..HEAD | grep -E 'environments/.+\.(yaml|yml)$' > changed-configs.txt || true
-
-          if [ -s changed-configs.txt ]; then
-            echo "has_changes=true" >> $GITHUB_OUTPUT
-            echo "Changed configuration files:"
-            cat changed-configs.txt
-          else
-            echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "No configuration files changed"
-          fi
-
       - name: Validate changed configurations
-        if: steps.changed-files.outputs.has_changes == 'true'
+        if: steps.check-changes.outputs.has_changes == 'true'
         run: |
           echo "Validating changed configuration files..."
           exit_code=0
@@ -83,8 +81,13 @@ jobs:
             echo "✅ All configuration files validated successfully"
           fi
 
+      - name: Skip validation message
+        if: steps.check-changes.outputs.has_changes == 'false'
+        run: |
+          echo "✅ No environment configuration changes to validate"
+
       - name: Comment PR with validation success
-        if: success() && steps.changed-files.outputs.has_changes == 'true'
+        if: success() && steps.check-changes.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -100,7 +103,7 @@ jobs:
             });
 
       - name: Comment PR with validation failure
-        if: failure() && steps.changed-files.outputs.has_changes == 'true'
+        if: failure() && steps.check-changes.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
