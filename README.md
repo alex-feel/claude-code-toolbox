@@ -35,26 +35,34 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 ```
 
 ##### Option 5: Using private repository configurations
+
+**For Private GitLab Repositories (One-liner recommended):**
 ```powershell
-# For private GitLab repositories (supports both web and API URLs)
-# Web URL format (automatically converted to API format):
+# One-liner (recommended) - works from any shell, Run dialog, or shortcuts
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+
+# Alternative: Two-step approach (if already in PowerShell)
 $env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
 $env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
 
-# API URL format (if you prefer to use it directly):
-$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/namespace%2Fproject/repository/files/path%2Fto%2Fconfig.yaml/raw?ref=main'
-$env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+**For Private GitHub Repositories (One-liner recommended):**
+```powershell
+# One-liner (recommended) - works from any shell, Run dialog, or shortcuts
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
-# For private GitHub repositories
+# Alternative: Two-step approach (if already in PowerShell)
 $env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
 $env:GITHUB_TOKEN='ghp_YOUR-TOKEN-HERE'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-
-# One-liner with escaping (use -NoExit to see any errors)
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
+
+**💡 Pro Tips:**
+- Use `-NoExit` flag to keep the window open and see any errors
+- GitLab web URLs (`/-/raw/`) are automatically converted to API format
+- Query parameters (like `?ref_type=heads`) are handled automatically
+- The script only uses authentication when needed (public repos work without tokens)
 
 #### macOS
 ```bash
@@ -64,15 +72,11 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
-# Private GitLab repository (web URL - auto-converted)
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' \
-GITLAB_TOKEN='glpat-YOUR-TOKEN' \
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+# Private GitLab repository (one-liner)
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
-# Private GitHub repository
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' \
-GITHUB_TOKEN='ghp_YOUR-TOKEN' \
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+# Private GitHub repository (one-liner)
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 #### Linux
@@ -83,15 +87,11 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Private GitLab repository (web URL - auto-converted)
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' \
-GITLAB_TOKEN='glpat-YOUR-TOKEN' \
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+# Private GitLab repository (one-liner)
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Private GitHub repository
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' \
-GITHUB_TOKEN='ghp_YOUR-TOKEN' \
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+# Private GitHub repository (one-liner)
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 This automated setup includes:
@@ -130,34 +130,53 @@ The setup script will warn you when loading from remote URLs. Always review the 
 
 ### 🔐 Using Private Repository Configurations
 
-For configurations stored in private repositories, you need to provide authentication:
+For configurations stored in private repositories, you need to provide authentication.
 
-#### Supported Authentication Methods
+#### Quick Start: One-liner Commands
 
-1. **GitLab Token** (via `GITLAB_TOKEN` environment variable)
-   - Create a personal access token with `read_repository` scope
-   - The token will be used as `PRIVATE-TOKEN` header
+**GitLab Private Repository (Windows):**
+```powershell
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
 
-2. **GitHub Token** (via `GITHUB_TOKEN` environment variable)
-   - Create a personal access token with `repo` scope
-   - The token will be used as `Authorization: Bearer` header
+**GitHub Private Repository (Windows):**
+```powershell
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml'; `$env:GITHUB_TOKEN='ghp_YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
 
-3. **Generic Token** (via `REPO_TOKEN` environment variable)
-   - Automatically detects repository type and uses appropriate header
+**GitLab Private Repository (macOS/Linux):**
+```bash
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
 
-4. **Custom Auth** (via `CLAUDE_ENV_AUTH` environment variable)
-   - Specify custom header format: `Header-Name:token-value`
+**GitHub Private Repository (macOS/Linux):**
+```bash
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
 
-#### Important Notes for Private Repositories
+#### Authentication Details
 
-- **Use `-NoExit` flag on Windows**: When running from PowerShell shortcuts or Run dialog, add `-NoExit` to see any authentication errors
-- **Check token permissions**: Ensure your token has read access to the repository and all referenced resources
-- **GitLab URLs**: Both web and API formats are supported
-  - Web format (auto-converted): `https://gitlab.com/namespace/project/-/raw/branch/path/to/file`
-  - API format: `https://gitlab.com/api/v4/projects/namespace%2Fproject/repository/files/path%2Fto%2Ffile/raw?ref=branch`
-  - The setup script automatically converts web URLs to API format for authentication
-- **GitHub URLs**: Use raw content URL
-  - Format: `https://raw.githubusercontent.com/{org}/{repo}/{branch}/{path}`
+**GitLab Authentication:**
+- Create a personal access token with `read_repository` scope
+- Use `GITLAB_TOKEN` environment variable
+- GitLab web URLs (`/-/raw/`) are automatically converted to API format
+- Query parameters (like `?ref_type=heads`) are handled automatically
+
+**GitHub Authentication:**
+- Create a personal access token with `repo` scope
+- Use `GITHUB_TOKEN` environment variable
+- Use raw.githubusercontent.com URLs
+
+**Additional Options:**
+- `REPO_TOKEN` - Generic token that auto-detects repository type
+- `CLAUDE_ENV_AUTH` - Custom header format: `Header-Name:token-value`
+
+#### Pro Tips
+
+- **Windows**: Always use `-NoExit` flag to see any errors
+- **All platforms**: The script tries public access first, only using tokens when needed
+- **GitLab**: Both web (`/-/raw/`) and API URLs work - web URLs are auto-converted
+- **Tokens**: Never commit tokens to repositories - use environment variables instead
 
 ---
 
