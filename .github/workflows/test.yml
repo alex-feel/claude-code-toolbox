@@ -135,21 +135,21 @@ jobs:
 
       - name: Test setup_environment.py imports
         run: |
-          python -c "import sys; sys.path.insert(0, 'scripts'); import setup_environment"
+          uv run python -c "import sys; sys.path.insert(0, 'scripts'); import setup_environment"
 
       - name: Test install_claude.py imports
         run: |
-          python -c "import sys; sys.path.insert(0, 'scripts'); import install_claude"
+          uv run python -c "import sys; sys.path.insert(0, 'scripts'); import install_claude"
 
       - name: Test setup with dry run (Unix)
         if: runner.os != 'Windows'
         run: |
-          python scripts/setup_environment.py python --skip-install || true
+          uv run python scripts/setup_environment.py python --skip-install || true
 
       - name: Test setup with dry run (Windows)
         if: runner.os == 'Windows'
         run: |
-          python scripts/setup_environment.py python --skip-install
+          uv run python scripts/setup_environment.py python --skip-install
         continue-on-error: true
 
   summary:
