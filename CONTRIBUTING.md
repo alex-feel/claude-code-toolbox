@@ -281,7 +281,7 @@ Test your changes:
 ```text
 claude-code-toolbox/
 ├── scripts/
-│   ├── install-claude.py            # Cross-platform Claude installer
+│   ├── install_claude.py            # Cross-platform Claude installer
 │   ├── setup-python-environment.py  # Cross-platform Python setup
 │   ├── windows/                     # Windows bootstrap scripts
 │   ├── linux/                       # Linux bootstrap scripts

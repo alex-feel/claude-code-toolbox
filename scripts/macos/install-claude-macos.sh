@@ -48,7 +48,7 @@ fi
 echo -e "${CYAN}[INFO]${NC} Running Claude Code installer..."
 echo ""
 
-SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install-claude.py"
+SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 # Download and run the Python script with uv
 # uv will handle Python installation automatically

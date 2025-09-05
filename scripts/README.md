@@ -6,17 +6,17 @@ This directory contains installation and setup scripts for Claude Code across di
 
 ```text
 scripts/
-├── install-claude.py            # Cross-platform Claude Code installer (Python)
-├── setup-environment.py         # Cross-platform environment setup (Python)
+├── install_claude.py            # Cross-platform Claude Code installer (Python)
+├── setup_environment.py         # Cross-platform environment setup (Python)
 ├── windows/                     # Windows bootstrap scripts
-│   ├── install-claude-windows.ps1      # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-environment.ps1            # Bootstrap: installs uv, runs setup-environment.py
+│   ├── install-claude-windows.ps1      # Bootstrap: installs uv, runs install_claude.py
+│   └── setup-environment.ps1            # Bootstrap: installs uv, runs setup_environment.py
 ├── linux/                       # Linux bootstrap scripts
-│   ├── install-claude-linux.sh         # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup-environment.py
+│   ├── install-claude-linux.sh         # Bootstrap: installs uv, runs install_claude.py
+│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup_environment.py
 ├── macos/                       # macOS bootstrap scripts
-│   ├── install-claude-macos.sh         # Bootstrap: installs uv, runs install-claude.py
-│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup-environment.py
+│   ├── install-claude-macos.sh         # Bootstrap: installs uv, runs install_claude.py
+│   └── setup-environment.sh             # Bootstrap: installs uv, runs setup_environment.py
 └── hooks/                       # Git hooks and validation scripts
     └── check-powershell.ps1            # PowerShell script analyzer
 ```
@@ -31,8 +31,8 @@ The installation system uses a two-tier architecture:
    - Handle platform-specific PATH setup
 
 2. **Cross-platform Python scripts** (comprehensive installers)
-   - `install-claude.py`: Handles Git Bash, Node.js, and Claude Code installation
-   - `setup-environment.py`: Sets up complete development environment based on YAML configuration
+   - `install_claude.py`: Handles Git Bash, Node.js, and Claude Code installation
+   - `setup_environment.py`: Sets up complete development environment based on YAML configuration
    - Work identically across Windows, Linux, and macOS
    - Require Python 3.12+ (automatically handled by uv)
 
@@ -106,7 +106,7 @@ bash scripts/macos/install-claude-macos.sh
 
 ## 📋 Script Functionality
 
-### Installation Scripts (`install-claude.py`)
+### Installation Scripts (`install_claude.py`)
 
 Comprehensive Claude Code installer that:
 - **Windows**: Installs Git Bash via winget or direct download
@@ -117,7 +117,7 @@ Comprehensive Claude Code installer that:
 - Handles SSL certificate issues in corporate environments
 - Provides fallback installation methods
 
-### Environment Setup Scripts (`setup-environment.py`)
+### Environment Setup Scripts (`setup_environment.py`)
 
 Configuration-driven environment setup that installs based on YAML files:
 - Claude Code (if not already installed)
@@ -144,13 +144,13 @@ The Python scripts support command-line arguments:
 
 ```bash
 # Specify configuration
-python setup-environment.py python
+python setup_environment.py python
 
 # Skip Claude Code installation (if already installed)
-python setup-environment.py python --skip-install
+python setup_environment.py python --skip-install
 
 # Use environment variable
-CLAUDE_ENV_CONFIG=python python setup-environment.py --skip-install
+CLAUDE_ENV_CONFIG=python python setup_environment.py --skip-install
 ```
 
 ### Bootstrap Scripts

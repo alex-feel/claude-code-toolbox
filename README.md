@@ -180,8 +180,8 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 ```text
 claude-code-toolbox/
 ├── scripts/                     # Installation and utility scripts
-│   ├── install-claude.py        # Cross-platform Claude installer
-│   ├── setup-environment.py     # Cross-platform environment setup
+│   ├── install_claude.py        # Cross-platform Claude installer
+│   ├── setup_environment.py     # Cross-platform environment setup
 │   ├── windows/                 # Windows bootstrap scripts
 │   │   ├── install-claude-windows.ps1
 │   │   └── setup-environment.ps1

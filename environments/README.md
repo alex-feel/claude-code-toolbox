@@ -74,7 +74,7 @@ $env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/123/repositor
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 
 # Windows - Using --auth parameter
-python scripts/setup-environment.py "https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main" --auth "glpat-YOUR_TOKEN_HERE"
+python scripts/setup_environment.py "https://gitlab.company.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main" --auth "glpat-YOUR_TOKEN_HERE"
 
 # Linux/macOS - Using environment variable
 export GITLAB_TOKEN='glpat-YOUR_TOKEN_HERE'
@@ -91,7 +91,7 @@ $env:CLAUDE_ENV_CONFIG='https://api.github.com/repos/owner/repo/contents/config.
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 
 # Windows - Using --auth parameter
-python scripts/setup-environment.py "https://api.github.com/repos/owner/repo/contents/config.yaml" --auth "ghp_YOUR_TOKEN_HERE"
+python scripts/setup_environment.py "https://api.github.com/repos/owner/repo/contents/config.yaml" --auth "ghp_YOUR_TOKEN_HERE"
 
 # Linux/macOS - Using environment variable
 export GITHUB_TOKEN='ghp_YOUR_TOKEN_HERE'

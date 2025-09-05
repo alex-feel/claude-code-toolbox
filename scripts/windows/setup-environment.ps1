@@ -51,7 +51,7 @@ if (-not $uvPath) {
 Write-Host "[INFO] Running Python environment setup..." -ForegroundColor Cyan
 Write-Host ""
 
-$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-environment.py"
+$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 
 try {
     # Download the Python script to a temp file

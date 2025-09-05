@@ -1217,7 +1217,7 @@ PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
 
 if [ ! -f "$PROMPT_PATH" ]; then
     echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
-    echo -e "\\033[1;33mPlease run setup-environment.py first\\033[0m"
+    echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
     exit 1
 fi
 
@@ -1368,9 +1368,9 @@ def main() -> None:
 
     if not config_name:
         error('No configuration specified!')
-        info('Usage: setup-environment.py <config_name>')
-        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup-environment.py')
-        info('Example: setup-environment.py python')
+        info('Usage: setup_environment.py <config_name>')
+        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup_environment.py')
+        info('Example: setup_environment.py python')
         sys.exit(1)
 
     try:

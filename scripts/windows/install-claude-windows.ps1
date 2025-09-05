@@ -44,7 +44,7 @@ if (-not $uvPath) {
 Write-Host "[INFO] Running Claude Code installer..." -ForegroundColor Cyan
 Write-Host ""
 
-$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install-claude.py"
+$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 try {
     # Download the Python script to a temp file

@@ -50,7 +50,7 @@ fi
 echo -e "${CYAN}[INFO]${NC} Running environment setup..."
 echo ""
 
-SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup-environment.py"
+SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 
 # Check if configuration is specified
 CONFIG="${CLAUDE_ENV_CONFIG:-$1}"
