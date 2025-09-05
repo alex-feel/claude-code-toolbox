@@ -6,7 +6,10 @@ readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12"
 
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0.2",
+    "pydantic>=2.10.3",
+]
 
 [dependency-groups]
 dev = [
@@ -17,8 +20,6 @@ dev = [
     "pytest-mock>=3.14.0",
     "pytest-timeout>=2.3.1",
     "mypy>=1.13.0",
-    "pyyaml>=6.0.2",
-    "pydantic>=2.10.3",
 ]
 
 [tool.ruff]
@@ -134,3 +135,19 @@ ignore_missing_imports = true
 module = "tests.*"
 disallow_untyped_defs = false
 check_untyped_defs = true
+
+[tool.coverage.run]
+relative_files = true
+source = ["scripts"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError:",
+]
