@@ -2,6 +2,17 @@
 
 A community toolbox for Claude Code - automated installers, scripts, agent templates, and utilities for Windows, macOS, and Linux.
 
+<!-- Dynamic entity count badges -->
+<p align="left">
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fenvironments.json&query=%24.message&label=Environments&color=blue&style=for-the-badge" alt="Environments" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fagents.json&query=%24.message&label=Agents&color=green&style=for-the-badge" alt="Agents" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fcommands.json&query=%24.message&label=Commands&color=yellow&style=for-the-badge" alt="Commands" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fprompts.json&query=%24.message&label=Prompts&color=orange&style=for-the-badge" alt="Prompts" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fstyles.json&query=%24.message&label=Styles&color=purple&style=for-the-badge" alt="Styles" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fhooks.json&query=%24.message&label=Hooks&color=red&style=for-the-badge" alt="Hooks" />
+  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Ftotal.json&query=%24.message&label=Total%20Components&color=brightgreen&style=for-the-badge" alt="Total Components" />
+</p>
+
 ## 🚀 Quick Install
 
 ### 🐍 Python Developer Setup
