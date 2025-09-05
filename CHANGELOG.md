@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.8.0...v1.8.1) (2025-09-05)
+
+
+### Bug Fixes
+
+* add pause prompts to prevent terminal from auto-closing ([06b583d](https://github.com/alex-feel/claude-code-toolbox/commit/06b583da5752cd3320e7ae8adbb8577a60e74c41))
+* convert GitLab web URLs to API format for authentication ([225b288](https://github.com/alex-feel/claude-code-toolbox/commit/225b288beadb13aa748b16df2c237cd9e954443a))
+* pass authentication tokens to Python script for private repository support ([3ecb8e3](https://github.com/alex-feel/claude-code-toolbox/commit/3ecb8e394d167b5ab630cec3c502aeb618050b65))
+* prevent PowerShell terminal from closing when using iex ([32316e7](https://github.com/alex-feel/claude-code-toolbox/commit/32316e79b80f86b75cae76c4350eaf3a82385c84))
+* revert add pause prompts to prevent terminal from auto-closing ([232e84e](https://github.com/alex-feel/claude-code-toolbox/commit/232e84edb0e14262ec34014219688b216ada87f2))
+* revert prevent PowerShell terminal from closing when using iex ([2c7ca3d](https://github.com/alex-feel/claude-code-toolbox/commit/2c7ca3d449fb748b371f9f8e4b208db6a4c8a576))
+* strip query parameters from GitLab URLs to prevent Windows filename errors ([adb2904](https://github.com/alex-feel/claude-code-toolbox/commit/adb2904143989955c8e36707fecfa4b566fcf0f8))
+* strip query parameters from system prompt filename in launcher script ([bf14fff](https://github.com/alex-feel/claude-code-toolbox/commit/bf14fffff708bb153eb5ab676ae91cb53d83b41c))
+
 ## [1.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.7.0...v1.8.0) (2025-09-05)
 
 
