@@ -76,6 +76,22 @@ This repository uses Conventional Commits (enforced by commitizen):
 
 Breaking changes: Add `!` after type or include `BREAKING CHANGE:` in body
 
+## Pull Request Guidelines
+
+### PR Title Format
+- **DO NOT use Conventional Commit format in PR titles** (no `feat:`, `fix:`, etc.)
+- Use clear, descriptive titles that explain the overall change
+- When PR contains multiple unrelated commits, use a comprehensive title like:
+  - "Update documentation and fix validation workflow"
+  - "Refactor components and add badge system"
+  - "Multiple improvements to environment configuration"
+
+### Why No Conventional Commits in PR Titles
+- PRs often contain multiple commits with different types
+- PR titles should describe the overall change, not individual commits
+- Individual commits within the PR should follow Conventional Commit format
+- Release Please uses commit messages, not PR titles, for versioning
+
 ## Critical Implementation Details
 
 ### Configuration Loading Priority (setup_environment.py)
