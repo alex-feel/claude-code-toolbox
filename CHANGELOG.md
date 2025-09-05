@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.9.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.8.1...v1.9.0) (2025-09-05)
+
+
+### Features
+
+* add entity counting and badge generation system ([0c02bd8](https://github.com/alex-feel/claude-code-toolbox/commit/0c02bd8bce12390c84f6b0c3201fac2f830f06e4))
+* add environment configuration validation system ([744fa75](https://github.com/alex-feel/claude-code-toolbox/commit/744fa75906c68013ece915639a15bce73a4f96c0))
+
+
+### Bug Fixes
+
+* add PR write permissions to validation workflow ([31458c0](https://github.com/alex-feel/claude-code-toolbox/commit/31458c01b017e57c1c6b5fca11178cc50afa8e5e))
+* ensure validation workflow always runs to satisfy branch protection ([c0fd20c](https://github.com/alex-feel/claude-code-toolbox/commit/c0fd20c75ec9d6dda34fba5d3e4f18b43532d5df))
+* remove --fix flag for better flow ([603cf05](https://github.com/alex-feel/claude-code-toolbox/commit/603cf053f7c923f7c864dc3df8ea9f05408c0568))
+* remove gist creation from badge update workflow ([2ebbdc8](https://github.com/alex-feel/claude-code-toolbox/commit/2ebbdc8523d0151de3a9c8aae5d929c9de216352))
+* skip validation workflow on Release Please PRs ([f22a961](https://github.com/alex-feel/claude-code-toolbox/commit/f22a96123e74876c9bc1e30f3b480376b967cfea))
+
 ## [1.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.8.0...v1.8.1) (2025-09-05)
 
 
