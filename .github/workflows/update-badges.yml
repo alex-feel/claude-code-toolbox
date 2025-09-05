@@ -1,0 +1,104 @@
+name: Update Entity Badges
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'agents/library/**'
+      - 'environments/library/**'
+      - 'hooks/library/**'
+      - 'slash-commands/library/**'
+      - 'system-prompts/library/**'
+      - 'output-styles/library/**'
+      - 'scripts/count_entities.py'
+      - '.github/workflows/update-badges.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-badges:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python with uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+
+      - name: Setup Python 3.12
+        run: |
+          uv python install 3.12
+          uv python pin 3.12
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv pip install pyyaml
+
+      - name: Count entities and generate badge data
+        run: |
+          uv run python scripts/count_entities.py
+
+      - name: Upload badge data to Gist
+        id: gist
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Read the generated badge data
+            const badgeDir = path.join(process.cwd(), '.github', 'badges');
+            const files = {};
+
+            // Read all JSON files
+            const fileNames = fs.readdirSync(badgeDir).filter(f => f.endsWith('.json'));
+            for (const fileName of fileNames) {
+              const content = fs.readFileSync(path.join(badgeDir, fileName), 'utf8');
+              files[fileName] = { content };
+            }
+
+            // Get or create gist
+            const gistId = '${{ secrets.GIST_ID }}';  // Store gist ID as secret after first creation
+
+            if (gistId) {
+              // Update existing gist
+              await github.rest.gists.update({
+                gist_id: gistId,
+                files: files
+              });
+              console.log(`Updated gist: ${gistId}`);
+            } else {
+              // Create new gist (first run only)
+              const result = await github.rest.gists.create({
+                description: 'Claude Code Toolbox Entity Counts',
+                public: true,
+                files: files
+              });
+              console.log(`Created gist: ${result.data.id}`);
+              console.log('Add this ID as GIST_ID secret in repository settings');
+              core.setOutput('gist_id', result.data.id);
+            }
+
+      - name: Commit badge data (alternative approach)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+          # Check if there are changes
+          if git diff --quiet .github/badges/; then
+            echo "No changes to badge data"
+          else
+            git add .github/badges/
+            git commit -m "chore: update entity count badges [skip ci]"
+            git push
+          fi
