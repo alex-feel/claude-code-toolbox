@@ -11,6 +11,7 @@ permissions:
 jobs:
   validate:
     name: Validate Environment Configurations
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
