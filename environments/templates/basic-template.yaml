@@ -1,5 +1,5 @@
 # Environment Configuration Template
-# Copy this file to environments/examples/<your-env>.yaml and customize
+# Copy this file to environments/library/<your-env>.yaml and customize
 
 # Display name for your environment
 name: [Your Environment Name]
@@ -28,9 +28,9 @@ dependencies:
 # Agents to include (optional)
 # Paths are relative to the repository root
 agents:
-    # - agents/examples/code-reviewer.md
-    # - agents/examples/doc-writer.md
-    # - agents/examples/test-generator.md
+    # - agents/library/code-reviewer.md
+    # - agents/library/doc-writer.md
+    # - agents/library/test-generator.md
 
 # MCP servers configuration (optional)
 mcp-servers:
@@ -56,20 +56,20 @@ mcp-servers:
 # Slash commands to include (optional)
 # Paths are relative to the repository root
 slash-commands:
-    # - slash-commands/examples/commit.md
-    # - slash-commands/examples/test.md
+    # - slash-commands/library/commit.md
+    # - slash-commands/library/test.md
 
 # Output styles (optional)
 # Paths are relative to the repository root
 output-styles:
-    # - output-styles/examples/concise.md
+    # - output-styles/library/concise.md
 
 # Hooks for automatic actions (optional)
 hooks:
     # Files to download for all hooks (listed once, used by multiple events)
     files:
-        # - hooks/examples/your-script.py
-        # - hooks/examples/another-script.py
+        # - hooks/library/your-script.py
+        # - hooks/library/another-script.py
 
     # Hook events configuration
     events:
@@ -136,4 +136,4 @@ command-defaults:
     # Additional system prompt (optional)
     # Use this when you want to append to Claude's default development prompt
     # Path is relative to the repository root
-    # system-prompt: system-prompts/examples/your-prompt.md
+    # system-prompt: system-prompts/library/your-prompt.md

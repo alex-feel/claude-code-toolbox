@@ -210,7 +210,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
             return url  # Unexpected format
 
         project_path = parts[0]  # e.g., "ai/claude-code-configs"
-        remainder = parts[1]     # e.g., "main/environments/examples/file.yaml"
+        remainder = parts[1]     # e.g., "main/environments/library/file.yaml"
 
         # Split remainder into branch and file path
         # The branch is the first part before /
@@ -530,7 +530,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     if not config_spec.endswith('.yaml'):
         config_spec += '.yaml'
 
-    config_url = f'{REPO_BASE_URL}/environments/examples/{config_spec}'
+    config_url = f'{REPO_BASE_URL}/environments/library/{config_spec}'
     info(f'Loading configuration from repository: {config_spec}')
 
     try:
@@ -546,7 +546,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
             info('  - python: Python development environment')
             info('')
             info('You can also:')
-            info('  - Create custom configs in environments/examples/')
+            info('  - Create custom configs in environments/library/')
             info('  - Use a local file: ./my-config.yaml')
             info('  - Use a URL: https://example.com/config.yaml')
             raise Exception(f'Configuration not found: {config_spec}') from None
