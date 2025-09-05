@@ -36,8 +36,14 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 
 ##### Option 5: Using private repository configurations
 ```powershell
-# For private GitLab repositories
-$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml'
+# For private GitLab repositories (supports both web and API URLs)
+# Web URL format (automatically converted to API format):
+$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
+$env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# API URL format (if you prefer to use it directly):
+$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/api/v4/projects/namespace%2Fproject/repository/files/path%2Fto%2Fconfig.yaml/raw?ref=main'
 $env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 
@@ -47,7 +53,7 @@ $env:GITHUB_TOKEN='ghp_YOUR-TOKEN-HERE'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 
 # One-liner with escaping (use -NoExit to see any errors)
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 #### macOS
@@ -58,8 +64,8 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
-# Private GitLab repository
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml' \
+# Private GitLab repository (web URL - auto-converted)
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' \
 GITLAB_TOKEN='glpat-YOUR-TOKEN' \
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
@@ -77,8 +83,8 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Private GitLab repository
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml' \
+# Private GitLab repository (web URL - auto-converted)
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' \
 GITLAB_TOKEN='glpat-YOUR-TOKEN' \
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
@@ -146,9 +152,12 @@ For configurations stored in private repositories, you need to provide authentic
 
 - **Use `-NoExit` flag on Windows**: When running from PowerShell shortcuts or Run dialog, add `-NoExit` to see any authentication errors
 - **Check token permissions**: Ensure your token has read access to the repository and all referenced resources
-- **URL format matters**: Use the raw file URL, not the web interface URL
-  - GitLab: `https://gitlab.com/api/v4/projects/{id}/repository/files/{path}/raw`
-  - GitHub: `https://raw.githubusercontent.com/{org}/{repo}/{branch}/{path}`
+- **GitLab URLs**: Both web and API formats are supported
+  - Web format (auto-converted): `https://gitlab.com/namespace/project/-/raw/branch/path/to/file`
+  - API format: `https://gitlab.com/api/v4/projects/namespace%2Fproject/repository/files/path%2Fto%2Ffile/raw?ref=branch`
+  - The setup script automatically converts web URLs to API format for authentication
+- **GitHub URLs**: Use raw content URL
+  - Format: `https://raw.githubusercontent.com/{org}/{repo}/{branch}/{path}`
 
 ---
 

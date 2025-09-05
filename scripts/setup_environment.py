@@ -162,6 +162,96 @@ def detect_repo_type(url: str) -> str | None:
     return None
 
 
+def convert_gitlab_url_to_api(url: str) -> str:
+    """Convert GitLab web UI URL to API URL for authentication.
+
+    GitLab web UI URLs don't accept API tokens via headers.
+    We need to use the API endpoint for private repo access.
+
+    Converts:
+    - From: https://gitlab.com/namespace/project/-/raw/branch/path/to/file
+    - To: https://gitlab.com/api/v4/projects/namespace%2Fproject/repository/files/path%2Fto%2Ffile/raw?ref=branch
+
+    Args:
+        url: GitLab web UI raw URL
+
+    Returns:
+        GitLab API URL that accepts PRIVATE-TOKEN header
+    """
+    # Check if it's already an API URL
+    if '/api/v4/projects/' in url:
+        return url
+
+    # Check if it's a GitLab web UI raw URL
+    if '/-/raw/' not in url:
+        return url  # Not a GitLab raw URL, return as-is
+
+    # Parse the URL to extract components
+    # Format: https://gitlab.com/namespace/project/-/raw/branch/path/to/file?query
+    try:
+        # Split off query parameters first
+        base_url, _, query = url.partition('?')
+
+        # Extract the domain and path
+        if base_url.startswith('https://'):
+            domain_end = base_url.index('/', 8)  # Find end of domain after https://
+            domain = base_url[:domain_end]
+            path = base_url[domain_end + 1:]  # Skip the /
+        elif base_url.startswith('http://'):
+            domain_end = base_url.index('/', 7)  # Find end of domain after http://
+            domain = base_url[:domain_end]
+            path = base_url[domain_end + 1:]  # Skip the /
+        else:
+            return url  # Unknown format
+
+        # Split the path by /-/raw/
+        parts = path.split('/-/raw/')
+        if len(parts) != 2:
+            return url  # Unexpected format
+
+        project_path = parts[0]  # e.g., "ai/claude-code-configs"
+        remainder = parts[1]     # e.g., "main/environments/examples/file.yaml"
+
+        # Split remainder into branch and file path
+        # The branch is the first part before /
+        branch_end = remainder.find('/')
+        if branch_end == -1:
+            # No file path, just branch
+            branch = remainder
+            file_path = ''
+        else:
+            branch = remainder[:branch_end]
+            file_path = remainder[branch_end + 1:]
+
+        # URL-encode the project path for API (namespace/project -> namespace%2Fproject)
+        encoded_project = urllib.parse.quote(project_path, safe='')
+
+        # URL-encode the file path for API
+        encoded_file = urllib.parse.quote(file_path, safe='')
+
+        # Extract ref parameter from query if present (it overrides branch)
+        ref = branch
+        if query:
+            # Parse query parameters
+            params = urllib.parse.parse_qs(query)
+            # Check for ref or ref_type parameters
+            if 'ref' in params:
+                ref = params['ref'][0]
+            elif 'ref_type' in params and branch:
+                # ref_type is just metadata, use the branch from path
+                ref = branch
+
+        # Build the API URL
+        api_url = f'{domain}/api/v4/projects/{encoded_project}/repository/files/{encoded_file}/raw?ref={ref}'
+
+        info('Converted GitLab URL to API format for authentication')
+        return api_url
+
+    except (ValueError, IndexError) as e:
+        warning(f'Could not convert GitLab URL to API format: {e}')
+        return url  # Return original if conversion fails
+
+
 def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     """Get authentication headers using multiple fallback methods.
 
@@ -524,6 +614,13 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         HTTPError: If the HTTP request fails after authentication attempts
         URLError: If there's a URL/network error (including SSL issues)
     """
+    # Convert GitLab web URLs to API URLs for authentication
+    original_url = url
+    if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
+        url = convert_gitlab_url_to_api(url)
+        if url != original_url:
+            info(f'Using API URL: {url}')
+
     # First try without auth (for public repos)
     try:
         request = Request(url)
