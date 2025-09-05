@@ -618,7 +618,39 @@ def ensure_nodejs() -> bool:
 
 
 # Claude Code installation
-def install_claude_npm() -> bool:
+def get_claude_version() -> str | None:
+    """Get installed Claude Code version."""
+    claude_path = find_command('claude')
+    if not claude_path:
+        # Check common locations on Windows
+        if platform.system() == 'Windows':
+            common_paths = [
+                os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
+                os.path.expandvars(r'%APPDATA%\npm\claude'),
+                os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'),
+            ]
+            for path in common_paths:
+                if Path(path).exists():
+                    claude_path = path
+                    break
+
+        if not claude_path:
+            return None
+
+    result = run_command([claude_path, '--version'])
+    if result.returncode == 0:
+        # Parse version from output like "claude, version 0.7.7" or "@anthropic-ai/claude-code/0.7.7"
+        output = result.stdout.strip()
+        # Try to extract version number
+        match = re.search(r'(\d+\.\d+\.\d+)', output)
+        if match:
+            return match.group(1)
+        return output  # Return full string if can't parse
+    return None
+
+
+def install_claude_npm(upgrade: bool = False) -> bool:
     """Install Claude Code using npm."""
     # On Windows, check if npm is in Program Files even if not in PATH
     if platform.system() == 'Windows':
@@ -649,26 +681,28 @@ def install_claude_npm() -> bool:
             error('npm not found. Please install Node.js with npm')
             return False
 
-    info(f'Installing Claude Code CLI via npm (npm path: {npm_path})...')
+    action = 'Upgrading' if upgrade else 'Installing'
+    info(f'{action} Claude Code CLI via npm (npm path: {npm_path})...')
 
     # Try without sudo first (show output for debugging)
-    cmd = [npm_path, 'install', '-g', CLAUDE_NPM_PACKAGE]
+    # Always use @latest to ensure we get the newest version
+    cmd = [npm_path, 'install', '-g', f'{CLAUDE_NPM_PACKAGE}@latest']
     info(f'Running command: {" ".join(cmd)}')
     result = run_command(cmd, capture_output=False)
 
     if result.returncode == 0:
-        success('Claude Code installed successfully')
+        success(f'Claude Code {"upgraded" if upgrade else "installed"} successfully')
         return True
 
     # Try with sudo on Unix systems
     if platform.system() != 'Windows':
         warning('Trying with sudo...')
-        result = run_command(['sudo', 'npm', 'install', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
+        result = run_command(['sudo', 'npm', 'install', '-g', f'{CLAUDE_NPM_PACKAGE}@latest'], capture_output=False)
         if result.returncode == 0:
-            success('Claude Code installed successfully')
+            success(f'Claude Code {"upgraded" if upgrade else "installed"} successfully')
             return True
 
-    error('Failed to install Claude Code via npm')
+    error(f'Failed to {"upgrade" if upgrade else "install"} Claude Code via npm')
     return False
 
 
@@ -722,30 +756,31 @@ def install_claude_native() -> bool:
 
 
 def ensure_claude() -> bool:
-    """Ensure Claude Code is installed."""
-    info('Installing Claude Code CLI...')
+    """Ensure Claude Code is installed and up-to-date."""
+    info('Checking Claude Code CLI...')
 
     # Check if already installed
-    if find_command('claude'):
-        success('Claude Code is already installed')
-        return True
+    current_version = get_claude_version()
 
-    # Check common locations on Windows
-    if platform.system() == 'Windows':
-        common_paths = [
-            os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
-            os.path.expandvars(r'%APPDATA%\npm\claude'),
-            os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
-            os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'),
-        ]
-
-        for path in common_paths:
-            if Path(path).exists():
-                success(f'Claude Code already installed at: {path}')
-                return True
-
-    # Try npm installation
-    if install_claude_npm():
+    if current_version:
+        info(f'Claude Code version {current_version} is currently installed')
+        info('Upgrading to latest version...')
+        # Upgrade existing installation
+        if install_claude_npm(upgrade=True):
+            new_version = get_claude_version()
+            if new_version and new_version != current_version:
+                success(f'Claude Code upgraded from {current_version} to {new_version}')
+            else:
+                success('Claude Code is up-to-date')
+            return True
+        warning('Upgrade failed, but existing installation remains')
+        return True  # Still return True since Claude is installed
+    info('Claude Code not found, installing...')
+    # Fresh installation
+    if install_claude_npm(upgrade=False):
+        new_version = get_claude_version()
+        if new_version:
+            success(f'Claude Code version {new_version} installed successfully')
         return True
 
     # Try native installer on Windows
