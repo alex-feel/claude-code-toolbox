@@ -180,18 +180,9 @@ CLAUDE_ENV_CONFIG=https://trusted-site.com/config.yaml curl -fsSL https://raw.gi
 
 ## Available Configurations
 
-### python.yaml
-**Command:** `claude-python`
+The `library/` directory contains ready-to-use environment configurations. Each configuration provides a complete development environment tailored for specific technology stacks and workflows.
 
-A Python development environment with:
-- 7 Python-optimized subagents (code review, testing, docs, etc.)
-- 6 slash commands (/commit, /debug, /test, etc.)
-- Context7 MCP server for library documentation
-- Python developer system prompt
-
-### Additional Configurations
-
-More environment configurations are coming soon. You can create your own by following the structure below.
+Check the `library/` directory for available configurations.
 
 ## Configuration Structure
 
@@ -317,7 +308,7 @@ agents:
 
 # Option 2: Mix resources from different sources
 agents:
-    - agents/examples/code-reviewer.md  # Uses default or derived base
+    - agents/library/code-reviewer.md  # Uses default or derived base
     - https://gitlab.company.com/api/v4/projects/123/repository/files/agents%2Fcustom.md/raw?ref=main
 
 # Option 3: Load config from URL - resources inherit that base automatically
@@ -331,7 +322,7 @@ agents:
 
 ### For Repository (Public)
 
-1. Create a new YAML file in `environments/examples/`
+1. Create a new YAML file in `environments/library/`
 2. Define your environment using the structure above
 3. **Do NOT include sensitive data like API keys**
 4. Run the setup script with your configuration name
@@ -350,8 +341,8 @@ dependencies:
     - uv tool install ruff@latest
 
 agents:
-    - agents/examples/code-reviewer.md
-    - agents/examples/test-generator.md
+    - agents/library/code-reviewer.md
+    - agents/library/test-generator.md
 
 # MCP servers with API keys (keep these private!)
 mcp-servers:
@@ -368,12 +359,12 @@ mcp-servers:
       header: Authorization: Bearer eyJhbGc...  # SENSITIVE!
 
 slash-commands:
-    - slash-commands/examples/commit.md
-    - slash-commands/examples/test.md
+    - slash-commands/library/commit.md
+    - slash-commands/library/test.md
 
 hooks:
     files:
-        - hooks/examples/python_ruff_lint.py
+        - hooks/library/python_ruff_lint.py
     events:
         - event: PostToolUse
           matcher: Edit|MultiEdit|Write

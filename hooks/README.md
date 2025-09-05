@@ -32,9 +32,8 @@ More events may be added in future versions of Claude Code.
 
 ```text
 hooks/
-├── examples/          # Ready-to-use hook scripts
-│   └── python_ruff_lint.py    # Python linting with Ruff
-└── README.md         # This file
+├── library/           # Ready-to-use hook scripts
+└── README.md          # This file
 ```
 
 ## 🚀 Quick Start
@@ -50,7 +49,7 @@ hooks/
        type: command
        command: .claude/hooks/python_ruff_lint.py
        files:
-         - hooks/examples/python_ruff_lint.py
+         - hooks/library/python_ruff_lint.py
    ```
 
 2. **Manual Installation:**
@@ -73,25 +72,18 @@ hooks/
    }
    ```
 
-## 📝 Example Hooks
+## 📝 Available Hooks
 
-### python_ruff_lint.py
+The `library/` directory contains ready-to-use hook scripts for:
 
-Automatically formats and lints Python files using Ruff:
-- Runs after any file edit operation
-- Auto-fixes formatting issues silently
-- Reports unfixable violations back to Claude
-- Works cross-platform (Windows/macOS/Linux)
+- **Python Linting** - Automatic formatting and linting with Ruff
+- Additional hooks can be added for other languages and tools
 
-**Requirements:**
-- Ruff installed (`uv tool install ruff` or `pip install ruff`)
-- Python 3.8+
-
-**Features:**
-- Silent auto-formatting
-- Error feedback to Claude
-- Handles multiple file edits
-- Filters only Python files
+Each hook is designed to:
+- Run silently when possible
+- Provide feedback on errors
+- Work cross-platform
+- Handle multiple file operations
 
 ## 🛠️ Creating Custom Hooks
 
@@ -184,9 +176,9 @@ Multiple hooks can run for the same event:
 ```yaml
 hooks:
   files:
-    - hooks/examples/format_check.py
-    - hooks/examples/type_check.py
-    - hooks/examples/run_tests.py
+    - hooks/library/format_check.py
+    - hooks/library/type_check.py
+    - hooks/library/run_tests.py
   events:
     - event: PostToolUse
       matcher: "\.py$"
@@ -234,7 +226,7 @@ else:
 ## 🤝 Contributing
 
 To contribute a new hook:
-1. Create a well-documented script in `hooks/examples/`
+1. Create a well-documented script in `hooks/library/`
 2. Include usage instructions and requirements
 3. Test on multiple platforms
 4. Submit a pull request

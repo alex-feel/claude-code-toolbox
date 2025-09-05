@@ -3,16 +3,20 @@ name: Validate Environment Configs
 on:
   pull_request:
     paths:
-      - 'environments/examples/**/*.yaml'
-      - 'environments/examples/**/*.yml'
+      - 'environments/library/**/*.yaml'
+      - 'environments/library/**/*.yml'
       - 'environments/templates/**/*.yaml'
       - 'environments/templates/**/*.yml'
       - 'scripts/validate_environment_config.py'
       - 'scripts/models/environment_config.py'
       - '.github/workflows/validate-configs.yml'
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  validate-pr:
+  validate:
     name: Validate Environment Configurations
     runs-on: ubuntu-latest
 
@@ -57,12 +61,12 @@ jobs:
               echo "----------------------------------------"
               echo "Validating: $config_file"
 
-              # Check if it's a template or example
+              # Check if it's a template or library config
               if [[ "$config_file" == *"templates/"* ]]; then
                 echo "Note: Template file - allowing placeholder values"
                 python scripts/validate_environment_config.py "$config_file" || true
               else
-                # Examples must pass strict validation
+                # Library configs must pass strict validation
                 if ! python scripts/validate_environment_config.py "$config_file" --strict; then
                   exit_code=1
                 fi
@@ -106,7 +110,7 @@ jobs:
             Please check the workflow logs for details.
 
             **Note:** Template files in \`environments/templates/\` are allowed to have placeholder values.
-            Example files in \`environments/examples/\` must be fully valid.
+            Configuration files in \`environments/library/\` must be fully valid.
 
             To validate locally, run:
             \`\`\`bash

@@ -1,0 +1,53 @@
+{
+  "counts": {
+    "environments": 1,
+    "env_templates": 1,
+    "agents": 9,
+    "agent_templates": 1,
+    "commands": 6,
+    "command_templates": 1,
+    "prompts": 3,
+    "prompt_templates": 1,
+    "styles": 6,
+    "style_templates": 1,
+    "hooks": 1,
+    "total_components": 26
+  },
+  "badges": {
+    "environments": {
+      "label": "Environments",
+      "message": "1",
+      "color": "blue"
+    },
+    "agents": {
+      "label": "Agents",
+      "message": "9",
+      "color": "green"
+    },
+    "commands": {
+      "label": "Commands",
+      "message": "6",
+      "color": "yellow"
+    },
+    "prompts": {
+      "label": "Prompts",
+      "message": "3",
+      "color": "orange"
+    },
+    "styles": {
+      "label": "Styles",
+      "message": "6",
+      "color": "purple"
+    },
+    "hooks": {
+      "label": "Hooks",
+      "message": "1",
+      "color": "red"
+    },
+    "total": {
+      "label": "Total Components",
+      "message": "26",
+      "color": "brightgreen"
+    }
+  }
+}

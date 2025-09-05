@@ -3,13 +3,13 @@ command-name: claude-python
 dependencies:
     - uv tool install ruff@latest
 agents:
-    - agents/examples/code-reviewer.md
-    - agents/examples/doc-writer.md
-    - agents/examples/implementation-guide.md
-    - agents/examples/performance-optimizer.md
-    - agents/examples/refactoring-assistant.md
-    - agents/examples/security-auditor.md
-    - agents/examples/test-generator.md
+    - agents/library/code-reviewer.md
+    - agents/library/doc-writer.md
+    - agents/library/implementation-guide.md
+    - agents/library/performance-optimizer.md
+    - agents/library/refactoring-assistant.md
+    - agents/library/security-auditor.md
+    - agents/library/test-generator.md
 mcp-servers:
     - name: context7
       scope: user
@@ -18,17 +18,17 @@ mcp-servers:
       # Note: Add your API key here if you have one
       # header: X-API-Key: your-key-here
 slash-commands:
-    - slash-commands/examples/commit.md
-    - slash-commands/examples/debug.md
-    - slash-commands/examples/document.md
-    - slash-commands/examples/refactor.md
-    - slash-commands/examples/review.md
-    - slash-commands/examples/test.md
+    - slash-commands/library/commit.md
+    - slash-commands/library/debug.md
+    - slash-commands/library/document.md
+    - slash-commands/library/refactor.md
+    - slash-commands/library/review.md
+    - slash-commands/library/test.md
 output-styles:
     # Add output styles if needed
 hooks:
     files:
-        - hooks/examples/python_ruff_lint.py
+        - hooks/library/python_ruff_lint.py
     events:
         - event: PostToolUse
           matcher: Edit|MultiEdit|Write
@@ -37,4 +37,4 @@ hooks:
 command-defaults:
     # Python developers benefit from the additional system prompt
     # that enhances Claude's default development capabilities
-    system-prompt: system-prompts/examples/python-developer.md
+    system-prompt: system-prompts/library/python-developer.md
