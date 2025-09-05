@@ -744,7 +744,9 @@ def download_resources(
     info(f'Downloading {resource_type}...')
 
     for resource in resources:
-        filename = Path(resource).name
+        # Strip query parameters from URL to get clean filename
+        clean_resource = resource.split('?')[0] if '?' in resource else resource
+        filename = Path(clean_resource).name
         destination = destination_dir / filename
         download_resource_with_url(resource, destination, config_source, base_url, auth_param)
 
@@ -1104,7 +1106,9 @@ def create_additional_settings(
         hooks_dir = claude_user_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
         for file in hook_files:
-            filename = Path(file).name
+            # Strip query parameters from URL to get clean filename
+            clean_file = file.split('?')[0] if '?' in file else file
+            filename = Path(clean_file).name
             destination = hooks_dir / filename
             # Use the new URL resolution for hook files
             if config_source:
@@ -1148,7 +1152,9 @@ def create_additional_settings(
         if command.endswith('.py'):
             # Python script - need to handle cross-platform execution
             # Use the absolute path to the downloaded hook file
-            hook_path = claude_user_dir / 'hooks' / Path(command).name
+            # Strip query parameters from command if present
+            clean_command = command.split('?')[0] if '?' in command else command
+            hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
 
             if platform.system() == 'Windows':
                 # Windows needs explicit Python interpreter
@@ -1558,7 +1564,9 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 7: Downloading system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
-            prompt_filename = Path(system_prompt).name
+            # Strip query parameters from URL to get clean filename
+            clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
+            prompt_filename = Path(clean_prompt).name
             prompt_path = prompts_dir / prompt_filename
             download_resource_with_url(system_prompt, prompt_path, config_source, base_url, args.auth)
         else:
