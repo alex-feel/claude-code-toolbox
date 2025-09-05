@@ -12,7 +12,7 @@ on:
       - '.github/workflows/validate-configs.yml'
 
 jobs:
-  validate-pr:
+  validate:
     name: Validate Environment Configurations
     runs-on: ubuntu-latest
 
