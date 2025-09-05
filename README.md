@@ -113,7 +113,6 @@ The Windows installer automatically:
 - ✅ Falls back to direct downloads if winget is unavailable
 - ✅ Configures `CLAUDE_CODE_GIT_BASH_PATH` if bash.exe is not on PATH
 - ✅ Installs Claude Code CLI using the official installer
-- ✅ Runs `claude doctor` to verify the installation
 
 **Reliability Features:**
 - Smart dependency resolution for winget/App Installer
@@ -181,8 +180,8 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 ```text
 claude-code-toolbox/
 ├── scripts/                     # Installation and utility scripts
-│   ├── install-claude.py        # Cross-platform Claude installer
-│   ├── setup-environment.py     # Cross-platform environment setup
+│   ├── install_claude.py        # Cross-platform Claude installer
+│   ├── setup_environment.py     # Cross-platform environment setup
 │   ├── windows/                 # Windows bootstrap scripts
 │   │   ├── install-claude-windows.ps1
 │   │   └── setup-environment.ps1

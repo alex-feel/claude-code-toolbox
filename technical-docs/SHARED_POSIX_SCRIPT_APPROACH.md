@@ -216,7 +216,7 @@ The technical documents for [PowerShell](APPEND_SYSTEM_PROMPT_POWERSHELL.md) and
 
 ## Migration and Setup
 
-The `setup-environment.py` script automatically creates:
+The `setup_environment.py` script automatically creates:
 
 1. The shared POSIX script in `~/.claude/launch-{command_name}.sh`
 2. Shell-specific launchers that call this script
@@ -224,7 +224,7 @@ The `setup-environment.py` script automatically creates:
 
 Users run:
 ```bash
-uv run scripts/setup-environment.py python
+uv run scripts/setup_environment.py python
 ```
 
 Then can use:

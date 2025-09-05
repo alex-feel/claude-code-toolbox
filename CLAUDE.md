@@ -16,8 +16,8 @@ This is the Claude Code Toolbox - a community project providing automated instal
    - These install `uv` (Astral's Python package manager) and run Python scripts
 
 2. **Cross-platform Python scripts** (comprehensive installers)
-   - `scripts/install-claude.py`: Installs Git Bash, Node.js, and Claude Code
-   - `scripts/setup-environment.py`: Configuration-driven environment setup from YAML
+   - `scripts/install_claude.py`: Installs Git Bash, Node.js, and Claude Code
+   - `scripts/setup_environment.py`: Configuration-driven environment setup from YAML
    - Support three configuration sources:
      - Repository configs: `python` → downloads from repo
      - Local files: `./my-config.yaml` → loads from disk
@@ -51,10 +51,10 @@ git add -A
 pre-commit run --all-files
 
 # Test environment setup with local config (prefer if structure changed)
-python scripts/setup-environment.py ./test-config.yaml --skip-install
+python scripts/setup_environment.py ./test-config.yaml --skip-install
 
 # Test with repository config (make sure latest changes are merged if structure changed)
-python scripts/setup-environment.py python --skip-install
+python scripts/setup_environment.py python --skip-install
 ```
 
 ### Linting and Validation
@@ -78,7 +78,7 @@ Breaking changes: Add `!` after type or include `BREAKING CHANGE:` in body
 
 ## Critical Implementation Details
 
-### Configuration Loading Priority (setup-environment.py)
+### Configuration Loading Priority (setup_environment.py)
 
 The `load_config_from_source()` function determines source by checking in order:
 1. URL detection: Starts with `http://` or `https://`
@@ -118,8 +118,8 @@ hooks:
 
 ## Testing Workflows
 
-### When modifying setup-environment.py
-1. Test with repository config: `python scripts/setup-environment.py python --skip-install` (make sure latest changes are merged if structure changed)
+### When modifying setup_environment.py
+1. Test with repository config: `python scripts/setup_environment.py python --skip-install` (make sure latest changes are merged if structure changed)
 2. Test with local file: Create test YAML, run with `./test.yaml` (prefer if structure changed)
 3. Test with mock URL to verify warning messages appear
 4. Verify global command registration works

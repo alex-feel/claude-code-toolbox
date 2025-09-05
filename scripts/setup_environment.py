@@ -887,6 +887,7 @@ def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
 def create_additional_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
+    command_name: str,
     output_style: str | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     model: str | None = None,
@@ -896,7 +897,7 @@ def create_additional_settings(
     base_url: str | None = None,
     auth_param: str | None = None,
 ) -> bool:
-    """Create additional-settings.json with environment-specific settings.
+    """Create {command_name}-additional-settings.json with environment-specific settings.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
@@ -904,6 +905,7 @@ def create_additional_settings(
     Args:
         hooks: Hooks configuration dictionary with 'files' and 'events' keys
         claude_user_dir: Path to Claude user directory
+        command_name: Name of the command for the environment-specific settings file
         output_style: Optional output style filename (without extension) to set as default
         mcp_servers: Optional list of MCP server configurations to pre-allow
         model: Optional model alias or custom model name
@@ -913,7 +915,7 @@ def create_additional_settings(
     Returns:
         bool: True if successful, False otherwise.
     """
-    info('Creating additional-settings.json...')
+    info(f'Creating {command_name}-additional-settings.json...')
 
     # Create fresh settings structure for this environment
     settings = {}
@@ -1076,14 +1078,14 @@ def create_additional_settings(
         matcher_group['hooks'].append(hook_config)
 
     # Save additional settings (always overwrite)
-    additional_settings_path = claude_user_dir / 'additional-settings.json'
+    additional_settings_path = claude_user_dir / f'{command_name}-additional-settings.json'
     try:
         with open(additional_settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
-        success('Created additional-settings.json with environment hooks')
+        success(f'Created {command_name}-additional-settings.json with environment hooks')
         return True
     except Exception as e:
-        error(f'Failed to save additional-settings.json: {e}')
+        error(f'Failed to save {command_name}-additional-settings.json: {e}')
         return False
 
 
@@ -1172,8 +1174,8 @@ if "%~1"=="" (
 set -euo pipefail
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/additional-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
 # Read and prepare system prompt
 PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
@@ -1189,12 +1191,12 @@ exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" 
 '''
             else:
                 # No system prompt, only settings
-                shared_sh_content = '''#!/usr/bin/env bash
+                shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/additional-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
 exec claude --settings "$SETTINGS_WIN" "$@"
 '''
@@ -1217,7 +1219,7 @@ PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
 
 if [ ! -f "$PROMPT_PATH" ]; then
     echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
-    echo -e "\\033[1;33mPlease run setup-environment.py first\\033[0m"
+    echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
     exit 1
 fi
 
@@ -1225,7 +1227,7 @@ echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\0
 
 # Read the prompt content
 PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-SETTINGS_PATH="$CLAUDE_USER_DIR/additional-settings.json"
+SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 
 # Pass any additional arguments to Claude
 if [ $# -gt 0 ]; then
@@ -1241,7 +1243,7 @@ fi
 # This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
-SETTINGS_PATH="$CLAUDE_USER_DIR/additional-settings.json"
+SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
@@ -1359,8 +1361,6 @@ def main() -> None:
                         help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true',
                         help='Skip Claude Code installation')
-    parser.add_argument('--force', action='store_true',
-                        help='Force overwrite existing files')
     parser.add_argument('--auth', type=str,
                         help='Authentication for private repos (e.g., "token" or "header:token")')
     args = parser.parse_args()
@@ -1370,9 +1370,9 @@ def main() -> None:
 
     if not config_name:
         error('No configuration specified!')
-        info('Usage: setup-environment.py <config_name>')
-        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup-environment.py')
-        info('Example: setup-environment.py python')
+        info('Usage: setup_environment.py <config_name>')
+        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup_environment.py')
+        info('Example: setup_environment.py python')
         sys.exit(1)
 
     try:
@@ -1478,7 +1478,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
         create_additional_settings(
-            hooks, claude_user_dir, output_style, mcp_servers, model, permissions, env_variables,
+            hooks, claude_user_dir, command_name, output_style, mcp_servers, model, permissions, env_variables,
             config_source, base_url, args.auth,
         )
 
