@@ -10,71 +10,11 @@ on:
       - 'scripts/validate_environment_config.py'
       - 'scripts/models/environment_config.py'
       - '.github/workflows/validate-configs.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'environments/examples/**/*.yaml'
-      - 'environments/examples/**/*.yml'
-      - 'environments/templates/**/*.yaml'
-      - 'environments/templates/**/*.yml'
-      - 'scripts/validate_environment_config.py'
-      - 'scripts/models/environment_config.py'
 
 jobs:
-  validate:
+  validate-pr:
+    name: Validate Environment Configurations
     runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml pydantic
-
-      - name: Validate example configurations
-        run: |
-          echo "Validating example configurations..."
-          python scripts/validate_environment_config.py environments/examples/ --strict
-
-      - name: Validate template configurations
-        run: |
-          echo "Validating template configurations..."
-          # Templates might have placeholder values, so we don't use --strict
-          python scripts/validate_environment_config.py environments/templates/ || true
-
-      - name: Test single file validation
-        run: |
-          echo "Testing single file validation..."
-          # Test with the python.yaml example if it exists
-          if [ -f "environments/examples/python.yaml" ]; then
-            python scripts/validate_environment_config.py environments/examples/python.yaml --strict
-          fi
-
-      - name: Generate validation report (JSON)
-        if: always()
-        run: |
-          echo "Generating JSON validation report..."
-          python scripts/validate_environment_config.py environments/examples/ --json > validation-report.json
-          cat validation-report.json
-
-      - name: Upload validation report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-report-py312
-          path: validation-report.json
-
-  validate-pr-configs:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
 
     steps:
       - name: Checkout PR branch
@@ -82,7 +22,7 @@ jobs:
         with:
           fetch-depth: 0  # Get full history for diff
 
-      - name: Set up Python
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -111,14 +51,51 @@ jobs:
         if: steps.changed-files.outputs.has_changes == 'true'
         run: |
           echo "Validating changed configuration files..."
+          exit_code=0
           while IFS= read -r config_file; do
             if [ -f "$config_file" ]; then
+              echo "----------------------------------------"
               echo "Validating: $config_file"
-              python scripts/validate_environment_config.py "$config_file" --strict
+
+              # Check if it's a template or example
+              if [[ "$config_file" == *"templates/"* ]]; then
+                echo "Note: Template file - allowing placeholder values"
+                python scripts/validate_environment_config.py "$config_file" || true
+              else
+                # Examples must pass strict validation
+                if ! python scripts/validate_environment_config.py "$config_file" --strict; then
+                  exit_code=1
+                fi
+              fi
             fi
           done < changed-configs.txt
 
-      - name: Comment PR with validation results
+          if [ $exit_code -ne 0 ]; then
+            echo "----------------------------------------"
+            echo "❌ Validation failed for one or more configuration files"
+            exit $exit_code
+          else
+            echo "----------------------------------------"
+            echo "✅ All configuration files validated successfully"
+          fi
+
+      - name: Comment PR with validation success
+        if: success() && steps.changed-files.outputs.has_changes == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `## ✅ Configuration Validation Passed
+
+            All environment configuration files have been validated successfully.`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+      - name: Comment PR with validation failure
         if: failure() && steps.changed-files.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
@@ -128,9 +105,12 @@ jobs:
             One or more environment configuration files have validation errors.
             Please check the workflow logs for details.
 
+            **Note:** Template files in \`environments/templates/\` are allowed to have placeholder values.
+            Example files in \`environments/examples/\` must be fully valid.
+
             To validate locally, run:
             \`\`\`bash
-            python scripts/validate_environment_config.py <config-file>
+            python scripts/validate_environment_config.py <config-file> --strict
             \`\`\``;
 
             github.rest.issues.createComment({
