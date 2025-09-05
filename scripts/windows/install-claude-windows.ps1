@@ -51,8 +51,8 @@ try {
     $tempScript = [System.IO.Path]::GetTempFileName() + ".py"
     Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
 
-    # Run with uv (it will handle Python installation automatically)
-    & uv run --python '>=3.12' $tempScript
+    # Run with uv (it will handle Python 3.12 installation automatically)
+    & uv run --python 3.12 $tempScript
     $exitCode = $LASTEXITCODE
 
     # Clean up

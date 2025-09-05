@@ -51,8 +51,8 @@ echo ""
 SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 # Download and run the Python script with uv
-# uv will handle Python installation automatically
-if curl -fsSL "$SCRIPT_URL" | uv run --python '>=3.12' -; then
+# uv will handle Python 3.12 installation automatically
+if curl -fsSL "$SCRIPT_URL" | uv run --python 3.12 -; then
     exit 0
 else
     echo -e "${RED}[FAIL]${NC} Installation failed"

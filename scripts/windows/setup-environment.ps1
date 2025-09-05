@@ -90,11 +90,11 @@ try {
         $authArgs = @('--auth', $env:CLAUDE_ENV_AUTH)
     }
 
-    # Run with uv (it will handle Python installation automatically)
+    # Run with uv (it will handle Python 3.12 installation automatically)
     if ($authArgs.Count -gt 0) {
-        & uv run --python '>=3.12' $tempScript $config @authArgs
+        & uv run --python 3.12 $tempScript $config @authArgs
     } else {
-        & uv run --python '>=3.12' $tempScript $config
+        & uv run --python 3.12 $tempScript $config
     }
     $exitCode = $LASTEXITCODE
 
