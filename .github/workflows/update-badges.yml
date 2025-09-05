@@ -47,49 +47,7 @@ jobs:
         run: |
           uv run python scripts/count_entities.py
 
-      - name: Upload badge data to Gist
-        id: gist
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            // Read the generated badge data
-            const badgeDir = path.join(process.cwd(), '.github', 'badges');
-            const files = {};
-
-            // Read all JSON files
-            const fileNames = fs.readdirSync(badgeDir).filter(f => f.endsWith('.json'));
-            for (const fileName of fileNames) {
-              const content = fs.readFileSync(path.join(badgeDir, fileName), 'utf8');
-              files[fileName] = { content };
-            }
-
-            // Get or create gist
-            const gistId = '${{ secrets.GIST_ID }}';  // Store gist ID as secret after first creation
-
-            if (gistId) {
-              // Update existing gist
-              await github.rest.gists.update({
-                gist_id: gistId,
-                files: files
-              });
-              console.log(`Updated gist: ${gistId}`);
-            } else {
-              // Create new gist (first run only)
-              const result = await github.rest.gists.create({
-                description: 'Claude Code Toolbox Entity Counts',
-                public: true,
-                files: files
-              });
-              console.log(`Created gist: ${result.data.id}`);
-              console.log('Add this ID as GIST_ID secret in repository settings');
-              core.setOutput('gist_id', result.data.id);
-            }
-
-      - name: Commit badge data (alternative approach)
+      - name: Commit badge data
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
