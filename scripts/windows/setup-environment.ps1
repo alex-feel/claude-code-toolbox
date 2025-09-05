@@ -41,7 +41,7 @@ if (-not $uvPath) {
         Write-Host "[FAIL] Failed to install uv: $_" -ForegroundColor Red
         Write-Host ""
         Write-Host "Please install uv manually from: https://docs.astral.sh/uv/" -ForegroundColor Yellow
-        exit 1
+        throw "uv installation failed"
     }
 } else {
     Write-Host "[OK]   uv is already installed" -ForegroundColor Green
@@ -69,7 +69,7 @@ try {
         Write-Host "Available configurations:" -ForegroundColor Cyan
         Write-Host "  - python    : Python development environment" -ForegroundColor Gray
         Write-Host ""
-        exit 1
+        throw "No configuration specified"
     }
 
     Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
@@ -81,8 +81,12 @@ try {
     # Clean up
     Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
 
-    exit $exitCode
+    # Don't use exit when running with iex to avoid closing the terminal
+    if ($exitCode -ne 0) {
+        throw "Setup failed with exit code $exitCode"
+    }
+    return
 } catch {
     Write-Host "[FAIL] Failed to run setup: $_" -ForegroundColor Red
-    exit 1
+    throw "Setup failed: $_"
 }
