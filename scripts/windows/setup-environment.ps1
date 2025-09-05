@@ -74,8 +74,28 @@ try {
 
     Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
 
+    # Check for authentication token
+    $authArgs = @()
+    if ($env:GITLAB_TOKEN) {
+        Write-Host "[INFO] GitLab token found, will use for authentication" -ForegroundColor Cyan
+        $authArgs = @('--auth', "PRIVATE-TOKEN:$($env:GITLAB_TOKEN)")
+    } elseif ($env:GITHUB_TOKEN) {
+        Write-Host "[INFO] GitHub token found, will use for authentication" -ForegroundColor Cyan
+        $authArgs = @('--auth', "Authorization:Bearer $($env:GITHUB_TOKEN)")
+    } elseif ($env:REPO_TOKEN) {
+        Write-Host "[INFO] Generic repo token found, will use for authentication" -ForegroundColor Cyan
+        $authArgs = @('--auth', $env:REPO_TOKEN)
+    } elseif ($env:CLAUDE_ENV_AUTH) {
+        Write-Host "[INFO] Using provided authentication" -ForegroundColor Cyan
+        $authArgs = @('--auth', $env:CLAUDE_ENV_AUTH)
+    }
+
     # Run with uv (it will handle Python installation automatically)
-    & uv run --python '>=3.12' $tempScript $config
+    if ($authArgs.Count -gt 0) {
+        & uv run --python '>=3.12' $tempScript $config @authArgs
+    } else {
+        & uv run --python '>=3.12' $tempScript $config
+    }
     $exitCode = $LASTEXITCODE
 
     # Clean up

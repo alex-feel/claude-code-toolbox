@@ -34,6 +34,22 @@ $env:CLAUDE_ENV_CONFIG='./my-python-env.yaml'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
+##### Option 5: Using private repository configurations
+```powershell
+# For private GitLab repositories
+$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml'
+$env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# For private GitHub repositories
+$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
+$env:GITHUB_TOKEN='ghp_YOUR-TOKEN-HERE'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+
+# One-liner with escaping (use -NoExit to see any errors)
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
+
 #### macOS
 ```bash
 # Repository config
@@ -41,6 +57,16 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+
+# Private GitLab repository
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml' \
+GITLAB_TOKEN='glpat-YOUR-TOKEN' \
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+
+# Private GitHub repository
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' \
+GITHUB_TOKEN='ghp_YOUR-TOKEN' \
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 #### Linux
@@ -50,6 +76,16 @@ CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+
+# Private GitLab repository
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/path/to/config.yaml' \
+GITLAB_TOKEN='glpat-YOUR-TOKEN' \
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+
+# Private GitHub repository
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' \
+GITHUB_TOKEN='ghp_YOUR-TOKEN' \
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 This automated setup includes:
@@ -85,6 +121,34 @@ When loading configurations:
 - ⚠️ **Remote URLs** (`https://example.com/config.yaml`) - **VERIFY THE SOURCE FIRST!**
 
 The setup script will warn you when loading from remote URLs. Always review the configuration content before proceeding.
+
+### 🔐 Using Private Repository Configurations
+
+For configurations stored in private repositories, you need to provide authentication:
+
+#### Supported Authentication Methods
+
+1. **GitLab Token** (via `GITLAB_TOKEN` environment variable)
+   - Create a personal access token with `read_repository` scope
+   - The token will be used as `PRIVATE-TOKEN` header
+
+2. **GitHub Token** (via `GITHUB_TOKEN` environment variable)
+   - Create a personal access token with `repo` scope
+   - The token will be used as `Authorization: Bearer` header
+
+3. **Generic Token** (via `REPO_TOKEN` environment variable)
+   - Automatically detects repository type and uses appropriate header
+
+4. **Custom Auth** (via `CLAUDE_ENV_AUTH` environment variable)
+   - Specify custom header format: `Header-Name:token-value`
+
+#### Important Notes for Private Repositories
+
+- **Use `-NoExit` flag on Windows**: When running from PowerShell shortcuts or Run dialog, add `-NoExit` to see any authentication errors
+- **Check token permissions**: Ensure your token has read access to the repository and all referenced resources
+- **URL format matters**: Use the raw file URL, not the web interface URL
+  - GitLab: `https://gitlab.com/api/v4/projects/{id}/repository/files/{path}/raw`
+  - GitHub: `https://raw.githubusercontent.com/{org}/{repo}/{branch}/{path}`
 
 ---
 
