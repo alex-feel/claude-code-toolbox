@@ -94,7 +94,7 @@ try {
         Read-Host
         throw "Setup failed with exit code $exitCode"
     }
-    
+
     # Success - show completion message and pause
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Green
