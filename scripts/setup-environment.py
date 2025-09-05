@@ -1359,8 +1359,6 @@ def main() -> None:
                         help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true',
                         help='Skip Claude Code installation')
-    parser.add_argument('--force', action='store_true',
-                        help='Force overwrite existing files')
     parser.add_argument('--auth', type=str,
                         help='Authentication for private repos (e.g., "token" or "header:token")')
     args = parser.parse_args()

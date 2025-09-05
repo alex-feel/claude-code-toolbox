@@ -417,5 +417,5 @@ Choose one or the other:
 - Configurations are downloaded from the repo at setup time
 - All files are placed in `~/.claude/` directory
 - Settings are merged with existing Claude Code configuration
-- Use `--force` flag to overwrite existing files
+- Files are automatically overwritten by default (to preserve latest versions)
 - Use `--skip-install` if Claude Code is already installed

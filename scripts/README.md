@@ -149,9 +149,6 @@ python setup-environment.py python
 # Skip Claude Code installation (if already installed)
 python setup-environment.py python --skip-install
 
-# Force overwrite existing configuration files
-python setup-environment.py python --force
-
 # Use environment variable
 CLAUDE_ENV_CONFIG=python python setup-environment.py --skip-install
 ```
@@ -166,10 +163,10 @@ The platform-specific bootstrap scripts automatically:
 
 ```bash
 # Linux/macOS - configuration and arguments are passed to Python script
-bash setup-environment.sh python --skip-install --force
+bash setup-environment.sh python --skip-install
 
 # Windows - configuration and arguments are passed to Python script
-.\setup-environment.ps1 python --skip-install --force
+.\setup-environment.ps1 python --skip-install
 ```
 
 ## 🔒 Security Considerations

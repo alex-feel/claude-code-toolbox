@@ -113,7 +113,6 @@ The Windows installer automatically:
 - ✅ Falls back to direct downloads if winget is unavailable
 - ✅ Configures `CLAUDE_CODE_GIT_BASH_PATH` if bash.exe is not on PATH
 - ✅ Installs Claude Code CLI using the official installer
-- ✅ Runs `claude doctor` to verify the installation
 
 **Reliability Features:**
 - Smart dependency resolution for winget/App Installer
