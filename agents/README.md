@@ -10,16 +10,8 @@ Sub-agents are specialized AI assistants that operate in isolated contexts withi
 
 ```text
 agents/
-├── examples/        # Ready-to-use sub-agent examples
-│   ├── code-reviewer.md
-│   ├── test-generator.md
-│   ├── doc-writer.md
-│   ├── implementation-guide.md
-│   ├── performance-optimizer.md
-│   ├── security-auditor.md
-│   └── refactoring-assistant.md
+├── library/         # Ready-to-use sub-agents
 └── templates/       # Templates for creating new sub-agents
-    └── basic-template.md
 ```
 
 ## Using These Sub-agents
@@ -33,8 +25,8 @@ Copy sub-agents to your project:
 mkdir -p .claude/agents
 
 # Copy desired sub-agents
-cp agents/examples/code-reviewer.md .claude/agents/
-cp agents/examples/test-generator.md .claude/agents/
+cp agents/library/code-reviewer.md .claude/agents/
+cp agents/library/test-generator.md .claude/agents/
 ```
 
 ### Option 2: User-level (Personal use)
@@ -44,11 +36,11 @@ Install sub-agents for all projects:
 ```bash
 # Windows
 mkdir -p %USERPROFILE%\.claude\agents
-copy agents\examples\*.md %USERPROFILE%\.claude\agents\
+copy agents\library\*.md %USERPROFILE%\.claude\agents\
 
 # Unix/Mac
 mkdir -p ~/.claude/agents
-cp agents/examples/*.md ~/.claude/agents/
+cp agents/library/*.md ~/.claude/agents/
 ```
 
 ## Creating Custom Sub-agents
@@ -99,42 +91,24 @@ Sub-agents are Markdown files with three parts:
 
 3. **File Extension**: Must be `.md`
 
-## Example Sub-agents
+## Available Sub-agents
 
-### Code Reviewer (model: opus, color: blue)
-**Purpose**: Expert code review specialist focusing on security, performance, and best practices. Reviews code for bugs, vulnerabilities, and improvement opportunities with actionable feedback. Produces detailed reports with risk assessments and specific remediation steps.
-**Invocation**: It should be used proactively after writing or modifying code, for pull requests, or when code quality assessment is needed.
-**Tools**: Read-only analysis tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
+The `library/` directory contains production-ready sub-agents for various development tasks including:
 
-### Test Generator (model: opus, color: yellow)
-**Purpose**: Test generation specialist creating comprehensive unit, integration, and end-to-end test suites. Develops tests following TDD/BDD principles with high coverage, proper mocking, and edge case handling. Ensures test maintainability through clear naming, isolated fixtures, and comprehensive assertions.
-**Invocation**: It should be used proactively after writing new code, before refactoring, or when test coverage is below 80%.
-**Tools**: Full testing toolkit (includes Write, Edit, MultiEdit, Bash for test creation and execution)
+- **Code Review** - Security, performance, and best practices analysis
+- **Test Generation** - Comprehensive test suite creation
+- **Documentation** - Technical writing and API documentation
+- **Implementation Guidance** - Library usage and best practices
+- **Performance Optimization** - Profiling and optimization
+- **Security Auditing** - Vulnerability assessment and compliance
+- **Refactoring** - Code restructuring and clean architecture
+- **Research** - Deep code analysis and web research
 
-### Documentation Writer (model: sonnet, color: green)
-**Purpose**: Documentation specialist for technical writing and API documentation. Creates and maintains comprehensive documentation for codebases, APIs, and systems. Ensures documentation stays synchronized with code and follows industry best practices.
-**Invocation**: It should be used proactively after implementing new features, making API changes, or when documentation gaps are detected.
-**Tools**: Full documentation toolkit (includes Write, Edit, MultiEdit, WebFetch, WebSearch)
-
-### Implementation Guide (model: opus, color: purple)
-**Purpose**: Expert at finding and preparing comprehensive implementation guidance for any feature using existing libraries, frameworks, and modules. Retrieves up-to-date documentation, working code examples, and best practices from authoritative sources including Context7. Synthesizes multiple information sources to provide production-ready implementation strategies.
-**Invocation**: It should be used proactively when implementing new features, integrating libraries, or when you need authoritative guidance on how to correctly use any functionality.
-**Tools**: Research and documentation tools (includes WebFetch, WebSearch, mcp__context7)
-
-### Performance Optimizer (model: opus, color: red)
-**Purpose**: Performance optimization expert specializing in profiling, bottleneck identification, and targeted optimization. Analyzes and optimizes application performance with measurable improvements and implementation strategies. Specializes in algorithm optimization, database tuning, caching strategies, and resource management.
-**Invocation**: It should be used proactively for performance issues, slow queries, high memory usage, or optimization requests.
-**Tools**: Full optimization toolkit (includes Write, Edit, MultiEdit, Bash, WebFetch, WebSearch)
-
-### Security Auditor (model: opus, color: orange)
-**Purpose**: Security audit specialist for vulnerability assessment, threat modeling, and compliance verification. Identifies security vulnerabilities, configuration issues, and compliance gaps with actionable remediation guidance. Performs comprehensive security analysis including OWASP Top 10, dependency scanning, and penetration testing.
-**Invocation**: It should be used proactively before deploying to production, after security incidents, or for regular security assessments.
-**Tools**: Full security toolkit (includes Write, Edit, MultiEdit, Bash, WebFetch, WebSearch)
-
-### Refactoring Assistant (model: opus, color: cyan)
-**Purpose**: Refactoring specialist for code restructuring, clean architecture, and design pattern implementation. Transforms complex, legacy, or poorly structured code into maintainable, testable, and extensible systems. Ensures safe refactoring through incremental changes with comprehensive test coverage validation.
-**Invocation**: It should be used proactively when code smells are detected, before adding features to legacy code, or for maintainability improvements.
-**Tools**: Full refactoring toolkit (includes Write, Edit, MultiEdit, Bash)
+Each sub-agent is carefully crafted with:
+- Specific purpose and invocation triggers
+- Appropriate tool permissions
+- Optimized cognitive modes
+- Concurrent execution patterns
 
 ## Best Practices
 
@@ -181,6 +155,6 @@ For detailed documentation on creating and using sub-agents, see:
 To contribute new sub-agents:
 
 1. Create a well-tested sub-agent
-2. Place it in `agents/examples/`
+2. Place it in `agents/library/`
 3. Update this README
 4. Submit a pull request

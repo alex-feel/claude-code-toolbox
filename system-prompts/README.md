@@ -6,13 +6,9 @@ This directory contains comprehensive system prompts that can be used with Claud
 
 ```text
 system-prompts/
-├── examples/          # Ready-to-use system prompts for specific roles
-│   ├── python-developer.md    # Comprehensive Python developer with subagent orchestration
-│   ├── frontend-developer.md  # React/TypeScript/Vite specialist
-│   └── devops-engineer.md     # Infrastructure and CI/CD expert
+├── library/           # Ready-to-use system prompts for specific roles
 ├── templates/         # Templates for creating custom system prompts
-│   └── base-template.md       # Full-featured template with all sections
-└── README.md         # This file
+└── README.md          # This file
 ```
 
 ## 🚀 Quick Start
@@ -48,10 +44,10 @@ As of Claude Code v1.0.51, the `--append-system-prompt` flag works in interactiv
 ```bash
 # Start Claude Code with a specific role
 # Git Bash/Linux/macOS:
-claude --append-system-prompt "$(cat system-prompts/examples/python-developer.md)"
+claude --append-system-prompt "$(cat system-prompts/library/python-developer.md)"
 
 # Or reference the file directly (may not work on all systems)
-claude --append-system-prompt @system-prompts/examples/python-developer.md
+claude --append-system-prompt @system-prompts/library/python-developer.md
 
 # Windows (PowerShell/CMD) - use the automated setup script which creates working wrappers
 ```
@@ -64,13 +60,13 @@ claude --append-system-prompt @system-prompts/examples/python-developer.md
 # Execute a task with a specific system prompt
 # Git Bash/Linux/macOS:
 claude -p "Review this codebase for security issues" \
-  --append-system-prompt "$(cat system-prompts/examples/python-developer.md)"
+  --append-system-prompt "$(cat system-prompts/library/python-developer.md)"
 
 # Windows users: Use the claude-python command after running setup
 
 # Combine with other flags
 claude -p "Optimize database queries" \
-  --append-system-prompt "$(cat system-prompts/examples/python-developer.md)" \
+  --append-system-prompt "$(cat system-prompts/library/python-developer.md)" \
   --model opus \
   --max-turns 10
 ```
@@ -79,44 +75,18 @@ claude -p "Optimize database queries" \
 
 ## 📚 Available System Prompts
 
-### Python Developer (`python-developer.md`)
+The `library/` directory contains comprehensive system prompts for various development roles:
 
-A comprehensive system prompt for Python development that includes:
+- **Python Developer** - Full-stack Python with subagent orchestration
+- **Frontend Developer** - React/TypeScript specialist
+- **DevOps Engineer** - Infrastructure and CI/CD expert
 
-- **Full-stack capabilities**: Python backend + React/TypeScript frontend
-- **Subagent orchestration**: Automatically delegates to specialized agents
-- **Best practices enforcement**: TDD, async-first, modular architecture
-- **Tool mastery**: uv package management, pytest, pre-commit hooks
-- **Concurrent execution**: Maximizes performance through parallel operations
-
-**Integrated Subagents:**
-- `code-reviewer` - Code quality and security reviews
-- `doc-writer` - Technical documentation
-- `implementation-guide` - Library usage and best practices
-- `performance-optimizer` - Performance profiling and optimization
-- `refactoring-assistant` - Code restructuring
-- `security-auditor` - Security vulnerability assessment
-- `test-generator` - Comprehensive test suite creation
-
-### Frontend Developer (`frontend-developer.md`)
-
-Specialized for modern frontend development:
-
-- **React expertise**: Hooks, context, concurrent features
-- **TypeScript mastery**: Type-safe development
-- **Performance focus**: Core Web Vitals optimization
-- **Testing coverage**: Testing Library, Playwright
-- **Accessibility**: WCAG compliance
-
-### DevOps Engineer (`devops-engineer.md`)
-
-Infrastructure and deployment specialist:
-
-- **Infrastructure as Code**: Terraform, CloudFormation
-- **CI/CD pipelines**: GitHub Actions, Jenkins
-- **Container orchestration**: Kubernetes, Docker
-- **Monitoring**: Prometheus, Grafana, ELK
-- **Security**: Automated scanning, compliance
+Each system prompt includes:
+- Role-specific expertise and best practices
+- Subagent integration patterns
+- Tool mastery requirements
+- Quality gates and standards
+- Concurrent execution patterns
 
 ## 🛠️ Creating Custom System Prompts
 
@@ -127,7 +97,7 @@ Infrastructure and deployment specialist:
 
 2. **Copy the template:**
    ```bash
-   cp system-prompts/templates/base-template.md system-prompts/examples/my-role.md
+   cp system-prompts/templates/base-template.md system-prompts/library/my-role.md
    ```
 
 3. **Customize the sections:**
@@ -226,7 +196,7 @@ Use system prompts in automated workflows:
 # GitHub Actions example
 - name: Code Review with Python Prompt
   run: |
-    claude --append-system-prompt @system-prompts/examples/python-developer.md \
+    claude --append-system-prompt @system-prompts/library/python-developer.md \
       -p "Review the changes in this PR for Python best practices"
 ```
 
@@ -235,7 +205,7 @@ Use system prompts in automated workflows:
 ```dockerfile
 # Include system prompt in container
 FROM ubuntu:22.04
-COPY system-prompts/examples/python-developer.md /claude/prompts/
+COPY system-prompts/library/python-developer.md /claude/prompts/
 ENV CLAUDE_SYSTEM_PROMPT=/claude/prompts/python-developer.md
 ```
 
@@ -247,9 +217,9 @@ You can combine system prompts for hybrid roles:
 
 ```bash
 # Create a combined prompt
-cat system-prompts/examples/python-developer.md > combined.md
+cat system-prompts/library/python-developer.md > combined.md
 echo "\n\n## Additional DevOps Responsibilities\n" >> combined.md
-cat system-prompts/examples/devops-engineer.md >> combined.md
+cat system-prompts/library/devops-engineer.md >> combined.md
 
 # Use the combined prompt
 claude --append-system-prompt @combined.md
@@ -261,11 +231,11 @@ Create environment-specific variations:
 
 ```bash
 # Development environment
-claude --append-system-prompt @system-prompts/examples/python-developer.md \
+claude --append-system-prompt @system-prompts/library/python-developer.md \
   --append-system-prompt "Focus on rapid prototyping and experimentation."
 
 # Production environment
-claude --append-system-prompt @system-prompts/examples/python-developer.md \
+claude --append-system-prompt @system-prompts/library/python-developer.md \
   --append-system-prompt "Prioritize stability, security, and performance."
 ```
 
@@ -281,7 +251,7 @@ echo "- Follow company style guide" >> project-prompt.md
 echo "- Target Python 3.11+" >> project-prompt.md
 
 # Combine with role prompt
-claude --append-system-prompt @system-prompts/examples/python-developer.md \
+claude --append-system-prompt @system-prompts/library/python-developer.md \
   --append-system-prompt @project-prompt.md
 ```
 

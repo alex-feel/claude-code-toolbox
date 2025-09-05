@@ -63,7 +63,7 @@ For documentation improvements:
 - Example: `docs: update installation instructions for Windows`
 - Example: `docs: add troubleshooting guide for proxy setups`
 - Example: `docs: clarify sub-agent frontmatter fields`
-- Example: `docs: add examples for slash commands`
+- Example: `docs: add new slash commands`
 
 #### ci
 For changes to CI/CD configuration files and pipelines:
@@ -185,35 +185,17 @@ pre-commit run --all-files
 4. **Cross-platform**: Test on Windows, Linux, and macOS
 5. **Dependencies**: Use uv for package management
 
-### Sub-agents
+### Component Guidelines
 
-1. **Format**: Markdown files with YAML frontmatter
-2. **Required Fields**: name, description
-3. **Optional Fields**: tools, model, color
-4. **Description**: Last sentence MUST contain "Use PROACTIVELY" or "MUST BE USED"
-5. **Location**: Store in `agents/examples/` or `agents/templates/`
-6. **Testing**: Verify in Claude Code before submitting
+For detailed guidelines on creating components, refer to:
+- **Sub-agents**: See [agents/README.md](agents/README.md)
+- **Slash Commands**: See [slash-commands/README.md](slash-commands/README.md)
+- **System Prompts**: See [system-prompts/README.md](system-prompts/README.md)
+- **Output Styles**: See [output-styles/README.md](output-styles/README.md)
+- **Hooks**: See [hooks/README.md](hooks/README.md)
+- **Environments**: See [environments/README.md](environments/README.md)
 
-### Slash Commands
-
-1. **Format**: Markdown files with optional YAML frontmatter
-2. **Naming**: Use descriptive filenames (becomes command name)
-3. **Arguments**: Use `$ARGUMENTS` for dynamic content
-4. **Frontmatter fields**: description, argument-hint, model, allowed-tools
-5. **Location**: Store in `slash-commands/examples/` or `slash-commands/templates/`
-
-### System Prompts
-
-1. **Format**: Markdown files for comprehensive role definitions
-2. **Structure**: Role definition, core practices, subagent integration
-3. **Location**: Store in `system-prompts/examples/` or `system-prompts/templates/`
-4. **Testing**: Verify with `--append-system-prompt` flag
-
-### Output Styles
-
-1. **Format**: Markdown transformation rules
-2. **Purpose**: Transform Claude's output for different professional domains
-3. **Location**: Store in `output-styles/examples/` or `output-styles/templates/`
+All components should be placed in either `library/` (ready-to-use) or `templates/` (examples for customization) directories.
 
 ### General Guidelines
 
@@ -251,24 +233,17 @@ Test your changes:
    ```powershell
    # Windows
    .\scripts\windows\install-claude-windows.ps1 -Verbose
-   .\scripts\windows\setup-python-environment.ps1
+   .\scripts\windows\setup-environment.ps1
 
    # Linux/macOS
    bash scripts/linux/install-claude-linux.sh
-   bash scripts/linux/setup-python-environment.sh
+   bash scripts/linux/setup-environment.sh
    ```
 
-3. **Sub-agents**
-   - Copy to `.claude/agents/`
+3. **Components**
    - Test in Claude Code
-   - Verify tool permissions work correctly
-   - Ensure "Use PROACTIVELY" or "MUST BE USED" triggers are present
-
-4. **Slash Commands**
-   - Copy to `.claude/commands/`
-   - Test with various arguments
-   - Ensure `$ARGUMENTS` substitution works
-   - Verify frontmatter fields if present
+   - Verify functionality works as expected
+   - Check tool permissions and configurations
 
 5. **Documentation**
    - Run markdownlint: `markdownlint-cli2 "**/*.md"`
@@ -282,22 +257,22 @@ Test your changes:
 claude-code-toolbox/
 ├── scripts/
 │   ├── install_claude.py            # Cross-platform Claude installer
-│   ├── setup-python-environment.py  # Cross-platform Python setup
+│   ├── setup_environment.py          # Cross-platform environment setup
 │   ├── windows/                     # Windows bootstrap scripts
 │   ├── linux/                       # Linux bootstrap scripts
 │   ├── macos/                       # macOS bootstrap scripts
 │   └── hooks/                       # Git hooks and validators
 ├── agents/
-│   ├── examples/                    # 7 general-purpose sub-agents
+│   ├── library/                     # Ready-to-use agents (subagents)
 │   └── templates/                   # Sub-agent templates
 ├── slash-commands/
-│   ├── examples/                    # 6 ready-to-use commands
+│   ├── library/                     # Ready-to-use commands
 │   └── templates/                   # Command templates
 ├── system-prompts/
-│   ├── examples/                    # 3 role-specific prompts
+│   ├── library/                     # Role-specific prompts
 │   └── templates/                   # Prompt templates
 ├── output-styles/
-│   ├── examples/                    # 6 professional styles
+│   ├── library/                     # Professional styles
 │   └── templates/                   # Style templates
 ├── mcp/                             # Model Context Protocol config
 ├── docs/                            # All documentation

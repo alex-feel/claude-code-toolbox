@@ -96,8 +96,8 @@ CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' 
 
 This automated setup includes:
 - ✨ Claude Code installation
-- 🤖 7 Python-optimized subagents (code review, testing, docs, etc.)
-- 🎯 6 custom slash commands (/commit, /debug, /test, etc.)
+- 🤖 Python-optimized subagents
+- 🎯 Custom slash commands
 - 📚 Context7 MCP server for up-to-date library documentation
 - 🔧 Comprehensive Python developer system prompt
 - 🚀 Convenience launchers for quick startup
@@ -283,22 +283,22 @@ claude-code-toolbox/
 │   └── macos/                   # macOS bootstrap scripts
 │       ├── install-claude-macos.sh
 │       └── setup-environment.sh
-├── agents/                      # Agent templates and examples
-│   ├── examples/                # Ready-to-use subagents (7 specialized agents)
+├── agents/                      # Agents (subagents)
+│   ├── library/                 # Ready-to-use subagents
 │   └── templates/               # Templates for creating new agents
 ├── system-prompts/              # Comprehensive system prompts
-│   ├── examples/                # Role-specific configurations (3 roles)
+│   ├── library/                 # Role-specific configurations
 │   └── templates/               # Templates for custom prompts
 ├── output-styles/               # Output style transformations
-│   ├── examples/                # Ready-to-use professional styles (6 styles)
+│   ├── library/                 # Ready-to-use professional styles
 │   └── templates/               # Templates for creating new styles
 ├── slash-commands/              # Custom slash command templates
-│   ├── examples/                # Ready-to-use commands (6 commands)
+│   ├── library/                 # Ready-to-use commands
 │   └── templates/               # Command templates
 ├── hooks/                       # Git hooks and event handlers
-│   └── examples/                # Ready-to-use hooks
+│   └── library/                 # Ready-to-use hooks
 ├── environments/                # Environment configurations
-│   ├── examples/                # Ready-to-use environments
+│   ├── library/                 # Ready-to-use environments
 │   └── templates/               # Environment templates
 ├── mcp/                         # Model Context Protocol configuration
 │   └── README.md                # MCP setup and usage guide

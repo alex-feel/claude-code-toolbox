@@ -25,7 +25,7 @@ This is the Claude Code Toolbox - a community project providing automated instal
 
 ### Environment Configuration System
 
-YAML configurations in `environments/examples/` define complete development environments including:
+YAML configurations in `environments/library/` define complete development environments including:
 - Dependencies to install
 - Agents (subagents for Claude Code)
 - MCP servers (with automatic permission pre-allowing)
@@ -102,7 +102,7 @@ As of latest version, hooks use this structure in environment YAML:
 ```yaml
 hooks:
     files:  # Top-level list of files to download
-        - hooks/examples/script.py
+        - hooks/library/script.py
     events:  # Event configurations
         - event: PostToolUse
           matcher: Edit|MultiEdit|Write
@@ -127,7 +127,7 @@ hooks:
 6. Check that hooks execute properly after setup
 
 ### When adding new environment configs
-1. Place in `environments/examples/`
+1. Place in `environments/library/`
 2. Test local installation flow
 3. Verify all referenced files exist in repo
 4. Verify additional-settings.json structure

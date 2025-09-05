@@ -28,15 +28,8 @@ Unlike agents (which handle specific delegated tasks), output styles change Clau
 ```text
 output-styles/
 ├── README.md           # This file
-├── examples/           # Ready-to-use output styles
-│   ├── business-analyst.md    # Business requirements and process analysis
-│   ├── content-creator.md     # Content marketing and copywriting
-│   ├── creative-writer.md     # Creative writing and storytelling
-│   ├── data-scientist.md      # Statistical analysis and ML
-│   ├── research-analyst.md    # Research and evidence-based reporting
-│   └── system-administrator.md # Infrastructure and operations
+├── library/            # Ready-to-use output styles
 └── templates/          # Templates for creating new styles
-    └── basic-template.md
 ```
 
 ## Using Output Styles
@@ -93,31 +86,24 @@ You are Claude Code with [specific characteristics].
 4. **User-Friendly**: Make the style intuitive and helpful
 5. **Documentation**: Include examples of how the style changes behavior
 
-## Example Output Styles
+## Available Output Styles
 
-### Business Analyst
-Transforms Claude Code into a business analyst for requirements gathering, process documentation, stakeholder management, and business case development.
+The `library/` directory contains ready-to-use output styles for various professional domains:
 
-### Content Creator
-Content marketing specialist for blog posts, social media, email campaigns, and content strategy using file operations for content management.
+- **Business Analysis** - Requirements gathering and process documentation
+- **Content Creation** - Marketing content and copywriting
+- **Creative Writing** - Fiction and storytelling
+- **Data Science** - Statistical analysis and machine learning
+- **Research Analysis** - Evidence-based reporting
+- **System Administration** - Infrastructure and operations
 
-### Creative Writer
-Creative writing assistant for novels, stories, scripts, and world-building using file operations for manuscript management.
-
-### Data Scientist
-Focused on statistical analysis, machine learning, visualization, and extracting insights from data using Python's scientific stack.
-
-### Research Analyst
-Conducts systematic investigations, synthesizes information from multiple sources, and produces evidence-based reports with academic rigor.
-
-### System Administrator
-Infrastructure management focus with automation, monitoring, and operational excellence using shell scripts and configuration management.
+Each style completely transforms Claude's communication and problem-solving approach while maintaining core functionality.
 
 ## Contributing
 
 To contribute a new output style:
 
-1. Create a new file in `examples/` following the template
+1. Create a new file in `library/` following the template
 2. Test the style thoroughly
 3. Document specific use cases
 4. Submit a pull request

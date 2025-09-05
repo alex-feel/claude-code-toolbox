@@ -10,15 +10,8 @@ Slash commands are shortcuts that control Claude's behavior during interactive s
 
 ```text
 slash-commands/
-├── examples/        # Ready-to-use command examples
-│   ├── review.md    # Code review command
-│   ├── test.md      # Test generation command
-│   ├── document.md  # Documentation command
-│   ├── refactor.md  # Refactoring command
-│   ├── debug.md     # Debugging command
-│   └── commit.md    # Git commit command
+├── library/         # Ready-to-use commands
 └── templates/       # Templates for new commands
-    └── basic-template.md
 ```
 
 ## Using These Commands
@@ -32,8 +25,8 @@ Copy commands to your project:
 mkdir -p .claude/commands
 
 # Copy desired commands
-cp slash-commands/examples/review.md .claude/commands/
-cp slash-commands/examples/test.md .claude/commands/
+cp slash-commands/library/review.md .claude/commands/
+cp slash-commands/library/test.md .claude/commands/
 ```
 
 ### Option 2: User-level (Personal use)
@@ -43,11 +36,11 @@ Install commands for all projects:
 ```bash
 # Windows
 mkdir -p %USERPROFILE%\.claude\commands
-copy slash-commands\examples\*.md %USERPROFILE%\.claude\commands\
+copy slash-commands\library\*.md %USERPROFILE%\.claude\commands\
 
 # Unix/Mac
 mkdir -p ~/.claude/commands
-cp slash-commands/examples/*.md ~/.claude/commands/
+cp slash-commands/library/*.md ~/.claude/commands/
 ```
 
 ## Command Format
@@ -80,38 +73,22 @@ allowed-tools: Bash, Read, Write  # Restrict tools (optional)
 3. **Content**: Markdown instructions for Claude
 4. **Arguments**: Use `$ARGUMENTS` to access user input
 
-## Example Commands
+## Available Commands
 
-### /commit
-Creates proper git commits with conventional format.
-- **Tools**: `Bash`, `Read`, `Grep` only
-- **Arguments**: `[issue-id] [additional context]`
+The `library/` directory contains ready-to-use slash commands for common development tasks:
 
-### /debug
-Systematic debugging with root cause analysis.
-- **Model**: Forces `opus` for complex analysis
-- **Arguments**: `[error message/issue] [file:line] [context]`
+- **commit** - Create proper git commits with conventional format
+- **debug** - Systematic debugging with root cause analysis
+- **document** - Generate comprehensive technical documentation
+- **refactor** - Refactor code with design patterns and SOLID principles
+- **review** - Comprehensive code review with security and performance analysis
+- **test** - Generate comprehensive test suites following TDD principles
 
-### /document
-Generates comprehensive technical documentation.
-- **Tools**: `Read`, `Write`, `Grep`, `Glob` only
-- **Arguments**: `[component/API/project] [doc-type]`
-
-### /refactor
-Refactors code with design patterns and SOLID principles.
-- **Model**: Forces `opus` for complex refactoring
-- **Tools**: `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Grep`
-- **Arguments**: `[file/module] [goal: performance|readability]`
-
-### /review
-Comprehensive code review with security and performance analysis.
-- **Model**: Forces `opus` for thorough analysis
-- **Arguments**: `[file/PR/commit] [focus: security|performance]`
-
-### /test
-Generates comprehensive test suites following TDD principles.
-- **Tools**: `Read`, `Write`, `Edit`, `MultiEdit`, `Bash`, `Grep`
-- **Arguments**: `[file/module] [test-type] [coverage-target]`
+Each command is configured with:
+- Optional model preferences
+- Tool restrictions for safety
+- Argument hints for proper usage
+- Clear instructions for Claude
 
 ## Creating Custom Commands
 
@@ -170,6 +147,6 @@ For detailed documentation on slash commands, see the [Official Claude Code Docu
 To contribute new commands:
 
 1. Create a well-tested command
-2. Place it in `slash-commands/examples/`
+2. Place it in `slash-commands/library/`
 3. Update this README
 4. Submit a pull request
