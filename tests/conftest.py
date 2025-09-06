@@ -96,7 +96,10 @@ command-name: invalid name with spaces
 @pytest.fixture
 def mock_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock URL fetching for testing."""
-    def mock_urlopen(url, *args, **kwargs):  # noqa: ARG001
+    def mock_urlopen(url, *args, **kwargs):
+        # Mark args and kwargs as intentionally unused
+        del args, kwargs
+
         class MockResponse:
             def read(self):
                 if 'node' in str(url):
@@ -136,7 +139,9 @@ def mock_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return f'/usr/bin/{cmd}'
         return None
 
-    def mock_run(cmd, *args, **kwargs):  # noqa: ARG001
+    def mock_run(cmd, *args, **kwargs):
+        # Mark args and kwargs as intentionally unused
+        del args, kwargs
         import subprocess
         cmd_name = cmd[0] if isinstance(cmd, list) else cmd.split()[0]
 

@@ -187,7 +187,8 @@ class TestMainFunction:
         # Mock file operations
         written_files = {}
 
-        def mock_open_func(file_path, mode='r', **kwargs):  # noqa: ARG001
+        def mock_open_func(file_path, mode='r', **kwargs):
+            del kwargs  # Intentionally unused
             if mode == 'w':
                 mock_file = MagicMock()
                 mock_file.__enter__ = MagicMock(return_value=mock_file)
@@ -239,7 +240,8 @@ class TestMainFunction:
 
         captured_data = {}
 
-        def capture_json_dump(data, file_obj, **kwargs):  # noqa: ARG001
+        def capture_json_dump(data, file_obj, **kwargs):
+            del file_obj, kwargs  # Intentionally unused
             if 'counts' in data:
                 captured_data['main'] = data
 
@@ -274,7 +276,8 @@ class TestMainFunction:
 
         captured_badges = []
 
-        def capture_json_dump(data, file_obj, **kwargs):  # noqa: ARG001
+        def capture_json_dump(data, file_obj, **kwargs):
+            del file_obj, kwargs  # Intentionally unused
             if 'schemaVersion' in data:
                 captured_badges.append(data)
 

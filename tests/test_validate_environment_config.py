@@ -449,7 +449,8 @@ command-name: claude-test
 ''')
 
         # Mock yaml.safe_load to raise an unexpected exception
-        def mock_safe_load(content):  # noqa: ARG001
+        def mock_safe_load(content):
+            del content  # Mark as intentionally unused
             raise RuntimeError('Unexpected error')
 
         with patch('yaml.safe_load', mock_safe_load):
