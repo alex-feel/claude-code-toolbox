@@ -26,9 +26,12 @@ jobs:
         python-version: ['3.12']
 
     steps:
-      - name: Skip release-please PRs
+      # Skip all steps for release-please PRs
+      - name: Skip for release-please
         if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-        run: echo "Skipping tests for release-please PR"
+        run: |
+          echo "Skipping tests for release-please PR"
+          echo "This job will complete quickly to satisfy branch protection"
 
       - name: Checkout code
         if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
@@ -126,9 +129,12 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
-      - name: Skip release-please PRs
+      # Skip all steps for release-please PRs
+      - name: Skip for release-please
         if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
-        run: echo "Skipping tests for release-please PR"
+        run: |
+          echo "Skipping tests for release-please PR"
+          echo "This job will complete quickly to satisfy branch protection"
 
       - name: Checkout code
         if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
