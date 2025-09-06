@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.9.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.9.0...v1.9.1) (2025-09-06)
+
+
+### Bug Fixes
+
+* correct symlink test assertions for Unix platforms ([b068ff6](https://github.com/alex-feel/claude-code-toolbox/commit/b068ff6ed3a0dd470a6682f259b8015fba87d874))
+* correct test assertions for register_global_command edge cases ([739fa00](https://github.com/alex-feel/claude-code-toolbox/commit/739fa000cf2aa545c469073ac140f9c5f6c1b787))
+* move release-please skip condition to step level for matrix jobs ([7a1c019](https://github.com/alex-feel/claude-code-toolbox/commit/7a1c0194a9ba5eac5b3a9f0bf4c0cbe856165544))
+* properly handle release-please PRs in matrix jobs ([6f5fd26](https://github.com/alex-feel/claude-code-toolbox/commit/6f5fd2691634a8c828996d7d54de88623acb19a9))
+* resolve CI test failures and validation issues ([240b562](https://github.com/alex-feel/claude-code-toolbox/commit/240b562973c89d0f6ab13d3b672d35d5d7d2494e))
+* skip Windows-specific tests on Unix platforms ([c871f5b](https://github.com/alex-feel/claude-code-toolbox/commit/c871f5bcec7abb8194e421755eae4e9c1f17d592))
+* test workflow and dependency configuration ([fbe14fe](https://github.com/alex-feel/claude-code-toolbox/commit/fbe14fe6d90b8278d85131a513fb78f757e292f6))
+* use uv run for install script tests ([b8d7d7d](https://github.com/alex-feel/claude-code-toolbox/commit/b8d7d7db92b258b416a5ead578dd27abb7d7dc03))
+
 ## [1.9.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.8.1...v1.9.0) (2025-09-05)
 
 
