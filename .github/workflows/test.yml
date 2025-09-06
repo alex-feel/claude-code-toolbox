@@ -17,7 +17,6 @@ permissions:
 jobs:
   test:
     name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -27,35 +26,44 @@ jobs:
         python-version: ['3.12']
 
     steps:
+      - name: Skip release-please PRs
+        if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
+        run: echo "Skipping tests for release-please PR"
+
       - name: Checkout code
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: astral-sh/setup-uv@v4
         with:
           enable-cache: true
           cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         run: uv sync --all-extras --dev
 
       - name: Run pytest with coverage
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         run: uv run pytest -v --cov=scripts --cov-report=term-missing --cov-report=xml --cov-report=html --junit-xml=test-results.xml tests/
 
       - name: Upload test results
-        if: always()
+        if: always() && ! startsWith(github.head_ref, 'release-please--branches--')
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
           path: test-results.xml
 
       - name: Upload coverage reports
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && ! startsWith(github.head_ref, 'release-please--branches--')
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
@@ -64,7 +72,7 @@ jobs:
             htmlcov/
 
       - name: Surface test results
-        if: always()
+        if: always() && ! startsWith(github.head_ref, 'release-please--branches--')
         uses: pmeier/pytest-results-action@main
         with:
           path: test-results.xml
@@ -73,7 +81,7 @@ jobs:
           fail-on-empty: true
 
       - name: Coverage comment
-        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest'
+        if: github.event_name == 'pull_request' && matrix.os == 'ubuntu-latest' && ! startsWith(github.head_ref, 'release-please--branches--')
         uses: py-cov-action/python-coverage-comment-action@v3
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -110,7 +118,6 @@ jobs:
 
   test-install-scripts:
     name: Test Install Scripts
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -119,35 +126,45 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
+      - name: Skip release-please PRs
+        if: ${{ startsWith(github.head_ref, 'release-please--branches--') }}
+        run: echo "Skipping tests for release-please PR"
+
       - name: Checkout code
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: actions/checkout@v4
 
       - name: Set up Python
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install uv
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         uses: astral-sh/setup-uv@v4
 
       - name: Install dependencies
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         run: uv sync
 
       - name: Test setup_environment.py imports
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         run: |
           uv run python -c "import sys; sys.path.insert(0, 'scripts'); import setup_environment"
 
       - name: Test install_claude.py imports
+        if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
         run: |
           uv run python -c "import sys; sys.path.insert(0, 'scripts'); import install_claude"
 
       - name: Test setup with dry run (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && ! startsWith(github.head_ref, 'release-please--branches--')
         run: |
           uv run python scripts/setup_environment.py python --skip-install || true
 
       - name: Test setup with dry run (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && ! startsWith(github.head_ref, 'release-please--branches--')
         run: |
           uv run python scripts/setup_environment.py python --skip-install
         continue-on-error: true
