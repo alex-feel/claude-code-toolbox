@@ -7,6 +7,7 @@ from typing import Any
 from typing import Literal
 
 from pydantic import BaseModel
+from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import ValidationInfo
 from pydantic import field_validator
@@ -76,6 +77,8 @@ class CommandDefaults(BaseModel):
 
 class EnvironmentConfig(BaseModel):
     """Complete environment configuration model."""
+    model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
+
     name: str = Field(..., description='Display name for the environment')
     command_name: str = Field(..., alias='command-name', description='Global command name')
     base_url: str | None = Field(None, alias='base-url', description='Base URL for relative paths')
@@ -177,8 +180,3 @@ class EnvironmentConfig(BaseModel):
                 raise ValueError(f'Absolute paths not allowed in repository configs: {path}')
 
         return v
-
-    class Config:
-        """Pydantic configuration."""
-        populate_by_name = True  # Allow both field names and aliases
-        str_strip_whitespace = True  # Strip whitespace from strings

@@ -4,7 +4,7 @@
   "sequential-calls": true,
   "packages": {
     ".": {
-      "release-type": "simple",
+      "release-type": "python",
       "path": ".",
       "changelog-path": "CHANGELOG.md",
       "extra-files": [],

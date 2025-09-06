@@ -1,0 +1,153 @@
+[project]
+name = "claude-code-toolbox"
+version = "1.9.0"
+description = "Claude Code Toolbox — production-ready Claude Code enhancements: subagents, hooks, output styles, custom slash commands, system prompts, and one-line environment setup."
+readme = "README.md"
+authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
+requires-python = ">=3.12"
+
+dependencies = [
+    "pyyaml>=6.0.2",
+    "pydantic>=2.10.3",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.1",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "pytest-timeout>=2.3.1",
+    "mypy>=1.13.0",
+]
+
+[tool.ruff]
+# Enable preview features
+preview = true
+# General settings
+src = ["scripts", "app"]
+target-version = "py312"
+line-length = 127
+extend-include = ["scripts/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+# Enable rule groups
+select = [
+    "FAST",  # FastAPI
+    "YTT",  # flake8-2020
+    "ANN",  # flake8-annotations
+    "ASYNC",  # flake8-async
+    "B",  # flake8-bugbear
+    "COM",  # flake8-commas
+    "C4",  # flake8-comprehensions
+    "DTZ",  # flake8-datetimez
+    "T10",  # flake8-debugger
+    "EXE",  # flake8-executable
+    "FIX",  # flake8-fix-me
+    "FA",  # flake8-future-annotations
+    "INT",  # flake8-gettext
+    "ISC",  # flake8-implicit-str-concat
+    "ICN",  # flake8-import-conventions
+    "LOG",  # flake8-logging
+    "PIE",  # flake8-pie
+    "PYI",  # flake8-pyi
+    "PT",  # flake8-pytest-style
+    "Q",  # flake8-quotes
+    "RSE",  # flake8-raise
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+    "SLOT",  # flake8-slots
+    "TID",  # flake8-tidy-imports
+    # "TC",  # flake8-type-checking
+    "ARG",  # flake8-unused-arguments
+    "FLY",  # flynt
+    "I",  # isort
+    "NPY",  # NumPy-specific rules
+    "PD",  # pandas-vet
+    "N",  # pep8-naming
+    "PERF",  # Perflint
+    "E", "W",  # pycodestyle
+    "DOC",  # pydoclint
+    "F",  # Pyflakes
+    "PGH",  # pygrep-hooks
+    "UP",  # pyupgrade
+    "FURB",  # refurb
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+ignore-fully-untyped = true
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+    "fastapi.Query",
+    "fastapi.params.Query",
+    "fastapi.params.Body",
+]
+
+[tool.ruff.lint.flake8-import-conventions.aliases]
+streamlit = "st"
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "single"
+multiline-quotes = "single"
+
+[tool.ruff.lint.flake8-type-checking]
+quote-annotations = true
+strict = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+force-single-line = true
+
+[tool.ruff.lint.pydoclint]
+ignore-one-line-docstrings = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+norecursedirs = ["scripts"]
+filterwarnings = [
+    "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_optional = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[tool.coverage.run]
+relative_files = true
+source = ["scripts"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "pass",
+    "except ImportError:",
+]

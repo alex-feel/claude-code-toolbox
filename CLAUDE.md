@@ -44,24 +44,31 @@ The setup creates global commands (e.g., `claude-python`) that work across all W
 
 ## Development Commands
 
-### Testing Changes
+### Testing Commands
 ```bash
-# Run pre-commit hooks (REQUIRED before commits)
-git add -A
-pre-commit run --all-files
+# Run all tests
+uv run pytest
 
-# Test environment setup with local config (prefer if structure changed)
-python scripts/setup_environment.py ./test-config.yaml --skip-install
+# Run with coverage report
+uv run pytest --cov=src
 
-# Test with repository config (make sure latest changes are merged if structure changed)
-python scripts/setup_environment.py python --skip-install
+# Run only unit tests
+uv run pytest tests/
+
+# Run a specific test file
+uv run pytest tests/test_count_entities.py
+
+# Run a specific test function
+uv run pytest tests/unit/test_card_service.py::TestCountFiles::test_count_files_existing_directory
 ```
 
-### Linting and Validation
+### Code Quality
 ```bash
-# Linting (Ruff - automatically fixes issues)
-git add -A
-pre-commit run --all-files
+# Run pre-commit hooks on all files
+uv run pre-commit run --all-files
+
+# Auto-fix linting issues, including after using Write, Edit, and MultiEdit tools and received feedback
+uv run ruff check --fix
 ```
 
 ## Commit Conventions
