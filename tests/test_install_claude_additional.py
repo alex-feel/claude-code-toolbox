@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
@@ -20,6 +22,7 @@ import install_claude
 class TestErrorHandling:
     """Test error handling scenarios."""
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
     @patch('ctypes.windll.shell32.IsUserAnAdmin', side_effect=Exception('ctypes error'))
     @patch('platform.system', return_value='Windows')
     def test_is_admin_windows_exception(self, mock_system, mock_admin):
@@ -406,6 +409,7 @@ class TestGitBashDetection:
     """Test Git Bash detection on Windows."""
 
     @patch('install_claude.find_command', return_value=None)
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
     @patch('os.path.expandvars')
     @patch('pathlib.Path.exists')
     def test_find_bash_windows_check_localappdata(self, mock_exists, mock_expand, mock_find):

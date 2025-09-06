@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 # Add parent directory to path so we can import scripts
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -398,6 +400,7 @@ class TestUpdatePath:
             # Should not modify PATH on Linux
             assert not mock_get.called
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
     @patch('scripts.install_claude.platform.system', return_value='Windows')
     @patch('scripts.install_claude.Path')
     def test_update_path_windows_npm_exists(self, mock_path, mock_system):
