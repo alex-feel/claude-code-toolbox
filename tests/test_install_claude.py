@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
@@ -148,6 +150,7 @@ class TestUtilityFunctions:
 class TestAdminCheck:
     """Test admin/sudo privilege checking."""
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
     @patch('platform.system', return_value='Windows')
     @patch('ctypes.windll.shell32.IsUserAnAdmin', return_value=1)
     def test_is_admin_windows_true(self, mock_admin, mock_system):
@@ -157,6 +160,7 @@ class TestAdminCheck:
         assert mock_admin.return_value == 1
         assert install_claude.is_admin() is True
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
     @patch('platform.system', return_value='Windows')
     @patch('ctypes.windll.shell32.IsUserAnAdmin', return_value=0)
     def test_is_admin_windows_false(self, mock_admin, mock_system):

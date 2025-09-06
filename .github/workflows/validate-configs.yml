@@ -26,8 +26,8 @@ jobs:
           # Check if any environment config files were changed
           git diff --name-only origin/${{ github.base_ref }}..HEAD > all-changes.txt
 
-          # Filter for environment config files
-          grep -E 'environments/.+\.(yaml|yml)$|scripts/validate_environment_config.py|scripts/models/environment_config.py' all-changes.txt > changed-configs.txt || true
+          # Filter for environment config files (YAML only, not Python model files)
+          grep -E 'environments/.+\.(yaml|yml)$' all-changes.txt > changed-configs.txt || true
 
           if [ -s changed-configs.txt ]; then
             echo "has_changes=true" >> $GITHUB_OUTPUT
