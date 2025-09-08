@@ -29,15 +29,13 @@ jobs:
           ref: main
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
-      - name: Setup Python with uv
-        uses: astral-sh/setup-uv@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          version: "latest"
+          python-version-file: pyproject.toml
 
-      - name: Setup Python 3.12
-        run: |
-          uv python install 3.12
-          uv python pin 3.12
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
         run: |
