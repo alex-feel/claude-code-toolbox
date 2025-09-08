@@ -104,6 +104,164 @@ def find_command(cmd: str) -> str | None:
     return shutil.which(cmd)
 
 
+def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
+    """Check if file exists using HEAD request.
+
+    Args:
+        url: URL to check
+        auth_headers: Optional authentication headers
+
+    Returns:
+        True if file is accessible, False otherwise
+    """
+    try:
+        request = Request(url, method='HEAD')
+        if auth_headers:
+            for header, value in auth_headers.items():
+                request.add_header(header, value)
+
+        try:
+            response = urlopen(request)
+            return response.status == 200
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                # Try with unverified SSL context
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                response = urlopen(request, context=ctx)
+                return response.status == 200
+            return False
+    except (urllib.error.HTTPError, Exception):
+        return False
+
+
+def check_file_with_range(url: str, auth_headers: dict[str, str] | None = None) -> bool:
+    """Check if file exists using Range request (first byte only).
+
+    Args:
+        url: URL to check
+        auth_headers: Optional authentication headers
+
+    Returns:
+        True if file is accessible, False otherwise
+    """
+    try:
+        request = Request(url)
+        request.add_header('Range', 'bytes=0-0')
+        if auth_headers:
+            for header, value in auth_headers.items():
+                request.add_header(header, value)
+
+        try:
+            response = urlopen(request)
+            # Accept both 200 (full content) and 206 (partial content)
+            return response.status in (200, 206)
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                # Try with unverified SSL context
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                response = urlopen(request, context=ctx)
+                return response.status in (200, 206)
+            return False
+    except (urllib.error.HTTPError, Exception):
+        return False
+
+
+def validate_file_availability(url: str, auth_headers: dict[str, str] | None = None) -> tuple[bool, str]:
+    """Validate file availability using HEAD first, then Range as fallback.
+
+    Args:
+        url: URL to check
+        auth_headers: Optional authentication headers
+
+    Returns:
+        Tuple of (is_available, method_used)
+    """
+    # Try HEAD request first
+    if check_file_with_head(url, auth_headers):
+        return (True, 'HEAD')
+
+    # Fallback to Range request
+    if check_file_with_range(url, auth_headers):
+        return (True, 'Range')
+
+    return (False, 'None')
+
+
+def validate_all_config_files(
+    config: dict[str, Any],
+    config_source: str,
+    auth_param: str | None = None,
+) -> tuple[bool, list[tuple[str, str, bool, str]]]:
+    """Validate all downloadable files in the configuration.
+
+    Args:
+        config: Environment configuration dictionary
+        config_source: Source of the configuration (URL or path)
+        auth_param: Optional authentication parameter
+
+    Returns:
+        Tuple of (all_valid, validation_results)
+        validation_results is a list of (file_type, path, is_valid, method) tuples
+    """
+    files_to_check = []
+    results = []
+
+    # Get authentication headers if needed
+    auth_headers = None
+    if config_source.startswith('http'):
+        auth_headers = get_auth_headers(config_source, auth_param)
+
+    # Collect all files that need to be downloaded
+    base_url = config.get('base-url')
+
+    # Agents
+    for agent in config.get('agents', []) or []:
+        url = resolve_resource_url(agent, config_source, base_url)
+        files_to_check.append(('agent', agent, url))
+
+    # Slash commands
+    for cmd in config.get('slash-commands', []) or []:
+        url = resolve_resource_url(cmd, config_source, base_url)
+        files_to_check.append(('slash_command', cmd, url))
+
+    # Output styles
+    for style in config.get('output-styles', []) or []:
+        url = resolve_resource_url(style, config_source, base_url)
+        files_to_check.append(('output_style', style, url))
+
+    # System prompts (if stored as files)
+    for prompt in config.get('system-prompts', []) or []:
+        url = resolve_resource_url(prompt, config_source, base_url)
+        files_to_check.append(('system_prompt', prompt, url))
+
+    # Hooks files
+    hooks = config.get('hooks', {})
+    if hooks:
+        for hook_file in hooks.get('files', []) or []:
+            url = resolve_resource_url(hook_file, config_source, base_url)
+            files_to_check.append(('hook', hook_file, url))
+
+    # Validate each file
+    info(f'Validating {len(files_to_check)} files before download...')
+    all_valid = True
+
+    for file_type, path, url in files_to_check:
+        is_valid, method = validate_file_availability(url, auth_headers)
+        results.append((file_type, path, is_valid, method))
+
+        if is_valid:
+            info(f'  ✓ {file_type}: {path} (validated via {method})')
+        else:
+            error(f'  ✗ {file_type}: {path} (not accessible)')
+            all_valid = False
+
+    return all_valid, results
+
+
 def download_file(url: str, destination: Path, force: bool = True) -> bool:
     """Download a file from URL to destination."""
     filename = destination.name
@@ -1501,6 +1659,28 @@ def main() -> None:
         env_variables = config.get('env-variables')
 
         header(environment_name)
+
+        # Validate all downloadable files before proceeding
+        print()
+        print(f'{Colors.CYAN}Validating configuration files...{Colors.NC}')
+        all_valid, validation_results = validate_all_config_files(config, config_source, args.auth)
+
+        if not all_valid:
+            print()
+            error('Configuration validation failed!')
+            error('The following files are not accessible:')
+            for file_type, path, is_valid, _method in validation_results:
+                if not is_valid:
+                    error(f'  - {file_type}: {path}')
+            print()
+            error('Please check:')
+            error('  1. The URLs are correct')
+            error('  2. The files exist at the specified locations')
+            error('  3. You have necessary permissions (authentication tokens)')
+            error('  4. Network connectivity to the sources')
+            sys.exit(1)
+        else:
+            success('All configuration files validated successfully!')
 
         # Set up directories
         home = Path.home()

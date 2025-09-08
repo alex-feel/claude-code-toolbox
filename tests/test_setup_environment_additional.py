@@ -1157,6 +1157,7 @@ class TestMainFunctionErrorPaths:
             mock_load.assert_called_with('env-config', None)
 
     @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.download_resources', return_value=True)
@@ -1177,11 +1178,16 @@ class TestMainFunctionErrorPaths:
         mock_download,
         mock_deps,
         mock_install,
+        mock_validate,
         mock_load,
     ):
         """Test main with all configuration features enabled."""
         del _mock_mkdir  # Unused but required for patch
         del mock_download_resource  # Unused but required for patch
+
+        # Mock validation to succeed
+        mock_validate.return_value = (True, [])
+
         mock_load.return_value = (
             {
                 'name': 'Full Test',
