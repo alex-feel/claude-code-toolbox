@@ -4,7 +4,7 @@ description: |
   Security audit specialist for vulnerability assessment, threat modeling, and compliance verification.
   Identifies security vulnerabilities, configuration issues, and compliance gaps with actionable remediation guidance.
   Performs comprehensive security analysis including OWASP Top 10, dependency scanning, and penetration testing.
-  It should be used proactively before deploying to production, after security incidents, or for regular security assessments.
+  MUST BE USED before deploying to production, after security incidents, or for regular security assessments.
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash, WebFetch, WebSearch
 model: opus
 color: orange

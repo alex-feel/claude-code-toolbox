@@ -4,7 +4,7 @@ description: |
   Brief description of this agent's specialization and expertise. <!-- For the CALLING agent to read, NOT this agent -->
   What this agent does when invoked (capabilities and deliverables). <!-- Focus on WHAT it delivers, not WHY -->
   Optional third sentence for additional capabilities or specializations.
-  It should be used proactively [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"]. <!-- EXACT phrase required -->
+  MUST BE USED [when to invoke - e.g., "after writing or modifying code", "when encountering errors", "for performance issues"]. <!-- EXACT phrase required -->
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput  # If using Write, MUST add Edit and MultiEdit
 model: opus
 color: blue
@@ -19,7 +19,7 @@ color: blue
 ║  DESCRIPTION FIELD:                                                        ║
 ║  • The description is ONLY seen by the calling agent (orchestrator)        ║
 ║  • The agent itself NEVER sees its own description                         ║
-║  • MUST end with EXACT phrase: "It should be used proactively"            ║
+║  • MUST end with phrase: "MUST BE USED" or "use PROACTIVELY"             ║
 ║  • Description is metadata for caller's decision-making                    ║
 ║                                                                            ║
 ║  AGENT BODY (System Prompt):                                               ║
@@ -71,7 +71,7 @@ color: blue
 ║     □ Thinking mode selected and specified                                 ║
 ║     □ Tools list includes ALL no-permission tools + needed permission ones ║
 ║     □ Domain-specific sections added                                       ║
-║     □ Description ends with "It should be used proactively"               ║
+║     □ Description ends with "MUST BE USED" or "use PROACTIVELY"          ║
 ║     □ Agent body is purpose-agnostic (no orchestrator assumptions)         ║
 ║                                                                            ║
 ╚════════════════════════════════════════════════════════════════════════════╝
@@ -88,10 +88,10 @@ The 'description' field is METADATA for the CALLING agent's decision-making:
 • The agent being defined NEVER sees its own description
 • Only the calling agent (e.g., orchestrator) reads the description
 • Purpose: Help the caller decide when to invoke this agent
-• MUST end with EXACT phrase: "It should be used proactively"
+• MUST end with phrase: "MUST BE USED" or "use PROACTIVELY"
 • Follow with specific trigger conditions
 
-✅ CORRECT: "Reviews code for bugs. Produces actionable reports. It should be used proactively after writing or modifying code."
+✅ CORRECT: "Reviews code for bugs. Produces actionable reports. MUST BE USED after writing or modifying code."
 ❌ WRONG: "The orchestrator will use this to..." (don't assume caller's purpose)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -112,9 +112,9 @@ The agent's system prompt (everything after the frontmatter) must:
 
 YAML FRONTMATTER CONFIGURATION:
 - name: Unique identifier (lowercase, hyphens/underscores)
-- description: Must be 3-4 sentences, LAST sentence MUST use EXACT phrase "It should be used proactively"
+- description: Must be 3-4 sentences, LAST sentence MUST use phrase "MUST BE USED" or "use PROACTIVELY"
   REMEMBER: This is for the CALLER to read, not the agent itself!
-  Example: "Expert code reviewer. Reviews for bugs. Produces reports. It should be used proactively after code changes."
+  Example: "Expert code reviewer. Reviews for bugs. Produces reports. MUST BE USED after code changes."
 - tools: Start with ALL no-permission tools (Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput)
   CRITICAL: If using Write, MUST also include Edit and MultiEdit for corrections!
   MCP SERVERS: To allow all tools from an MCP server, use just the server name: mcp__<serverName>
@@ -129,7 +129,7 @@ TEMPLATE INSTRUCTIONS:
 3. KEEP sections marked as "(KEEP THIS SECTION)" - they contain best practices
 4. CUSTOMIZE examples by replacing them with your domain-specific content
 5. REMOVE all HTML comments (<!-- -->) before finalizing your agent
-6. ENSURE description ends with "It should be used proactively" (exact phrase)
+6. ENSURE description ends with "MUST BE USED" or "use PROACTIVELY"
 7. ENSURE agent body is purpose-agnostic (no caller assumptions)
 
 Template Legend:

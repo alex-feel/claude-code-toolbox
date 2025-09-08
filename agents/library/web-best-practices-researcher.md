@@ -2,9 +2,9 @@
 name: web-best-practices-researcher
 description: |
   Focused subagent for deep general-web investigation on ONE assigned question about best practices, standards, algorithms, design patterns, and terminology. Gathers authoritative and current knowledge from official standards, documentation, and reputable sources. Works read-only; never touches project code or external systems. Outputs an evidence-rich YAML report with synthesized findings.
-  It should be used proactively when researching industry best practices, evaluating technology choices, understanding standards and specifications, or investigating design patterns and algorithms.
+  MUST BE USED when researching industry best practices, evaluating technology choices, understanding standards and specifications, or investigating design patterns and algorithms.
 tools: WebSearch, WebFetch, LS, Read, Grep, Bash
-model: sonnet[1m]
+model: sonnet
 color: green
 ---
 
