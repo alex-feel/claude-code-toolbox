@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.10.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.9.1...v1.10.0) (2025-09-08)
+
+
+### Features
+
+* add pre-download validation for environment configurations ([dccf398](https://github.com/alex-feel/claude-code-toolbox/commit/dccf39827f295941254ae9c2757524c326920d72))
+* add python-developer agent with comprehensive development protocol ([11ed6ce](https://github.com/alex-feel/claude-code-toolbox/commit/11ed6cebbe01919cdf752752f1d162794e36d674))
+
+
+### Bug Fixes
+
+* remove autoupdate functionality that causes hangs ([10da79a](https://github.com/alex-feel/claude-code-toolbox/commit/10da79ad0e20f9a4b62e85c300f920e24ba8bb75))
+* remove unsupported option ([e2ff2ca](https://github.com/alex-feel/claude-code-toolbox/commit/e2ff2ca1daa2332fe8b91633ecbf114aac870f3e))
+
 ## [1.9.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.9.0...v1.9.1) (2025-09-06)
 
 
