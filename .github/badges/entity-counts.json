@@ -2,7 +2,7 @@
   "counts": {
     "environments": 1,
     "env_templates": 1,
-    "agents": 9,
+    "agents": 10,
     "agent_templates": 1,
     "commands": 6,
     "command_templates": 1,
@@ -11,7 +11,7 @@
     "styles": 6,
     "style_templates": 1,
     "hooks": 1,
-    "total_components": 26
+    "total_components": 27
   },
   "badges": {
     "environments": {
@@ -21,7 +21,7 @@
     },
     "agents": {
       "label": "Agents",
-      "message": "9",
+      "message": "10",
       "color": "green"
     },
     "commands": {
@@ -46,7 +46,7 @@
     },
     "total": {
       "label": "Total Components",
-      "message": "26",
+      "message": "27",
       "color": "brightgreen"
     }
   }
