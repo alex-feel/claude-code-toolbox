@@ -55,7 +55,6 @@ Commands can include frontmatter at the top to configure behavior:
 ---
 description: Brief description of what this command does
 argument-hint: "[expected format] [example: file.txt]"
-model: opus|sonnet|haiku  # Force specific model (optional)
 allowed-tools: Bash, Read, Write  # Restrict tools (optional)
 ---
 ```
@@ -63,7 +62,6 @@ allowed-tools: Bash, Read, Write  # Restrict tools (optional)
 **Frontmatter Fields:**
 - **description**: Brief description shown in command list
 - **argument-hint**: Hints for expected arguments format
-- **model**: Force a specific Claude model (defaults to current)
 - **allowed-tools**: Comma-separated list of allowed tools
 
 ### Command Structure
@@ -85,7 +83,6 @@ The `library/` directory contains ready-to-use slash commands for common develop
 - **test** - Generate comprehensive test suites following TDD principles
 
 Each command is configured with:
-- Optional model preferences
 - Tool restrictions for safety
 - Argument hints for proper usage
 - Clear instructions for Claude
@@ -100,7 +97,6 @@ Each command is configured with:
 2. Configure the frontmatter (optional):
    - Set `description` for command list
    - Add `argument-hint` to guide users
-   - Specify `model` if needed
    - Restrict `allowed-tools` for safety
 
 3. Write the command content using `$ARGUMENTS` for user input

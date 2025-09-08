@@ -756,25 +756,16 @@ def install_claude_native() -> bool:
 
 
 def ensure_claude() -> bool:
-    """Ensure Claude Code is installed and up-to-date."""
+    """Ensure Claude Code is installed."""
     info('Checking Claude Code CLI...')
 
     # Check if already installed
     current_version = get_claude_version()
 
     if current_version:
-        info(f'Claude Code version {current_version} is currently installed')
-        info('Upgrading to latest version...')
-        # Upgrade existing installation
-        if install_claude_npm(upgrade=True):
-            new_version = get_claude_version()
-            if new_version and new_version != current_version:
-                success(f'Claude Code upgraded from {current_version} to {new_version}')
-            else:
-                success('Claude Code is up-to-date')
-            return True
-        warning('Upgrade failed, but existing installation remains')
-        return True  # Still return True since Claude is installed
+        success(f'Claude Code version {current_version} is already installed')
+        return True
+
     info('Claude Code not found, installing...')
     # Fresh installation
     if install_claude_npm(upgrade=False):

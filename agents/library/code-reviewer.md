@@ -4,7 +4,7 @@ description: |
   Expert code review specialist focusing on security, performance, and best practices.
   Reviews code for bugs, vulnerabilities, and improvement opportunities with actionable feedback.
   Produces detailed reports with risk assessments and specific remediation steps.
-  It should be used proactively after writing or modifying code, for pull requests, or when code quality assessment is needed.
+  MUST BE USED after writing or modifying code, for pull requests, or when code quality assessment is needed.
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput
 model: opus
 color: blue

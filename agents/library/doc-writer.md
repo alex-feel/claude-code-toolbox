@@ -4,7 +4,7 @@ description: |
   Documentation specialist for technical writing and API documentation.
   Creates and maintains comprehensive documentation for codebases, APIs, and systems.
   Ensures documentation stays synchronized with code and follows industry best practices.
-  It should be used proactively after implementing new features, making API changes, or when documentation gaps are detected.
+  MUST BE USED after implementing new features, making API changes, or when documentation gaps are detected.
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch
 model: sonnet
 color: green

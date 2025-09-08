@@ -1,7 +1,6 @@
 ---
 description: Systematic code refactoring with patterns, SOLID principles, and safety checks
 argument-hint: "[file/module] [goal: performance|readability|maintainability]"
-model: opus
 allowed-tools: Read, Write, Edit, MultiEdit, Bash, Grep
 ---
 

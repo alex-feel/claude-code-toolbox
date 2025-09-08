@@ -1,7 +1,6 @@
 ---
 description: Systematic debugging with root cause analysis and comprehensive fixes
 argument-hint: "[error message/issue description] [file:line] [additional context]"
-model: opus
 ---
 
 # Advanced Debugging Protocol

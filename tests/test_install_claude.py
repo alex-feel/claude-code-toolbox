@@ -604,14 +604,13 @@ class TestEnsureFunctions:
                 mock_sleep.assert_called()
 
     @patch('install_claude.get_claude_version')
-    @patch('install_claude.install_claude_npm')
-    def test_ensure_claude_upgrade(self, mock_install, mock_get_version):
-        """Test Claude upgrade when already installed."""
-        mock_get_version.side_effect = ['0.7.0', '0.7.7']
-        mock_install.return_value = True
+    def test_ensure_claude_already_installed(self, mock_get_version):
+        """Test Claude when already installed (no upgrade attempted)."""
+        mock_get_version.return_value = '0.7.0'
         result = install_claude.ensure_claude()
         assert result is True
-        mock_install.assert_called_with(upgrade=True)
+        # Should not attempt to install or upgrade
+        mock_get_version.assert_called_once()
 
     @patch('install_claude.get_claude_version', return_value=None)
     @patch('install_claude.install_claude_npm', return_value=False)

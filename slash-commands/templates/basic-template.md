@@ -1,7 +1,6 @@
 ---
 description: [Brief description of what this command does and when to use it]
 argument-hint: "[expected arguments format and examples]"
-model: [optional: opus|sonnet|haiku - defaults to current model]
 allowed-tools: [optional: comma-separated list of allowed tools]
 ---
 

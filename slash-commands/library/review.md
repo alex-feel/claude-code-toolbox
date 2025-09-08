@@ -1,7 +1,6 @@
 ---
 description: Comprehensive code review with security, performance, and quality analysis
 argument-hint: "[file/PR/commit] [focus: security|performance|architecture]"
-model: opus
 ---
 
 # Comprehensive Code Review Protocol
