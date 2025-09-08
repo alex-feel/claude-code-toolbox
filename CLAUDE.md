@@ -71,6 +71,28 @@ uv run pre-commit run --all-files
 uv run ruff check --fix
 ```
 
+## CRITICAL: Test Suite Requirements
+
+**ALWAYS run the full test suite after making ANY changes to the codebase:**
+
+```bash
+# Run the complete test suite
+uv run pytest
+
+# If any tests fail, they MUST be fixed before proceeding
+# The codebase must maintain 100% test pass rate at all times
+```
+
+**Testing workflow after code changes:**
+1. Make your code changes
+2. Run `uv run pytest` to check all tests pass
+3. Fix any failing tests immediately
+4. Run `uv run ruff check --fix` to fix linting issues
+5. Run `uv run pre-commit run --all-files` for final validation
+6. Only commit when ALL tests pass and linting is clean
+
+**Important:** Never skip the test suite. Even small changes can have unexpected impacts.
+
 ## Commit Conventions
 
 This repository uses Conventional Commits (enforced by commitizen):

@@ -641,6 +641,7 @@ class TestMainFunction:
     """Test the main setup flow."""
 
     @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
     @patch('setup_environment.install_dependencies')
     @patch('setup_environment.download_resources')
@@ -659,6 +660,7 @@ class TestMainFunction:
         mock_download,
         mock_deps,
         mock_install,
+        mock_validate,
         mock_load,
     ):
         """Test successful main flow."""
@@ -675,6 +677,9 @@ class TestMainFunction:
             },
             'test.yaml',
         )
+
+        # Mock validation to succeed
+        mock_validate.return_value = (True, [])
 
         mock_install.return_value = True
         mock_deps.return_value = True
