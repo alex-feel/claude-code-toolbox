@@ -52,9 +52,6 @@ class Colors:
 # Initialize colors based on terminal support
 Colors.strip()
 
-# Configuration
-REPO_BASE_URL = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main'
-
 
 # Logging functions
 def info(msg: str) -> None:
@@ -196,7 +193,7 @@ def validate_all_config_files(
     config_source: str,
     auth_param: str | None = None,
 ) -> tuple[bool, list[tuple[str, str, bool, str]]]:
-    """Validate all downloadable files in the configuration.
+    """Validate all files in the configuration (both remote and local).
 
     Args:
         config: Environment configuration dictionary
@@ -215,49 +212,63 @@ def validate_all_config_files(
     if config_source.startswith('http'):
         auth_headers = get_auth_headers(config_source, auth_param)
 
-    # Collect all files that need to be downloaded
+    # Collect all files that need to be validated
     base_url = config.get('base-url')
 
     # Agents
     for agent in config.get('agents', []) or []:
-        url = resolve_resource_url(agent, config_source, base_url)
-        files_to_check.append(('agent', agent, url))
+        resolved_path, is_remote = resolve_resource_path(agent, config_source, base_url)
+        files_to_check.append(('agent', agent, resolved_path, is_remote))
 
     # Slash commands
     for cmd in config.get('slash-commands', []) or []:
-        url = resolve_resource_url(cmd, config_source, base_url)
-        files_to_check.append(('slash_command', cmd, url))
+        resolved_path, is_remote = resolve_resource_path(cmd, config_source, base_url)
+        files_to_check.append(('slash_command', cmd, resolved_path, is_remote))
 
     # Output styles
     for style in config.get('output-styles', []) or []:
-        url = resolve_resource_url(style, config_source, base_url)
-        files_to_check.append(('output_style', style, url))
+        resolved_path, is_remote = resolve_resource_path(style, config_source, base_url)
+        files_to_check.append(('output_style', style, resolved_path, is_remote))
 
-    # System prompts (if stored as files)
-    for prompt in config.get('system-prompts', []) or []:
-        url = resolve_resource_url(prompt, config_source, base_url)
-        files_to_check.append(('system_prompt', prompt, url))
+    # System prompts from command-defaults
+    command_defaults = config.get('command-defaults', {})
+    if command_defaults and command_defaults.get('system-prompt'):
+        prompt = command_defaults['system-prompt']
+        resolved_path, is_remote = resolve_resource_path(prompt, config_source, base_url)
+        files_to_check.append(('system_prompt', prompt, resolved_path, is_remote))
 
     # Hooks files
     hooks = config.get('hooks', {})
     if hooks:
         for hook_file in hooks.get('files', []) or []:
-            url = resolve_resource_url(hook_file, config_source, base_url)
-            files_to_check.append(('hook', hook_file, url))
+            resolved_path, is_remote = resolve_resource_path(hook_file, config_source, base_url)
+            files_to_check.append(('hook', hook_file, resolved_path, is_remote))
 
     # Validate each file
-    info(f'Validating {len(files_to_check)} files before download...')
+    info(f'Validating {len(files_to_check)} files...')
     all_valid = True
 
-    for file_type, path, url in files_to_check:
-        is_valid, method = validate_file_availability(url, auth_headers)
-        results.append((file_type, path, is_valid, method))
+    for file_type, original_path, resolved_path, is_remote in files_to_check:
+        if is_remote:
+            # Validate remote URL
+            is_valid, method = validate_file_availability(resolved_path, auth_headers)
+            results.append((file_type, original_path, is_valid, method))
 
-        if is_valid:
-            info(f'  ✓ {file_type}: {path} (validated via {method})')
+            if is_valid:
+                info(f'  ✓ {file_type}: {original_path} (remote, validated via {method})')
+            else:
+                error(f'  ✗ {file_type}: {original_path} (remote, not accessible)')
+                all_valid = False
         else:
-            error(f'  ✗ {file_type}: {path} (not accessible)')
-            all_valid = False
+            # Validate local file
+            local_path = Path(resolved_path)
+            if local_path.exists() and local_path.is_file():
+                results.append((file_type, original_path, True, 'Local'))
+                info(f'  ✓ {file_type}: {original_path} (local file exists)')
+            else:
+                results.append((file_type, original_path, False, 'Local'))
+                error(f'  ✗ {file_type}: {original_path} (local file not found at {resolved_path})')
+                all_valid = False
 
     return all_valid, results
 
@@ -569,28 +580,30 @@ def derive_base_url(config_source: str) -> str:
     return config_source
 
 
-def resolve_resource_url(resource_path: str, config_source: str, base_url: str | None = None) -> str:
-    """Resolve a resource path to a full URL based on priority rules.
+def resolve_resource_path(resource_path: str, config_source: str, base_url: str | None = None) -> tuple[str, bool]:
+    """Resolve a resource path to either a URL or local path.
 
     Priority:
-    1. If resource_path is already a full URL, return as-is
-    2. If base_url is configured, combine with resource_path
-    3. If config was loaded from URL, derive base from it
-    4. Fall back to default repo URL
+    1. If resource_path is already a full URL, return as-is (remote)
+    2. If base_url is configured, combine with resource_path (remote)
+    3. If config was loaded from URL, derive base from it (remote)
+    4. Otherwise, treat as local path (absolute or relative)
 
     Args:
-        resource_path: The resource path from config (e.g., 'agents/code-reviewer.md' or full URL)
-        config_source: Where the config was loaded from (URL, path, or name)
+        resource_path: The resource path from config (URL or local path)
+        config_source: Where the config was loaded from (URL or local path)
         base_url: Optional base URL override from config
 
     Returns:
-        Full URL to the resource
+        tuple[str, bool]: (resolved_path, is_remote)
+            - resolved_path: Full URL or absolute local path
+            - is_remote: True if URL, False if local path
     """
     # 1. If full URL, return as-is
     if resource_path.startswith(('http://', 'https://')):
-        return resource_path
+        return resource_path, True
 
-    # 2. If base-url configured, use it
+    # 2. If base-url configured, use it (always remote)
     if base_url:
         # Auto-append {path} if not present
         if '{path}' not in base_url:
@@ -601,9 +614,9 @@ def resolve_resource_url(resource_path: str, config_source: str, base_url: str |
         if '/api/v4/projects/' in base_url and '/repository/files/' in base_url:
             # URL encode the path for GitLab API
             encoded_path = urllib.parse.quote(resource_path, safe='')
-            return base_url.replace('{path}', encoded_path)
+            return base_url.replace('{path}', encoded_path), True
         # For other URLs, just replace the placeholder
-        return base_url.replace('{path}', resource_path)
+        return base_url.replace('{path}', resource_path), True
 
     # 3. If config from URL, derive base from it
     if config_source.startswith(('http://', 'https://')):
@@ -611,11 +624,33 @@ def resolve_resource_url(resource_path: str, config_source: str, base_url: str |
         # Handle GitLab URL encoding
         if '/api/v4/projects/' in derived_base and '/repository/files/' in derived_base:
             encoded_path = urllib.parse.quote(resource_path, safe='')
-            return derived_base.replace('{path}', encoded_path)
-        return derived_base.replace('{path}', resource_path)
+            return derived_base.replace('{path}', encoded_path), True
+        return derived_base.replace('{path}', resource_path), True
 
-    # 4. Default to main repo
-    return f'{REPO_BASE_URL}/{resource_path}'
+    # 4. Treat as local path (absolute or relative)
+    # Handle home directory expansion (~)
+    if resource_path.startswith('~'):
+        resource_path = os.path.expanduser(resource_path)
+
+    # Handle environment variables (e.g., %USERPROFILE%, $HOME)
+    resource_path = os.path.expandvars(resource_path)
+
+    # Convert to Path object for proper handling
+    path_obj = Path(resource_path)
+
+    # Check if it's already an absolute path
+    if path_obj.is_absolute():
+        return str(path_obj.resolve()), False
+
+    # It's a relative path - resolve relative to config location
+    config_path = Path(config_source)
+    # Config source might be just a name from repo library
+    # In this case, paths should be resolved relative to current directory
+    config_dir = config_path.parent if config_path.is_file() else Path.cwd()
+
+    # Resolve the resource path relative to config directory
+    resource_full_path = (config_dir / resource_path).resolve()
+    return str(resource_full_path), False
 
 
 def load_config_from_source(config_spec: str, auth_param: str | None = None) -> tuple[dict[str, Any], str]:
@@ -688,7 +723,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     if not config_spec.endswith('.yaml'):
         config_spec += '.yaml'
 
-    config_url = f'{REPO_BASE_URL}/environments/library/{config_spec}'
+    config_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/environments/library/{config_spec}'
     info(f'Loading configuration from repository: {config_spec}')
 
     try:
@@ -834,17 +869,17 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         raise
 
 
-def download_resource_with_url(
+def handle_resource(
     resource_path: str,
     destination: Path,
     config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
 ) -> bool:
-    """Download a single resource with URL resolution.
+    """Handle a resource - either download from URL or copy from local path.
 
     Args:
-        resource_path: Resource path from config (can be relative path or full URL)
+        resource_path: Resource path from config (URL or local path)
         destination: Local destination path
         config_source: Where the config was loaded from
         base_url: Optional base URL from config
@@ -853,8 +888,8 @@ def download_resource_with_url(
     Returns:
         bool: True if successful, False otherwise
     """
-    # Resolve the full URL based on priority rules
-    url = resolve_resource_url(resource_path, config_source, base_url)
+    # Resolve the path
+    resolved_path, is_remote = resolve_resource_path(resource_path, config_source, base_url)
     filename = destination.name
 
     # Check if destination already exists
@@ -862,20 +897,31 @@ def download_resource_with_url(
         info(f'File already exists: {filename} (overwriting)')
 
     try:
-        # Fetch content with authentication if needed
-        content = fetch_url_with_auth(url, auth_param=auth_param)
-
-        # Write to destination
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding='utf-8')
-        success(f'Downloaded: {filename}')
+
+        if is_remote:
+            # Download from URL
+            content = fetch_url_with_auth(resolved_path, auth_param=auth_param)
+            destination.write_text(content, encoding='utf-8')
+            success(f'Downloaded: {filename}')
+        else:
+            # Copy from local path
+            source_path = Path(resolved_path)
+            if not source_path.exists():
+                error(f'Local file not found: {resolved_path}')
+                return False
+
+            # Copy the file
+            shutil.copy2(source_path, destination)
+            success(f'Copied: {filename} from {source_path}')
+
         return True
     except Exception as e:
-        error(f'Failed to download {filename} from {url}: {e}')
+        error(f'Failed to handle {filename}: {e}')
         return False
 
 
-def download_resources(
+def process_resources(
     resources: list[str],
     destination_dir: Path,
     resource_type: str,
@@ -883,7 +929,7 @@ def download_resources(
     base_url: str | None = None,
     auth_param: str | None = None,
 ) -> bool:
-    """Download resources (agents, commands, output-styles) from configuration.
+    """Process resources (download from URL or copy from local) based on configuration.
 
     Args:
         resources: List of resource paths from config
@@ -899,14 +945,14 @@ def download_resources(
     if not resources:
         return True
 
-    info(f'Downloading {resource_type}...')
+    info(f'Processing {resource_type}...')
 
     for resource in resources:
         # Strip query parameters from URL to get clean filename
         clean_resource = resource.split('?')[0] if '?' in resource else resource
         filename = Path(clean_resource).name
         destination = destination_dir / filename
-        download_resource_with_url(resource, destination, config_source, base_url, auth_param)
+        handle_resource(resource, destination, config_source, base_url, auth_param)
 
     return True
 
@@ -920,7 +966,7 @@ def install_claude() -> bool:
     try:
         # Download the appropriate installer script
         if system == 'Windows':
-            installer_url = f'{REPO_BASE_URL}/scripts/windows/install-claude-windows.ps1'
+            installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1'
             with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
                 try:
                     response = urlopen(installer_url)
@@ -945,14 +991,14 @@ def install_claude() -> bool:
             ], capture_output=False)
 
         elif system == 'Darwin':  # macOS
-            installer_url = f'{REPO_BASE_URL}/scripts/macos/install-claude-macos.sh'
+            installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh'
             result = run_command([
                 'bash', '-c',
                 f'curl -fsSL {installer_url} | bash',
             ], capture_output=False)
 
         else:  # Linux
-            installer_url = f'{REPO_BASE_URL}/scripts/linux/install-claude-linux.sh'
+            installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh'
             result = run_command([
                 'bash', '-c',
                 f'curl -fsSL {installer_url} | bash',
@@ -1259,7 +1305,7 @@ def create_additional_settings(
         hook_files = hooks.get('files', [])
         hook_events = hooks.get('events', [])
 
-    # Download all hook files first
+    # Process all hook files first
     if hook_files:
         hooks_dir = claude_user_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -1268,13 +1314,12 @@ def create_additional_settings(
             clean_file = file.split('?')[0] if '?' in file else file
             filename = Path(clean_file).name
             destination = hooks_dir / filename
-            # Use the new URL resolution for hook files
+            # Handle hook files (download or copy)
             if config_source:
-                download_resource_with_url(file, destination, config_source, base_url, auth_param)
+                handle_resource(file, destination, config_source, base_url, auth_param)
             else:
-                # Fallback to old method if no config_source (shouldn't happen)
-                url = f'{REPO_BASE_URL}/{file}'
-                download_file(url, destination)
+                # This shouldn't happen, but handle gracefully
+                error(f'No config source provided for hook file: {file}')
 
     # Process each hook event
     for hook in hook_events:
@@ -1718,37 +1763,37 @@ def main() -> None:
         dependencies = config.get('dependencies', [])
         install_dependencies(dependencies)
 
-        # Step 4: Download agents
+        # Step 4: Process agents
         print()
-        print(f'{Colors.CYAN}Step 4: Downloading agents...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 4: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
-        download_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
+        process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
 
-        # Step 5: Download slash commands
+        # Step 5: Process slash commands
         print()
-        print(f'{Colors.CYAN}Step 5: Downloading slash commands...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 5: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
-        download_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
+        process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 6: Download output styles
+        # Step 6: Process output styles
         print()
-        print(f'{Colors.CYAN}Step 6: Downloading output styles...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 6: Processing output styles...{Colors.NC}')
         output_styles = config.get('output-styles', [])
         if output_styles:
-            download_resources(output_styles, output_styles_dir, 'output styles', config_source, base_url, args.auth)
+            process_resources(output_styles, output_styles_dir, 'output styles', config_source, base_url, args.auth)
         else:
             info('No output styles configured')
 
-        # Step 7: Download system prompt (if specified)
+        # Step 7: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 7: Downloading system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 7: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
             clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
             prompt_filename = Path(clean_prompt).name
             prompt_path = prompts_dir / prompt_filename
-            download_resource_with_url(system_prompt, prompt_path, config_source, base_url, args.auth)
+            handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth)
         else:
             info('No additional system prompt configured')
 
