@@ -649,6 +649,310 @@ class TestInstallClaude:
         assert 'bash' in mock_run.call_args[0][0]
 
 
+class TestExtractFrontMatter:
+    """Test YAML front matter extraction from Markdown files."""
+
+    def test_extract_front_matter_valid_with_name_and_description_only(self):
+        """Test extracting valid front matter with ONLY name and description fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a markdown file with valid front matter (ONLY name and description)
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''---
+name: Test Output Style
+description: A test output style
+---
+
+# Content
+
+This is the content of the file.
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is not None
+            assert result['name'] == 'Test Output Style'
+            assert result['description'] == 'A test output style'
+            assert len(result) == 2  # Only name and description fields
+
+    def test_extract_front_matter_no_front_matter(self):
+        """Test extracting from file without front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''# Just a regular markdown file
+
+No front matter here.
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is None
+
+    def test_extract_front_matter_malformed_yaml(self):
+        """Test extracting malformed YAML front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''---
+name: Test
+invalid yaml here: [
+---
+
+Content
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is None
+
+    def test_extract_front_matter_alternative_delimiter(self):
+        """Test extracting with alternative delimiter format (--- at end of line)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''---
+name: Alternative Style
+description: Alternative output style description
+---
+# Content
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is not None
+            assert result['name'] == 'Alternative Style'
+            assert result['description'] == 'Alternative output style description'
+
+    def test_extract_front_matter_empty_front_matter(self):
+        """Test extracting empty front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''---
+---
+
+# Content
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            # Empty YAML should parse to None or empty dict
+            assert result is None or result == {}
+
+    def test_extract_front_matter_missing_closing_delimiter(self):
+        """Test extracting when closing delimiter is missing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'test.md'
+            md_file.write_text('''---
+name: Incomplete
+description: Missing closing delimiter
+
+# Content without proper closing
+''')
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is None
+
+    def test_extract_front_matter_file_not_found(self):
+        """Test extracting from non-existent file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md_file = Path(tmpdir) / 'nonexistent.md'
+            result = setup_environment.extract_front_matter(md_file)
+            assert result is None
+
+
+class TestResolveOutputStyleName:
+    """Test output style name resolution from front matter."""
+
+    def test_resolve_output_style_name_matches_filename(self):
+        """Test when front matter name matches the filename."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'my-style.md'
+            style_file.write_text('''---
+name: my-style
+description: Test style
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('my-style', styles_dir)
+            assert result == 'my-style'
+
+    def test_resolve_output_style_name_differs_from_filename(self):
+        """Test when front matter name differs from filename."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'filename.md'
+            style_file.write_text('''---
+name: Actual Style Name
+description: The real name differs from filename
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('filename', styles_dir)
+            assert result == 'Actual Style Name'
+
+    def test_resolve_output_style_name_no_front_matter(self):
+        """Test resolution when file has no front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'plain-file.md'
+            style_file.write_text('# Just content, no front matter')
+
+            result = setup_environment.resolve_output_style_name('plain-file', styles_dir)
+            assert result == 'plain-file'
+
+    def test_resolve_output_style_name_missing_name_field(self):
+        """Test resolution when front matter exists but lacks name field (has description only)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'no-name.md'
+            style_file.write_text('''---
+description: Has front matter but no name field
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('no-name', styles_dir)
+            assert result == 'no-name'
+
+    def test_resolve_output_style_name_file_not_found(self):
+        """Test resolution when file doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            result = setup_environment.resolve_output_style_name('nonexistent', styles_dir)
+            assert result == 'nonexistent'
+
+    def test_resolve_output_style_name_with_md_extension(self):
+        """Test resolution when input includes .md extension."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'style.md'
+            style_file.write_text('''---
+name: Style With Extension
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('style.md', styles_dir)
+            assert result == 'Style With Extension'
+
+    def test_resolve_output_style_name_without_md_extension(self):
+        """Test resolution when input doesn't include .md extension."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'another-style.md'
+            style_file.write_text('''---
+name: Another Style Name
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('another-style', styles_dir)
+            assert result == 'Another Style Name'
+
+    def test_resolve_output_style_name_special_characters(self):
+        """Test resolution with special characters in the name."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            styles_dir = Path(tmpdir)
+            style_file = styles_dir / 'special.md'
+            style_file.write_text('''---
+name: "Style: With Special-Characters & Symbols!"
+---
+# Content
+''')
+            result = setup_environment.resolve_output_style_name('special', styles_dir)
+            assert result == 'Style: With Special-Characters & Symbols!'
+
+
+class TestCreateAdditionalSettingsWithOutputStyleResolution:
+    """Test create_additional_settings with output style name resolution."""
+
+    def test_create_additional_settings_resolves_output_style_name(self):
+        """Test that output style name is resolved from front matter."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / '.claude'
+            styles_dir = claude_dir / 'output-styles'
+            styles_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create an output style file with different name in front matter
+            style_file = styles_dir / 'file-name.md'
+            style_file.write_text('''---
+name: Actual Display Name
+description: Test output style
+---
+# Test Style Content
+''')
+
+            # Create additional settings with output style
+            result = setup_environment.create_additional_settings(
+                hooks={},
+                claude_user_dir=claude_dir,
+                command_name='test-env',
+                output_style='file-name',
+                output_styles_dir=styles_dir,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            assert settings_file.exists()
+
+            settings = json.loads(settings_file.read_text())
+            # Should use the name from front matter, not the filename
+            assert settings['outputStyle'] == 'Actual Display Name'
+
+    def test_create_additional_settings_fallback_to_filename(self):
+        """Test fallback to filename when front matter is missing."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / '.claude'
+            styles_dir = claude_dir / 'output-styles'
+            styles_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create an output style file without front matter
+            style_file = styles_dir / 'plain-style.md'
+            style_file.write_text('# Plain Style\n\nNo front matter here.')
+
+            # Create additional settings with output style
+            result = setup_environment.create_additional_settings(
+                hooks={},
+                claude_user_dir=claude_dir,
+                command_name='test-env',
+                output_style='plain-style.md',
+                output_styles_dir=styles_dir,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+            # Should use cleaned filename (without .md) as fallback
+            assert settings['outputStyle'] == 'plain-style'
+
+    def test_create_additional_settings_without_output_styles_dir(self):
+        """Test backward compatibility when output_styles_dir is not provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / '.claude'
+            claude_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create additional settings without output_styles_dir (old behavior)
+            result = setup_environment.create_additional_settings(
+                hooks={},
+                claude_user_dir=claude_dir,
+                command_name='test-env',
+                output_style='legacy-style.md',
+                # output_styles_dir not provided - should fall back to old behavior
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+            # Should use old behavior: strip .md extension
+            assert settings['outputStyle'] == 'legacy-style'
+
+    def test_create_additional_settings_output_style_not_found(self):
+        """Test handling when output style file doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir) / '.claude'
+            styles_dir = claude_dir / 'output-styles'
+            styles_dir.mkdir(parents=True, exist_ok=True)
+
+            # Don't create the file, just reference it
+            result = setup_environment.create_additional_settings(
+                hooks={},
+                claude_user_dir=claude_dir,
+                command_name='test-env',
+                output_style='nonexistent-style',
+                output_styles_dir=styles_dir,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+            # Should still use the provided name when file not found
+            assert settings['outputStyle'] == 'nonexistent-style'
+
+
 class TestMainFunction:
     """Test the main setup flow."""
 
