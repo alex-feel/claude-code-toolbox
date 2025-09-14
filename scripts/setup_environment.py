@@ -877,6 +877,78 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         raise
 
 
+def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
+    """Extract YAML front matter from a Markdown file.
+
+    Args:
+        file_path: Path to the markdown file
+
+    Returns:
+        dict: Parsed front matter data, or None if no front matter found
+    """
+    try:
+        content = file_path.read_text(encoding='utf-8')
+
+        # Check if file starts with front matter delimiter
+        if not content.startswith('---'):
+            return None
+
+        # Find the closing delimiter
+        end_match = content.find('\n---\n', 4)  # Start after first ---
+        if end_match == -1:
+            # Try alternative format with just --- at end of line
+            end_match = content.find('\n---', 4)
+            if end_match == -1:
+                return None
+
+        # Extract and parse the YAML content
+        front_matter_text = content[4:end_match].strip()
+        return yaml.safe_load(front_matter_text)
+
+    except Exception as e:
+        warning(f'Failed to parse front matter from {file_path}: {e}')
+        return None
+
+
+def resolve_output_style_name(
+    output_style_ref: str,
+    output_styles_dir: Path,
+) -> str:
+    """Resolve the actual output style name from the file's front matter.
+
+    Args:
+        output_style_ref: Reference to output style (filename without extension or style name)
+        output_styles_dir: Directory containing output style files
+
+    Returns:
+        str: The actual style name from front matter, or cleaned reference as fallback
+    """
+    # Remove .md extension if present
+    base_name = output_style_ref.replace('.md', '')
+
+    # Try to find the output style file
+    possible_files = [
+        output_styles_dir / f'{base_name}.md',
+        output_styles_dir / base_name,  # In case it's already a full filename
+    ]
+
+    for file_path in possible_files:
+        if file_path.exists():
+            # Try to extract name from front matter
+            front_matter = extract_front_matter(file_path)
+            if front_matter and 'name' in front_matter:
+                resolved_name = front_matter['name']
+                if resolved_name != base_name:
+                    info(f'Resolved output style name: {base_name} → {resolved_name}')
+                return resolved_name
+            warning(f'No front matter or name field in {file_path}, using filename')
+            return base_name
+
+    # File not found, return cleaned reference
+    warning(f'Output style file not found for "{output_style_ref}", using as-is')
+    return base_name
+
+
 def handle_resource(
     resource_path: str,
     destination: Path,
@@ -1207,6 +1279,7 @@ def create_additional_settings(
     config_source: str | None = None,
     base_url: str | None = None,
     auth_param: str | None = None,
+    output_styles_dir: Path | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -1238,8 +1311,13 @@ def create_additional_settings(
 
     # Add output style if specified
     if output_style:
-        # Remove .md extension if present
-        style_name = output_style.replace('.md', '')
+        # Resolve the actual style name from front matter if possible
+        if output_styles_dir:
+            style_name = resolve_output_style_name(output_style, output_styles_dir)
+        else:
+            # Fallback to old behavior if directory not provided
+            style_name = output_style.replace('.md', '')
+
         settings['outputStyle'] = style_name
         info(f'Setting default output style: {style_name}')
 
@@ -1817,7 +1895,7 @@ def main() -> None:
         hooks = config.get('hooks', {})
         create_additional_settings(
             hooks, claude_user_dir, command_name, output_style, mcp_servers, model, permissions, env_variables,
-            config_source, base_url, args.auth,
+            config_source, base_url, args.auth, output_styles_dir,
         )
 
         # Step 10: Create launcher script

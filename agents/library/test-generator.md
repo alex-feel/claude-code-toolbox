@@ -5,9 +5,9 @@ description: |
   Develops tests following TDD/BDD principles with high coverage, proper mocking, and edge case handling.
   Ensures test maintainability through clear naming, isolated fixtures, and comprehensive assertions.
   MUST BE USED after writing new code, before refactoring, or when test coverage is below 80%.
-tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash
+tools: Glob, Grep, LS, Read, NotebookRead, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash
 model: opus
-color: yellow
+color: green
 ---
 
 # Test Generation Expert

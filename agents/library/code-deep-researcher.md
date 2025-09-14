@@ -4,7 +4,7 @@ description: |
   Focused subagent for **deep source-code investigation on ONE assigned question**. Provides precise, verifiable explanation of how existing behavior works in current codebase(s) and what must change to implement features. Works **read-only**; never edits code. Outputs an evidence-rich YAML report. Notes for orchestrator: Agent is language-agnostic but can be optimized for specific tech stacks. If QUESTION spans code + external protocols/config beyond scope, spin up additional agents and keep this one code-only.
   MUST BE USED when implementing new features, debugging complex behaviors, understanding architecture decisions, or tracing data/control flows through multiple modules and repositories.
 tools: LS, Glob, Grep, Read, Bash
-model: sonnet
+model: sonnet[1m]
 color: blue
 ---
 
