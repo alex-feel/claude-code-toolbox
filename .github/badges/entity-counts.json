@@ -8,10 +8,10 @@
     "command_templates": 1,
     "prompts": 3,
     "prompt_templates": 1,
-    "styles": 6,
+    "styles": 7,
     "style_templates": 1,
     "hooks": 1,
-    "total_components": 27
+    "total_components": 28
   },
   "badges": {
     "environments": {
@@ -36,7 +36,7 @@
     },
     "styles": {
       "label": "Styles",
-      "message": "6",
+      "message": "7",
       "color": "purple"
     },
     "hooks": {
@@ -46,7 +46,7 @@
     },
     "total": {
       "label": "Total Components",
-      "message": "27",
+      "message": "28",
       "color": "brightgreen"
     }
   }
