@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.10.0...v1.11.0) (2025-09-14)
+
+
+### Features
+
+* add local file path support to environment configurations ([85d9892](https://github.com/alex-feel/claude-code-toolbox/commit/85d98927aaa9fb7f30dec4a58c29bfd1b314f98a))
+* remove structured output requirements from agents and generalize web researcher ([09fb566](https://github.com/alex-feel/claude-code-toolbox/commit/09fb566efe3bd70d51127c41c84e55f35aed831c))
+
 ## [1.10.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.9.1...v1.10.0) (2025-09-08)
 
 
