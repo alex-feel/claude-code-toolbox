@@ -1,40 +1,44 @@
+# Python Development Environment Configuration
+
 name: Python Development
 command-name: claude-python
+
 dependencies:
-    - uv tool install ruff@latest
+  - uv tool install ruff@latest
+
 agents:
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/code-reviewer.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/doc-writer.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/implementation-guide.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/performance-optimizer.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/refactoring-assistant.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/security-auditor.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/test-generator.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/implementation-guide.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/python-developer.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/code-reviewer.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/doc-writer.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/refactoring-assistant.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/agents/library/test-generator.md
+
 mcp-servers:
-    - name: context7
-      scope: user
-      transport: http
-      url: https://mcp.context7.com/mcp
-      # Note: Add your API key here if you have one
-      # header: X-API-Key: your-key-here
+  - name: context7
+    scope: user
+    transport: http
+    url: https://mcp.context7.com/mcp
+
 slash-commands:
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/commit.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/debug.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/document.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/refactor.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/review.md
-    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/test.md
-output-styles:
-    # Add output styles if needed
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/commit.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/debug.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/document.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/refactor.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/review.md
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/slash-commands/library/test.md
+
 hooks:
-    files:
-        - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/hooks/library/python_ruff_lint.py
-    events:
-        - event: PostToolUse
-          matcher: Edit|MultiEdit|Write
-          type: command
-          command: python_ruff_lint.py
+  files:
+    - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/hooks/library/python_ruff_lint.py
+  events:
+    - event: PostToolUse
+      matcher: Edit|MultiEdit|Write
+      type: command
+      command: python_ruff_lint.py
+
+output-styles:
+  - https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/output-styles/library/python-orchestrator.md
+
 command-defaults:
-    # Python developers benefit from the additional system prompt
-    # that enhances Claude's default development capabilities
-    system-prompt: https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/system-prompts/library/python-developer.md
+  output-style: python-orchestrator
