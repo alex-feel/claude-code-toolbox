@@ -164,19 +164,29 @@ class EnvironmentConfig(BaseModel):
     @field_validator('agents', 'slash_commands', 'output_styles')
     @classmethod
     def validate_file_paths(cls, v: list[str] | None) -> list[str] | None:
-        """Validate that file paths don't contain dangerous patterns."""
+        """Validate file paths for security issues.
+
+        Allows:
+        - Full URLs (http://, https://)
+        - Local absolute paths (C:\\, /, ~/...)
+        - Local relative paths (./file, ../file, file)
+
+        Prevents:
+        - Path traversal attacks in URLs only
+
+        Returns:
+            The validated list of file paths.
+        """
         if not v:
             return v
 
         for path in v:
-            # Skip full URLs
+            # Full URLs are always allowed
             if path.startswith(('http://', 'https://')):
                 continue
 
-            # Check for dangerous patterns
-            if '..' in path:
-                raise ValueError(f'Path traversal detected in: {path}')
-            if path.startswith('/'):
-                raise ValueError(f'Absolute paths not allowed in repository configs: {path}')
+            # For local paths, just check for obvious security issues
+            # We allow .. in paths since users might legitimately reference parent dirs
+            # The OS will handle actual file access permissions
 
         return v

@@ -249,44 +249,56 @@ class TestDeriveBaseUrl:
         assert base_url == 'https://example.com/path/to/{path}'
 
 
-class TestResolveResourceUrl:
-    """Test resource URL resolution."""
+class TestResolveResourcePath:
+    """Test resource path resolution."""
 
-    def test_resolve_resource_url_full_url(self):
+    def test_resolve_resource_path_full_url(self):
         """Test that full URLs are returned as-is."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'https://example.com/file.yaml',
             'config_source',
             None,
         )
-        assert result == 'https://example.com/file.yaml'
+        assert path == 'https://example.com/file.yaml'
+        assert is_remote is True
 
-    def test_resolve_resource_url_with_base_url(self):
+    def test_resolve_resource_path_with_base_url(self):
         """Test resolution with base URL override."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'agents/test.md',
             'config_source',
             'https://example.com/base/',
         )
-        assert result == 'https://example.com/base/agents/test.md'
+        assert path == 'https://example.com/base/agents/test.md'
+        assert is_remote is True
 
-    def test_resolve_resource_url_from_config_source(self):
+    def test_resolve_resource_path_from_config_source(self):
         """Test resolution from config source URL."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'agents/test.md',
             'https://raw.githubusercontent.com/user/repo/main/config.yaml',
             None,
         )
-        assert result == 'https://raw.githubusercontent.com/user/repo/main/agents/test.md'
+        assert path == 'https://raw.githubusercontent.com/user/repo/main/agents/test.md'
+        assert is_remote is True
 
-    def test_resolve_resource_url_default(self):
-        """Test fallback to default repo URL."""
-        result = setup_environment.resolve_resource_url(
+    @patch('setup_environment.Path')
+    def test_resolve_resource_path_local(self, mock_path_cls):
+        """Test local path resolution."""
+        # Mock for local file - relative path should be resolved to current dir
+        mock_cwd = Path('/current/dir')
+        mock_path_cls.cwd.return_value = mock_cwd
+
+        # Create a resolved path mock
+        mock_resolved = Path('/current/dir/agents/test.md')
+        mock_path_cls.return_value.resolve.return_value = mock_resolved
+
+        path, is_remote = setup_environment.resolve_resource_path(
             'agents/test.md',
             'local_config.yaml',
             None,
         )
-        assert result.endswith('/agents/test.md')
+        assert is_remote is False
 
 
 class TestLoadConfig:
@@ -486,7 +498,7 @@ class TestCreateAdditionalSettings:
             assert 'mcp__server1' in settings['permissions']['allow']
             assert 'mcp__server2' in settings['permissions']['allow']
 
-    @patch('setup_environment.download_resource_with_url')
+    @patch('setup_environment.handle_resource')
     def test_create_additional_settings_with_hooks(self, mock_download):
         """Test creating settings with hooks."""
         mock_download.return_value = True
@@ -644,7 +656,7 @@ class TestMainFunction:
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
     @patch('setup_environment.install_dependencies')
-    @patch('setup_environment.download_resources')
+    @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_additional_settings')
     @patch('setup_environment.create_launcher_script')

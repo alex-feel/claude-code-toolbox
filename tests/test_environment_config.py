@@ -307,29 +307,38 @@ class TestEnvironmentConfig:
             )
             assert config.model == model
 
-    def test_path_traversal_in_agents(self):
-        """Test path traversal detection in agents."""
-        with pytest.raises(ValidationError) as exc_info:
-            EnvironmentConfig(
-                name='Test',
-                **{
-                    'command-name': 'claude-test',
-                    'agents': ['../../../etc/passwd'],
-                },
-            )
-        assert 'Path traversal' in str(exc_info.value)
+    def test_local_paths_allowed(self):
+        """Test that local paths are now allowed."""
+        # Test relative paths with ..
+        config1 = EnvironmentConfig(
+            name='Test',
+            **{
+                'command-name': 'claude-test',
+                'agents': ['../../../custom/agent.md'],
+            },
+        )
+        assert config1.agents[0] == '../../../custom/agent.md'
 
-    def test_absolute_path_in_slash_commands(self):
-        """Test absolute path detection in slash commands."""
-        with pytest.raises(ValidationError) as exc_info:
-            EnvironmentConfig(
-                name='Test',
-                **{
-                    'command-name': 'claude-test',
-                    'slash-commands': ['/etc/secret.md'],
-                },
-            )
-        assert 'Absolute paths not allowed' in str(exc_info.value)
+        # Test absolute paths
+        config2 = EnvironmentConfig(
+            name='Test',
+            **{
+                'command-name': 'claude-test',
+                'slash-commands': ['/etc/custom-command.md', 'C:\\custom\\command.md'],
+            },
+        )
+        assert config2.slash_commands[0] == '/etc/custom-command.md'
+        assert config2.slash_commands[1] == 'C:\\custom\\command.md'
+
+        # Test home directory paths
+        config3 = EnvironmentConfig(
+            name='Test',
+            **{
+                'command-name': 'claude-test',
+                'output-styles': ['~/my-styles/custom.md'],
+            },
+        )
+        assert config3.output_styles[0] == '~/my-styles/custom.md'
 
     def test_url_paths_allowed(self):
         """Test that full URLs are allowed in file paths."""

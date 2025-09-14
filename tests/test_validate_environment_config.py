@@ -438,7 +438,7 @@ agents:
 
         is_valid, errors = validate_config_file(config_file)
         assert is_valid is False
-        assert len(errors) >= 4  # Should have errors for command-name, base-url, model, and agents
+        assert len(errors) >= 3  # Should have errors for command-name, base-url, and model (agents path is now allowed)
 
     def test_exception_handling(self, temp_dir):
         """Test that unexpected exceptions are handled gracefully."""

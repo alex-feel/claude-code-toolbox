@@ -228,7 +228,7 @@ class TestValidateAllConfigFiles:
     """Test full configuration validation."""
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_empty_config(self, mock_validate, mock_resolve, mock_auth):
         """Test validation with empty configuration."""
@@ -243,7 +243,7 @@ class TestValidateAllConfigFiles:
         mock_validate.assert_not_called()
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_with_agents(self, mock_validate, mock_resolve, mock_auth):
         """Test validation with agents."""
@@ -252,8 +252,8 @@ class TestValidateAllConfigFiles:
         }
         mock_auth.return_value = None
         mock_resolve.side_effect = [
-            'https://example.com/agent1.md',
-            'https://example.com/agent2.md',
+            ('https://example.com/agent1.md', True),  # Remote
+            ('https://example.com/agent2.md', True),  # Remote
         ]
         mock_validate.side_effect = [
             (True, 'HEAD'),
@@ -268,49 +268,69 @@ class TestValidateAllConfigFiles:
         assert results[1] == ('agent', 'agent2.md', True, 'Range')
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
-    def test_validate_all_config_files_with_mixed_resources(self, mock_validate, mock_resolve, mock_auth):
-        """Test validation with multiple resource types."""
+    @patch('setup_environment.Path')
+    def test_validate_all_config_files_with_mixed_resources(self, mock_path_cls, mock_validate, mock_resolve, mock_auth):
+        """Test validation with multiple resource types (remote and local)."""
         config = {
             'agents': ['agent.md'],
             'slash-commands': ['cmd1.py', 'cmd2.py'],
             'output-styles': ['style.md'],
+            'command-defaults': {
+                'system-prompt': 'prompt.md',
+            },
             'hooks': {
                 'files': ['hook1.py', 'hook2.py'],
             },
         }
         mock_auth.return_value = {'Authorization': 'Bearer token'}
+
+        # Mock some as remote, some as local
         mock_resolve.side_effect = [
-            'https://example.com/agent.md',
-            'https://example.com/cmd1.py',
-            'https://example.com/cmd2.py',
-            'https://example.com/style.md',
-            'https://example.com/hook1.py',
-            'https://example.com/hook2.py',
+            ('https://example.com/agent.md', True),  # Remote
+            ('/local/path/cmd1.py', False),  # Local
+            ('https://example.com/cmd2.py', True),  # Remote
+            ('/local/path/style.md', False),  # Local
+            ('https://example.com/prompt.md', True),  # Remote
+            ('/local/path/hook1.py', False),  # Local
+            ('https://example.com/hook2.py', True),  # Remote
         ]
-        mock_validate.return_value = (True, 'HEAD')
+
+        # Mock local file checks
+        mock_path = MagicMock()
+        mock_path.exists.side_effect = [True, True, True]  # All local files exist
+        mock_path.is_file.return_value = True
+        mock_path_cls.return_value = mock_path
+
+        # Mock remote validation
+        mock_validate.side_effect = [
+            (True, 'HEAD'),  # agent.md
+            (True, 'Range'),  # cmd2.py
+            (True, 'HEAD'),  # prompt.md
+            (True, 'HEAD'),  # hook2.py
+        ]
 
         all_valid, results = setup_environment.validate_all_config_files(
             config, 'https://example.com', 'token',
         )
 
         assert all_valid is True
-        assert len(results) == 6
-        assert results[0][0] == 'agent'
-        assert results[1][0] == 'slash_command'
-        assert results[2][0] == 'slash_command'
-        assert results[3][0] == 'output_style'
-        assert results[4][0] == 'hook'
-        assert results[5][0] == 'hook'
-        # Verify auth headers were passed
-        for call in mock_validate.call_args_list:
-            assert call[0][1] == {'Authorization': 'Bearer token'}
+        assert len(results) == 7
+        # Check result types and validation methods
+        assert results[0] == ('agent', 'agent.md', True, 'HEAD')  # Remote
+        assert results[1] == ('slash_command', 'cmd1.py', True, 'Local')  # Local
+        assert results[2] == ('slash_command', 'cmd2.py', True, 'Range')  # Remote
+        assert results[3] == ('output_style', 'style.md', True, 'Local')  # Local
+        assert results[4] == ('system_prompt', 'prompt.md', True, 'HEAD')  # Remote
+        assert results[5] == ('hook', 'hook1.py', True, 'Local')  # Local
+        assert results[6] == ('hook', 'hook2.py', True, 'HEAD')  # Remote
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
-    def test_validate_all_config_files_with_failures(self, mock_validate, mock_resolve, mock_auth):
+    @patch('setup_environment.Path')
+    def test_validate_all_config_files_with_failures(self, mock_path_cls, mock_validate, mock_resolve, mock_auth):
         """Test validation with some failures."""
         config = {
             'agents': ['good.md', 'bad.md'],
@@ -318,14 +338,20 @@ class TestValidateAllConfigFiles:
         }
         mock_auth.return_value = None
         mock_resolve.side_effect = [
-            'https://example.com/good.md',
-            'https://example.com/bad.md',
-            'https://example.com/cmd.py',
+            ('https://example.com/good.md', True),  # Remote
+            ('/local/bad.md', False),  # Local
+            ('https://example.com/cmd.py', True),  # Remote
         ]
+
+        # Mock local file check for bad.md (doesn't exist)
+        mock_path = MagicMock()
+        mock_path.exists.return_value = False
+        mock_path.is_file.return_value = False
+        mock_path_cls.return_value = mock_path
+
         mock_validate.side_effect = [
-            (True, 'HEAD'),
-            (False, 'None'),  # bad.md fails
-            (True, 'Range'),
+            (True, 'HEAD'),  # good.md
+            (True, 'Range'),  # cmd.py
         ]
 
         all_valid, results = setup_environment.validate_all_config_files(config, 'https://example.com')
@@ -333,11 +359,11 @@ class TestValidateAllConfigFiles:
         assert all_valid is False
         assert len(results) == 3
         assert results[0] == ('agent', 'good.md', True, 'HEAD')
-        assert results[1] == ('agent', 'bad.md', False, 'None')
+        assert results[1] == ('agent', 'bad.md', False, 'Local')  # Local file not found
         assert results[2] == ('slash_command', 'cmd.py', True, 'Range')
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_with_base_url(self, mock_validate, mock_resolve, mock_auth):
         """Test validation with base URL configured."""
@@ -346,20 +372,20 @@ class TestValidateAllConfigFiles:
             'agents': ['agent.md'],
         }
         mock_auth.return_value = None
-        mock_resolve.return_value = 'https://cdn.example.com/files/agent.md'
+        mock_resolve.return_value = ('https://cdn.example.com/files/agent.md', True)  # Remote
         mock_validate.return_value = (True, 'HEAD')
 
         all_valid, results = setup_environment.validate_all_config_files(config, 'local')
 
         assert all_valid is True
         assert len(results) == 1
-        # Verify base_url was passed to resolve_resource_url
+        # Verify base_url was passed to resolve_resource_path
         mock_resolve.assert_called_once_with('agent.md', 'local', 'https://cdn.example.com/files')
 
     @patch('setup_environment.info')
     @patch('setup_environment.error')
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_output_messages(
         self, mock_validate, mock_resolve, mock_auth, mock_error, mock_info,
@@ -370,8 +396,8 @@ class TestValidateAllConfigFiles:
         }
         mock_auth.return_value = None
         mock_resolve.side_effect = [
-            'https://example.com/good.md',
-            'https://example.com/bad.md',
+            ('https://example.com/good.md', True),  # Remote
+            ('https://example.com/bad.md', True),  # Remote
         ]
         mock_validate.side_effect = [
             (True, 'HEAD'),
@@ -382,13 +408,13 @@ class TestValidateAllConfigFiles:
 
         assert all_valid is False
         # Check info messages
-        mock_info.assert_any_call('Validating 2 files before download...')
-        mock_info.assert_any_call('  ✓ agent: good.md (validated via HEAD)')
+        mock_info.assert_any_call('Validating 2 files...')
+        mock_info.assert_any_call('  ✓ agent: good.md (remote, validated via HEAD)')
         # Check error message
-        mock_error.assert_called_once_with('  ✗ agent: bad.md (not accessible)')
+        mock_error.assert_called_once_with('  ✗ agent: bad.md (remote, not accessible)')
 
     @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_empty_lists(self, mock_validate, mock_resolve, mock_auth):
         """Test validation with empty lists in config."""
@@ -408,28 +434,6 @@ class TestValidateAllConfigFiles:
         assert all_valid is True
         assert results == []
         mock_validate.assert_not_called()
-
-    @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_url')
-    @patch('setup_environment.validate_file_availability')
-    def test_validate_all_config_files_system_prompts(self, mock_validate, mock_resolve, mock_auth):
-        """Test validation with system prompts (file-based)."""
-        config = {
-            'system-prompts': ['prompt1.md', 'prompt2.md'],
-        }
-        mock_auth.return_value = None
-        mock_resolve.side_effect = [
-            'https://example.com/prompt1.md',
-            'https://example.com/prompt2.md',
-        ]
-        mock_validate.return_value = (True, 'HEAD')
-
-        all_valid, results = setup_environment.validate_all_config_files(config, 'https://example.com')
-
-        assert all_valid is True
-        assert len(results) == 2
-        assert results[0] == ('system_prompt', 'prompt1.md', True, 'HEAD')
-        assert results[1] == ('system_prompt', 'prompt2.md', True, 'HEAD')
 
 
 class TestMainFlowWithValidation:
@@ -474,7 +478,7 @@ class TestMainFlowWithValidation:
         mock_error.assert_any_call('The following files are not accessible:')
         mock_error.assert_any_call('  - agent: bad.md')
 
-    @patch('setup_environment.download_resources')
+    @patch('setup_environment.process_resources')
     @patch('setup_environment.install_dependencies')
     @patch('setup_environment.success')
     @patch('setup_environment.validate_all_config_files')

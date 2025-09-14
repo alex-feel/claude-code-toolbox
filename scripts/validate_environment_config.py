@@ -7,6 +7,7 @@ Requires Python 3.12+
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -52,49 +53,59 @@ def validate_config_file(config_path: Path) -> tuple[bool, list[str]]:
         # Additional semantic validations
         warnings = []
 
-        # Check for referenced files (only for repository configs)
+        # Check for referenced files (local paths only, URLs are checked at runtime)
         if not str(config_path).startswith('http'):
-            repo_root = Path(__file__).parent.parent
+            config_dir = config_path.parent
+
+            # Helper function to check local file existence
+            def check_local_file(file_path: str, file_type: str) -> None:
+                """Check if a local file exists."""
+                if file_path.startswith(('http://', 'https://')):
+                    # Skip URLs - they're validated at runtime
+                    return
+
+                # Handle home directory expansion
+                expanded_path = os.path.expanduser(file_path)
+                expanded_path = os.path.expandvars(expanded_path)
+
+                # Convert to Path object
+                path_obj = Path(expanded_path)
+
+                # Check if absolute or relative
+                if path_obj.is_absolute():
+                    # Absolute path - check directly
+                    if not path_obj.exists():
+                        warnings.append(f'Referenced {file_type} file not found: {file_path}')
+                else:
+                    # Relative path - resolve relative to config directory
+                    resolved_path = (config_dir / path_obj).resolve()
+                    if not resolved_path.exists():
+                        warnings.append(f'Referenced {file_type} file not found: {file_path} (resolved to {resolved_path})')
 
             # Check agents exist
             if config.agents:
                 for agent in config.agents:
-                    if not agent.startswith(('http://', 'https://')):
-                        agent_path = repo_root / agent
-                        if not agent_path.exists():
-                            warnings.append(f'Referenced agent file not found: {agent}')
+                    check_local_file(agent, 'agent')
 
             # Check slash commands exist
             if config.slash_commands:
                 for cmd in config.slash_commands:
-                    if not cmd.startswith(('http://', 'https://')):
-                        cmd_path = repo_root / cmd
-                        if not cmd_path.exists():
-                            warnings.append(f'Referenced slash command file not found: {cmd}')
+                    check_local_file(cmd, 'slash command')
 
             # Check output styles exist
             if config.output_styles:
                 for style in config.output_styles:
-                    if not style.startswith(('http://', 'https://')):
-                        style_path = repo_root / style
-                        if not style_path.exists():
-                            warnings.append(f'Referenced output style file not found: {style}')
+                    check_local_file(style, 'output style')
 
             # Check hook files exist
             if config.hooks and config.hooks.files:
                 for hook_file in config.hooks.files:
-                    if not hook_file.startswith(('http://', 'https://')):
-                        hook_path = repo_root / hook_file
-                        if not hook_path.exists():
-                            warnings.append(f'Referenced hook file not found: {hook_file}')
+                    check_local_file(hook_file, 'hook')
 
             # Check system prompt exists
             if config.command_defaults and config.command_defaults.system_prompt:
                 prompt = config.command_defaults.system_prompt
-                if not prompt.startswith(('http://', 'https://')):
-                    prompt_path = repo_root / prompt
-                    if not prompt_path.exists():
-                        warnings.append(f'Referenced system prompt file not found: {prompt}')
+                check_local_file(prompt, 'system prompt')
 
         if warnings:
             print(f'[OK] {config_path.name} - Valid with warnings:')

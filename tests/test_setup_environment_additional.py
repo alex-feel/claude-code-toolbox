@@ -277,45 +277,49 @@ class TestConfigLoadingErrorPaths:
             setup_environment.load_config_from_source('python')
 
 
-class TestResolveResourceURLEdgeCases:
+class TestResolveResourcePathEdgeCases:
     """Test resource URL resolution edge cases."""
 
-    def test_resolve_resource_url_gitlab_encoding(self):
+    def test_resolve_resource_path_gitlab_encoding(self):
         """Test GitLab API URL encoding in resource resolution."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'path/to/file.yaml',
             'config',
             'https://gitlab.com/api/v4/projects/123/repository/files/{path}/raw?ref=main',
         )
-        assert 'path%2Fto%2Ffile.yaml' in result
+        assert 'path%2Fto%2Ffile.yaml' in path
+        assert is_remote is True
 
-    def test_resolve_resource_url_from_gitlab_config_source(self):
+    def test_resolve_resource_path_from_gitlab_config_source(self):
         """Test resource resolution from GitLab config source."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'hooks/script.py',
             'https://gitlab.com/api/v4/projects/123/repository/files/config.yaml/raw?ref=main',
             None,
         )
-        assert '/api/v4/projects/123/repository/files/' in result
-        assert 'hooks%2Fscript.py' in result
+        assert '/api/v4/projects/123/repository/files/' in path
+        assert 'hooks%2Fscript.py' in path
+        assert is_remote is True
 
-    def test_resolve_resource_url_base_url_without_path_placeholder(self):
+    def test_resolve_resource_path_base_url_without_path_placeholder(self):
         """Test base URL without {path} placeholder."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'test.md',
             'config',
             'https://example.com/base/',
         )
-        assert result == 'https://example.com/base/test.md'
+        assert path == 'https://example.com/base/test.md'
+        assert is_remote is True
 
-    def test_resolve_resource_url_base_url_no_trailing_slash(self):
+    def test_resolve_resource_path_base_url_no_trailing_slash(self):
         """Test base URL without trailing slash."""
-        result = setup_environment.resolve_resource_url(
+        path, is_remote = setup_environment.resolve_resource_path(
             'test.md',
             'config',
             'https://example.com/base',
         )
-        assert result == 'https://example.com/base/test.md'
+        assert path == 'https://example.com/base/test.md'
+        assert is_remote is True
 
 
 class TestFetchURLWithAuthEdgeCases:
@@ -406,17 +410,19 @@ class TestFetchURLWithAuthEdgeCases:
         assert 'context' in second_call[1]
 
 
-class TestDownloadResourceWithURL:
-    """Test download_resource_with_url function."""
+class TestHandleResource:
+    """Test handle_resource function."""
 
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.fetch_url_with_auth')
-    def test_download_resource_with_url_success(self, mock_fetch):
-        """Test successful resource download with URL resolution."""
+    def test_handle_resource_remote_success(self, mock_fetch, mock_resolve):
+        """Test successful remote resource download."""
+        mock_resolve.return_value = ('https://example.com/base/agents/test.md', True)
         mock_fetch.return_value = 'file content'
 
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = Path(tmpdir) / 'resource.md'
-            result = setup_environment.download_resource_with_url(
+            result = setup_environment.handle_resource(
                 'agents/test.md',
                 dest,
                 'https://example.com/config.yaml',
@@ -428,16 +434,18 @@ class TestDownloadResourceWithURL:
             assert dest.exists()
             assert dest.read_text() == 'file content'
 
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.fetch_url_with_auth')
-    def test_download_resource_with_url_overwrite_existing(self, mock_fetch):
+    def test_handle_resource_overwrite_existing(self, mock_fetch, mock_resolve):
         """Test overwriting existing file."""
+        mock_resolve.return_value = ('https://example.com/resource.md', True)
         mock_fetch.return_value = 'new content'
 
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = Path(tmpdir) / 'existing.md'
             dest.write_text('old content')
 
-            result = setup_environment.download_resource_with_url(
+            result = setup_environment.handle_resource(
                 'resource.md',
                 dest,
                 'config.yaml',
@@ -448,14 +456,16 @@ class TestDownloadResourceWithURL:
             assert result is True
             assert dest.read_text() == 'new content'
 
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.fetch_url_with_auth')
-    def test_download_resource_with_url_failure(self, mock_fetch):
+    def test_handle_resource_failure(self, mock_fetch, mock_resolve):
         """Test resource download failure."""
+        mock_resolve.return_value = ('https://example.com/resource.md', True)
         mock_fetch.side_effect = Exception('Download failed')
 
         with tempfile.TemporaryDirectory() as tmpdir:
             dest = Path(tmpdir) / 'resource.md'
-            result = setup_environment.download_resource_with_url(
+            result = setup_environment.handle_resource(
                 'resource.md',
                 dest,
                 'config.yaml',
@@ -826,7 +836,7 @@ class TestCreateAdditionalSettingsComplex:
             assert 'py' in hook_cmd
             assert hook_file.as_posix() in hook_cmd
 
-    @patch('setup_environment.download_resource_with_url')
+    @patch('setup_environment.handle_resource')
     @patch('platform.system', return_value='Linux')
     def test_create_additional_settings_hooks_linux(self, _mock_system, mock_download):
         """Test hook configuration on Linux."""
@@ -1072,10 +1082,11 @@ class TestMainFunctionErrorPaths:
             mock_exit.assert_called_with(1)
 
     @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files', return_value=(True, []))
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
-    @patch('setup_environment.download_resources', return_value=True)
-    @patch('setup_environment.download_resource_with_url', return_value=True)
+    @patch('setup_environment.process_resources', return_value=True)
+    @patch('setup_environment.handle_resource', return_value=True)
     @patch('setup_environment.configure_all_mcp_servers', return_value=True)
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
@@ -1086,10 +1097,11 @@ class TestMainFunctionErrorPaths:
         mock_launcher,
         mock_settings,
         mock_mcp,
-        mock_download_resource,
-        mock_download,
+        mock_handle_resource,
+        mock_process_resources,
         mock_deps,
         mock_install,
+        mock_validate,
         mock_load,
     ):
         """Test main when launcher creation fails."""
@@ -1097,10 +1109,11 @@ class TestMainFunctionErrorPaths:
         del mock_launcher  # Unused but required for patch
         del mock_settings  # Unused but required for patch
         del mock_mcp  # Unused but required for patch
-        del mock_download_resource  # Unused but required for patch
-        del mock_download  # Unused but required for patch
+        del mock_handle_resource  # Unused but required for patch
+        del mock_process_resources  # Unused but required for patch
         del mock_deps  # Unused but required for patch
         del mock_install  # Unused but required for patch
+        del mock_validate  # Unused but required for patch
         mock_load.return_value = (
             {
                 'name': 'Test',
@@ -1119,7 +1132,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
-    @patch('setup_environment.download_resources', return_value=True)
+    @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.configure_all_mcp_servers', return_value=True)
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
@@ -1160,8 +1173,8 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
-    @patch('setup_environment.download_resources', return_value=True)
-    @patch('setup_environment.download_resource_with_url', return_value=True)
+    @patch('setup_environment.process_resources', return_value=True)
+    @patch('setup_environment.handle_resource', return_value=True)
     @patch('setup_environment.configure_all_mcp_servers', return_value=True)
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
