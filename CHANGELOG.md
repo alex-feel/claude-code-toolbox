@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.0...v1.11.1) (2025-09-14)
+
+
+### Bug Fixes
+
+* remove unnecessary releases_created output ([b0dd557](https://github.com/alex-feel/claude-code-toolbox/commit/b0dd55799a81074875e107008fe715a6652f0135))
+
 ## [1.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.10.0...v1.11.0) (2025-09-14)
 
 
