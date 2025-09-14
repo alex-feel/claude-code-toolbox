@@ -2,8 +2,6 @@ name: Test & Coverage
 
 on:
   pull_request:
-    branches-ignore:
-      - 'release-please--branches--**'  # Skip release-please PRs entirely
   workflow_dispatch:
 
 permissions:
@@ -14,6 +12,7 @@ permissions:
 jobs:
   test:
     name: Test Python on ${{ matrix.os }}
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -77,6 +76,7 @@ jobs:
 
   test-validation:
     name: Test Environment Validation
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -104,6 +104,7 @@ jobs:
 
   test-install-scripts:
     name: Test Install Scripts
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -150,7 +151,7 @@ jobs:
     name: Test Summary
     runs-on: ubuntu-latest
     needs: [test, test-validation, test-install-scripts]
-    if: always()
+    if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
 
     steps:
       - name: Summary
