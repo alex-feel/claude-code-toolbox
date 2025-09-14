@@ -710,18 +710,21 @@ class TestLocalPathValidation:
                 assert resolved == str((tmpdir / 'file.md').resolve())
                 assert is_remote is False
 
-            # Test environment variable expansion (Windows)
-            with patch.dict(os.environ, {'USERPROFILE': str(tmpdir)}):
-                resolved, is_remote = setup_environment.resolve_resource_path(
-                    '%USERPROFILE%\\file.md', str(config_file),
-                )
-                assert resolved == str((tmpdir / 'file.md').resolve())
-                assert is_remote is False
-
-            # Test environment variable expansion (Unix)
-            with patch.dict(os.environ, {'HOME': str(tmpdir)}):
-                resolved, is_remote = setup_environment.resolve_resource_path(
-                    '$HOME/file.md', str(config_file),
-                )
-                assert resolved == str((tmpdir / 'file.md').resolve())
-                assert is_remote is False
+            # Test environment variable expansion (platform-specific)
+            import platform
+            if platform.system() == 'Windows':
+                # Test Windows environment variable expansion
+                with patch.dict(os.environ, {'USERPROFILE': str(tmpdir)}):
+                    resolved, is_remote = setup_environment.resolve_resource_path(
+                        '%USERPROFILE%\\file.md', str(config_file),
+                    )
+                    assert resolved == str((tmpdir / 'file.md').resolve())
+                    assert is_remote is False
+            else:
+                # Test Unix environment variable expansion
+                with patch.dict(os.environ, {'HOME': str(tmpdir)}):
+                    resolved, is_remote = setup_environment.resolve_resource_path(
+                        '$HOME/file.md', str(config_file),
+                    )
+                    assert resolved == str((tmpdir / 'file.md').resolve())
+                    assert is_remote is False
