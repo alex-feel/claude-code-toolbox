@@ -5,8 +5,8 @@ description: |
   Analyzes and optimizes application performance with measurable improvements and implementation strategies.
   Specializes in algorithm optimization, database tuning, caching strategies, and resource management.
   MUST BE USED for performance issues, slow queries, high memory usage, or optimization requests.
-tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash, WebFetch, WebSearch
-model: opus
+tools: Glob, Grep, LS, Read, NotebookRead, TodoWrite, BashOutput, Write, Edit, MultiEdit, Bash, WebFetch, WebSearch
+model: sonnet
 color: red
 ---
 

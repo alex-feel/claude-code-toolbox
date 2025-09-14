@@ -6,7 +6,7 @@ description: |
   Produces evidence-based reports with complete source attribution and confidence scoring.
   MUST BE USED when researching current events, technologies, methodologies, or any topic requiring up-to-date web information.
 tools: WebSearch, WebFetch, LS, Read, Grep, Bash
-model: sonnet
+model: sonnet[1m]
 color: green
 ---
 

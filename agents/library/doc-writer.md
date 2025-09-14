@@ -5,7 +5,7 @@ description: |
   Creates and maintains comprehensive documentation for codebases, APIs, and systems.
   Ensures documentation stays synchronized with code and follows industry best practices.
   MUST BE USED after implementing new features, making API changes, or when documentation gaps are detected.
-tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch
+tools: Glob, Grep, LS, Read, NotebookRead, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch
 model: sonnet
 color: blue
 ---
