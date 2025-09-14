@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.13.0...v2.0.0) (2025-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* All pre-built library content has been removed from the repository. Users must now provide their own agents, hooks, slash commands, output styles, system prompts, and environment configurations. The toolbox now serves as a pure framework for Claude Code environment setup without any bundled content.
+
+### Features
+
+* remove all pre-built library content ([93ccd37](https://github.com/alex-feel/claude-code-toolbox/commit/93ccd37fbbc08b0c4986b1afaa83339021a66e2a))
+
 ## [1.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.12.0...v1.13.0) (2025-09-14)
 
 
