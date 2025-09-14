@@ -177,6 +177,14 @@ def validate_file_availability(url: str, auth_headers: dict[str, str] | None = N
     Returns:
         Tuple of (is_available, method_used)
     """
+    # Convert GitLab web URLs to API URLs for accurate validation
+    # (same as done in fetch_url_with_auth during download)
+    original_url = url
+    if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
+        url = convert_gitlab_url_to_api(url)
+        if url != original_url:
+            info(f'Using API URL for validation: {url}')
+
     # Try HEAD request first
     if check_file_with_head(url, auth_headers):
         return (True, 'HEAD')
