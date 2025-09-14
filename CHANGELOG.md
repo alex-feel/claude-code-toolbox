@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.2...v1.12.0) (2025-09-14)
+
+
+### Features
+
+* add python orchestrator output style and update configurations ([d676f5d](https://github.com/alex-feel/claude-code-toolbox/commit/d676f5d552168f159fe32fd2c670de6d038bdc88))
+
+
+### Bug Fixes
+
+* add missing front matter to python-developer agent ([afffdab](https://github.com/alex-feel/claude-code-toolbox/commit/afffdabf1b05522dae8c7c99bd8b3c450308227b))
+
 ## [1.11.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.1...v1.11.2) (2025-09-14)
 
 
