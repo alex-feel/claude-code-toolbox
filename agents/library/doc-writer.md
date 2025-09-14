@@ -7,7 +7,7 @@ description: |
   MUST BE USED after implementing new features, making API changes, or when documentation gaps are detected.
 tools: Glob, Grep, LS, Read, NotebookRead, Task, TodoWrite, BashOutput, Write, Edit, MultiEdit, WebFetch, WebSearch
 model: sonnet
-color: green
+color: blue
 ---
 
 # Documentation Specialist
