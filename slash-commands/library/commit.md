@@ -34,7 +34,7 @@ If found, follow those conventions strictly. Otherwise, use the fallback convent
 
 ### 2. Fallback Conventional Commits
 
-When no project-specific conventions exist, use ONLY these types (no scopes unless explicitly allowed):
+When no project-specific conventions exist, you must choose from these types only (no scopes):
 
 - **feat** – a new feature or capability
 - **fix** – a bug fix, issue resolution, or revert
@@ -42,8 +42,6 @@ When no project-specific conventions exist, use ONLY these types (no scopes unle
 - **test** – adding, modifying, or fixing tests
 - **chore** – maintenance, refactoring, tooling, dependencies
 - **ci** – CI/CD configuration and pipeline changes
-- **perf** – performance improvements
-- **style** – code style/formatting (no logic changes)
 
 ### 3. Pre-Commit Preparation
 
