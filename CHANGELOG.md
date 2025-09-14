@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.12.0...v1.13.0) (2025-09-14)
+
+
+### Features
+
+* strengthen python-orchestrator workflow enforcement ([8feb171](https://github.com/alex-feel/claude-code-toolbox/commit/8feb17138f70eeb82f346c2a6146547ae5b9d232))
+
+
+### Bug Fixes
+
+* correct agent metadata and descriptions ([6fc87b7](https://github.com/alex-feel/claude-code-toolbox/commit/6fc87b7f9364e58b02a8d5acbcc5ebe1bf30cd3e))
+* resolve output style names from front matter instead of filename ([b46e7da](https://github.com/alex-feel/claude-code-toolbox/commit/b46e7dabeb58e125dd2f9015ea562a4d8cf4652d))
+
 ## [1.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.2...v1.12.0) (2025-09-14)
 
 
