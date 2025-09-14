@@ -1,7 +1,7 @@
 [project]
 name = "claude-code-toolbox"
 version = "1.13.0"
-description = "Claude Code Toolbox — production-ready Claude Code enhancements: subagents, hooks, output styles, custom slash commands, system prompts, and one-line environment setup."
+description = "Claude Code Toolbox — automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
 requires-python = ">=3.12"
