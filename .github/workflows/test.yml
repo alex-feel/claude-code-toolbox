@@ -38,7 +38,7 @@ jobs:
           CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD || echo "")
 
           # Check if any test-relevant files changed
-          TEST_PATTERNS="scripts/ tests/ pyproject.toml .github/workflows/test.yml"
+          TEST_PATTERNS="scripts/ tests/ pyproject.toml \\.github/workflows/test\\.yml"
           SHOULD_TEST=false
 
           for pattern in $TEST_PATTERNS; do
@@ -70,7 +70,7 @@ jobs:
           fi
 
   test:
-    name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    name: Test Python on ${{ matrix.os }}
     needs: status-check
     if: needs.status-check.outputs.should-test == 'true'
     runs-on: ${{ matrix.os }}
@@ -84,7 +84,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version-file: pyproject.toml
@@ -105,7 +105,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ matrix.os }}-${{ matrix.python-version }}
+          name: test-results-${{ matrix.os }}
           path: test-results.xml
 
       - name: Upload coverage reports
