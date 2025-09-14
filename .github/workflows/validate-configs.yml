@@ -67,10 +67,10 @@ jobs:
               # Check if it's a template or library config
               if [[ "$config_file" == *"templates/"* ]]; then
                 echo "Note: Template file - allowing placeholder values"
-                python scripts/validate_environment_config.py "$config_file" || true
+                uv run python scripts/validate_environment_config.py "$config_file" || true
               else
                 # Library configs must pass strict validation
-                if ! python scripts/validate_environment_config.py "$config_file" --strict; then
+                if ! uv run python scripts/validate_environment_config.py "$config_file" --strict; then
                   exit_code=1
                 fi
               fi
