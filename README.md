@@ -1,6 +1,6 @@
 # Claude Code Toolbox
 
-A community toolbox for Claude Code - automated installers, scripts, agent templates, and utilities for Windows, macOS, and Linux.
+A community toolbox for Claude Code - automated installers and environment configuration framework for Windows, macOS, and Linux.
 
 ## 🚀 Quick Install
 
@@ -12,22 +12,17 @@ Set up a complete development environment with specialized configurations:
 
 #### Option 1: One-liner (recommended)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='<environment-name>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
-#### Option 2: Using CMD
-```cmd
-curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 <environment-name>
-```
-
-#### Option 3: Using local configuration (for sensitive configs)
+#### Option 2: Using local configuration (for sensitive configs)
 ```powershell
 # Use a local file containing API keys or other sensitive data
 $env:CLAUDE_ENV_CONFIG='./my-custom-env.yaml'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-#### Option 4: Using private repository configurations
+#### Option 3: Using private repository configurations
 
 **For Private GitLab Repositories (One-liner recommended):**
 ```powershell
@@ -59,31 +54,31 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 
 ### macOS
 ```bash
-# Repository config
-CLAUDE_ENV_CONFIG=<environment-name> curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+# Public repository config
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
-# Private GitLab repository (one-liner)
+# Private GitLab repository
 CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
-# Private GitHub repository (one-liner)
+# Private GitHub repository
 CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 ### Linux
 ```bash
-# Repository config
-CLAUDE_ENV_CONFIG=<environment-name> curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+# Public repository config
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Private GitLab repository (one-liner)
+# Private GitLab repository
 CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
-# Private GitHub repository (one-liner)
+# Private GitHub repository
 CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
@@ -116,28 +111,6 @@ The setup script will warn you when loading from remote URLs. Always review the 
 ### 🔐 Using Private Repository Configurations
 
 For configurations stored in private repositories, you need to provide authentication.
-
-#### Quick Start: One-liner Commands
-
-**GitLab Private Repository (Windows):**
-```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
-```
-
-**GitHub Private Repository (Windows):**
-```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
-```
-
-**GitLab Private Repository (macOS/Linux):**
-```bash
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-```
-
-**GitHub Private Repository (macOS/Linux):**
-```bash
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-```
 
 #### Authentication Details
 
@@ -173,12 +146,6 @@ Run this command in PowerShell (as regular user, it will elevate if needed):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')"
-```
-
-Or using CMD:
-
-```cmd
-curl -L -o %TEMP%\install-claude-windows.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\install-claude-windows.ps1
 ```
 
 ### What it does
