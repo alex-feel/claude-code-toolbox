@@ -223,6 +223,32 @@ class TestValidateFileAvailability:
         mock_head.assert_called_once_with('https://example.com/file.md', auth_headers)
         mock_range.assert_called_once_with('https://example.com/file.md', auth_headers)
 
+    @patch('setup_environment.info')
+    @patch('setup_environment.convert_gitlab_url_to_api')
+    @patch('setup_environment.detect_repo_type')
+    @patch('setup_environment.check_file_with_head')
+    def test_validate_file_availability_gitlab_url_conversion(self, mock_head, mock_detect, mock_convert, mock_info):
+        """Test that GitLab URLs are converted to API format for validation."""
+        # Setup
+        gitlab_web_url = 'https://gitlab.com/namespace/project/-/raw/main/file.md'
+        gitlab_api_url = 'https://gitlab.com/api/v4/projects/namespace%2Fproject/repository/files/file.md/raw?ref=main'
+
+        mock_detect.return_value = 'gitlab'
+        mock_convert.return_value = gitlab_api_url
+        mock_head.return_value = True
+
+        # Execute
+        is_valid, method = setup_environment.validate_file_availability(gitlab_web_url)
+
+        # Verify
+        assert is_valid is True
+        assert method == 'HEAD'
+        mock_detect.assert_called_once_with(gitlab_web_url)
+        mock_convert.assert_called_once_with(gitlab_web_url)
+        # The HEAD check should be called with the converted API URL
+        mock_head.assert_called_once_with(gitlab_api_url, None)
+        mock_info.assert_called_once_with(f'Using API URL for validation: {gitlab_api_url}')
+
 
 class TestValidateAllConfigFiles:
     """Test full configuration validation."""
