@@ -14,57 +14,50 @@ A community toolbox for Claude Code - automated installers, scripts, agent templ
 
 ## 🚀 Quick Install
 
-### 🐍 Python Developer Setup
+## 🚀 Quick Start with Environment Configurations
 
-Set up a complete Python development environment with one command:
+Set up a complete development environment with specialized configurations:
 
-#### Windows
+### Windows
 
-##### Option 1: Simple approach (recommended)
+#### Option 1: One-liner (recommended)
 ```powershell
-# First set the environment variable, then run the installer
-$env:CLAUDE_ENV_CONFIG='python'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='<environment-name>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
-##### Option 2: One-liner (requires escaping)
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
-```
-
-##### Option 3: Using CMD
+#### Option 2: Using CMD
 ```cmd
-curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 python
+curl -L -o %TEMP%\setup-env.ps1 https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File %TEMP%\setup-env.ps1 <environment-name>
 ```
 
-##### Option 4: Using local configuration (for sensitive configs)
+#### Option 3: Using local configuration (for sensitive configs)
 ```powershell
 # Use a local file containing API keys or other sensitive data
-$env:CLAUDE_ENV_CONFIG='./my-python-env.yaml'
+$env:CLAUDE_ENV_CONFIG='./my-custom-env.yaml'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-##### Option 5: Using private repository configurations
+#### Option 4: Using private repository configurations
 
 **For Private GitLab Repositories (One-liner recommended):**
 ```powershell
 # One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
 # Alternative: Two-step approach (if already in PowerShell)
 $env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
-$env:GITLAB_TOKEN='glpat-YOUR-TOKEN-HERE'
+$env:GITLAB_TOKEN='glpat-<your-token>'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
 **For Private GitHub Repositories (One-liner recommended):**
 ```powershell
 # One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
 # Alternative: Two-step approach (if already in PowerShell)
 $env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
-$env:GITHUB_TOKEN='ghp_YOUR-TOKEN-HERE'
+$env:GITHUB_TOKEN='ghp_<your-token>'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
@@ -74,50 +67,42 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 - Query parameters (like `?ref_type=heads`) are handled automatically
 - The script only uses authentication when needed (public repos work without tokens)
 
-#### macOS
+### macOS
 ```bash
 # Repository config
-CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG=<environment-name> curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Private GitLab repository (one-liner)
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Private GitHub repository (one-liner)
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
-#### Linux
+### Linux
 ```bash
 # Repository config
-CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG=<environment-name> curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Local config file
 CLAUDE_ENV_CONFIG=./my-env.yaml curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Private GitLab repository (one-liner)
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Private GitHub repository (one-liner)
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
-
-This automated setup includes:
-- ✨ Claude Code installation
-- 🤖 Python-optimized subagents
-- 🎯 Custom slash commands
-- 📚 Context7 MCP server for up-to-date library documentation
-- 🔧 Comprehensive Python developer system prompt
-- 🚀 Convenience launchers for quick startup
 
 **✅ After setup, use the simple command:**
 ```bash
-claude-python  # Works in all Windows shells (PowerShell, CMD, Git Bash)
+<command-name>  # Works in all Windows shells (PowerShell, CMD, Git Bash)
 ```
 
-The setup automatically creates properly escaped wrappers for each Windows shell, ensuring the Python developer system prompt loads correctly regardless of which shell you use.
+The setup automatically creates properly escaped wrappers for each Windows shell, ensuring your environment configuration loads correctly regardless of which shell you use.
 
 ---
 
@@ -132,7 +117,7 @@ The setup automatically creates properly escaped wrappers for each Windows shell
 **Only use environment configurations from trusted sources!**
 
 When loading configurations:
-- ✅ **Repository configs** (`python`) - Reviewed and maintained by the community
+- ✅ **Repository configs** - Reviewed and maintained by the community
 - ✅ **Your local files** (`./my-config.yaml`) - Under your control
 - ⚠️ **Remote URLs** (`https://example.com/config.yaml`) - **VERIFY THE SOURCE FIRST!**
 
@@ -146,22 +131,22 @@ For configurations stored in private repositories, you need to provide authentic
 
 **GitLab Private Repository (Windows):**
 ```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml'; `$env:GITLAB_TOKEN='glpat-YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 **GitHub Private Repository (Windows):**
 ```powershell
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml'; `$env:GITHUB_TOKEN='ghp_YOUR-TOKEN'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 **GitLab Private Repository (macOS/Linux):**
 ```bash
-CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml' GITLAB_TOKEN='glpat-YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://gitlab.company.com/team/configs/-/raw/main/env.yaml' GITLAB_TOKEN='glpat-<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 **GitHub Private Repository (macOS/Linux):**
 ```bash
-CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml' GITHUB_TOKEN='ghp_YOUR-TOKEN' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/configs/main/env.yaml' GITHUB_TOKEN='ghp_<your-token>' curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
 #### Authentication Details
@@ -222,13 +207,13 @@ The Windows installer automatically:
 - Cached availability checks to prevent redundant attempts
 - Comprehensive PATH refresh for immediate command availability
 
-### macOS
+#### macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
 ```
 
-### Linux
+#### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
@@ -242,15 +227,6 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 - Windows 10/11 with PowerShell 5.1+
 - Internet connection
 - Admin rights (auto-elevation for system-wide installs)
-
-### Behind a Proxy?
-
-Set your proxy before running:
-
-```powershell
-$env:HTTP_PROXY = "http://your-proxy:port"
-$env:HTTPS_PROXY = "http://your-proxy:port"
-```
 
 ## 🔒 Security
 
@@ -331,43 +307,3 @@ This is a community project and is not officially affiliated with Anthropic. Cla
 
 - **Bug reports**: [Open an issue](https://github.com/alex-feel/claude-code-toolbox/issues)
 - **Claude Code documentation**: [Official docs](https://docs.anthropic.com/claude-code)
-
-## ✨ After Installation
-
-### Standard Installation
-Once installed, verify everything works:
-
-```bash
-claude doctor
-```
-
-Then start using Claude:
-
-```bash
-claude
-```
-
-### Python Developer Setup
-After running the Python setup script:
-
-```bash
-# 1. Verify installation
-claude doctor
-
-# 2. Start Claude with Python configuration - just run:
-claude-python
-
-# That's it! The command is registered globally during setup
-```
-
-**⚠️ Common Mistakes:**
-- Running `claude` directly won't load the Python system prompt!
-
-For IDE integration:
-- **VS Code**: Configure terminal to use the launcher script
-- **JetBrains**: Set shell path to the launcher script
-
----
-
-<!-- Version and release information is managed by Release Please -->
-<!-- See releases: https://github.com/alex-feel/claude-code-toolbox/releases -->
