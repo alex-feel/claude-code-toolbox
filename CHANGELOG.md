@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.2](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.1...v1.11.2) (2025-09-14)
+
+
+### Bug Fixes
+
+* make environment variable expansion tests platform-specific ([044daac](https://github.com/alex-feel/claude-code-toolbox/commit/044daac5aace8d625b5452b96cfd5b7c079f485f))
+* resolve GitLab validation false positive in setup_environment.py ([8cb4a10](https://github.com/alex-feel/claude-code-toolbox/commit/8cb4a10857f85603e1229ebc19f10d162d79fd0f))
+
 ## [1.11.1](https://github.com/alex-feel/claude-code-toolbox/compare/v1.11.0...v1.11.1) (2025-09-14)
 
 
