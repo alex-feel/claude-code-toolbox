@@ -2,16 +2,6 @@
 
 A community toolbox for Claude Code - automated installers, scripts, agent templates, and utilities for Windows, macOS, and Linux.
 
-<!-- Dynamic entity count badges -->
-<p align="left">
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fenvironments.json&query=%24.message&label=Environments&color=blue&style=for-the-badge" alt="Environments" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fagents.json&query=%24.message&label=Agents&color=green&style=for-the-badge" alt="Agents" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fcommands.json&query=%24.message&label=Commands&color=yellow&style=for-the-badge" alt="Commands" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fprompts.json&query=%24.message&label=Prompts&color=orange&style=for-the-badge" alt="Prompts" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fstyles.json&query=%24.message&label=Styles&color=purple&style=for-the-badge" alt="Styles" />
-  <img src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Falex-feel%2Fclaude-code-toolbox%2Fmain%2F.github%2Fbadges%2Fhooks.json&query=%24.message&label=Hooks&color=red&style=for-the-badge" alt="Hooks" />
-</p>
-
 ## 🚀 Quick Install
 
 ## 🚀 Quick Start with Environment Configurations
@@ -246,12 +236,13 @@ If you download the script manually, Windows SmartScreen may warn you. The scrip
 
 ## 📚 Documentation
 
-- [Sub-agents Guide](agents/README.md) - Creating specialized AI assistants
-- [System Prompts Guide](system-prompts/README.md) - Comprehensive role-based configurations
-- [Output Styles Guide](output-styles/README.md) - Transform Claude Code for different professional domains
-- [Slash Commands Guide](slash-commands/README.md) - Custom command shortcuts
-- [MCP Configuration Guide](mcp/README.md) - Model Context Protocol setup
-- [Scripts Documentation](scripts/README.md) - Installation and setup scripts
+Visit the [Claude Code Toolbox Wiki](https://github.com/alex-feel/claude-code-toolbox/wiki) for guides on creating your own:
+- Sub-agents (specialized AI assistants)
+- System Prompts (role-based configurations)
+- Output Styles (transform Claude Code for different domains)
+- Slash Commands (custom command shortcuts)
+- MCP Servers (Model Context Protocol setup)
+- Hooks (event-driven automations)
 
 ## 🛠️ Repository Structure
 
@@ -269,25 +260,9 @@ claude-code-toolbox/
 │   └── macos/                   # macOS bootstrap scripts
 │       ├── install-claude-macos.sh
 │       └── setup-environment.sh
-├── agents/                      # Agents (subagents)
-│   ├── library/                 # Ready-to-use subagents
-│   └── templates/               # Templates for creating new agents
-├── system-prompts/              # Comprehensive system prompts
-│   ├── library/                 # Role-specific configurations
-│   └── templates/               # Templates for custom prompts
-├── output-styles/               # Output style transformations
-│   ├── library/                 # Ready-to-use professional styles
-│   └── templates/               # Templates for creating new styles
-├── slash-commands/              # Custom slash command templates
-│   ├── library/                 # Ready-to-use commands
-│   └── templates/               # Command templates
-├── hooks/                       # Git hooks and event handlers
-│   └── library/                 # Ready-to-use hooks
-├── environments/                # Environment configurations
-│   ├── library/                 # Ready-to-use environments
-│   └── templates/               # Environment templates
-├── mcp/                         # Model Context Protocol configuration
-│   └── README.md                # MCP setup and usage guide
+├── tests/                       # Test suite for the toolbox
+│   ├── conftest.py              # Test fixtures and configuration
+│   └── ...                      # Unit and integration tests
 └── docs/                        # Documentation
 ```
 
