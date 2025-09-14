@@ -38,7 +38,7 @@ jobs:
           CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD || echo "")
 
           # Check if any test-relevant files changed
-          TEST_PATTERNS="scripts/ tests/ pyproject.toml .github/workflows/test.yml"
+          TEST_PATTERNS="scripts/ tests/ pyproject.toml \\.github/workflows/test\\.yml"
           SHOULD_TEST=false
 
           for pattern in $TEST_PATTERNS; do
