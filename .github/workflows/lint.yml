@@ -2,6 +2,8 @@ name: Lint and Validate
 
 on:
   pull_request:
+    branches-ignore:
+      - 'release-please--branches--**'  # Skip release-please PRs entirely
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,6 @@ permissions:
 jobs:
   pre-commit:
     name: Run Pre-Commit Checks
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
@@ -41,7 +42,6 @@ jobs:
 
   powershell:
     name: PowerShell Script Analysis
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: windows-latest
 
     steps:
@@ -63,7 +63,6 @@ jobs:
 
   security:
     name: Security Scan
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:

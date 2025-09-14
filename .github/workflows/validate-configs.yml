@@ -2,7 +2,8 @@ name: Validate Environment Configs
 
 on:
   pull_request:
-    # Remove path filters to ensure workflow always runs
+    branches-ignore:
+      - 'release-please--branches--**'  # Skip release-please PRs entirely
 
 permissions:
   contents: read
@@ -11,7 +12,6 @@ permissions:
 jobs:
   validate:
     name: Validate Environment Configurations
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
     runs-on: ubuntu-latest
 
     steps:
