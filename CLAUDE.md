@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is the Claude Code Toolbox - a community project providing automated installers, environment configurations, agent templates, and utilities for Claude Code across Windows, macOS, and Linux. The toolbox enables users to quickly set up specialized development environments with custom agents, MCP servers, slash commands, and hooks.
+This is the Claude Code Toolbox - a community project providing automated installers and environment configuration tools for Claude Code across Windows, macOS, and Linux. The toolbox enables users to quickly set up specialized development environments with custom agents, MCP servers, slash commands, and hooks.
 
 ## Key Architecture
 
@@ -25,7 +25,7 @@ This is the Claude Code Toolbox - a community project providing automated instal
 
 ### Environment Configuration System
 
-YAML configurations in `environments/library/` define complete development environments including:
+YAML configurations define complete development environments including:
 - Dependencies to install
 - Agents (subagents for Claude Code)
 - MCP servers (with automatic permission pre-allowing)
@@ -56,7 +56,7 @@ uv run pytest --cov=src
 uv run pytest tests/
 
 # Run a specific test file
-uv run pytest tests/test_count_entities.py
+uv run pytest tests/test_setup_environment.py
 
 # Run a specific test function
 uv run pytest tests/unit/test_card_service.py::TestCountFiles::test_count_files_existing_directory
@@ -147,12 +147,12 @@ As of latest version, hooks use this structure in environment YAML:
 ```yaml
 hooks:
     files:  # Top-level list of files to download
-        - hooks/library/script.py
+        - my-hooks/linter.py
     events:  # Event configurations
         - event: PostToolUse
           matcher: Edit|MultiEdit|Write
           type: command
-          command: script.py  # References filename from 'files'
+          command: linter.py  # References filename from 'files'
 ```
 
 ### System Prompts vs Output Styles
@@ -164,17 +164,16 @@ hooks:
 ## Testing Workflows
 
 ### When modifying setup_environment.py
-1. Test with repository config: `python scripts/setup_environment.py python --skip-install` (make sure latest changes are merged if structure changed)
-2. Test with local file: Create test YAML, run with `./test.yaml` (prefer if structure changed)
-3. Test with mock URL to verify warning messages appear
-4. Verify global command registration works
-5. Verify additional-settings.json structure
-6. Check that hooks execute properly after setup
+1. Test with local file: Create test YAML, run with `./test.yaml`
+2. Test with remote URL to verify warning messages appear
+3. Verify global command registration works
+4. Verify additional-settings.json structure
+5. Check that hooks execute properly after setup
 
-### When adding new environment configs
-1. Place in `environments/library/`
-2. Test local installation flow
-3. Verify all referenced files exist in repo
+### When creating custom environment configs
+1. Create your YAML configuration file
+2. Test local installation flow with your config
+3. Verify all referenced files are accessible
 4. Verify additional-settings.json structure
 5. Ensure hooks trigger correctly
 

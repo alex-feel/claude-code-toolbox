@@ -74,34 +74,6 @@ jobs:
           MINIMUM_GREEN: 80
           MINIMUM_ORANGE: 60
 
-  test-validation:
-    name: Test Environment Validation
-    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version-file: pyproject.toml
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Install dependencies
-        run: uv sync
-
-      - name: Validate all environment configs
-        run: |
-          uv run python scripts/validate_environment_config.py environments/library/
-
-      - name: Test entity counting
-        run: |
-          uv run python scripts/count_entities.py
-
   test-install-scripts:
     name: Test Install Scripts
     if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
@@ -150,7 +122,7 @@ jobs:
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [test, test-validation, test-install-scripts]
+    needs: [test, test-install-scripts]
     if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
 
     steps:
@@ -166,6 +138,4 @@ jobs:
           echo "- ✅ macOS + Python" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Validation Tests" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Environment configurations validated" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Entity counting tested" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Install scripts tested" >> $GITHUB_STEP_SUMMARY

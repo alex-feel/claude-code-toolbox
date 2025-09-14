@@ -188,7 +188,7 @@ dependencies:
   - uv
   - pytest
 agents:
-  - agents/library/python-developer.md
+  - my-agents/custom-agent.md
 ''')
     files['valid'] = valid_env
 
