@@ -1,7 +1,9 @@
 """Tests for pre-download validation functionality in setup_environment.py."""
 
 import contextlib
+import os
 import sys
+import tempfile
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -390,6 +392,63 @@ class TestValidateAllConfigFiles:
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
+    @patch('setup_environment.Path')
+    def test_validate_all_config_files_local_paths_comprehensive(self, mock_path_cls, mock_resolve, mock_auth):
+        """Test validation with all types of local paths."""
+        config = {
+            'agents': [
+                'C:\\absolute\\windows\\path.md',  # Windows absolute
+                '/absolute/unix/path.md',  # Unix absolute
+                './relative/path.md',  # Relative with ./
+                '../parent/path.md',  # Parent relative
+                'simple.md',  # Simple relative
+                '~/home/path.md',  # Home directory
+                '%USERPROFILE%\\env\\path.md',  # Windows env var
+                '$HOME/env/path.md',  # Unix env var
+            ],
+        }
+        mock_auth.return_value = None
+
+        # All resolve to local paths
+        mock_resolve.side_effect = [
+            ('C:\\absolute\\windows\\path.md', False),
+            ('/absolute/unix/path.md', False),
+            ('C:\\current\\relative\\path.md', False),
+            ('C:\\parent\\path.md', False),
+            ('C:\\current\\simple.md', False),
+            ('C:\\Users\\test\\home\\path.md', False),
+            ('C:\\Users\\test\\env\\path.md', False),
+            ('C:\\Users\\test\\env\\path.md', False),
+        ]
+
+        # Mock Path objects for each resolved path
+        mock_paths = []
+        for i in range(8):
+            mock_path = MagicMock()
+            # Make first 5 exist, last 3 not exist
+            mock_path.exists.return_value = i < 5
+            mock_path.is_file.return_value = i < 5
+            mock_paths.append(mock_path)
+
+        mock_path_cls.side_effect = mock_paths
+
+        all_valid, results = setup_environment.validate_all_config_files(config, 'local.yaml')
+
+        assert all_valid is False  # Some files don't exist
+        assert len(results) == 8
+
+        # Check that first 5 are valid
+        for i in range(5):
+            assert results[i][2] is True  # is_valid
+            assert results[i][3] == 'Local'  # method
+
+        # Check that last 3 are invalid
+        for i in range(5, 8):
+            assert results[i][2] is False  # is_valid
+            assert results[i][3] == 'Local'  # method
+
+    @patch('setup_environment.get_auth_headers')
+    @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_with_base_url(self, mock_validate, mock_resolve, mock_auth):
         """Test validation with base URL configured."""
@@ -547,3 +606,122 @@ class TestMainFlowWithValidation:
         mock_success.assert_any_call('All configuration files validated successfully!')
         # Verify we didn't exit early
         mock_install.assert_called()
+
+
+class TestLocalPathValidation:
+    """Test local path validation with real files."""
+
+    @patch('setup_environment.info')
+    @patch('setup_environment.error')
+    def test_validate_local_files_with_real_paths(self, mock_error, mock_info):
+        """Test validation with actual temporary files."""
+        del mock_error, mock_info  # Unused but needed to suppress output
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+
+            # Create some test files
+            (tmpdir / 'exists.md').write_text('content')
+            (tmpdir / 'subdir').mkdir()
+            (tmpdir / 'subdir' / 'nested.md').write_text('nested')
+
+            # Create config with various local paths
+            config = {
+                'agents': [
+                    str(tmpdir / 'exists.md'),  # Absolute path that exists
+                    str(tmpdir / 'missing.md'),  # Absolute path that doesn't exist
+                ],
+                'slash-commands': [
+                    './subdir/nested.md',  # Relative path (will be resolved)
+                ],
+            }
+
+            # Create a config file in tmpdir for relative path resolution
+            config_file = tmpdir / 'config.yaml'
+            config_file.write_text('dummy')
+
+            # Run validation
+            all_valid, results = setup_environment.validate_all_config_files(
+                config, str(config_file),
+            )
+
+            # Verify results
+            assert all_valid is False  # One file missing
+            assert len(results) == 3
+
+            # Check first agent (exists)
+            assert results[0][0] == 'agent'
+            assert results[0][1] == str(tmpdir / 'exists.md')
+            assert results[0][2] is True
+            assert results[0][3] == 'Local'
+
+            # Check second agent (missing)
+            assert results[1][0] == 'agent'
+            assert results[1][1] == str(tmpdir / 'missing.md')
+            assert results[1][2] is False
+            assert results[1][3] == 'Local'
+
+            # Check slash command (nested, exists)
+            assert results[2][0] == 'slash_command'
+            assert results[2][1] == './subdir/nested.md'
+            assert results[2][2] is True
+            assert results[2][3] == 'Local'
+
+    def test_resolve_resource_path_local_variations(self):
+        """Test resolve_resource_path with various local path types."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            config_file = tmpdir / 'config.yaml'
+            config_file.write_text('dummy')
+
+            # Test absolute path
+            abs_path = str(tmpdir / 'file.md')
+            resolved, is_remote = setup_environment.resolve_resource_path(
+                abs_path, str(config_file),
+            )
+            assert resolved == str(Path(abs_path).resolve())
+            assert is_remote is False
+
+            # Test relative path with ./
+            resolved, is_remote = setup_environment.resolve_resource_path(
+                './file.md', str(config_file),
+            )
+            assert resolved == str((tmpdir / 'file.md').resolve())
+            assert is_remote is False
+
+            # Test parent relative path
+            resolved, is_remote = setup_environment.resolve_resource_path(
+                '../file.md', str(config_file),
+            )
+            assert resolved == str((tmpdir.parent / 'file.md').resolve())
+            assert is_remote is False
+
+            # Test simple relative path
+            resolved, is_remote = setup_environment.resolve_resource_path(
+                'file.md', str(config_file),
+            )
+            assert resolved == str((tmpdir / 'file.md').resolve())
+            assert is_remote is False
+
+            # Test home directory expansion
+            with patch.dict(os.environ, {'HOME': str(tmpdir), 'USERPROFILE': str(tmpdir)}):
+                resolved, is_remote = setup_environment.resolve_resource_path(
+                    '~/file.md', str(config_file),
+                )
+                assert resolved == str((tmpdir / 'file.md').resolve())
+                assert is_remote is False
+
+            # Test environment variable expansion (Windows)
+            with patch.dict(os.environ, {'USERPROFILE': str(tmpdir)}):
+                resolved, is_remote = setup_environment.resolve_resource_path(
+                    '%USERPROFILE%\\file.md', str(config_file),
+                )
+                assert resolved == str((tmpdir / 'file.md').resolve())
+                assert is_remote is False
+
+            # Test environment variable expansion (Unix)
+            with patch.dict(os.environ, {'HOME': str(tmpdir)}):
+                resolved, is_remote = setup_environment.resolve_resource_path(
+                    '$HOME/file.md', str(config_file),
+                )
+                assert resolved == str((tmpdir / 'file.md').resolve())
+                assert is_remote is False
