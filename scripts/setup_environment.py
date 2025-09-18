@@ -1272,7 +1272,6 @@ def create_additional_settings(
     claude_user_dir: Path,
     command_name: str,
     output_style: str | None = None,
-    mcp_servers: list[dict[str, Any]] | None = None,
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
@@ -1291,7 +1290,6 @@ def create_additional_settings(
         claude_user_dir: Path to Claude user directory
         command_name: Name of the command for the environment-specific settings file
         output_style: Optional output style filename (without extension) to set as default
-        mcp_servers: Optional list of MCP server configurations to pre-allow
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
@@ -1311,64 +1309,23 @@ def create_additional_settings(
 
     # Add output style if specified
     if output_style:
-        # Resolve the actual style name from front matter if possible
+        # Resolve the actual style name from front matter
         if output_styles_dir:
             style_name = resolve_output_style_name(output_style, output_styles_dir)
         else:
-            # Fallback to old behavior if directory not provided
+            # If directory not provided, just strip .md extension
             style_name = output_style.replace('.md', '')
 
         settings['outputStyle'] = style_name
         info(f'Setting default output style: {style_name}')
 
-    # Handle permissions with smart MCP server auto-allowing
+    # Handle permissions from configuration
     final_permissions = {}
 
-    # Start with env config permissions if provided
+    # Use permissions from env config if provided
     if permissions:
         final_permissions = permissions.copy()
         info('Using permissions from environment configuration')
-
-    # Auto-allow MCP servers if not explicitly mentioned in permissions
-    if mcp_servers:
-        # Get existing allow list from env config (or create empty)
-        existing_allow = final_permissions.get('allow', [])
-        existing_deny = final_permissions.get('deny', [])
-
-        # Convert to sets for efficient lookups
-        allow_set = set(existing_allow) if isinstance(existing_allow, list) else set()
-
-        for server in mcp_servers:
-            if isinstance(server, dict) and 'name' in server:
-                server_permission = f"mcp__{server['name']}"
-
-                # Check if this server is explicitly mentioned anywhere in permissions
-                server_mentioned = False
-
-                # Check in allow list
-                if any(server_permission in str(item) for item in existing_allow):
-                    server_mentioned = True
-                    info(f'MCP server {server["name"]} already in allow list')
-
-                # Check in deny list
-                if any(server_permission in str(item) for item in existing_deny):
-                    server_mentioned = True
-                    warning(f'MCP server {server["name"]} is in deny list - not auto-allowing')
-
-                # Check in ask list
-                existing_ask = final_permissions.get('ask', [])
-                if any(server_permission in str(item) for item in existing_ask):
-                    server_mentioned = True
-                    info(f'MCP server {server["name"]} is in ask list - not auto-allowing')
-
-                # Only auto-allow if not mentioned anywhere
-                if not server_mentioned:
-                    allow_set.add(server_permission)
-                    info(f'Auto-allowing MCP server: {server["name"]}')
-
-        # Update allow list if we added any
-        if allow_set:
-            final_permissions['allow'] = list(allow_set)
 
     # Add permissions to settings if we have any
     if final_permissions:
@@ -1894,7 +1851,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
         hooks = config.get('hooks', {})
         create_additional_settings(
-            hooks, claude_user_dir, command_name, output_style, mcp_servers, model, permissions, env_variables,
+            hooks, claude_user_dir, command_name, output_style, model, permissions, env_variables,
             config_source, base_url, args.auth, output_styles_dir,
         )
 
