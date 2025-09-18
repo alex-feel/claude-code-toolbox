@@ -692,14 +692,9 @@ class TestCreateAdditionalSettingsComplex:
     """Test complex additional settings creation scenarios."""
 
     def test_create_additional_settings_with_permissions_merge(self):
-        """Test merging MCP permissions with existing permissions."""
+        """Test that only explicit permissions are included, no auto-adding."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
-
-            mcp_servers = [
-                {'name': 'server1'},
-                {'name': 'server2'},
-            ]
 
             permissions = {
                 'allow': ['tool__*', 'mcp__server1'],
@@ -711,7 +706,6 @@ class TestCreateAdditionalSettingsComplex:
                 {},
                 claude_dir,
                 'test',
-                mcp_servers=mcp_servers,
                 permissions=permissions,
             )
 
@@ -719,9 +713,11 @@ class TestCreateAdditionalSettingsComplex:
             settings_file = claude_dir / 'test-additional-settings.json'
             settings = json.loads(settings_file.read_text())
 
-            # server1 should not be duplicated, server2 should be added
+            # Only explicitly listed permissions should be present
             assert 'mcp__server1' in settings['permissions']['allow']
-            assert 'mcp__server2' in settings['permissions']['allow']
+            assert 'tool__*' in settings['permissions']['allow']
+            # server2 should NOT be auto-added
+            assert 'mcp__server2' not in settings['permissions']['allow']
             assert settings['permissions']['allow'].count('mcp__server1') == 1
 
     def test_create_additional_settings_mcp_in_deny_list(self):
@@ -729,14 +725,12 @@ class TestCreateAdditionalSettingsComplex:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            mcp_servers = [{'name': 'blocked_server'}]
             permissions = {'deny': ['mcp__blocked_server']}
 
             setup_environment.create_additional_settings(
                 {},
                 claude_dir,
                 'test',
-                mcp_servers=mcp_servers,
                 permissions=permissions,
             )
 
@@ -752,14 +746,12 @@ class TestCreateAdditionalSettingsComplex:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            mcp_servers = [{'name': 'ask_server'}]
             permissions = {'ask': ['mcp__ask_server']}
 
             setup_environment.create_additional_settings(
                 {},
                 claude_dir,
                 'test',
-                mcp_servers=mcp_servers,
                 permissions=permissions,
             )
 

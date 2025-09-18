@@ -474,29 +474,54 @@ class TestCreateAdditionalSettings:
             assert settings['model'] == 'claude-3-opus'
 
     def test_create_additional_settings_with_mcp_permissions(self):
-        """Test creating settings with MCP server permissions."""
+        """Test creating settings without automatic MCP server permissions."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
-
-            mcp_servers = [
-                {'name': 'server1'},
-                {'name': 'server2'},
-            ]
 
             result = setup_environment.create_additional_settings(
                 {},
                 claude_dir,
                 'test-env',
-                mcp_servers=mcp_servers,
             )
 
             assert result is True
             settings_file = claude_dir / 'test-env-additional-settings.json'
             settings = json.loads(settings_file.read_text())
 
+            # MCP servers should NOT be automatically added to permissions
+            assert 'permissions' not in settings or (
+                'mcp__server1' not in settings.get('permissions', {}).get('allow', []) and
+                'mcp__server2' not in settings.get('permissions', {}).get('allow', [])
+            )
+
+    def test_create_additional_settings_with_explicit_permissions(self):
+        """Test that explicit permissions are still preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            permissions = {
+                'allow': ['mcp__server1', 'tool__*'],
+                'deny': ['mcp__server3'],
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                permissions=permissions,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Explicit permissions should be preserved exactly as provided
             assert 'permissions' in settings
             assert 'mcp__server1' in settings['permissions']['allow']
-            assert 'mcp__server2' in settings['permissions']['allow']
+            assert 'tool__*' in settings['permissions']['allow']
+            # server2 should NOT be auto-added
+            assert 'mcp__server2' not in settings['permissions']['allow']
+            assert 'mcp__server3' in settings['permissions']['deny']
 
     @patch('setup_environment.handle_resource')
     def test_create_additional_settings_with_hooks(self, mock_download):
@@ -910,7 +935,7 @@ description: Test output style
             assert settings['outputStyle'] == 'plain-style'
 
     def test_create_additional_settings_without_output_styles_dir(self):
-        """Test backward compatibility when output_styles_dir is not provided."""
+        """Test output style handling when output_styles_dir is not provided."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir) / '.claude'
             claude_dir.mkdir(parents=True, exist_ok=True)
@@ -921,13 +946,13 @@ description: Test output style
                 claude_user_dir=claude_dir,
                 command_name='test-env',
                 output_style='legacy-style.md',
-                # output_styles_dir not provided - should fall back to old behavior
+                # output_styles_dir not provided - should just strip .md
             )
 
             assert result is True
             settings_file = claude_dir / 'test-env-additional-settings.json'
             settings = json.loads(settings_file.read_text())
-            # Should use old behavior: strip .md extension
+            # Should strip .md extension
             assert settings['outputStyle'] == 'legacy-style'
 
     def test_create_additional_settings_output_style_not_found(self):
