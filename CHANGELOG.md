@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.0.0...v2.1.0) (2025-09-18)
+
+
+### Features
+
+* remove automatic MCP server permission addition feature ([28642e1](https://github.com/alex-feel/claude-code-toolbox/commit/28642e12ec52cd9efb96b9f4e1bdd875f4673061))
+
 ## [2.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v1.13.0...v2.0.0) (2025-09-14)
 
 
