@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.1.0...v2.2.0) (2025-09-24)
+
+
+### Features
+
+* make command-name and command-defaults optional in environment configs ([e87f164](https://github.com/alex-feel/claude-code-toolbox/commit/e87f164ae5505f65f3d2cb1775745da0d130e41f))
+
 ## [2.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.0.0...v2.1.0) (2025-09-18)
 
 
