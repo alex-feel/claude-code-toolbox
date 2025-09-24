@@ -1729,7 +1729,7 @@ def main() -> None:
         config, config_source = load_config_from_source(config_name, args.auth)
 
         environment_name = config.get('name', 'Development')
-        command_name = config.get('command-name', 'claude-env')
+        command_name = config.get('command-name')  # No default - returns None if not present
         base_url = config.get('base-url')  # Optional base URL override from config
 
         # Extract command defaults
@@ -1846,33 +1846,41 @@ def main() -> None:
         mcp_servers = config.get('mcp-servers', [])
         configure_all_mcp_servers(mcp_servers)
 
-        # Step 9: Configure hooks and output style
-        print()
-        print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
-        hooks = config.get('hooks', {})
-        create_additional_settings(
-            hooks, claude_user_dir, command_name, output_style, model, permissions, env_variables,
-            config_source, base_url, args.auth, output_styles_dir,
-        )
-
-        # Step 10: Create launcher script
-        print()
-        print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
-        # Strip query parameters from system prompt filename (must match download logic)
-        if system_prompt:
-            clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
-            prompt_filename = Path(clean_prompt).name
-        else:
-            prompt_filename = None
-        launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
-
-        # Step 11: Register global command
-        if launcher_path:
+        # Check if command creation is needed
+        if command_name:
+            # Step 9: Configure hooks and output style
             print()
-            print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
-            register_global_command(launcher_path, command_name)
+            print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
+            hooks = config.get('hooks', {})
+            create_additional_settings(
+                hooks, claude_user_dir, command_name, output_style, model, permissions, env_variables,
+                config_source, base_url, args.auth, output_styles_dir,
+            )
+
+            # Step 10: Create launcher script
+            print()
+            print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
+            # Strip query parameters from system prompt filename (must match download logic)
+            if system_prompt:
+                clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
+                prompt_filename = Path(clean_prompt).name
+            else:
+                prompt_filename = None
+            launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
+
+            # Step 11: Register global command
+            if launcher_path:
+                print()
+                print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
+                register_global_command(launcher_path, command_name)
+            else:
+                warning('Launcher script was not created')
         else:
-            warning('Launcher script was not created')
+            # Skip command creation
+            print()
+            print(f'{Colors.CYAN}Steps 9-11: Skipping command creation (no command-name specified)...{Colors.NC}')
+            info('Environment configuration completed successfully')
+            info('To create a custom command, add "command-name: your-command-name" to your config')
 
         # Final message
         print()
@@ -1908,12 +1916,20 @@ def main() -> None:
                 print(f'   * Permissions: {", ".join(perm_items)}')
         if env_variables:
             print(f'   * Environment variables: {len(env_variables)} configured')
-        print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
-        print(f'   * Global command: {command_name} registered')
+        # Only show hooks count if command_name was specified (hooks was defined)
+        if command_name:
+            hooks = config.get('hooks', {})
+            print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
+            print(f'   * Global command: {command_name} registered')
+        else:
+            print('   * Custom command: Not created (no command-name specified)')
 
         print()
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
-        print(f'   * Global command: {command_name}')
+        if command_name:
+            print(f'   * Global command: {command_name}')
+        else:
+            print('   * Use "claude" to start Claude Code with configured environment')
 
         print()
         print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')
