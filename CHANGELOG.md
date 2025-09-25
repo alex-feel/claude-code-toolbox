@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.2.0...v2.3.0) (2025-09-25)
+
+
+### Features
+
+* force MCP server removal before re-adding to ensure config updates ([ef7a55b](https://github.com/alex-feel/claude-code-toolbox/commit/ef7a55bda9695e60bb1eb2c9c48f1ecda520775b))
+
 ## [2.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.1.0...v2.2.0) (2025-09-24)
 
 
