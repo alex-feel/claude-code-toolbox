@@ -1156,6 +1156,11 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         return False
 
     try:
+        # Remove existing MCP server if present (ignore errors if it doesn't exist)
+        info(f'Removing existing MCP server {name} if present...')
+        remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', scope, name]
+        run_command(remove_cmd, capture_output=True)  # Ignore result - server might not exist
+
         # Build the base command
         base_cmd = [str(claude_cmd), 'mcp', 'add']
 
@@ -1229,9 +1234,6 @@ $LASTEXITCODE
         # Check if successful
         if result.returncode == 0:
             success(f'MCP server {name} configured successfully!')
-            return True
-        if result.stderr and 'already exists' in result.stderr.lower():
-            success(f'MCP server {name} already configured!')
             return True
 
         # If it still fails, try one more time with a delay

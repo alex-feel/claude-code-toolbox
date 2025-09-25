@@ -569,6 +569,8 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
+            # Should call run_command twice: once for remove, once for add
+            assert mock_run.call_count == 2
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value=None)
@@ -584,6 +586,8 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
+            # Should call run_command twice: once for remove, once for add
+            assert mock_run.call_count == 2
 
     def test_configure_mcp_server_missing_name(self):
         """Test MCP configuration with missing name."""
@@ -606,10 +610,11 @@ class TestMCPServerConfigurationEdgeCases:
         """Test MCP configuration retry on Windows."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
-        # First attempt fails, second succeeds
+        # Remove, first add attempt fails, retry add succeeds
         mock_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Error'),
-            subprocess.CompletedProcess([], 0, '', ''),
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
+            subprocess.CompletedProcess([], 0, '', ''),  # retry add succeeds
         ]
 
         server = {
@@ -623,28 +628,38 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
         assert result is True
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_already_exists(self, mock_run, mock_find):
-        """Test MCP configuration when server already exists."""
+        """Test MCP configuration removes existing server before adding."""
         del mock_find  # Unused but required for patch
-        mock_run.return_value = subprocess.CompletedProcess(
-            [], 1, '', 'Server already exists',
-        )
+        # First call (remove) can fail - server might not exist
+        # Second call (add) should succeed
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 0, '', ''),  # add succeeds
+        ]
 
         server = {'name': 'test', 'command': 'test-server'}
         result = setup_environment.configure_mcp_server(server)
 
         assert result is True
+        # Verify both remove and add commands were called
+        assert mock_run.call_count == 2
 
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_final_failure(self, mock_run, mock_find):
         """Test MCP configuration final failure after retry."""
         del mock_find  # Unused but required for patch
-        mock_run.return_value = subprocess.CompletedProcess([], 1, '', 'Error')
+        # Remove, first add fails, retry add fails
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # retry add fails
+        ]
 
         server = {'name': 'test', 'command': 'test-server'}
 
@@ -652,6 +667,7 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
         assert result is False
+        assert mock_run.call_count == 3
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.find_command', return_value='claude')
@@ -671,8 +687,10 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Check that cmd /c wrapper was used for npx
-        call_args = mock_run.call_args[0][0]
+        # Should call run_command twice: once for remove, once for add
+        assert mock_run.call_count == 2
+        # Check that cmd /c wrapper was used for npx in the second call (add)
+        call_args = mock_run.call_args_list[1][0][0]
         assert 'cmd' in call_args
         assert '/c' in call_args
 
@@ -682,7 +700,11 @@ class TestMCPServerConfigurationEdgeCases:
         del mock_find  # Unused but required for patch
         server = {'name': 'test', 'command': 'test'}
 
-        with patch('setup_environment.run_command', side_effect=Exception('Unexpected')):
+        # Exception happens on the add command (second call)
+        with patch('setup_environment.run_command', side_effect=[
+            subprocess.CompletedProcess([], 0, '', ''),  # remove succeeds
+            Exception('Unexpected'),  # add throws exception
+        ]):
             result = setup_environment.configure_mcp_server(server)
 
         assert result is False
