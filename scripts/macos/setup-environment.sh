@@ -4,7 +4,8 @@
 # Purpose: Bootstrap uv and run the cross-platform environment setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 # To specify configuration:
-#   CLAUDE_ENV_CONFIG=python curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+#   export CLAUDE_ENV_CONFIG=python
+#   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 set -euo pipefail
 
