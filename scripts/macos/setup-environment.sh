@@ -53,7 +53,7 @@ echo ""
 SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 
 # Check if configuration is specified
-CONFIG="${CLAUDE_ENV_CONFIG:-$1}"
+CONFIG="${CLAUDE_ENV_CONFIG:-${1:-}}"
 
 if [ -z "$CONFIG" ]; then
     echo -e "${RED}[ERROR]${NC} No configuration specified!"
