@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.0...v2.3.1) (2025-09-26)
+
+
+### Bug Fixes
+
+* handle unbound variable error in setup scripts when piped to bash ([2561da2](https://github.com/alex-feel/claude-code-toolbox/commit/2561da2d48e5c481a9688676e212cec9144f0e06))
+
 ## [2.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.2.0...v2.3.0) (2025-09-25)
 
 
