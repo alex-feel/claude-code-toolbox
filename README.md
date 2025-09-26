@@ -2,8 +2,6 @@
 
 A community toolbox for Claude Code - automated installers and environment configuration framework for Windows, macOS, and Linux.
 
-## 🚀 Quick Install
-
 ## 🚀 Quick Start with Environment Configurations
 
 Set up a complete development environment with specialized configurations:
