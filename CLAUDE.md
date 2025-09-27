@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is the Claude Code Toolbox - a community project providing automated installers and environment configuration tools for Claude Code across Windows, macOS, and Linux. The toolbox enables users to quickly set up specialized development environments with custom agents, MCP servers, slash commands, and hooks.
+This is the Claude Code Toolbox - a community project providing automated installers and environment configuration tools for Claude Code across Windows, macOS, and Linux. The toolbox enables users to quickly set up specialized environments with custom agents, MCP servers, slash commands, and hooks.
 
 ## Key Architecture
 
@@ -50,25 +50,34 @@ The setup creates global commands (e.g., `claude-python`) that work across all W
 uv run pytest
 
 # Run with coverage report
-uv run pytest --cov=src
+uv run pytest --cov=scripts
 
-# Run only unit tests
-uv run pytest tests/
-
-# Run a specific test file
+# Run specific test files
 uv run pytest tests/test_setup_environment.py
+uv run pytest tests/test_install_claude.py
 
-# Run a specific test function
-uv run pytest tests/unit/test_card_service.py::TestCountFiles::test_count_files_existing_directory
+# Run tests matching a pattern
+uv run pytest -k "test_colors"
+
+# Run tests with verbose output
+uv run pytest -v
 ```
 
-### Code Quality
+### Code Quality & Linting
 ```bash
-# Run pre-commit hooks on all files
+# Fix all linting issues (run this after making code changes)
+uv run ruff check --fix
+
+# Format Python code
+uv run ruff format
+
+# Run all pre-commit hooks
 uv run pre-commit run --all-files
 
-# Auto-fix linting issues, including after using Write, Edit, and MultiEdit tools and received feedback
-uv run ruff check --fix
+# Run specific pre-commit hooks
+uv run pre-commit run ruff-check
+uv run pre-commit run shellcheck
+uv run pre-commit run markdownlint
 ```
 
 ## CRITICAL: Test Suite Requirements
@@ -130,6 +139,11 @@ The `load_config_from_source()` function determines source by checking in order:
 2. Local file: Contains path separators (`/`, `\`) or starts with `.`
 3. Repository config: Everything else (name only, `.yaml` added if missing)
 
+For private repository access:
+- GitLab: Set `GITLAB_TOKEN` environment variable with PAT (Personal Access Token)
+- GitHub: Set `GITHUB_TOKEN` environment variable with PAT
+- Script auto-detects GitLab/GitHub URLs and applies appropriate authentication headers
+
 ### MCP Server Permissions
 
 When configuring MCP servers, permissions are automatically added to `additional-settings.json`:
@@ -143,7 +157,7 @@ When configuring MCP servers, permissions are automatically added to `additional
 
 ### Hooks Configuration Structure
 
-As of latest version, hooks use this structure in environment YAML:
+Hooks use this structure in environment YAML:
 ```yaml
 hooks:
     files:  # Top-level list of files to download
@@ -174,13 +188,17 @@ hooks:
 1. Create your YAML configuration file
 2. Test local installation flow with your config
 3. Verify all referenced files are accessible
-4. Verify additional-settings.json structure
+4. Verify additional-settings.json structure is correct:
+   - `~/.config/claude/additional-settings.json` on Linux/macOS
+   - `%LOCALAPPDATA%\Claude\additional-settings.json` on Windows
 5. Ensure hooks trigger correctly
 
-## File Modification Guidelines
+## Script Dependencies
 
-### When editing scripts
-- Must pass linting with zero warnings
+- **Python 3.12+** required for all Python scripts
+- **uv** (Astral's package manager) installed automatically by bootstrap scripts
+- **PyYAML** and **Pydantic** installed as project dependencies
+- **pytest**, **ruff**, **pre-commit** installed as dev dependencies
 
 ## Version Management
 

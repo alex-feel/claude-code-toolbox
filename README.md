@@ -2,13 +2,35 @@
 
 A community toolbox for Claude Code - automated installers and environment configuration framework for Windows, macOS, and Linux.
 
-## 🚀 Quick Start with Environment Configurations
+## 📋 Quick Overview
 
-Set up a complete development environment with specialized configurations:
+**Two installation options:**
+- **Environment Configurations** - Complete custom environments with agents, MCP servers, slash commands, and tools. Perfect for teams or any specialized workflow (development, research, finance, etc.).
+- **Claude Code Only** - Just the Claude Code CLI without additional configuration. Choose this for a minimal installation.
+
+> 💡 **Not sure which to choose?** If you want a custom environment with specialized tools and agents, choose Environment Configurations. For just the CLI, skip to [Claude Code Only Installation](#-only-claude-code-installation).
+
+## 🎯 Example Use Cases
+
+This framework can configure environments for any purpose. Here are some examples of what you could build:
+
+- **Python Development**: Create a configuration with Python tools, linters, formatters, testing frameworks, and specialized Python agents
+- **Web Development**: Set up Node.js, npm, frontend tooling, and web development agents
+- **Research Environment**: Configure data analysis tools, Jupyter integration, and research-focused MCP servers
+- **Finance Workflows**: Add financial APIs, market data servers, and analysis agents
+- **Team Standardization**: Share your team's custom configuration via private repository to ensure consistent environments
+- **Custom Workflows**: Build any specialized environment with the exact MCP servers, agents, and tools you need
+
+## 🚀 Environment Configurations Installation
+
+Set up your custom environment with specialized configurations:
 
 ### Windows
 
 #### Option 1: One-liner (recommended)
+
+> **Note:** Replace `https://raw.githubusercontent.com/org/repo/main/config.yaml` with your actual configuration URL. The command sets your configuration source and runs the installer in one line.
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
@@ -148,17 +170,9 @@ For configurations stored in private repositories, you need to provide authentic
 
 ---
 
-### Standard Installation
+## ⏬ Only Claude Code Installation
 
-#### Windows (PowerShell)
-
-Run this command in PowerShell (as regular user, it will elevate if needed):
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')"
-```
-
-### What it does
+### Windows (PowerShell)
 
 The Windows installer automatically:
 - ✅ Installs Git for Windows (Git Bash) if not present
@@ -174,73 +188,22 @@ The Windows installer automatically:
 - Cached availability checks to prevent redundant attempts
 - Comprehensive PATH refresh for immediate command availability
 
-#### macOS
+Run this command in PowerShell (as regular user, it will elevate if needed):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')"
+```
+
+### macOS
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
 ```
 
-#### Linux
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
-```
-
-**Note**: macOS and Linux installers are in beta.
-
-## 📋 Requirements
-
-### Windows
-- Windows 10/11 with PowerShell 5.1+
-- Internet connection
-- Admin rights (auto-elevation for system-wide installs)
-
-## 🔒 Security
-
-### Verify Script Integrity
-
-Pin to a specific commit for supply chain security:
-
-```powershell
-$commit = "abc123..." # Replace with actual commit hash
-$url = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/$commit/scripts/windows/install-claude-windows.ps1"
-iex (irm $url)
-```
-
-### Windows SmartScreen
-
-If you download the script manually, Windows SmartScreen may warn you. The script is open source - review it at [scripts/windows/install-claude-windows.ps1](scripts/windows/install-claude-windows.ps1).
-
-## 📚 Documentation
-
-Visit the [Claude Code Toolbox Wiki](https://github.com/alex-feel/claude-code-toolbox/wiki) for guides on creating your own:
-- Sub-agents (specialized AI assistants)
-- System Prompts (role-based configurations)
-- Output Styles (transform Claude Code for different domains)
-- Slash Commands (custom command shortcuts)
-- MCP Servers (Model Context Protocol setup)
-- Hooks (event-driven automations)
-
-## 🛠️ Repository Structure
-
-```text
-claude-code-toolbox/
-├── scripts/                     # Installation and utility scripts
-│   ├── install_claude.py        # Cross-platform Claude installer
-│   ├── setup_environment.py     # Cross-platform environment setup
-│   ├── windows/                 # Windows bootstrap scripts
-│   │   ├── install-claude-windows.ps1
-│   │   └── setup-environment.ps1
-│   ├── linux/                   # Linux bootstrap scripts
-│   │   ├── install-claude-linux.sh
-│   │   └── setup-environment.sh
-│   └── macos/                   # macOS bootstrap scripts
-│       ├── install-claude-macos.sh
-│       └── setup-environment.sh
-├── tests/                       # Test suite for the toolbox
-│   ├── conftest.py              # Test fixtures and configuration
-│   └── ...                      # Unit and integration tests
-└── docs/                        # Documentation
 ```
 
 ## 🤝 Contributing
