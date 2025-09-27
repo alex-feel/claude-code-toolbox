@@ -135,17 +135,21 @@ docs: add macOS installation guide
 
 ### Pre-commit Hooks
 
-This project uses pre-commit hooks to ensure code quality. Install them locally:
+This project uses pre-commit hooks to ensure code quality. Pre-commit is automatically installed as a dev dependency when you set up the project:
 
 ```bash
-# Install pre-commit
-pip install pre-commit
+# Create and activate virtual environment
+uv venv
+# Activate the venv as shown by uv output (platform-specific)
+
+# Install all dependencies including pre-commit
+uv sync
 
 # Install the git hooks
-pre-commit install
+uv run pre-commit install
 
 # Run manually on all files
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 **Configured hooks:**
@@ -179,23 +183,11 @@ pre-commit run --all-files
 
 ### Python Scripts
 
-1. **Compatibility**: Python 3.12+ (managed by uv)
+1. **Compatibility**: Python 3.12 (managed by uv)
 2. **Style**: Must pass Ruff linting and formatting
 3. **Error Handling**: Comprehensive try-except blocks
 4. **Cross-platform**: Test on Windows, Linux, and macOS
 5. **Dependencies**: Use uv for package management
-
-### Component Guidelines
-
-For detailed guidelines on creating components, refer to:
-- **Sub-agents**: See [agents/README.md](agents/README.md)
-- **Slash Commands**: See [slash-commands/README.md](slash-commands/README.md)
-- **System Prompts**: See [system-prompts/README.md](system-prompts/README.md)
-- **Output Styles**: See [output-styles/README.md](output-styles/README.md)
-- **Hooks**: See [hooks/README.md](hooks/README.md)
-- **Environments**: See [environments/README.md](environments/README.md)
-
-All components should be placed in either `library/` (ready-to-use) or `templates/` (examples for customization) directories.
 
 ### General Guidelines
 
@@ -219,34 +211,80 @@ All components should be placed in either `library/` (ready-to-use) or `template
 
 ## Testing
 
+### Python Tests
+
+**ALWAYS run the full test suite after making ANY changes to the codebase:**
+
+```bash
+# Run all tests (REQUIRED before committing)
+uv run pytest
+
+# Run with coverage report
+uv run pytest --cov=scripts
+
+# Run specific test files
+uv run pytest tests/test_setup_environment.py
+uv run pytest tests/test_install_claude.py
+
+# Run tests matching a pattern
+uv run pytest -k "test_colors"
+
+# Run tests with verbose output
+uv run pytest -v
+```
+
+**If any tests fail, they MUST be fixed before proceeding. The codebase must maintain 100% test pass rate at all times.**
+
+### Code Quality & Linting
+
+```bash
+# Fix all linting issues (run after making code changes)
+uv run ruff check --fix
+
+# Format Python code
+uv run ruff format
+
+# Run all pre-commit hooks
+uv run pre-commit run --all-files
+
+# Run specific pre-commit hooks
+uv run pre-commit run ruff-check
+uv run pre-commit run shellcheck
+uv run pre-commit run markdownlint
+```
+
 ### Before Submitting
 
 Test your changes:
 
-1. **Run Pre-commit Hooks**
+1. **Run Python Tests** (MANDATORY)
    ```bash
-   # Run all hooks on your changes
-   pre-commit run --all-files
+   uv run pytest
    ```
 
-2. **Installation Scripts**
+2. **Run Pre-commit Hooks**
+   ```bash
+   uv run pre-commit run --all-files
+   ```
+
+3. **Test Installation Scripts**
    ```powershell
-   # Windows
-   .\scripts\windows\install-claude-windows.ps1 -Verbose
+   # Windows - test bootstrap scripts
+   .\scripts\windows\install-claude.ps1 -Verbose
    .\scripts\windows\setup-environment.ps1
 
-   # Linux/macOS
-   bash scripts/linux/install-claude-linux.sh
+   # Linux/macOS - test bootstrap scripts
+   bash scripts/linux/install-claude.sh
    bash scripts/linux/setup-environment.sh
    ```
 
-3. **Components**
+4. **Components**
    - Test in Claude Code
    - Verify functionality works as expected
    - Check tool permissions and configurations
 
 5. **Documentation**
-   - Run markdownlint: `markdownlint-cli2 "**/*.md"`
+   - Run markdownlint: `uv run markdownlint-cli2 "**/*.md"`
    - Check for broken links
    - Verify code examples work
    - Ensure formatting is correct
@@ -257,32 +295,32 @@ Test your changes:
 claude-code-toolbox/
 ├── scripts/
 │   ├── install_claude.py            # Cross-platform Claude installer
-│   ├── setup_environment.py          # Cross-platform environment setup
+│   ├── setup_environment.py         # Cross-platform environment setup
 │   ├── windows/                     # Windows bootstrap scripts
+│   │   ├── install-claude.ps1       # Claude installation script
+│   │   └── setup-environment.ps1    # Environment setup script
 │   ├── linux/                       # Linux bootstrap scripts
+│   │   ├── install-claude.sh        # Claude installation script
+│   │   └── setup-environment.sh     # Environment setup script
 │   ├── macos/                       # macOS bootstrap scripts
+│   │   ├── install-claude.sh        # Claude installation script
+│   │   └── setup-environment.sh     # Environment setup script
 │   └── hooks/                       # Git hooks and validators
-├── agents/
-│   ├── library/                     # Ready-to-use agents (subagents)
-│   └── templates/                   # Sub-agent templates
-├── slash-commands/
-│   ├── library/                     # Ready-to-use commands
-│   └── templates/                   # Command templates
-├── system-prompts/
-│   ├── library/                     # Role-specific prompts
-│   └── templates/                   # Prompt templates
-├── output-styles/
-│   ├── library/                     # Professional styles
-│   └── templates/                   # Style templates
-├── mcp/                             # Model Context Protocol config
-├── docs/                            # All documentation
+├── tests/                           # Test suite
+│   ├── test_install_claude.py       # Tests for installer
+│   └── test_setup_environment.py    # Tests for environment setup
+├── technical-docs/                  # Technical documentation
 ├── .github/                         # GitHub workflows and templates
 │   └── workflows/
 │       ├── lint.yml                 # Linting and validation
 │       └── release-please.yml       # Automated releases
+├── pyproject.toml                   # Python project configuration
 ├── .pre-commit-config.yaml          # Pre-commit hook configuration
 ├── release-please-config.json       # Release automation config
-└── .release-please-manifest.json   # Version tracking
+├── .release-please-manifest.json   # Version tracking
+├── CLAUDE.md                        # Claude Code instructions
+├── README.md                        # User documentation
+└── CONTRIBUTING.md                  # This file
 ```
 
 ## Adding New Features
@@ -290,15 +328,29 @@ claude-code-toolbox/
 1. **Discuss First**: Open an issue for significant changes
 2. **Design**: Document the approach in the issue
 3. **Implement**: Follow coding guidelines
-4. **Test**: Include test scenarios
+4. **Test**: Include test scenarios and ensure all tests pass
 5. **Document**: Update relevant documentation
 6. **Submit**: Create a pull request
+
+## CRITICAL: Testing Workflow After Code Changes
+
+**Testing is MANDATORY after ANY code changes:**
+
+1. Make your code changes
+2. Run `uv run pytest` to check all tests pass
+3. Fix any failing tests immediately
+4. Run `uv run ruff check --fix` to fix linting issues
+5. Run `uv run pre-commit run --all-files` for final validation
+6. Only commit when ALL tests pass and linting is clean
+
+**Never skip the test suite. Even small changes can have unexpected impacts.**
 
 ## Documentation Requirements
 
 - Update README.md for user-facing changes
-- Add/update docs/ for detailed documentation
+- Add/update technical-docs/ for detailed technical documentation
 - Include inline comments for complex logic
+- Update CLAUDE.md if changing development workflows
 
 ## Important: Version Management
 
@@ -309,8 +361,8 @@ claude-code-toolbox/
 
 ## Pull Request Process
 
-1. Run pre-commit hooks: `pre-commit run --all-files`
-2. Ensure all tests pass
+1. Run tests: `uv run pytest` (MUST pass 100%)
+2. Run pre-commit hooks: `uv run pre-commit run --all-files`
 3. Update documentation as needed
 4. Use conventional commits for automatic changelog generation
 5. Push to your fork and open PR

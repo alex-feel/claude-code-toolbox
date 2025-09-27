@@ -195,7 +195,7 @@ hooks:
 
 ## Script Dependencies
 
-- **Python 3.12+** required for all Python scripts
+- **Python 3.12** required for all Python scripts
 - **uv** (Astral's package manager) installed automatically by bootstrap scripts
 - **PyYAML** and **Pydantic** installed as project dependencies
 - **pytest**, **ruff**, **pre-commit** installed as dev dependencies
