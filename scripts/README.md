@@ -34,14 +34,14 @@ The installation system uses a two-tier architecture:
    - `install_claude.py`: Handles Git Bash, Node.js, and Claude Code installation
    - `setup_environment.py`: Sets up complete development environment based on YAML configuration
    - Work identically across Windows, Linux, and macOS
-   - Require Python 3.12+ (automatically handled by uv)
+   - Require Python 3.12 (automatically handled by uv)
 
 ## 📦 Requirements
 
 ### Automatic Installation
 The scripts automatically install all requirements, including:
 - **uv** - Astral's fast Python package and project manager
-- **Python 3.12+** - Managed automatically by uv
+- **Python 3.12** - Managed automatically by uv
 - **Node.js 18+** - For Claude Code CLI
 - **Git** (Windows only) - For Git Bash
 
@@ -158,7 +158,7 @@ CLAUDE_ENV_CONFIG=python python setup_environment.py --skip-install
 The platform-specific bootstrap scripts automatically:
 1. Install uv if not present
 2. Download the Python script from GitHub
-3. Run it with Python 3.12+ via uv
+3. Run it with Python 3.12 via uv
 4. Pass any arguments through to the Python script
 
 ```bash
@@ -198,7 +198,7 @@ chmod +x setup-python-environment.sh
 ### Cross-Platform Compatibility
 
 - **Python Scripts**: Work identically on Windows, Linux, and macOS
-- **Python Version**: Requires Python 3.12+ (automatically handled by uv)
+- **Python Version**: Requires Python 3.12 (automatically handled by uv)
 - **Package Manager**: Uses uv for fast, reliable Python management
 - **Windows**: PowerShell 5.1+ for bootstrap, full Windows 10/11 support
   - `claude-python` command works in **all Windows shells** (PowerShell, CMD, Git Bash)

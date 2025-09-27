@@ -4,7 +4,7 @@ version = "2.3.1"
 description = "Claude Code Toolbox — automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 
 dependencies = [
     "pyyaml>=6.0.2",
@@ -78,18 +78,6 @@ select = [
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 ignore-fully-untyped = true
-
-[tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = [
-    "fastapi.Depends",
-    "fastapi.params.Depends",
-    "fastapi.Query",
-    "fastapi.params.Query",
-    "fastapi.params.Body",
-]
-
-[tool.ruff.lint.flake8-import-conventions.aliases]
-streamlit = "st"
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"
