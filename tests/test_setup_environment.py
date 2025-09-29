@@ -426,10 +426,10 @@ class TestConfigureMCPServer:
 
         result = setup_environment.configure_mcp_server(server)
         assert result is True
-        # Should call run_command twice: once for remove, once for add
-        assert mock_run.call_count == 2
-        # Check the second call (add command) contains mcp add
-        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[1][0][0])
+        # Should call run_command 4 times: 3 for removing from all scopes, once for add
+        assert mock_run.call_count == 4
+        # Check the last call (add command) contains mcp add
+        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
         assert 'mcp add' in add_cmd_str
         assert 'test-server' in add_cmd_str
 
@@ -448,8 +448,8 @@ class TestConfigureMCPServer:
 
         result = setup_environment.configure_mcp_server(server)
         assert result is True
-        # Should call run_command twice: once for remove, once for add
-        assert mock_run.call_count == 2
+        # Should call run_command 4 times: 3 for removing from all scopes, once for add
+        assert mock_run.call_count == 4
 
 
 class TestCreateAdditionalSettings:

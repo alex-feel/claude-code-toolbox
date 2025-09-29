@@ -569,8 +569,8 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
-            # Should call run_command twice: once for remove, once for add
-            assert mock_run.call_count == 2
+            # Should call run_command 4 times: 3 for removing from all scopes, once for add
+            assert mock_run.call_count == 4
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value=None)
@@ -586,8 +586,8 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
-            # Should call run_command twice: once for remove, once for add
-            assert mock_run.call_count == 2
+            # Should call run_command 4 times: 3 for removing from all scopes, once for add
+            assert mock_run.call_count == 4
 
     def test_configure_mcp_server_missing_name(self):
         """Test MCP configuration with missing name."""
@@ -610,9 +610,11 @@ class TestMCPServerConfigurationEdgeCases:
         """Test MCP configuration retry on Windows."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
-        # Remove, first add attempt fails, retry add succeeds
+        # 3 removes (one per scope), first add attempt fails, retry add succeeds
         mock_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
             subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
             subprocess.CompletedProcess([], 0, '', ''),  # retry add succeeds
         ]
@@ -628,17 +630,19 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
         assert result is True
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 5
 
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_already_exists(self, mock_run, mock_find):
         """Test MCP configuration removes existing server before adding."""
         del mock_find  # Unused but required for patch
-        # First call (remove) can fail - server might not exist
-        # Second call (add) should succeed
+        # 3 removes (one per scope) can fail - server might not exist
+        # Then add should succeed
         mock_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
             subprocess.CompletedProcess([], 0, '', ''),  # add succeeds
         ]
 
@@ -646,17 +650,19 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
 
         assert result is True
-        # Verify both remove and add commands were called
-        assert mock_run.call_count == 2
+        # Verify 3 remove commands and 1 add command were called
+        assert mock_run.call_count == 4
 
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_final_failure(self, mock_run, mock_find):
         """Test MCP configuration final failure after retry."""
         del mock_find  # Unused but required for patch
-        # Remove, first add fails, retry add fails
+        # 3 removes (one per scope), first add fails, retry add fails
         mock_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
+            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
             subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
             subprocess.CompletedProcess([], 1, '', 'Error'),  # retry add fails
         ]
@@ -667,7 +673,7 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
         assert result is False
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 5
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.find_command', return_value='claude')
@@ -687,10 +693,10 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Should call run_command twice: once for remove, once for add
-        assert mock_run.call_count == 2
-        # Check that cmd /c wrapper was used for npx in the second call (add)
-        call_args = mock_run.call_args_list[1][0][0]
+        # Should call run_command 4 times: 3 for removing from all scopes, once for add
+        assert mock_run.call_count == 4
+        # Check that cmd /c wrapper was used for npx in the last call (add)
+        call_args = mock_run.call_args_list[3][0][0]
         assert 'cmd' in call_args
         assert '/c' in call_args
 
