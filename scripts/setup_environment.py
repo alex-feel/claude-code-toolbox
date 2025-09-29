@@ -1156,10 +1156,22 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         return False
 
     try:
-        # Remove existing MCP server if present (ignore errors if it doesn't exist)
-        info(f'Removing existing MCP server {name} if present...')
-        remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', scope, name]
-        run_command(remove_cmd, capture_output=True)  # Ignore result - server might not exist
+        # Remove existing MCP server from all scopes to avoid conflicts
+        # When servers with the same name exist at multiple scopes, local-scoped servers
+        # take precedence, followed by project, then user - so we remove from all scopes
+        info(f'Removing existing MCP server {name} from all scopes if present...')
+        scopes_removed = []
+        for remove_scope in ['user', 'local', 'project']:
+            remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
+            result = run_command(remove_cmd, capture_output=True)
+            # Check if removal was successful (exit code 0)
+            if result.returncode == 0:
+                scopes_removed.append(remove_scope)
+
+        if scopes_removed:
+            info(f'Removed MCP server {name} from scope(s): {", ".join(scopes_removed)}')
+        else:
+            info(f'MCP server {name} was not found in any scope')
 
         # Build the base command
         base_cmd = [str(claude_cmd), 'mcp', 'add']
