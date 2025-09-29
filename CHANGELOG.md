@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.1...v2.3.2) (2025-09-29)
+
+
+### Bug Fixes
+
+* remove MCP servers from all scopes to prevent conflicts ([38b5cfe](https://github.com/alex-feel/claude-code-toolbox/commit/38b5cfe3ea2299a4be822721028c3c198f64a5c9))
+
 ## [2.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.0...v2.3.1) (2025-09-26)
 
 
