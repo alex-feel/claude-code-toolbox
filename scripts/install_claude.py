@@ -25,23 +25,34 @@ from urllib.request import urlretrieve
 # ANSI color codes for pretty output
 class Colors:
     """ANSI color codes for terminal output."""
-    RED = '\033[0;31m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[1;33m'
-    BLUE = '\033[0;34m'
-    CYAN = '\033[0;36m'
-    NC = '\033[0m'  # No Color
-    BOLD = '\033[1m'
+    _RED = '\033[0;31m'
+    _GREEN = '\033[0;32m'
+    _YELLOW = '\033[1;33m'
+    _BLUE = '\033[0;34m'
+    _CYAN = '\033[0;36m'
+    _NC = '\033[0m'  # No Color
+    _BOLD = '\033[1m'
 
-    @staticmethod
-    def strip():
-        """Strip colors for Windows cmd that doesn't support ANSI."""
+    # Check if colors should be disabled
+    _NO_COLOR = platform.system() == 'Windows' and not os.environ.get('WT_SESSION')
+
+    # Public color attributes (computed properties)
+    RED = '' if _NO_COLOR else _RED
+    GREEN = '' if _NO_COLOR else _GREEN
+    YELLOW = '' if _NO_COLOR else _YELLOW
+    BLUE = '' if _NO_COLOR else _BLUE
+    CYAN = '' if _NO_COLOR else _CYAN
+    NC = '' if _NO_COLOR else _NC
+    BOLD = '' if _NO_COLOR else _BOLD
+
+    @classmethod
+    def strip(cls) -> None:
+        """Strip ANSI color codes for environments that don't support them."""
         if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
-            Colors.RED = Colors.GREEN = Colors.YELLOW = Colors.BLUE = Colors.CYAN = Colors.NC = Colors.BOLD = ''
+            # Use setattr to avoid pyright's constant redefinition error
+            for attr in ['RED', 'GREEN', 'YELLOW', 'BLUE', 'CYAN', 'NC', 'BOLD']:
+                setattr(cls, attr, '')
 
-
-# Initialize colors based on terminal support
-Colors.strip()
 
 # Configuration
 MIN_NODE_VERSION = '18.0.0'
@@ -82,7 +93,7 @@ def banner() -> None:
     print()
 
 
-def run_command(cmd: list, capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
+def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     try:
         # Debug: print command being run if not capturing output
@@ -107,11 +118,23 @@ def is_admin() -> bool:
     if platform.system() == 'Windows':
         try:
             import ctypes
-            return ctypes.windll.shell32.IsUserAnAdmin() != 0
+            # Use getattr to handle platform-specific attributes
+            windll = getattr(ctypes, 'windll', None)
+            if windll is not None:
+                return bool(windll.shell32.IsUserAnAdmin())
+            return False
         except Exception:
             return False
     else:
-        return os.geteuid() == 0
+        # Only available on Unix-like systems
+        try:
+            # Use getattr to safely access geteuid (Unix-only)
+            geteuid = getattr(os, 'geteuid', None)
+            if geteuid is not None:
+                return bool(geteuid() == 0)
+            return False
+        except Exception:
+            return False
 
 
 def find_command(cmd: str) -> str | None:
@@ -123,7 +146,11 @@ def parse_version(version_str: str) -> tuple[int, int, int] | None:
     """Parse version string to tuple."""
     match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
     if match:
-        return tuple(map(int, match.groups()))
+        # Explicitly return as a 3-element tuple for type checker
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        patch = int(match.group(3))
+        return (major, minor, patch)
     return None
 
 
@@ -566,12 +593,14 @@ def ensure_nodejs() -> bool:
         if check_winget():
             if install_nodejs_winget('user'):
                 time.sleep(2)
-                if get_node_version() and compare_versions(get_node_version(), MIN_NODE_VERSION):
+                node_version = get_node_version()
+                if node_version and compare_versions(node_version, MIN_NODE_VERSION):
                     return True
 
             if is_admin() and install_nodejs_winget('machine'):
                 time.sleep(2)
-                if get_node_version() and compare_versions(get_node_version(), MIN_NODE_VERSION):
+                node_version = get_node_version()
+                if node_version and compare_versions(node_version, MIN_NODE_VERSION):
                     return True
 
         # Fallback to direct download
@@ -592,24 +621,24 @@ def ensure_nodejs() -> bool:
 
     elif system == 'Darwin':
         # Try Homebrew first
-        if install_nodejs_homebrew() and get_node_version() and compare_versions(get_node_version(), MIN_NODE_VERSION):
-            return True
+        if install_nodejs_homebrew():
+            node_version = get_node_version()
+            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
+                return True
 
         # Fallback to direct download
         if install_nodejs_direct():
             time.sleep(2)
-            if get_node_version() and compare_versions(get_node_version(), MIN_NODE_VERSION):
+            node_version = get_node_version()
+            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
                 return True
 
     else:  # Linux
         # Detect distro and use package manager
-        if (
-            Path('/etc/debian_version').exists()
-            and install_nodejs_apt()
-            and get_node_version()
-            and compare_versions(get_node_version(), MIN_NODE_VERSION)
-        ):
-            return True
+        if Path('/etc/debian_version').exists() and install_nodejs_apt():
+            node_version = get_node_version()
+            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
+                return True
         warning('Unsupported Linux distribution - please install Node.js manually')
         return False
 

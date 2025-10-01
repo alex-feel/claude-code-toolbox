@@ -20,18 +20,22 @@ dev = [
     "pytest-mock>=3.14.0",
     "pytest-timeout>=2.3.1",
     "mypy>=1.13.0",
+    "pyright>=1.1.390",
+    "types-PyYAML>=6.0.12",
 ]
 
 [tool.ruff]
 # Enable preview features
 preview = true
 # General settings
-src = ["scripts", "app"]
+src = ["scripts"]
 target-version = "py312"
 line-length = 127
-extend-include = ["scripts/**/*.py", "tests/**/*.py"]
+extend-include = ["tests/**/*.py"]
 
 [tool.ruff.lint]
+# Ignore specific rules
+ignore = ["B008", "PIE807"]  # B008: lambda in default_factory, PIE807: Prefer list over lambda
 # Enable rule groups
 select = [
     "FAST",  # FastAPI
@@ -89,11 +93,87 @@ quote-annotations = true
 strict = false
 
 [tool.ruff.lint.isort]
-known-first-party = ["app"]
+known-first-party = ["scripts"]
 force-single-line = true
 
 [tool.ruff.lint.pydoclint]
 ignore-one-line-docstrings = true
+
+[tool.mypy]
+# Core safety, balanced for production
+python_version = '3.12'
+files = ['scripts']
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_any_explicit = false
+disallow_any_unimported = true
+
+# None and Optional handling
+no_implicit_optional = true
+
+# Warnings that catch real bugs
+warn_return_any = true
+warn_redundant_casts = true
+warn_unreachable = true
+warn_unused_ignores = true
+warn_unused_configs = true
+
+# Cleaner public APIs and safer comparisons
+implicit_reexport = false
+strict_equality = true
+
+# Error message quality
+show_error_codes = true
+pretty = true
+
+# Encourage precise ignores and common correctness checks
+enable_error_code = [
+  'ignore-without-code',
+  'unused-awaitable',
+  'possibly-undefined',
+  'truthy-bool',
+  'truthy-iterable',
+  'redundant-expr',
+  'explicit-override'
+]
+
+# Pydantic v2 plugin for better type inference on models and validators
+plugins = ['pydantic.mypy']
+
+# Skip common noise and respect .gitignore
+exclude_gitignore = true
+exclude = '''(?x)(
+  ^\.venv/
+| ^\.tox/
+| ^\.mypy_cache/
+| ^\.pytest_cache/
+| ^build/
+| ^dist/
+| ^node_modules/
+| ^site-packages/
+)'''
+
+# Silence auto-generated migrations
+[[tool.mypy.overrides]]
+module = ['migrations.*']
+ignore_errors = true
+
+[tool.pyright]
+include = ["scripts"]
+exclude = [".venv", "**/__pycache__"]
+# Set a sane global baseline; strictness is then scoped below.
+typeCheckingMode = "standard"
+
+# Let Ruff handle these:
+reportUnusedImport = "none"
+reportUnusedVariable = "none"
+reportUnnecessaryTypeIgnoreComment = "none"
+
+# Make dirs strict
+strict = ["scripts"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
@@ -103,26 +183,6 @@ norecursedirs = ["scripts"]
 filterwarnings = [
     "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
 ]
-
-[tool.mypy]
-python_version = "3.12"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-check_untyped_defs = true
-no_implicit_optional = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-warn_no_return = true
-warn_unreachable = true
-strict_optional = true
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = "tests.*"
-disallow_untyped_defs = false
-check_untyped_defs = true
 
 [tool.coverage.run]
 relative_files = true
