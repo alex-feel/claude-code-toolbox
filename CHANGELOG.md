@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.1.0...v3.2.0) (2025-10-01)
+
+
+### Features
+
+* add claude-code-version parameter to environment configs ([c73b56a](https://github.com/alex-feel/claude-code-toolbox/commit/c73b56aecfc8873a40a6df71dcbec9c099b49f13))
+
 ## [3.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.0.1...v3.1.0) (2025-10-01)
 
 
