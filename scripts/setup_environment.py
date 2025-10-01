@@ -759,15 +759,56 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         raise
 
 
-def install_dependencies(dependencies: list[str]) -> bool:
+def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     """Install dependencies from configuration."""
     if not dependencies:
         return True
 
+    # Validate that dependencies is a dict
+    if not isinstance(dependencies, dict):
+        warning(f'Dependencies must be a dict with platform keys. Got {type(dependencies).__name__}')
+        return False
+
     info('Installing dependencies...')
+
+    # Get system platform
     system = platform.system()
 
-    for dep in dependencies:
+    # Platform mapping: platform.system() returns -> config key
+    platform_map = {
+        'Windows': 'windows',
+        'Darwin': 'mac',  # macOS
+        'Linux': 'linux',
+    }
+
+    current_platform_key = platform_map.get(system)
+
+    if not current_platform_key:
+        warning(f'Unknown platform: {system}. Skipping platform-specific dependencies.')
+        current_platform_key = None
+
+    # Collect dependencies: common first, then platform-specific
+    deps_to_install = []
+
+    # Add common dependencies
+    common_deps = dependencies.get('common', [])
+    if common_deps:
+        info(f'Found {len(common_deps)} common dependencies')
+        deps_to_install.extend(common_deps)
+
+    # Add platform-specific dependencies
+    if current_platform_key:
+        platform_deps = dependencies.get(current_platform_key, [])
+        if platform_deps:
+            info(f'Found {len(platform_deps)} {current_platform_key}-specific dependencies')
+            deps_to_install.extend(platform_deps)
+
+    if not deps_to_install:
+        info('No dependencies to install for this platform')
+        return True
+
+    # Execute all collected dependencies
+    for dep in deps_to_install:
         info(f'Running: {dep}')
 
         # Parse the command
@@ -1827,7 +1868,7 @@ def main() -> None:
         # Step 3: Install dependencies (after Claude Code which provides tools)
         print()
         print(f'{Colors.CYAN}Step 3: Installing dependencies...{Colors.NC}')
-        dependencies = config.get('dependencies', [])
+        dependencies = config.get('dependencies', {})
         install_dependencies(dependencies)
 
         # Step 4: Process agents

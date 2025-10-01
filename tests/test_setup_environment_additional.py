@@ -1290,7 +1290,7 @@ class TestInstallDependenciesEdgeCases:
         """Test PowerShell fallback for unknown commands on Windows."""
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_dependencies(['custom-command install package'])
+        result = setup_environment.install_dependencies({'windows': ['custom-command install package']})
         assert result is True
 
         # Should use PowerShell for unknown command
@@ -1303,7 +1303,7 @@ class TestInstallDependenciesEdgeCases:
         """Test uv tool install with force flag on Linux."""
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_dependencies(['uv tool install pytest'])
+        result = setup_environment.install_dependencies({'linux': ['uv tool install pytest']})
         assert result is True
 
         # Should add --force flag
@@ -1319,7 +1319,7 @@ class TestInstallDependenciesEdgeCases:
             subprocess.CompletedProcess([], 0, '', ''),  # Second succeeds
         ]
 
-        result = setup_environment.install_dependencies(['failing-dep', 'working-dep'])
+        result = setup_environment.install_dependencies({'windows': ['failing-dep', 'working-dep']})
         assert result is True
         assert mock_run.call_count == 2
 
