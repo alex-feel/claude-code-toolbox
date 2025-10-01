@@ -25,6 +25,7 @@ from urllib.request import urlretrieve
 # ANSI color codes for pretty output
 class Colors:
     """ANSI color codes for terminal output."""
+
     _RED = '\033[0;31m'
     _GREEN = '\033[0;32m'
     _YELLOW = '\033[1;33m'
@@ -98,7 +99,7 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
     try:
         # Debug: print command being run if not capturing output
         if not capture_output:
-            info(f'Executing: {", ".join(cmd)}')
+            info(f"Executing: {', '.join(cmd)}")
         return subprocess.run(
             cmd,
             capture_output=capture_output,
@@ -118,6 +119,7 @@ def is_admin() -> bool:
     if platform.system() == 'Windows':
         try:
             import ctypes
+
             # Use getattr to handle platform-specific attributes
             windll = getattr(ctypes, 'windll', None)
             if windll is not None:
@@ -206,15 +208,19 @@ def install_git_windows_winget(scope: str = 'user') -> bool:
 
     info(f'Installing Git for Windows via winget, scope: {scope}')
     result = run_command([
-        'winget', 'install',
-        '--id', 'Git.Git',
+        'winget',
+        'install',
+        '--id',
+        'Git.Git',
         '-e',
-        '--source', 'winget',
+        '--source',
+        'winget',
         '--accept-package-agreements',
         '--accept-source-agreements',
         '--silent',
         '--disable-interactivity',
-        '--scope', scope,
+        '--scope',
+        scope,
     ])
 
     if result.returncode == 0:
@@ -276,8 +282,12 @@ def install_git_windows_download() -> bool:
         info('Running Git installer silently...')
         result = run_command([
             temp_path,
-            '/VERYSILENT', '/NORESTART', '/NOCANCEL', '/SP-',
-            '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS',
+            '/VERYSILENT',
+            '/NORESTART',
+            '/NOCANCEL',
+            '/SP-',
+            '/CLOSEAPPLICATIONS',
+            '/RESTARTAPPLICATIONS',
             '/COMPONENTS="icons,ext\\reg\\shellhere,assoc,assoc_sh"',
         ])
 
@@ -350,12 +360,53 @@ def set_windows_env_var(name: str, value: str) -> None:
 
         # Set persistently for user
         if platform.system() == 'Windows':
-            run_command([
-                'setx', name, value,
-            ], capture_output=False)
+            run_command(
+                [
+                    'setx',
+                    name,
+                    value,
+                ],
+                capture_output=False,
+            )
             success(f'Set environment variable: {name}')
     except Exception as e:
         warning(f'Could not set environment variable {name}: {e}')
+
+
+def set_disable_autoupdater() -> None:
+    """Set DISABLE_AUTOUPDATER environment variable to prevent auto-updates."""
+    info('Setting DISABLE_AUTOUPDATER environment variable to prevent auto-updates...')
+
+    if platform.system() == 'Windows':
+        set_windows_env_var('DISABLE_AUTOUPDATER', '1')
+    else:
+        # For Unix-like systems, add to shell profile files
+        home = Path.home()
+        env_line = '\n# Disable Claude Code auto-updates\nexport DISABLE_AUTOUPDATER=1\n'
+
+        # List of shell profile files to update
+        profile_files = [
+            home / '.bashrc',
+            home / '.zshrc',
+            home / '.profile',
+        ]
+
+        updated_files: list[Path] = []
+        for profile_file in profile_files:
+            if profile_file.exists():
+                try:
+                    content = profile_file.read_text()
+                    if 'DISABLE_AUTOUPDATER' not in content:
+                        profile_file.write_text(content + env_line)
+                        updated_files.append(profile_file)
+                except Exception as e:
+                    warning(f'Could not update {profile_file}: {e}')
+
+        if updated_files:
+            success(f"Added DISABLE_AUTOUPDATER to: {', '.join(str(f) for f in updated_files)}")
+            info('Please restart your shell or run: export DISABLE_AUTOUPDATER=1')
+        else:
+            warning('No shell profile files were updated')
 
 
 def configure_powershell_policy() -> None:
@@ -367,7 +418,8 @@ def configure_powershell_policy() -> None:
 
     # Try to set for current user
     result = run_command([
-        'powershell', '-Command',
+        'powershell',
+        '-Command',
         'Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force',
     ])
 
@@ -397,15 +449,19 @@ def install_nodejs_winget(scope: str = 'user') -> bool:
 
     info(f'Installing Node.js LTS via winget, scope: {scope}')
     result = run_command([
-        'winget', 'install',
-        '--id', 'OpenJS.NodeJS.LTS',
+        'winget',
+        'install',
+        '--id',
+        'OpenJS.NodeJS.LTS',
         '-e',
-        '--source', 'winget',
+        '--source',
+        'winget',
         '--accept-package-agreements',
         '--accept-source-agreements',
         '--silent',
         '--disable-interactivity',
-        '--scope', scope,
+        '--scope',
+        scope,
     ])
 
     if result.returncode == 0:
@@ -520,7 +576,8 @@ def install_nodejs_homebrew() -> bool:
     if not find_command('brew'):
         info('Installing Homebrew first...')
         result = run_command([
-            '/bin/bash', '-c',
+            '/bin/bash',
+            '-c',
             '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)',
         ])
         if result.returncode != 0:
@@ -546,7 +603,8 @@ def install_nodejs_apt() -> bool:
 
     # Add NodeSource repository
     result = run_command([
-        'bash', '-c',
+        'bash',
+        '-c',
         'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -',
     ])
 
@@ -679,8 +737,16 @@ def get_claude_version() -> str | None:
     return None
 
 
-def install_claude_npm(upgrade: bool = False) -> bool:
-    """Install Claude Code using npm."""
+def install_claude_npm(upgrade: bool = False, version: str | None = None) -> bool:
+    """Install Claude Code using npm.
+
+    Args:
+        upgrade: Whether this is an upgrade operation.
+        version: Specific version to install (e.g., "1.0.128"). If None, installs latest.
+
+    Returns:
+        True if installation succeeded, False otherwise.
+    """
     # On Windows, check if npm is in Program Files even if not in PATH
     if platform.system() == 'Windows':
         nodejs_path = r'C:\Program Files\nodejs'
@@ -711,27 +777,53 @@ def install_claude_npm(upgrade: bool = False) -> bool:
             return False
 
     action = 'Upgrading' if upgrade else 'Installing'
-    info(f'{action} Claude Code CLI via npm (npm path: {npm_path})...')
+
+    # Determine version to install
+    if version:
+        package_spec = f'{CLAUDE_NPM_PACKAGE}@{version}'
+        info(f'{action} Claude Code CLI version {version} via npm (npm path: {npm_path})...')
+
+        # Check if specified version exists
+        info(f'Verifying that version {version} exists...')
+        check_cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@{version}', 'version']
+        check_result = run_command(check_cmd, capture_output=True)
+
+        if check_result.returncode != 0:
+            warning(f'Version {version} not found. Installing latest version instead.')
+            package_spec = f'{CLAUDE_NPM_PACKAGE}@latest'
+            version = None  # Reset version to indicate we're installing latest
+    else:
+        package_spec = f'{CLAUDE_NPM_PACKAGE}@latest'
+        info(f'{action} Claude Code CLI (latest version) via npm (npm path: {npm_path})...')
 
     # Try without sudo first (show output for debugging)
-    # Always use @latest to ensure we get the newest version
-    cmd = [npm_path, 'install', '-g', f'{CLAUDE_NPM_PACKAGE}@latest']
-    info(f'Running command: {" ".join(cmd)}')
+    cmd = [npm_path, 'install', '-g', package_spec]
+    info(f"Running command: {' '.join(cmd)}")
     result = run_command(cmd, capture_output=False)
 
     if result.returncode == 0:
-        success(f'Claude Code {"upgraded" if upgrade else "installed"} successfully')
+        success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
+
+        # If specific version was installed, set DISABLE_AUTOUPDATER
+        if version:
+            set_disable_autoupdater()
+
         return True
 
     # Try with sudo on Unix systems
     if platform.system() != 'Windows':
         warning('Trying with sudo...')
-        result = run_command(['sudo', 'npm', 'install', '-g', f'{CLAUDE_NPM_PACKAGE}@latest'], capture_output=False)
+        result = run_command(['sudo', 'npm', 'install', '-g', package_spec], capture_output=False)
         if result.returncode == 0:
-            success(f'Claude Code {"upgraded" if upgrade else "installed"} successfully')
+            success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
+
+            # If specific version was installed, set DISABLE_AUTOUPDATER
+            if version:
+                set_disable_autoupdater()
+
             return True
 
-    error(f'Failed to {"upgrade" if upgrade else "install"} Claude Code via npm')
+    error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     return False
 
 
@@ -765,10 +857,17 @@ def install_claude_native() -> bool:
             temp_path = tmp.name
 
         # Execute installer (show output for debugging)
-        result = run_command([
-            'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-            '-File', temp_path,
-        ], capture_output=False)
+        result = run_command(
+            [
+                'powershell',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                temp_path,
+            ],
+            capture_output=False,
+        )
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -788,16 +887,35 @@ def ensure_claude() -> bool:
     """Ensure Claude Code is installed."""
     info('Checking Claude Code CLI...')
 
+    # Check if a specific version is requested via environment variable
+    requested_version = os.environ.get('CLAUDE_VERSION')
+
     # Check if already installed
     current_version = get_claude_version()
 
     if current_version:
-        success(f'Claude Code version {current_version} is already installed')
-        return True
+        if requested_version:
+            # Check if the installed version matches the requested one
+            if current_version != requested_version:
+                info(f'Claude Code version {current_version} is installed, but version {requested_version} is requested')
+                info(f'Installing Claude Code version {requested_version}...')
+                if install_claude_npm(upgrade=False, version=requested_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code version {new_version} installed successfully')
+                    return True
+            else:
+                success(f'Claude Code version {current_version} is already installed (matches requested version)')
+                # Still set DISABLE_AUTOUPDATER since a specific version was requested
+                set_disable_autoupdater()
+                return True
+        else:
+            success(f'Claude Code version {current_version} is already installed')
+            return True
 
     info('Claude Code not found, installing...')
     # Fresh installation
-    if install_claude_npm(upgrade=False):
+    if install_claude_npm(upgrade=False, version=requested_version):
         new_version = get_claude_version()
         if new_version:
             success(f'Claude Code version {new_version} installed successfully')
