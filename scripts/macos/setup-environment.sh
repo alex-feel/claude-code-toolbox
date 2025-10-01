@@ -47,6 +47,16 @@ else
     echo -e "${GREEN}[OK]${NC}   uv is already installed"
 fi
 
+# Install Python 3.12 if not already available
+echo -e "${CYAN}[INFO]${NC} Ensuring Python 3.12 is available..."
+if ! command -v python3.12 &> /dev/null; then
+    echo -e "${CYAN}[INFO]${NC} Installing Python 3.12 via uv..."
+    uv python install 3.12
+fi
+
+# Ensure ~/.local/bin is in PATH for current session
+export PATH="$HOME/.local/bin:$PATH"
+
 # Run the setup script
 echo -e "${CYAN}[INFO]${NC} Running environment setup..."
 echo ""

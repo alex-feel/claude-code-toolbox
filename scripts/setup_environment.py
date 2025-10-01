@@ -1424,11 +1424,21 @@ def create_additional_settings(
                 hook_path_str = hook_path.as_posix()
                 full_command = f'{python_cmd} {hook_path_str}'
             else:
-                # Unix-like systems can use shebang directly
+                # Unix-like systems - explicitly use Python 3.12 for hooks
+                # This ensures compatibility with modern Python features (e.g., datetime.UTC)
+                python_cmd = 'python3.12' if shutil.which('python3.12') else None
+
+                if not python_cmd:
+                    error(f'Python 3.12 required for hook "{command}" but not found in PATH')
+                    error('Please install Python 3.12: uv python install 3.12')
+                    # Continue without this hook rather than failing the entire setup
+                    continue
+
                 # Make script executable
                 if hook_path.exists():
                     hook_path.chmod(0o755)
-                full_command = str(hook_path)
+
+                full_command = f'{python_cmd} {hook_path}'
         else:
             # Not a Python script, use command as-is
             full_command = command
