@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.0.0...v3.0.1) (2025-10-01)
+
+
+### Bug Fixes
+
+* resolve CI failures for type checking in GitHub Actions ([028f2a1](https://github.com/alex-feel/claude-code-toolbox/commit/028f2a1765bf3830fb30141f5acb146e6bf25743))
+
 ## [3.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.3...v3.0.0) (2025-10-01)
 
 
