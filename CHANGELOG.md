@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.3...v3.0.0) (2025-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* Dependencies structure changed from flat list to platform-specific dictionary. All existing environment configs must be updated.
+
+### Features
+
+* add platform-specific dependencies support ([6da97c6](https://github.com/alex-feel/claude-code-toolbox/commit/6da97c6c2c4f7e57dc54c120109cc69c5f859c56))
+
 ## [2.3.3](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.2...v2.3.3) (2025-10-01)
 
 
