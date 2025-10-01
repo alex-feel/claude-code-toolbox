@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.3](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.2...v2.3.3) (2025-10-01)
+
+
+### Bug Fixes
+
+* ensure Python 3.12 is used for hook execution on Unix systems ([ac9e0d2](https://github.com/alex-feel/claude-code-toolbox/commit/ac9e0d2cd7f282f709deb0aa5fd1097d5e38c7de))
+
 ## [2.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v2.3.1...v2.3.2) (2025-09-29)
 
 
