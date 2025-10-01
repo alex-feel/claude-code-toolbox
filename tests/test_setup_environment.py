@@ -348,7 +348,7 @@ class TestInstallDependencies:
         assert mock_system.return_value == 'Windows'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_dependencies(['npm install -g package'])
+        result = setup_environment.install_dependencies({'windows': ['npm install -g package']})
         assert result is True
         mock_run.assert_called_with(['npm', 'install', '-g', 'package'], capture_output=False)
 
@@ -360,7 +360,7 @@ class TestInstallDependencies:
         assert mock_system.return_value == 'Linux'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_dependencies(['apt-get install package'])
+        result = setup_environment.install_dependencies({'linux': ['apt-get install package']})
         assert result is True
         mock_run.assert_called_with(['bash', '-c', 'apt-get install package'], capture_output=False)
 
@@ -372,7 +372,7 @@ class TestInstallDependencies:
         assert mock_system.return_value == 'Windows'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_dependencies(['uv tool install ruff'])
+        result = setup_environment.install_dependencies({'windows': ['uv tool install ruff']})
         assert result is True
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
