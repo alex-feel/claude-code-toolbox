@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.0.1...v3.1.0) (2025-10-01)
+
+
+### Features
+
+* add include-co-authored-by parameter to environment configs ([45416be](https://github.com/alex-feel/claude-code-toolbox/commit/45416bed0aa55d1179ad60a3aedd82b39d42d6f0))
+
 ## [3.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.0.0...v3.0.1) (2025-10-01)
 
 
