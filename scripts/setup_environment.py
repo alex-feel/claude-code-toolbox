@@ -1372,6 +1372,7 @@ def create_additional_settings(
     base_url: str | None = None,
     auth_param: str | None = None,
     output_styles_dir: Path | None = None,
+    include_co_authored_by: bool | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -1430,6 +1431,11 @@ def create_additional_settings(
         info(f'Setting {len(env)} environment variables')
         for key in env:
             info(f'  - {key}')
+
+    # Add includeCoAuthoredBy if explicitly set (None means not configured, leave as default)
+    if include_co_authored_by is not None:
+        settings['includeCoAuthoredBy'] = include_co_authored_by
+        info(f'Setting includeCoAuthoredBy: {include_co_authored_by}')
 
     # Handle hooks if present
     hook_files: list[str] = []
@@ -1861,6 +1867,9 @@ def main() -> None:
         # Extract environment variables configuration
         env_variables = config.get('env-variables')
 
+        # Extract include_co_authored_by configuration
+        include_co_authored_by = config.get('include-co-authored-by')
+
         header(environment_name)
 
         # Validate all downloadable files before proceeding
@@ -1969,7 +1978,7 @@ def main() -> None:
             hooks = config.get('hooks', {})
             create_additional_settings(
                 hooks, claude_user_dir, command_name, output_style, model, permissions, env_variables,
-                config_source, base_url, args.auth, output_styles_dir,
+                config_source, base_url, args.auth, output_styles_dir, include_co_authored_by,
             )
 
             # Step 10: Create launcher script
