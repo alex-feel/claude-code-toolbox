@@ -34,6 +34,7 @@ import yaml
 # ANSI color codes for pretty output
 class Colors:
     """ANSI color codes for terminal output."""
+
     _RED = '\033[0;31m'
     _GREEN = '\033[0;32m'
     _YELLOW = '\033[1;33m'
@@ -404,11 +405,11 @@ def convert_gitlab_url_to_api(url: str) -> str:
         if base_url.startswith('https://'):
             domain_end = base_url.index('/', 8)  # Find end of domain after https://
             domain = base_url[:domain_end]
-            path = base_url[domain_end + 1:]  # Skip the /
+            path = base_url[domain_end + 1 :]  # Skip the /
         elif base_url.startswith('http://'):
             domain_end = base_url.index('/', 7)  # Find end of domain after http://
             domain = base_url[:domain_end]
-            path = base_url[domain_end + 1:]  # Skip the /
+            path = base_url[domain_end + 1 :]  # Skip the /
         else:
             return url  # Unknown format
 
@@ -418,7 +419,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
             return url  # Unexpected format
 
         project_path = parts[0]  # e.g., "ai/claude-code-configs"
-        remainder = parts[1]     # e.g., "main/environments/library/file.yaml"
+        remainder = parts[1]  # e.g., "main/environments/library/file.yaml"
 
         # Split remainder into branch and file path
         # The branch is the first part before /
@@ -429,7 +430,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
             file_path = ''
         else:
             branch = remainder[:branch_end]
-            file_path = remainder[branch_end + 1:]
+            file_path = remainder[branch_end + 1 :]
 
         # URL-encode the project path for API (namespace/project -> namespace%2Fproject)
         encoded_project = urllib.parse.quote(project_path, safe='')
@@ -536,7 +537,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     # Method 4: Interactive prompt (only if repo type detected and terminal is interactive)
     if repo_type and sys.stdin.isatty():
         warning(f'Private {repo_type.title()} repository detected but no authentication found')
-        info(f'Checked environment variables: {", ".join(tokens_checked)}')
+        info(f"Checked environment variables: {', '.join(tokens_checked)}")
         info('You can provide authentication by:')
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
         info('  2. Using --auth parameter: --auth "token_here"')
@@ -546,6 +547,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
             response = input('Would you like to enter the token now? (y/N): ').strip().lower()
             if response == 'y':
                 import getpass
+
                 input_token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
                 if input_token:
                     if repo_type == 'gitlab':
@@ -557,7 +559,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     elif repo_type:
         # Non-interactive terminal but auth might be needed
         info(f'Private {repo_type.title()} repository detected')
-        info(f'If authentication is required, set one of: {", ".join(tokens_checked)}')
+        info(f"If authentication is required, set one of: {', '.join(tokens_checked)}")
 
     return {}
 
@@ -728,17 +730,20 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         try:
             content = fetch_url_with_auth(config_spec, auth_param=auth_param)
             config = yaml.safe_load(content)
-            success(f'Configuration loaded from URL: {config.get("name", "Remote Config")}')
+            success(f"Configuration loaded from URL: {config.get('name', 'Remote Config')}")
             return config, config_spec
         except Exception as e:
             error(f'Failed to load configuration from URL: {e}')
             raise
 
     # Source 2: Local file (has path separators, starts with . or exists)
-    if ('/' in config_spec or '\\' in config_spec or
-        config_spec.startswith(('./', '.\\', '../', '..\\')) or
-        os.path.isabs(config_spec) or os.path.exists(config_spec)):
-
+    if (
+        '/' in config_spec
+        or '\\' in config_spec
+        or config_spec.startswith(('./', '.\\', '../', '..\\'))
+        or os.path.isabs(config_spec)
+        or os.path.exists(config_spec)
+    ):
         # Normalize path
         config_path = Path(config_spec).resolve()
 
@@ -752,7 +757,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         try:
             with open(config_path, encoding='utf-8') as f:
                 config = yaml.safe_load(f)
-            success(f'Configuration loaded: {config.get("name", config_path.name)}')
+            success(f"Configuration loaded: {config.get('name', config_path.name)}")
             return config, str(config_path)
         except Exception as e:
             error(f'Failed to load local configuration: {e}')
@@ -769,7 +774,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         # Use the same fetch function for consistency
         content = fetch_url_with_auth(config_url, auth_param=auth_param)
         config = yaml.safe_load(content)
-        success(f'Configuration loaded: {config.get("name", config_spec)}')
+        success(f"Configuration loaded: {config.get('name', config_spec)}")
         return config, config_spec
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -1115,9 +1120,26 @@ def process_resources(
     return True
 
 
-def install_claude() -> bool:
-    """Install Claude Code if needed."""
-    info('Installing Claude Code...')
+def install_claude(version: str | None = None) -> bool:
+    """Install Claude Code if needed.
+
+    Args:
+        version: Specific Claude Code version to install (e.g., "1.0.128").
+                If None, installs the latest version.
+
+    Returns:
+        True if installation succeeded, False otherwise.
+
+    Raises:
+        Exception: If installation fails with exit code.
+        URLError: If there's an error downloading the installer script.
+    """
+    if version:
+        info(f'Installing Claude Code version {version}...')
+        # Set environment variable for the installer scripts to use
+        os.environ['CLAUDE_VERSION'] = version
+    else:
+        info('Installing Claude Code (latest version)...')
 
     system = platform.system()
     temp_installer: str | None = None
@@ -1144,24 +1166,43 @@ def install_claude() -> bool:
                 temp_installer = tmp.name
 
             # Run PowerShell installer
-            result = run_command([
-                'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-                '-File', temp_installer,
-            ], capture_output=False)
+            result = run_command(
+                [
+                    'powershell',
+                    '-NoProfile',
+                    '-ExecutionPolicy',
+                    'Bypass',
+                    '-File',
+                    temp_installer,
+                ],
+                capture_output=False,
+            )
 
         elif system == 'Darwin':  # macOS
-            installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh'
-            result = run_command([
-                'bash', '-c',
-                f'curl -fsSL {installer_url} | bash',
-            ], capture_output=False)
+            installer_url = (
+                'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh'
+            )
+            result = run_command(
+                [
+                    'bash',
+                    '-c',
+                    f'curl -fsSL {installer_url} | bash',
+                ],
+                capture_output=False,
+            )
 
         else:  # Linux
-            installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh'
-            result = run_command([
-                'bash', '-c',
-                f'curl -fsSL {installer_url} | bash',
-            ], capture_output=False)
+            installer_url = (
+                'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh'
+            )
+            result = run_command(
+                [
+                    'bash',
+                    '-c',
+                    f'curl -fsSL {installer_url} | bash',
+                ],
+                capture_output=False,
+            )
 
         # Clean up temp file on Windows
         if system == 'Windows' and temp_installer:
@@ -1248,7 +1289,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 scopes_removed.append(remove_scope)
 
         if scopes_removed:
-            info(f'Removed MCP server {name} from scope(s): {", ".join(scopes_removed)}')
+            info(f"Removed MCP server {name} from scope(s): {', '.join(scopes_removed)}")
         else:
             info(f'MCP server {name} was not found in any scope')
 
@@ -1285,9 +1326,15 @@ $env:Path = $userPath + ";" + $machinePath
 & "{claude_cmd}" mcp add --scope {scope} --transport {transport} --header "{header}" {name} {url}
 $LASTEXITCODE
 '''
-                result = run_command([
-                    'powershell', '-NoProfile', '-Command', ps_script,
-                ], capture_output=True)
+                result = run_command(
+                    [
+                        'powershell',
+                        '-NoProfile',
+                        '-Command',
+                        ps_script,
+                    ],
+                    capture_output=True,
+                )
 
                 # Also try with direct execution
                 if result.returncode != 0:
@@ -1296,13 +1343,16 @@ $LASTEXITCODE
             else:
                 # On Unix, spawn new bash with updated PATH
                 parent_dir = Path(claude_cmd).parent
-                bash_cmd = (
-                    f'export PATH="{parent_dir}:$PATH" && '
-                    f'{" ".join(base_cmd)}'
+                bash_cmd = f'export PATH="{parent_dir}:$PATH" && {" ".join(base_cmd)}'
+                result = run_command(
+                    [
+                        'bash',
+                        '-l',
+                        '-c',
+                        bash_cmd,
+                    ],
+                    capture_output=True,
                 )
-                result = run_command([
-                    'bash', '-l', '-c', bash_cmd,
-                ], capture_output=True)
         elif command:
             # Stdio transport (command)
             if env:
@@ -1465,7 +1515,6 @@ def create_additional_settings(
 
     # Process each hook event
     for hook in hook_events:
-
         event = hook.get('event')
         matcher = hook.get('matcher', '')
         hook_type = hook.get('type', 'command')
@@ -1827,12 +1876,9 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 def main() -> None:
     """Main setup flow."""
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
-    parser.add_argument('config', nargs='?',
-                        help='Configuration file name (e.g., python.yaml)')
-    parser.add_argument('--skip-install', action='store_true',
-                        help='Skip Claude Code installation')
-    parser.add_argument('--auth', type=str,
-                        help='Authentication for private repos (e.g., "token" or "header:token")')
+    parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
+    parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
+    parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
     args = parser.parse_args()
 
     # Get configuration from args or environment
@@ -1870,6 +1916,11 @@ def main() -> None:
         # Extract include_co_authored_by configuration
         include_co_authored_by = config.get('include-co-authored-by')
 
+        # Extract claude-code-version configuration
+        claude_code_version = config.get('claude-code-version')
+        if claude_code_version:
+            info(f'Claude Code version specified: {claude_code_version}')
+
         header(environment_name)
 
         # Validate all downloadable files before proceeding
@@ -1906,7 +1957,7 @@ def main() -> None:
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
         if not args.skip_install:
             print(f'{Colors.CYAN}Step 1: Installing Claude Code...{Colors.NC}')
-            if not install_claude():
+            if not install_claude(claude_code_version):
                 raise Exception('Claude Code installation failed')
         else:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
@@ -1977,8 +2028,18 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
             hooks = config.get('hooks', {})
             create_additional_settings(
-                hooks, claude_user_dir, command_name, output_style, model, permissions, env_variables,
-                config_source, base_url, args.auth, output_styles_dir, include_co_authored_by,
+                hooks,
+                claude_user_dir,
+                command_name,
+                output_style,
+                model,
+                permissions,
+                env_variables,
+                config_source,
+                base_url,
+                args.auth,
+                output_styles_dir,
+                include_co_authored_by,
             )
 
             # Step 10: Create launcher script
@@ -2036,13 +2097,13 @@ def main() -> None:
             if 'ask' in permissions:
                 perm_items.append(f"{len(permissions['ask'])} ask rules")
             if perm_items:
-                print(f'   * Permissions: {", ".join(perm_items)}')
+                print(f"   * Permissions: {', '.join(perm_items)}")
         if env_variables:
             print(f'   * Environment variables: {len(env_variables)} configured')
         # Only show hooks count if command_name was specified (hooks was defined)
         if command_name:
             hooks = config.get('hooks', {})
-            print(f'   * Hooks: {len(hooks.get("events", [])) if hooks else 0} configured')
+            print(f"   * Hooks: {len(hooks.get('events', [])) if hooks else 0} configured")
             print(f'   * Global command: {command_name} registered')
         else:
             print('   * Custom command: Not created (no command-name specified)')
