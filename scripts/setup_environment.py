@@ -22,9 +22,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any
+from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
 
@@ -34,23 +34,33 @@ import yaml
 # ANSI color codes for pretty output
 class Colors:
     """ANSI color codes for terminal output."""
-    RED = '\033[0;31m'
-    GREEN = '\033[0;32m'
-    YELLOW = '\033[1;33m'
-    BLUE = '\033[0;34m'
-    CYAN = '\033[0;36m'
-    NC = '\033[0m'  # No Color
-    BOLD = '\033[1m'
+    _RED = '\033[0;31m'
+    _GREEN = '\033[0;32m'
+    _YELLOW = '\033[1;33m'
+    _BLUE = '\033[0;34m'
+    _CYAN = '\033[0;36m'
+    _NC = '\033[0m'  # No Color
+    _BOLD = '\033[1m'
 
-    @staticmethod
-    def strip():
-        """Strip colors for Windows cmd that doesn't support ANSI."""
+    # Check if colors should be disabled
+    _NO_COLOR = platform.system() == 'Windows' and not os.environ.get('WT_SESSION')
+
+    # Public color attributes (computed properties)
+    RED = '' if _NO_COLOR else _RED
+    GREEN = '' if _NO_COLOR else _GREEN
+    YELLOW = '' if _NO_COLOR else _YELLOW
+    BLUE = '' if _NO_COLOR else _BLUE
+    CYAN = '' if _NO_COLOR else _CYAN
+    NC = '' if _NO_COLOR else _NC
+    BOLD = '' if _NO_COLOR else _BOLD
+
+    @classmethod
+    def strip(cls) -> None:
+        """Strip ANSI color codes for environments that don't support them."""
         if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
-            Colors.RED = Colors.GREEN = Colors.YELLOW = Colors.BLUE = Colors.CYAN = Colors.NC = Colors.BOLD = ''
-
-
-# Initialize colors based on terminal support
-Colors.strip()
+            # Use setattr to avoid pyright's constant redefinition error
+            for attr in ['RED', 'GREEN', 'YELLOW', 'BLUE', 'CYAN', 'NC', 'BOLD']:
+                setattr(cls, attr, '')
 
 
 # Logging functions
@@ -83,7 +93,7 @@ def header(environment_name: str = 'Development') -> None:
     print()
 
 
-def run_command(cmd: list, capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess:
+def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     try:
         return subprocess.run(
@@ -119,7 +129,7 @@ def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -
 
         try:
             response = urlopen(request)
-            return response.status == 200
+            return bool(response.status == 200)
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
                 # Try with unverified SSL context
@@ -127,7 +137,7 @@ def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 response = urlopen(request, context=ctx)
-                return response.status == 200
+                return bool(response.status == 200)
             return False
     except (urllib.error.HTTPError, Exception):
         return False
@@ -212,8 +222,8 @@ def validate_all_config_files(
         Tuple of (all_valid, validation_results)
         validation_results is a list of (file_type, path, is_valid, method) tuples
     """
-    files_to_check = []
-    results = []
+    files_to_check: list[tuple[str, str, str, bool]] = []
+    results: list[tuple[str, str, bool, str]] = []
 
     # Get authentication headers if needed
     auth_headers = None
@@ -224,19 +234,34 @@ def validate_all_config_files(
     base_url = config.get('base-url')
 
     # Agents
-    for agent in config.get('agents', []) or []:
-        resolved_path, is_remote = resolve_resource_path(agent, config_source, base_url)
-        files_to_check.append(('agent', agent, resolved_path, is_remote))
+    agents_raw = config.get('agents', [])
+    if isinstance(agents_raw, list):
+        # Cast to typed list for pyright
+        agents_list = cast(list[object], agents_raw)
+        for agent_item in agents_list:
+            if isinstance(agent_item, str):
+                resolved_path, is_remote = resolve_resource_path(agent_item, config_source, base_url)
+                files_to_check.append(('agent', agent_item, resolved_path, is_remote))
 
     # Slash commands
-    for cmd in config.get('slash-commands', []) or []:
-        resolved_path, is_remote = resolve_resource_path(cmd, config_source, base_url)
-        files_to_check.append(('slash_command', cmd, resolved_path, is_remote))
+    commands_raw = config.get('slash-commands', [])
+    if isinstance(commands_raw, list):
+        # Cast to typed list for pyright
+        commands_list = cast(list[object], commands_raw)
+        for cmd_item in commands_list:
+            if isinstance(cmd_item, str):
+                resolved_path, is_remote = resolve_resource_path(cmd_item, config_source, base_url)
+                files_to_check.append(('slash_command', cmd_item, resolved_path, is_remote))
 
     # Output styles
-    for style in config.get('output-styles', []) or []:
-        resolved_path, is_remote = resolve_resource_path(style, config_source, base_url)
-        files_to_check.append(('output_style', style, resolved_path, is_remote))
+    styles_raw = config.get('output-styles', [])
+    if isinstance(styles_raw, list):
+        # Cast to typed list for pyright
+        styles_list = cast(list[object], styles_raw)
+        for style_item in styles_list:
+            if isinstance(style_item, str):
+                resolved_path, is_remote = resolve_resource_path(style_item, config_source, base_url)
+                files_to_check.append(('output_style', style_item, resolved_path, is_remote))
 
     # System prompts from command-defaults
     command_defaults = config.get('command-defaults', {})
@@ -247,10 +272,16 @@ def validate_all_config_files(
 
     # Hooks files
     hooks = config.get('hooks', {})
-    if hooks:
-        for hook_file in hooks.get('files', []) or []:
-            resolved_path, is_remote = resolve_resource_path(hook_file, config_source, base_url)
-            files_to_check.append(('hook', hook_file, resolved_path, is_remote))
+    if isinstance(hooks, dict):
+        hooks_typed = cast(dict[str, Any], hooks)
+        hook_files_raw = hooks_typed.get('files', [])
+        if isinstance(hook_files_raw, list):
+            # Cast to typed list for pyright
+            hook_files_list = cast(list[object], hook_files_raw)
+            for hook_file_item in hook_files_list:
+                if isinstance(hook_file_item, str):
+                    resolved_path, is_remote = resolve_resource_path(hook_file_item, config_source, base_url)
+                    files_to_check.append(('hook', hook_file_item, resolved_path, is_remote))
 
     # Validate each file
     info(f'Validating {len(files_to_check)} files...')
@@ -470,31 +501,31 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         return {header_name: token}
 
     # Method 2: Environment variables
-    tokens_checked = []
+    tokens_checked: list[str] = []
 
     # Check repo-specific tokens first
     if repo_type == 'gitlab':
-        token = os.environ.get('GITLAB_TOKEN')
+        env_token = os.environ.get('GITLAB_TOKEN')
         tokens_checked.append('GITLAB_TOKEN')
-        if token:
+        if env_token:
             info('Using GitLab token from GITLAB_TOKEN environment variable')
-            return {'PRIVATE-TOKEN': token}
+            return {'PRIVATE-TOKEN': env_token}
     elif repo_type == 'github':
-        token = os.environ.get('GITHUB_TOKEN')
+        env_token = os.environ.get('GITHUB_TOKEN')
         tokens_checked.append('GITHUB_TOKEN')
-        if token:
+        if env_token:
             info('Using GitHub token from GITHUB_TOKEN environment variable')
-            return {'Authorization': f'Bearer {token}'}
+            return {'Authorization': f'Bearer {env_token}'}
 
     # Check generic REPO_TOKEN as fallback
-    token = os.environ.get('REPO_TOKEN')
+    env_token = os.environ.get('REPO_TOKEN')
     tokens_checked.append('REPO_TOKEN')
-    if token:
+    if env_token:
         info('Using token from REPO_TOKEN environment variable')
         if repo_type == 'gitlab':
-            return {'PRIVATE-TOKEN': token}
+            return {'PRIVATE-TOKEN': env_token}
         if repo_type == 'github':
-            return {'Authorization': f'Bearer {token}'}
+            return {'Authorization': f'Bearer {env_token}'}
 
     # Method 3: Auth config file (future expansion)
     # auth_file = Path.home() / '.claude' / 'auth.yaml'
@@ -515,12 +546,12 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
             response = input('Would you like to enter the token now? (y/N): ').strip().lower()
             if response == 'y':
                 import getpass
-                token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
-                if token:
+                input_token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
+                if input_token:
                     if repo_type == 'gitlab':
-                        return {'PRIVATE-TOKEN': token}
+                        return {'PRIVATE-TOKEN': input_token}
                     if repo_type == 'github':
-                        return {'Authorization': f'Bearer {token}'}
+                        return {'Authorization': f'Bearer {input_token}'}
         except (KeyboardInterrupt, EOFError):
             print()  # New line after Ctrl+C
     elif repo_type:
@@ -764,10 +795,8 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     if not dependencies:
         return True
 
-    # Validate that dependencies is a dict
-    if not isinstance(dependencies, dict):
-        warning(f'Dependencies must be a dict with platform keys. Got {type(dependencies).__name__}')
-        return False
+    # Type annotation already ensures dependencies is a dict
+    # Runtime type check removed as it's redundant with proper typing
 
     info('Installing dependencies...')
 
@@ -788,7 +817,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
         current_platform_key = None
 
     # Collect dependencies: common first, then platform-specific
-    deps_to_install = []
+    deps_to_install: list[str] = []
 
     # Add common dependencies
     common_deps = dependencies.get('common', [])
@@ -867,7 +896,8 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
     try:
         request = Request(url)
         response = urlopen(request)
-        return response.read().decode('utf-8')
+        content: str = response.read().decode('utf-8')
+        return content
     except urllib.error.HTTPError as e:
         if e.code in (401, 403, 404):
             # Authentication might be needed
@@ -883,7 +913,8 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
                     request.add_header(header, value)
                 try:
                     response = urlopen(request)
-                    return response.read().decode('utf-8')
+                    result: str = response.read().decode('utf-8')
+                    return result
                 except urllib.error.HTTPError as auth_e:
                     if auth_e.code == 401:
                         error('Authentication failed. Check your token.')
@@ -914,7 +945,8 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
                     request.add_header(header, value)
 
             response = urlopen(request, context=ctx)
-            return response.read().decode('utf-8')
+            ctx_result: str = response.read().decode('utf-8')
+            return ctx_result
         raise
 
 
@@ -944,7 +976,12 @@ def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
 
         # Extract and parse the YAML content
         front_matter_text = content[4:end_match].strip()
-        return yaml.safe_load(front_matter_text)
+        result = yaml.safe_load(front_matter_text)
+        # Explicitly type check and return properly typed dict
+        if isinstance(result, dict):
+            # Cast to typed dict to satisfy pyright
+            return cast(dict[str, Any], result)
+        return None
 
     except Exception as e:
         warning(f'Failed to parse front matter from {file_path}: {e}')
@@ -981,7 +1018,7 @@ def resolve_output_style_name(
                 resolved_name = front_matter['name']
                 if resolved_name != base_name:
                     info(f'Resolved output style name: {base_name} → {resolved_name}')
-                return resolved_name
+                return str(resolved_name)
             warning(f'No front matter or name field in {file_path}, using filename')
             return base_name
 
@@ -1083,6 +1120,7 @@ def install_claude() -> bool:
     info('Installing Claude Code...')
 
     system = platform.system()
+    temp_installer: str | None = None
 
     try:
         # Download the appropriate installer script
@@ -1126,7 +1164,7 @@ def install_claude() -> bool:
             ], capture_output=False)
 
         # Clean up temp file on Windows
-        if system == 'Windows' and 'temp_installer' in locals():
+        if system == 'Windows' and temp_installer:
             with contextlib.suppress(Exception):
                 os.unlink(temp_installer)
 
@@ -1201,7 +1239,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         # When servers with the same name exist at multiple scopes, local-scoped servers
         # take precedence, followed by project, then user - so we remove from all scopes
         info(f'Removing existing MCP server {name} from all scopes if present...')
-        scopes_removed = []
+        scopes_removed: list[str] = []
         for remove_scope in ['user', 'local', 'project']:
             remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
             result = run_command(remove_cmd, capture_output=True)
@@ -1355,7 +1393,7 @@ def create_additional_settings(
     info(f'Creating {command_name}-additional-settings.json...')
 
     # Create fresh settings structure for this environment
-    settings = {}
+    settings: dict[str, Any] = {}
 
     # Add model if specified
     if model:
@@ -1394,8 +1432,8 @@ def create_additional_settings(
             info(f'  - {key}')
 
     # Handle hooks if present
-    hook_files = []
-    hook_events = []
+    hook_files: list[str] = []
+    hook_events: list[dict[str, Any]] = []
 
     if hooks:
         settings['hooks'] = {}
@@ -1436,18 +1474,24 @@ def create_additional_settings(
             settings['hooks'][event] = []
 
         # Find or create matcher group
-        matcher_group = None
-        for group in settings['hooks'][event]:
-            if group.get('matcher') == matcher:
-                matcher_group = group
-                break
+        matcher_group: dict[str, Any] | None = None
+        hooks_list_raw = cast(Any, settings['hooks'][event])  # Cast for pyright
+        if isinstance(hooks_list_raw, list):
+            hooks_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_list_raw)
+            for group_item in hooks_list:
+                if group_item.get('matcher') == matcher:
+                    matcher_group = group_item
+                    break
 
         if not matcher_group:
             matcher_group = {
                 'matcher': matcher,
                 'hooks': [],
             }
-            settings['hooks'][event].append(matcher_group)
+            hooks_event_list_raw = cast(Any, settings['hooks'][event])  # Cast for pyright
+            if isinstance(hooks_event_list_raw, list):
+                hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
+                hooks_event_list.append(matcher_group)
 
         # Build the proper command based on OS and file type
         if command.endswith('.py'):
@@ -1456,6 +1500,7 @@ def create_additional_settings(
             # Strip query parameters from command if present
             clean_command = command.split('?')[0] if '?' in command else command
             hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+            python_cmd: str | None
 
             if platform.system() == 'Windows':
                 # Windows needs explicit Python interpreter
@@ -1485,11 +1530,16 @@ def create_additional_settings(
             full_command = command
 
         # Add hook configuration
-        hook_config = {
+        hook_config: dict[str, str] = {
             'type': hook_type,
             'command': full_command,
         }
-        matcher_group['hooks'].append(hook_config)
+        if matcher_group and 'hooks' in matcher_group:
+            matcher_hooks_raw = matcher_group['hooks']
+            if isinstance(matcher_hooks_raw, list):
+                # Cast to typed list for pyright
+                matcher_hooks_list = cast(list[object], matcher_hooks_raw)
+                matcher_hooks_list.append(hook_config)
 
     # Save additional settings (always overwrite)
     additional_settings_path = claude_user_dir / f'{command_name}-additional-settings.json'
@@ -1899,8 +1949,8 @@ def main() -> None:
         if system_prompt:
             # Strip query parameters from URL to get clean filename
             clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
-            prompt_filename = Path(clean_prompt).name
-            prompt_path = prompts_dir / prompt_filename
+            sys_prompt_filename = Path(clean_prompt).name
+            prompt_path = prompts_dir / sys_prompt_filename
             handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth)
         else:
             info('No additional system prompt configured')
@@ -1926,11 +1976,10 @@ def main() -> None:
             print()
             print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
+            prompt_filename: str | None = None
             if system_prompt:
                 clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
                 prompt_filename = Path(clean_prompt).name
-            else:
-                prompt_filename = None
             launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
 
             # Step 11: Register global command
@@ -1968,7 +2017,7 @@ def main() -> None:
             print(f'   * Model: {model}')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:
-            perm_items = []
+            perm_items: list[str] = []
             if 'defaultMode' in permissions:
                 perm_items.append(f"defaultMode={permissions['defaultMode']}")
             if 'allow' in permissions:
