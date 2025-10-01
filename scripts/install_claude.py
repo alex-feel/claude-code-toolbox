@@ -118,7 +118,11 @@ def is_admin() -> bool:
     if platform.system() == 'Windows':
         try:
             import ctypes
-            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+            # Use getattr to handle platform-specific attributes
+            windll = getattr(ctypes, 'windll', None)
+            if windll is not None:
+                return bool(windll.shell32.IsUserAnAdmin())
+            return False
         except Exception:
             return False
     else:
