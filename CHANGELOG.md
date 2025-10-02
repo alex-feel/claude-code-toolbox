@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.4.1...v3.5.0) (2025-10-02)
+
+
+### Features
+
+* add support for 'latest' value in claude-code-version config ([774482c](https://github.com/alex-feel/claude-code-toolbox/commit/774482c1ecbed19535cc13270cce8c0257c4e414))
+
 ## [3.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.4.0...v3.4.1) (2025-10-02)
 
 
