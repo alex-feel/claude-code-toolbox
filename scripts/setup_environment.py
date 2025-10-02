@@ -99,12 +99,14 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
 
         # Build command line with script path, environment variables, then original arguments
         # Important: sys.argv[0] is the script path, sys.argv[1:] are the actual arguments
+        # Add special flag to indicate UAC elevation created a new window
+        uac_flag = ['--elevated-via-uac']
         if script_args:
             # When script_args is provided, use it instead of sys.argv[1:]
-            all_args = [sys.argv[0]] + env_vars_to_pass + script_args
+            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
         else:
             # Use original arguments (excluding script path)
-            all_args = [sys.argv[0]] + env_vars_to_pass + sys.argv[1:]
+            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
 
         # Build parameters string with proper quoting for Windows
         # Quote each argument that contains spaces or special characters
@@ -2109,16 +2111,18 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
         return False
 
 
-def restore_env_vars_from_args() -> list[str]:
+def restore_env_vars_from_args() -> tuple[list[str], bool]:
     """Restore environment variables from command-line arguments.
 
     When running elevated on Windows, environment variables are not inherited.
     This function restores them from special --env-* arguments.
 
     Returns:
-        List of remaining arguments after removing --env-* arguments.
+        Tuple of (remaining arguments after removing --env-* and special flags,
+                  whether --elevated-via-uac flag was present).
     """
     remaining_args: list[str] = []
+    was_elevated_via_uac = False
 
     # Debug logging to track what we're processing
     if '--debug-elevation' in sys.argv:
@@ -2134,6 +2138,11 @@ def restore_env_vars_from_args() -> list[str]:
         arg = sys.argv[i]
         if arg == '--debug-elevation':
             # Skip debug flag
+            i += 1
+            continue
+        if arg == '--elevated-via-uac':
+            # Track that we were elevated via UAC (new window was opened)
+            was_elevated_via_uac = True
             i += 1
             continue
         if arg.startswith('--env-'):
@@ -2159,31 +2168,32 @@ def restore_env_vars_from_args() -> list[str]:
     if '--debug-elevation' in sys.argv:
         print(f'[DEBUG] Cleaned sys.argv: {remaining_args}')
         print(f'[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+        print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
-    return remaining_args
+    return remaining_args, was_elevated_via_uac
 
 
 def main() -> None:
     """Main setup flow."""
-    # Track if we're running in an elevated process for better UX
-    is_elevated_process = False
+    # Track if we were elevated via UAC (new window opened) for better UX
+    was_elevated_via_uac = False
 
     # Restore environment variables if running elevated on Windows
     if platform.system() == 'Windows' and is_admin():
-        is_elevated_process = True
-
         # Replace sys.argv with cleaned arguments (without --env-* args)
+        # and check if we were elevated via UAC
         original_argv = sys.argv.copy()
-        sys.argv = restore_env_vars_from_args()
+        sys.argv, was_elevated_via_uac = restore_env_vars_from_args()
 
         # Debug output to understand what's happening in elevated process
         if '--debug-elevation' in original_argv:
             print('[DEBUG] Elevated process started successfully')
             print(f'[DEBUG] Admin status: {is_admin()}')
             print(f'[DEBUG] Config from env: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+            print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
-        # Show that we're running elevated
-        if is_elevated_process:
+        # Show that we're running elevated (only if via UAC)
+        if was_elevated_via_uac:
             print()
             print(f'{Colors.GREEN}========================================================================{Colors.NC}')
             print(f'{Colors.GREEN}     Running with Administrator Privileges{Colors.NC}')
@@ -2492,8 +2502,8 @@ def main() -> None:
         print('   * Claude Code Docs: https://docs.anthropic.com/claude-code')
         print()
 
-        # If running elevated, add a pause so user can see the results
-        if is_elevated_process and not is_running_in_pytest():
+        # If running elevated via UAC, add a pause so user can see the results
+        if was_elevated_via_uac and not is_running_in_pytest():
             print()
             print(f'{Colors.GREEN}========================================================================{Colors.NC}')
             print(f'{Colors.GREEN}     Setup Completed Successfully!{Colors.NC}')
@@ -2512,8 +2522,8 @@ def main() -> None:
         print(f'{Colors.YELLOW}For help, visit: https://github.com/alex-feel/claude-code-toolbox{Colors.NC}')
         print()
 
-        # If running elevated, add a pause so user can see the error
-        if platform.system() == 'Windows' and is_admin() and not is_running_in_pytest():
+        # If running elevated via UAC, add a pause so user can see the error
+        if was_elevated_via_uac and not is_running_in_pytest():
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}     Setup Failed{Colors.NC}')
