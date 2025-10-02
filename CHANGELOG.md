@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.3.0...v3.3.1) (2025-10-02)
+
+
+### Bug Fixes
+
+* improve UAC elevation environment variable passing ([87946f5](https://github.com/alex-feel/claude-code-toolbox/commit/87946f5e62a917f01aaa3b777b9102e6166e449b))
+
 ## [3.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.2.0...v3.3.0) (2025-10-02)
 
 
