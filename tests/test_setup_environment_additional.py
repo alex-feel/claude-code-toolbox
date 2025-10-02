@@ -491,8 +491,10 @@ class TestInstallClaudeEdgeCases:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    def test_install_claude_windows_ssl_error(self, mock_run, mock_urlopen, _mock_system):
+    @patch('setup_environment.is_admin', return_value=True)
+    def test_install_claude_windows_ssl_error(self, mock_is_admin, mock_run, mock_urlopen, _mock_system):
         """Test Claude installation on Windows with SSL error."""
+        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_urlopen.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
             MagicMock(read=lambda: b'# PowerShell script'),
@@ -502,6 +504,7 @@ class TestInstallClaudeEdgeCases:
         result = setup_environment.install_claude()
         assert result is True
         assert mock_urlopen.call_count == 2
+        mock_is_admin.assert_called()  # Verify is_admin was called
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')

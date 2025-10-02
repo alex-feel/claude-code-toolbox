@@ -43,8 +43,18 @@ def is_admin() -> bool:
 
     try:
         import ctypes
-
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        # Use getattr to access Windows-specific attributes dynamically
+        # This prevents type checkers from failing on non-Windows platforms
+        windll = getattr(ctypes, 'windll', None)
+        if windll is None:
+            return False
+        shell32 = getattr(windll, 'shell32', None)
+        if shell32 is None:
+            return False
+        is_user_admin = getattr(shell32, 'IsUserAnAdmin', None)
+        if is_user_admin is None:
+            return False
+        return bool(is_user_admin())
     except Exception:
         return False
 
@@ -64,8 +74,19 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         # Build command line
         params = ' '.join([sys.argv[0]] + script_args) if script_args else ' '.join(sys.argv)
 
+        # Use getattr to access Windows-specific attributes dynamically
+        windll = getattr(ctypes, 'windll', None)
+        if windll is None:
+            return
+        shell32 = getattr(windll, 'shell32', None)
+        if shell32 is None:
+            return
+        shell_execute_w = getattr(shell32, 'ShellExecuteW', None)
+        if shell_execute_w is None:
+            return
+
         # Request elevation
-        result = ctypes.windll.shell32.ShellExecuteW(
+        result = shell_execute_w(
             None,
             'runas',
             sys.executable,

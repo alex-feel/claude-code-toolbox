@@ -648,10 +648,12 @@ class TestInstallClaude:
     @patch('platform.system', return_value='Windows')
     @patch('urllib.request.urlopen')
     @patch('setup_environment.run_command')
-    def test_install_claude_windows(self, mock_run, mock_urlopen, mock_system):
+    @patch('setup_environment.is_admin', return_value=True)
+    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system):
         """Test installing Claude on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer'
         mock_urlopen.return_value = mock_response
@@ -662,6 +664,7 @@ class TestInstallClaude:
         assert result is True
         mock_run.assert_called_once()
         assert 'powershell' in mock_run.call_args[0][0]
+        mock_is_admin.assert_called()  # Verify is_admin was called
 
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.run_command')
