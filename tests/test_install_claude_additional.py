@@ -266,8 +266,10 @@ class TestEnsureFunctionsAdditional:
         # 3. After apt installation check 2 (line 610) - returns v20.10.0
         mock_get_version.side_effect = [None, 'v20.10.0', 'v20.10.0']
 
-        with patch('install_claude.compare_versions', return_value=True), \
-             patch('pathlib.Path.exists', return_value=True):  # For /etc/debian_version check
+        with (
+            patch('install_claude.compare_versions', return_value=True),
+            patch('pathlib.Path.exists', return_value=True),
+        ):  # For /etc/debian_version check
             result = install_claude.ensure_nodejs()
             assert result is True
             mock_apt.assert_called_once()
@@ -305,7 +307,14 @@ class TestEnsureFunctionsAdditional:
     @patch('time.sleep')
     @patch('pathlib.Path.exists', return_value=False)  # For Windows nodejs path check
     def test_ensure_nodejs_upgrade_old_version(
-        self, mock_path_exists, mock_sleep, mock_winget, mock_check, mock_compare, mock_get_version, mock_system,
+        self,
+        mock_path_exists,
+        mock_sleep,
+        mock_winget,
+        mock_check,
+        mock_compare,
+        mock_get_version,
+        mock_system,
     ):
         """Test Node.js upgrade when version is too old."""
         # Verify mock configurations

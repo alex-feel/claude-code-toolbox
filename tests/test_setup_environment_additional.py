@@ -252,7 +252,11 @@ class TestConfigLoadingErrorPaths:
     def test_load_config_from_repo_404(self, mock_fetch):
         """Test repository config not found (404)."""
         mock_fetch.side_effect = urllib.error.HTTPError(
-            'url', 404, 'Not Found', {}, None,
+            'url',
+            404,
+            'Not Found',
+            {},
+            None,
         )
 
         with pytest.raises(Exception, match='Configuration not found'):
@@ -262,7 +266,11 @@ class TestConfigLoadingErrorPaths:
     def test_load_config_from_repo_other_http_error(self, mock_fetch):
         """Test repository config with non-404 HTTP error."""
         mock_fetch.side_effect = urllib.error.HTTPError(
-            'url', 500, 'Server Error', {}, None,
+            'url',
+            500,
+            'Server Error',
+            {},
+            None,
         )
 
         with pytest.raises(urllib.error.HTTPError):
@@ -707,10 +715,13 @@ class TestMCPServerConfigurationEdgeCases:
         server = {'name': 'test', 'command': 'test'}
 
         # Exception happens on the add command (second call)
-        with patch('setup_environment.run_command', side_effect=[
-            subprocess.CompletedProcess([], 0, '', ''),  # remove succeeds
-            Exception('Unexpected'),  # add throws exception
-        ]):
+        with patch(
+            'setup_environment.run_command',
+            side_effect=[
+                subprocess.CompletedProcess([], 0, '', ''),  # remove succeeds
+                Exception('Unexpected'),  # add throws exception
+            ],
+        ):
             result = setup_environment.configure_mcp_server(server)
 
         assert result is False
@@ -766,8 +777,9 @@ class TestCreateAdditionalSettingsComplex:
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
-            assert 'allow' not in settings['permissions'] or \
-                   'mcp__blocked_server' not in settings['permissions'].get('allow', [])
+            assert 'allow' not in settings['permissions'] or 'mcp__blocked_server' not in settings['permissions'].get(
+                'allow', [],
+            )
 
     def test_create_additional_settings_mcp_in_ask_list(self):
         """Test MCP server in ask list is not auto-allowed."""
@@ -787,8 +799,7 @@ class TestCreateAdditionalSettingsComplex:
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
-            assert 'allow' not in settings['permissions'] or \
-                   'mcp__ask_server' not in settings['permissions'].get('allow', [])
+            assert 'allow' not in settings['permissions'] or 'mcp__ask_server' not in settings['permissions'].get('allow', [])
 
     def test_create_additional_settings_with_env_variables(self):
         """Test creating settings with environment variables."""

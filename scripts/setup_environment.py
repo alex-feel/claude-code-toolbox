@@ -31,6 +31,95 @@ from urllib.request import urlopen
 import yaml
 
 
+# Windows UAC elevation helper functions
+def is_admin() -> bool:
+    """Check if running with admin privileges on Windows.
+
+    Returns:
+        True if running as admin or not on Windows, False otherwise.
+    """
+    if platform.system() != 'Windows':
+        return True  # Not Windows, no admin check needed
+
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def request_admin_elevation(script_args: list[str] | None = None) -> None:
+    """Re-launch script with UAC elevation on Windows.
+
+    Args:
+        script_args: Optional list of arguments to pass to elevated script.
+    """
+    if platform.system() != 'Windows':
+        return
+
+    try:
+        import ctypes
+
+        # Build command line
+        params = ' '.join([sys.argv[0]] + script_args) if script_args else ' '.join(sys.argv)
+
+        # Request elevation
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            'runas',
+            sys.executable,
+            params,
+            None,
+            1,
+        )
+
+        # Exit current process if elevation was requested
+        if result > 32:  # Success
+            sys.exit(0)
+
+    except Exception:
+        # If elevation fails, we'll continue without it
+        pass
+
+
+def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
+    """Check if admin rights are needed for the current operation.
+
+    Args:
+        config: Configuration dictionary.
+        args: Command line arguments.
+
+    Returns:
+        True if admin needed, False otherwise.
+    """
+    if platform.system() != 'Windows':
+        return False
+
+    # Check if Claude Code installation is needed
+    if not args.skip_install:
+        # Installing Node.js and Git typically requires admin on Windows
+        return True
+
+    # Check for dependencies that need admin
+    dependencies = config.get('dependencies', {})
+    if dependencies:
+        # Check Windows-specific dependencies
+        win_deps = dependencies.get('windows', [])
+        common_deps = dependencies.get('common', [])
+        all_deps = win_deps + common_deps
+
+        for dep in all_deps:
+            # Check for commands that typically need admin
+            if 'winget' in dep and '--scope machine' in dep:
+                return True
+            if 'npm install -g' in dep:
+                # Global npm installs may need admin depending on Node.js installation
+                return True
+
+    return False
+
+
 # ANSI color codes for pretty output
 class Colors:
     """ANSI color codes for terminal output."""
@@ -805,6 +894,31 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 
     info('Installing dependencies...')
 
+    # Check if any Windows dependencies need admin
+    if platform.system() == 'Windows' and not is_admin():
+        win_deps = dependencies.get('windows', [])
+        common_deps = dependencies.get('common', [])
+        all_deps = win_deps + common_deps
+
+        admin_needed_deps = [dep for dep in all_deps if 'winget' in dep and '--scope machine' in dep]
+
+        if admin_needed_deps:
+            warning('Some dependencies require administrator privileges:')
+            for dep in admin_needed_deps:
+                warning(f'  - {dep}')
+            info('')
+            info('Requesting administrator elevation...')
+            request_admin_elevation()
+            # If we reach here, elevation was denied
+            error('Administrator elevation was denied')
+            error('System-wide dependency installation cannot proceed without administrator privileges')
+            error('')
+            error('Options:')
+            error('  1. Run this script as administrator')
+            error('  2. Modify dependencies to use --scope user instead')
+            error('  3. Use --no-admin flag to skip admin-required dependencies')
+            return False
+
     # Get system platform
     system = platform.system()
 
@@ -870,6 +984,10 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 
         if result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
+            # Check if it failed due to admin rights on Windows
+            if system == 'Windows' and not is_admin() and 'winget' in dep and '--scope machine' in dep:
+                warning('This may have failed due to lack of admin rights')
+                info('Try: 1) Run as administrator, or 2) Use --scope user instead')
             warning('Continuing with other dependencies...')
 
     return True
@@ -1134,6 +1252,23 @@ def install_claude(version: str | None = None) -> bool:
         Exception: If installation fails with exit code.
         URLError: If there's an error downloading the installer script.
     """
+    # Check if admin rights needed for Windows installation
+    if platform.system() == 'Windows' and not is_admin():
+        warning('Installing Claude Code requires administrator privileges on Windows')
+        warning('This includes installing Node.js and Git if not already present')
+        info('')
+        info('Requesting administrator elevation...')
+        request_admin_elevation()
+        # If we reach here, elevation was denied
+        error('Administrator elevation was denied')
+        error('Installation cannot proceed without administrator privileges')
+        error('')
+        error('Please run this script as administrator manually:')
+        error('  1. Right-click on your terminal')
+        error('  2. Select "Run as administrator"')
+        error('  3. Run the setup command again')
+        return False
+
     if version:
         info(f'Installing Claude Code version {version}...')
         # Set environment variable for the installer scripts to use
@@ -1842,9 +1977,20 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
                 os.environ['PATH'] = f'{local_bin_str};{user_path}'
 
                 # Update persistent user PATH (Windows only)
-                run_command(['setx', 'PATH', f'{local_bin_str};%PATH%'], capture_output=True)
-                success(f'Added {local_bin_str} to PATH')
-                info('You may need to restart your terminal for PATH changes to take effect')
+                result = run_command(['setx', 'PATH', f'{local_bin_str};%PATH%'], capture_output=True)
+                if result.returncode == 0:
+                    success(f'Added {local_bin_str} to PATH')
+                    info('You may need to restart your terminal for PATH changes to take effect')
+                else:
+                    warning(f'Failed to update PATH with setx: {result.stderr}')
+                    if not is_admin():
+                        info('This may be due to lack of admin rights or PATH length limits')
+                    info('')
+                    info('To manually add to PATH:')
+                    info('1. Open System Properties > Environment Variables')
+                    info('2. Edit the User PATH variable')
+                    info(f'3. Add: {local_bin_str}')
+                    info('4. Click OK and restart your terminal')
 
         else:
             # Create symlink in ~/.local/bin
@@ -1879,6 +2025,7 @@ def main() -> None:
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
     parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
+    parser.add_argument('--no-admin', action='store_true', help='Do not request admin elevation even if needed')
     args = parser.parse_args()
 
     # Get configuration from args or environment
@@ -1894,6 +2041,44 @@ def main() -> None:
     try:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
+
+        # Check if admin rights are needed for this configuration
+        if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
+            print()
+            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+            print(f'{Colors.YELLOW}     Administrator Privileges Required{Colors.NC}')
+            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+            print()
+            info('This configuration requires administrator privileges for:')
+
+            if not args.skip_install:
+                info('  - Installing Claude Code (includes Node.js and Git)')
+
+            # Check dependencies
+            dependencies = config.get('dependencies', {})
+            if dependencies:
+                win_deps = dependencies.get('windows', [])
+                common_deps = dependencies.get('common', [])
+                all_deps = win_deps + common_deps
+
+                for dep in all_deps:
+                    if 'winget' in dep and '--scope machine' in dep:
+                        info(f'  - System-wide installation: {dep}')
+                    elif 'npm install -g' in dep:
+                        info(f'  - Global npm package: {dep}')
+
+            print()
+            info('Requesting administrator elevation...')
+            request_admin_elevation()
+            # If we reach here, elevation was denied
+            error('Administrator elevation was denied')
+            error('Please run this script as administrator manually:')
+            error('  1. Right-click on your terminal')
+            error('  2. Select "Run as administrator"')
+            error('  3. Run the setup command again')
+            error('')
+            error('Alternatively, use --no-admin flag to skip elevation')
+            sys.exit(1)
 
         environment_name = config.get('name', 'Development')
         command_name = config.get('command-name')  # No default - returns None if not present

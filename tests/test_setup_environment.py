@@ -493,8 +493,8 @@ class TestCreateAdditionalSettings:
 
             # MCP servers should NOT be automatically added to permissions
             assert 'permissions' not in settings or (
-                'mcp__server1' not in settings.get('permissions', {}).get('allow', []) and
-                'mcp__server2' not in settings.get('permissions', {}).get('allow', [])
+                'mcp__server1' not in settings.get('permissions', {}).get('allow', [])
+                and 'mcp__server2' not in settings.get('permissions', {}).get('allow', [])
             )
 
     def test_create_additional_settings_with_explicit_permissions(self):

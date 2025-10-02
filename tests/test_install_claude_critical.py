@@ -65,7 +65,12 @@ class TestSSLErrorHandling:
     @patch('scripts.install_claude.urlretrieve')
     @patch('scripts.install_claude.urlopen')
     def test_install_git_windows_download_urlretrieve_ssl_error(
-        self, mock_urlopen, mock_urlretrieve, mock_ssl_context, mock_build_opener, mock_install_opener,
+        self,
+        mock_urlopen,
+        mock_urlretrieve,
+        mock_ssl_context,
+        mock_build_opener,
+        mock_install_opener,
     ):
         """Test Git installer download with SSL error during urlretrieve."""
         # Create proper mock response for urlopen
