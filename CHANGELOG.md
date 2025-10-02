@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.3.1...v3.4.0) (2025-10-02)
+
+
+### Features
+
+* improve UAC elevation user experience ([cc93eb6](https://github.com/alex-feel/claude-code-toolbox/commit/cc93eb62b2d6ce6b16665fca479ff8f55fe77485))
+
 ## [3.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.3.0...v3.3.1) (2025-10-02)
 
 
