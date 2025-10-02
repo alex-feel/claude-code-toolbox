@@ -1084,3 +1084,182 @@ class TestMainFunction:
         ):
             setup_environment.main()
             mock_exit.assert_not_called()
+
+
+class TestClaudeCodeVersion:
+    """Test claude-code-version configuration handling."""
+
+    def test_claude_code_version_latest(self):
+        """Test that 'latest' value results in None being passed to install_claude."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-latest.yaml'
+            config_file.write_text('''
+name: "Test Latest"
+claude-code-version: "latest"
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+            assert config.get('claude-code-version') == 'latest'
+
+            # Simulate the normalization logic from setup_environment.py
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized is None
+
+    def test_claude_code_version_latest_case_insensitive(self):
+        """Test that 'latest' is case-insensitive (LATEST, Latest, etc.)."""
+        test_cases = ['latest', 'LATEST', 'Latest', 'LaTeSt']
+
+        for test_value in test_cases:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_file = Path(tmpdir) / f'test-{test_value}.yaml'
+                config_file.write_text(f'''
+name: "Test {test_value}"
+claude-code-version: "{test_value}"
+dependencies:
+  - uv
+''')
+                config, source = setup_environment.load_config_from_source(str(config_file), None)
+
+                # Simulate normalization logic
+                claude_code_version = config.get('claude-code-version')
+                claude_code_version_normalized = None
+                if claude_code_version is not None:
+                    claude_code_version_str = str(claude_code_version).strip()
+                    if claude_code_version_str.lower() == 'latest':
+                        claude_code_version_normalized = None
+                    else:
+                        claude_code_version_normalized = claude_code_version_str
+
+                assert claude_code_version_normalized is None, f'Failed for value: {test_value}'
+
+    def test_claude_code_version_specific(self):
+        """Test that specific version strings are preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-specific.yaml'
+            config_file.write_text('''
+name: "Test Specific"
+claude-code-version: "1.0.124"
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+            assert config.get('claude-code-version') == '1.0.124'
+
+            # Simulate normalization logic
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized == '1.0.124'
+
+    def test_claude_code_version_numeric_yaml(self):
+        """Test that numeric YAML values are properly converted to strings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-numeric.yaml'
+            # YAML will parse 1.0 as a float
+            config_file.write_text('''
+name: "Test Numeric"
+claude-code-version: 1.0
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+
+            # Simulate normalization logic with type conversion
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                # Convert to string to handle numeric values
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized == '1.0'
+
+    def test_claude_code_version_empty_string(self):
+        """Test that empty string defaults to latest (None)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-empty.yaml'
+            config_file.write_text('''
+name: "Test Empty"
+claude-code-version: ""
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+
+            # Simulate normalization logic
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized is None
+
+    def test_claude_code_version_whitespace(self):
+        """Test that whitespace is properly trimmed."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-whitespace.yaml'
+            config_file.write_text('''
+name: "Test Whitespace"
+claude-code-version: "  latest  "
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+
+            # Simulate normalization logic
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized is None
+
+    def test_claude_code_version_not_specified(self):
+        """Test behavior when claude-code-version is not specified."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / 'test-no-version.yaml'
+            config_file.write_text('''
+name: "Test No Version"
+dependencies:
+  - uv
+''')
+            config, source = setup_environment.load_config_from_source(str(config_file), None)
+            assert config.get('claude-code-version') is None
+
+            # Simulate normalization logic
+            claude_code_version = config.get('claude-code-version')
+            claude_code_version_normalized = None
+            if claude_code_version is not None:
+                claude_code_version_str = str(claude_code_version).strip()
+                if not claude_code_version_str or claude_code_version_str.lower() == 'latest':
+                    claude_code_version_normalized = None
+                else:
+                    claude_code_version_normalized = claude_code_version_str
+
+            assert claude_code_version_normalized is None

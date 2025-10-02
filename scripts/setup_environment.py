@@ -2285,8 +2285,24 @@ def main() -> None:
 
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
-        if claude_code_version:
-            info(f'Claude Code version specified: {claude_code_version}')
+        claude_code_version_normalized = None  # Default to latest
+
+        if claude_code_version is not None:
+            # Convert to string to handle YAML numeric values (e.g., 1.0 becomes "1.0")
+            claude_code_version_str = str(claude_code_version).strip()
+
+            # Handle empty strings
+            if not claude_code_version_str:
+                warning('Empty claude-code-version value, using latest')
+                claude_code_version_normalized = None
+            # Handle "latest" value (case-insensitive)
+            elif claude_code_version_str.lower() == 'latest':
+                info(f'Claude Code version specified: {claude_code_version} (will install latest available)')
+                claude_code_version_normalized = None
+            # Specific version specified
+            else:
+                info(f'Claude Code version specified: {claude_code_version_str}')
+                claude_code_version_normalized = claude_code_version_str
 
         header(environment_name)
 
@@ -2324,7 +2340,7 @@ def main() -> None:
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
         if not args.skip_install:
             print(f'{Colors.CYAN}Step 1: Installing Claude Code...{Colors.NC}')
-            if not install_claude(claude_code_version):
+            if not install_claude(claude_code_version_normalized):
                 raise Exception('Claude Code installation failed')
         else:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
