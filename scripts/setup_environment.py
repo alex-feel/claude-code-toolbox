@@ -71,8 +71,45 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
     try:
         import ctypes
 
-        # Build command line
-        params = ' '.join([sys.argv[0]] + script_args) if script_args else ' '.join(sys.argv)
+        # Collect critical environment variables to pass to elevated process
+        env_vars_to_pass: list[str] = []
+        critical_env_vars = [
+            'CLAUDE_ENV_CONFIG',
+            'GITHUB_TOKEN',
+            'GITLAB_TOKEN',
+            'REPO_TOKEN',
+            'CLAUDE_VERSION',
+        ]
+
+        for var_name in critical_env_vars:
+            var_value = os.environ.get(var_name)
+            if var_value:
+                # Don't escape here - we'll handle escaping when building the params string
+                env_vars_to_pass.append(f'--env-{var_name}={var_value}')
+
+        # Build command line with script path, environment variables, then original arguments
+        # Important: sys.argv[0] is the script path, sys.argv[1:] are the actual arguments
+        if script_args:
+            # When script_args is provided, use it instead of sys.argv[1:]
+            all_args = [sys.argv[0]] + env_vars_to_pass + script_args
+        else:
+            # Use original arguments (excluding script path)
+            all_args = [sys.argv[0]] + env_vars_to_pass + sys.argv[1:]
+
+        # Build parameters string with proper quoting for Windows
+        # Quote each argument that contains spaces or special characters
+        params_list: list[str] = []
+        for arg in all_args:
+            # Always quote arguments with = to ensure proper parsing
+            if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
+                # For Windows command line, we need to escape quotes properly
+                # Use \" for quotes inside quoted strings
+                escaped_arg = arg.replace('"', '\\"')
+                quoted_arg = f'"{escaped_arg}"'
+                params_list.append(quoted_arg)
+            else:
+                params_list.append(arg)
+        params = ' '.join(params_list)
 
         # Use getattr to access Windows-specific attributes dynamically
         windll = getattr(ctypes, 'windll', None)
@@ -97,11 +134,26 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
 
         # Exit current process if elevation was requested
         if result > 32:  # Success
+            # Wait briefly to ensure elevated process starts
+            time.sleep(0.5)
+            # Exit the non-elevated process so only the elevated one continues
             sys.exit(0)
+        else:
+            # Elevation was denied or failed
+            error('Administrator elevation was denied')
+            error('Installation cannot proceed without administrator privileges')
+            error('')
+            error('Please run this script as administrator manually:')
+            error('  1. Right-click on your terminal')
+            error('  2. Select "Run as administrator"')
+            error('  3. Run the setup command again')
+            sys.exit(1)
 
-    except Exception:
-        # If elevation fails, we'll continue without it
-        pass
+    except Exception as e:
+        # If elevation fails due to an error, report it
+        error(f'Failed to request elevation: {e}')
+        error('Please run this script as administrator manually')
+        sys.exit(1)
 
 
 def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
@@ -2040,8 +2092,74 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
         return False
 
 
+def restore_env_vars_from_args() -> list[str]:
+    """Restore environment variables from command-line arguments.
+
+    When running elevated on Windows, environment variables are not inherited.
+    This function restores them from special --env-* arguments.
+
+    Returns:
+        List of remaining arguments after removing --env-* arguments.
+    """
+    remaining_args: list[str] = []
+
+    # Debug logging to track what we're processing
+    if '--debug-elevation' in sys.argv:
+        print(f'[DEBUG] Original sys.argv: {sys.argv}')
+        print(f'[DEBUG] Running as admin: {is_admin()}')
+
+    # sys.argv[0] is always the script path, keep it
+    remaining_args.append(sys.argv[0])
+
+    # Process the rest of the arguments
+    i = 1  # Start from index 1 to skip script path
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg == '--debug-elevation':
+            # Skip debug flag
+            i += 1
+            continue
+        if arg.startswith('--env-'):
+            # Parse --env-VAR_NAME=value format
+            if '=' in arg:
+                var_part = arg[6:]  # Remove '--env-' prefix
+                var_name, var_value = var_part.split('=', 1)
+
+                # No unescaping needed - values are passed as-is
+
+                os.environ[var_name] = var_value
+
+                if '--debug-elevation' in sys.argv:
+                    if len(var_value) > 50:
+                        print(f'[DEBUG] Restored env var: {var_name}={var_value[:50]}...')
+                    else:
+                        print(f'[DEBUG] Restored env var: {var_name}={var_value}')
+            i += 1
+        else:
+            remaining_args.append(arg)
+            i += 1
+
+    if '--debug-elevation' in sys.argv:
+        print(f'[DEBUG] Cleaned sys.argv: {remaining_args}')
+        print(f'[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+
+    return remaining_args
+
+
 def main() -> None:
     """Main setup flow."""
+    # Restore environment variables if running elevated on Windows
+    if platform.system() == 'Windows' and is_admin():
+        # Replace sys.argv with cleaned arguments (without --env-* args)
+        original_argv = sys.argv.copy()
+        sys.argv = restore_env_vars_from_args()
+
+        # Debug output to understand what's happening in elevated process
+        if '--debug-elevation' in original_argv:
+            print('[DEBUG] Elevated process started successfully')
+            print(f'[DEBUG] Admin status: {is_admin()}')
+            print(f'[DEBUG] Config from env: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
