@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.4.0...v3.4.1) (2025-10-02)
+
+
+### Bug Fixes
+
+* make pause prompt conditional on UAC elevation type ([18bb371](https://github.com/alex-feel/claude-code-toolbox/commit/18bb3711b5cee95ebf1c96dde980b941aa107594))
+
 ## [3.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.3.1...v3.4.0) (2025-10-02)
 
 
