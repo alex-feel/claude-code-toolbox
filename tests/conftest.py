@@ -96,6 +96,7 @@ command-name: invalid name with spaces
 @pytest.fixture
 def mock_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mock URL fetching for testing."""
+
     def mock_urlopen(url, *args, **kwargs):
         # Mark args and kwargs as intentionally unused
         del args, kwargs
@@ -117,6 +118,7 @@ def mock_urls(monkeypatch: pytest.MonkeyPatch) -> None:
         return MockResponse()
 
     import urllib.request
+
     monkeypatch.setattr(urllib.request, 'urlopen', mock_urlopen)
 
 
@@ -143,6 +145,7 @@ def mock_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         # Mark args and kwargs as intentionally unused
         del args, kwargs
         import subprocess
+
         cmd_name = cmd[0] if isinstance(cmd, list) else cmd.split()[0]
 
         # Remove .exe, .cmd extensions for Windows
@@ -150,12 +153,16 @@ def mock_commands(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
         if cmd_name in commands_output:
             return subprocess.CompletedProcess(
-                cmd, 0, commands_output.get(cmd_name, ''), '',
+                cmd,
+                0,
+                commands_output.get(cmd_name, ''),
+                '',
             )
         return subprocess.CompletedProcess(cmd, 1, '', 'Command not found')
 
     import shutil
     import subprocess
+
     monkeypatch.setattr(shutil, 'which', mock_which)
     monkeypatch.setattr(subprocess, 'run', mock_run)
 

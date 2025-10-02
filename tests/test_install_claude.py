@@ -299,6 +299,7 @@ class TestWindowsGitBash:
         def retrieve_side_effect(url, filename):
             # Just pretend we downloaded the file
             pass
+
         mock_retrieve.side_effect = retrieve_side_effect
 
         # Mock installer execution
@@ -437,6 +438,7 @@ class TestNodeJsInstallation:
         def retrieve_side_effect(url, filename):
             # Just pretend we downloaded the file
             pass
+
         mock_retrieve.side_effect = retrieve_side_effect
 
         # Mock installer execution
@@ -639,8 +641,9 @@ class TestMainFunction:
     @patch('install_claude.update_path')
     @patch('install_claude.find_command', return_value=None)
     @patch('install_claude.set_windows_env_var')
-    def test_main_windows_success(self, mock_set_env, mock_find, mock_update, mock_ps, mock_claude, mock_node, mock_git,
-                                   mock_system):
+    def test_main_windows_success(
+        self, mock_set_env, mock_find, mock_update, mock_ps, mock_claude, mock_node, mock_git, mock_system,
+    ):
         """Test successful main flow on Windows."""
         # Verify mock configurations
         assert mock_system.return_value == 'Windows'

@@ -37,7 +37,11 @@ class TestCheckFileWithHead:
     def test_check_file_with_head_not_found(self, mock_urlopen):
         """Test HEAD request with 404."""
         mock_urlopen.side_effect = urllib.error.HTTPError(
-            'https://example.com/file.md', 404, 'Not Found', {}, None,
+            'https://example.com/file.md',
+            404,
+            'Not Found',
+            {},
+            None,
         )
 
         result = setup_environment.check_file_with_head('https://example.com/file.md')
@@ -146,7 +150,11 @@ class TestCheckFileWithRange:
     def test_check_file_with_range_http_error(self, mock_urlopen):
         """Test Range request with HTTP error."""
         mock_urlopen.side_effect = urllib.error.HTTPError(
-            'https://example.com/file.md', 416, 'Range Not Satisfiable', {}, None,
+            'https://example.com/file.md',
+            416,
+            'Range Not Satisfiable',
+            {},
+            None,
         )
 
         result = setup_environment.check_file_with_range('https://example.com/file.md')
@@ -217,7 +225,8 @@ class TestValidateFileAvailability:
         auth_headers = {'Authorization': 'Bearer token'}
 
         is_valid, method = setup_environment.validate_file_availability(
-            'https://example.com/file.md', auth_headers,
+            'https://example.com/file.md',
+            auth_headers,
         )
 
         assert is_valid is True
@@ -340,7 +349,9 @@ class TestValidateAllConfigFiles:
         ]
 
         all_valid, results = setup_environment.validate_all_config_files(
-            config, 'https://example.com', 'token',
+            config,
+            'https://example.com',
+            'token',
         )
 
         assert all_valid is True
@@ -473,7 +484,12 @@ class TestValidateAllConfigFiles:
     @patch('setup_environment.resolve_resource_path')
     @patch('setup_environment.validate_file_availability')
     def test_validate_all_config_files_output_messages(
-        self, mock_validate, mock_resolve, mock_auth, mock_error, mock_info,
+        self,
+        mock_validate,
+        mock_resolve,
+        mock_auth,
+        mock_error,
+        mock_info,
     ):
         """Test validation output messages."""
         config = {
@@ -570,7 +586,13 @@ class TestMainFlowWithValidation:
     @patch('setup_environment.load_config_from_source')
     @patch('argparse.ArgumentParser.parse_args')
     def test_main_validation_success_continues(
-        self, mock_args, mock_load, mock_validate, mock_success, mock_install, mock_download,
+        self,
+        mock_args,
+        mock_load,
+        mock_validate,
+        mock_success,
+        mock_install,
+        mock_download,
     ):
         """Test that main continues when validation succeeds."""
         del mock_download  # Unused but required by decorator
@@ -641,7 +663,8 @@ class TestLocalPathValidation:
 
             # Run validation
             all_valid, results = setup_environment.validate_all_config_files(
-                config, str(config_file),
+                config,
+                str(config_file),
             )
 
             # Verify results
@@ -676,28 +699,32 @@ class TestLocalPathValidation:
             # Test absolute path
             abs_path = str(tmpdir / 'file.md')
             resolved, is_remote = setup_environment.resolve_resource_path(
-                abs_path, str(config_file),
+                abs_path,
+                str(config_file),
             )
             assert resolved == str(Path(abs_path).resolve())
             assert is_remote is False
 
             # Test relative path with ./
             resolved, is_remote = setup_environment.resolve_resource_path(
-                './file.md', str(config_file),
+                './file.md',
+                str(config_file),
             )
             assert resolved == str((tmpdir / 'file.md').resolve())
             assert is_remote is False
 
             # Test parent relative path
             resolved, is_remote = setup_environment.resolve_resource_path(
-                '../file.md', str(config_file),
+                '../file.md',
+                str(config_file),
             )
             assert resolved == str((tmpdir.parent / 'file.md').resolve())
             assert is_remote is False
 
             # Test simple relative path
             resolved, is_remote = setup_environment.resolve_resource_path(
-                'file.md', str(config_file),
+                'file.md',
+                str(config_file),
             )
             assert resolved == str((tmpdir / 'file.md').resolve())
             assert is_remote is False
@@ -705,18 +732,21 @@ class TestLocalPathValidation:
             # Test home directory expansion
             with patch.dict(os.environ, {'HOME': str(tmpdir), 'USERPROFILE': str(tmpdir)}):
                 resolved, is_remote = setup_environment.resolve_resource_path(
-                    '~/file.md', str(config_file),
+                    '~/file.md',
+                    str(config_file),
                 )
                 assert resolved == str((tmpdir / 'file.md').resolve())
                 assert is_remote is False
 
             # Test environment variable expansion (platform-specific)
             import platform
+
             if platform.system() == 'Windows':
                 # Test Windows environment variable expansion
                 with patch.dict(os.environ, {'USERPROFILE': str(tmpdir)}):
                     resolved, is_remote = setup_environment.resolve_resource_path(
-                        '%USERPROFILE%\\file.md', str(config_file),
+                        '%USERPROFILE%\\file.md',
+                        str(config_file),
                     )
                     assert resolved == str((tmpdir / 'file.md').resolve())
                     assert is_remote is False
@@ -724,7 +754,8 @@ class TestLocalPathValidation:
                 # Test Unix environment variable expansion
                 with patch.dict(os.environ, {'HOME': str(tmpdir)}):
                     resolved, is_remote = setup_environment.resolve_resource_path(
-                        '$HOME/file.md', str(config_file),
+                        '$HOME/file.md',
+                        str(config_file),
                     )
                     assert resolved == str((tmpdir / 'file.md').resolve())
                     assert is_remote is False
