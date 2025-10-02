@@ -31,6 +31,16 @@ from urllib.request import urlopen
 import yaml
 
 
+# Helper function to detect if we're running in pytest
+def is_running_in_pytest() -> bool:
+    """Check if the script is running under pytest.
+
+    Returns:
+        True if running under pytest, False otherwise.
+    """
+    return 'pytest' in sys.modules or 'py.test' in sys.argv[0]
+
+
 # Windows UAC elevation helper functions
 def is_admin() -> bool:
     """Check if running with admin privileges on Windows.
@@ -134,8 +144,15 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
 
         # Exit current process if elevation was requested
         if result > 32:  # Success
+            # Show message that elevated window is opening
+            print()
+            info('Administrator privileges granted!')
+            info('A new window is opening with elevated privileges...')
+            info('Please check the new window to see the setup progress.')
+            print()
+
             # Wait briefly to ensure elevated process starts
-            time.sleep(0.5)
+            time.sleep(1.0)
             # Exit the non-elevated process so only the elevated one continues
             sys.exit(0)
         else:
@@ -886,8 +903,8 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         if repo_type:
             info(f'Detected {repo_type.title()} repository URL')
         else:
-            warning('⚠️  Loading configuration from remote URL')
-            warning('⚠️  Only use configs from trusted sources!')
+            warning('Loading configuration from remote URL')
+            warning('Only use configs from trusted sources!')
 
         try:
             content = fetch_url_with_auth(config_spec, auth_param=auth_param)
@@ -2148,8 +2165,13 @@ def restore_env_vars_from_args() -> list[str]:
 
 def main() -> None:
     """Main setup flow."""
+    # Track if we're running in an elevated process for better UX
+    is_elevated_process = False
+
     # Restore environment variables if running elevated on Windows
     if platform.system() == 'Windows' and is_admin():
+        is_elevated_process = True
+
         # Replace sys.argv with cleaned arguments (without --env-* args)
         original_argv = sys.argv.copy()
         sys.argv = restore_env_vars_from_args()
@@ -2159,6 +2181,14 @@ def main() -> None:
             print('[DEBUG] Elevated process started successfully')
             print(f'[DEBUG] Admin status: {is_admin()}')
             print(f'[DEBUG] Config from env: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+
+        # Show that we're running elevated
+        if is_elevated_process:
+            print()
+            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+            print(f'{Colors.GREEN}     Running with Administrator Privileges{Colors.NC}')
+            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+            print()
 
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
@@ -2208,6 +2238,9 @@ def main() -> None:
 
             print()
             info('Requesting administrator elevation...')
+            info('A new window will open with administrator privileges.')
+            info('Please look for the UAC dialog and click "Yes" to continue.')
+            print()
             request_admin_elevation()
             # If we reach here, elevation was denied
             error('Administrator elevation was denied')
@@ -2459,6 +2492,18 @@ def main() -> None:
         print('   * Claude Code Docs: https://docs.anthropic.com/claude-code')
         print()
 
+        # If running elevated, add a pause so user can see the results
+        if is_elevated_process and not is_running_in_pytest():
+            print()
+            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+            print(f'{Colors.GREEN}     Setup Completed Successfully!{Colors.NC}')
+            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
+            print()
+            print(f'{Colors.YELLOW}The environment has been configured successfully.{Colors.NC}')
+            print(f'{Colors.YELLOW}You can now close this window and use the configured environment.{Colors.NC}')
+            print()
+            input('Press Enter to exit...')
+
     except Exception as e:
         print()
         error(str(e))
@@ -2466,6 +2511,16 @@ def main() -> None:
         print(f'{Colors.RED}Setup failed. Please check the error above.{Colors.NC}')
         print(f'{Colors.YELLOW}For help, visit: https://github.com/alex-feel/claude-code-toolbox{Colors.NC}')
         print()
+
+        # If running elevated, add a pause so user can see the error
+        if platform.system() == 'Windows' and is_admin() and not is_running_in_pytest():
+            print()
+            print(f'{Colors.RED}========================================================================{Colors.NC}')
+            print(f'{Colors.RED}     Setup Failed{Colors.NC}')
+            print(f'{Colors.RED}========================================================================{Colors.NC}')
+            print()
+            input('Press Enter to exit...')
+
         sys.exit(1)
 
 
