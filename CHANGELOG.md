@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.2.0...v3.3.0) (2025-10-02)
+
+
+### Features
+
+* implement automatic Windows UAC elevation ([3c26b17](https://github.com/alex-feel/claude-code-toolbox/commit/3c26b17dc984b6abf4dcbd4f1869df5484f40850))
+
+
+### Bug Fixes
+
+* resolve CI failures for Windows UAC elevation ([e984b8a](https://github.com/alex-feel/claude-code-toolbox/commit/e984b8a7ec46553f67faed8ef91bdd07efd05a33))
+
 ## [3.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.1.0...v3.2.0) (2025-10-01)
 
 
