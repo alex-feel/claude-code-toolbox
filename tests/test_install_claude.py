@@ -642,7 +642,15 @@ class TestMainFunction:
     @patch('install_claude.find_command', return_value=None)
     @patch('install_claude.set_windows_env_var')
     def test_main_windows_success(
-        self, mock_set_env, mock_find, mock_update, mock_ps, mock_claude, mock_node, mock_git, mock_system,
+        self,
+        mock_set_env,
+        mock_find,
+        mock_update,
+        mock_ps,
+        mock_claude,
+        mock_node,
+        mock_git,
+        mock_system,
     ):
         """Test successful main flow on Windows."""
         # Verify mock configurations

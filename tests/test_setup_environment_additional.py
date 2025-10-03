@@ -781,7 +781,8 @@ class TestCreateAdditionalSettingsComplex:
 
             # Should not be in allow list
             assert 'allow' not in settings['permissions'] or 'mcp__blocked_server' not in settings['permissions'].get(
-                'allow', [],
+                'allow',
+                [],
             )
 
     def test_create_additional_settings_mcp_in_ask_list(self):
