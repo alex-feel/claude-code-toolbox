@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.5.0...v3.5.1) (2025-10-03)
+
+
+### Bug Fixes
+
+* handle both bash and zsh shells on macOS for environment variables ([8bc5993](https://github.com/alex-feel/claude-code-toolbox/commit/8bc59930ff8d93fb840b9c6f216406acf32b6d97))
+
 ## [3.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.4.1...v3.5.0) (2025-10-02)
 
 
