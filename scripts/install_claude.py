@@ -737,6 +737,35 @@ def get_claude_version() -> str | None:
     return None
 
 
+def get_latest_claude_version() -> str | None:
+    """Get the latest available Claude Code version from npm.
+
+    Returns:
+        Latest version string (e.g., "1.0.135") or None if cannot determine.
+    """
+    npm_path = find_command('npm')
+    if not npm_path:
+        # On Windows, try to find npm.cmd explicitly
+        if platform.system() == 'Windows':
+            npm_cmd_path = Path(r'C:\Program Files\nodejs\npm.cmd')
+            if npm_cmd_path.exists():
+                npm_path = str(npm_cmd_path)
+            else:
+                return None
+        else:
+            return None
+
+    # Query npm for latest version
+    cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
+    result = run_command(cmd, capture_output=True)
+
+    if result.returncode == 0:
+        version = result.stdout.strip()
+        # Remove quotes if present
+        return version.strip("\"'")
+    return None
+
+
 def install_claude_npm(upgrade: bool = False, version: str | None = None) -> bool:
     """Install Claude Code using npm.
 
@@ -910,6 +939,27 @@ def ensure_claude() -> bool:
                 set_disable_autoupdater()
                 return True
         else:
+            # No specific version requested (None) - interpret as "install latest if needed"
+            latest_version = get_latest_claude_version()
+
+            if latest_version:
+                # We know the latest version, compare with installed
+                if compare_versions(current_version, latest_version):
+                    # Current version is >= latest
+                    success(f'Claude Code version {current_version} is already up-to-date (latest: {latest_version})')
+                    return True
+                # Current version is older than latest - upgrade
+                info(f'Claude Code version {current_version} is installed, but {latest_version} is available')
+                info(f'Upgrading to latest version {latest_version}...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version}')
+                    return True
+                warning('Upgrade failed, continuing with current version')
+                return True  # Don't fail the entire installation
+            # Cannot determine latest version - keep current
+            warning('Cannot determine latest version from npm')
             success(f'Claude Code version {current_version} is already installed')
             return True
 
