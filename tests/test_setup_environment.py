@@ -337,6 +337,145 @@ class TestLoadConfig:
         mock_fetch.assert_called_once()
 
 
+class TestShellDetection:
+    """Test shell detection and configuration for macOS."""
+
+    @patch.dict('os.environ', {'SHELL': '/bin/bash'})
+    def test_detect_user_shell_bash(self):
+        """Test detecting bash shell."""
+        assert setup_environment.detect_user_shell() == 'bash'
+
+    @patch.dict('os.environ', {'SHELL': '/bin/zsh'})
+    def test_detect_user_shell_zsh(self):
+        """Test detecting zsh shell."""
+        assert setup_environment.detect_user_shell() == 'zsh'
+
+    @patch.dict('os.environ', {}, clear=True)
+    def test_detect_user_shell_default(self):
+        """Test default shell when SHELL env var is missing."""
+        assert setup_environment.detect_user_shell() == 'bash'
+
+    def test_get_shell_config_file_bash(self):
+        """Test getting config file for bash shell."""
+        config_file = setup_environment.get_shell_config_file('bash')
+        assert config_file == Path.home() / '.bash_profile'
+
+    def test_get_shell_config_file_zsh(self):
+        """Test getting config file for zsh shell."""
+        config_file = setup_environment.get_shell_config_file('zsh')
+        assert config_file == Path.home() / '.zprofile'
+
+    def test_get_shell_config_file_unknown(self):
+        """Test getting config file for unknown shell."""
+        config_file = setup_environment.get_shell_config_file('fish')
+        assert config_file == Path.home() / '.profile'
+
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    def test_translate_shell_commands_zsh_to_bash(self, mock_detect):
+        """Test translating zsh commands to bash."""
+        assert mock_detect.return_value == 'bash'  # Verify mock is configured
+        commands = [
+            'echo "export FOO=bar" >> ~/.zshrc',
+            'exec zsh -l',
+        ]
+        translated = setup_environment.translate_shell_commands(commands)
+
+        expected_config = Path.home() / '.bash_profile'
+        assert f'echo "export FOO=bar" >> {expected_config}' in translated
+        assert 'exec bash -l' in translated
+
+    @patch('setup_environment.detect_user_shell', return_value='zsh')
+    def test_translate_shell_commands_bash_to_zsh(self, mock_detect):
+        """Test translating bash commands to zsh."""
+        assert mock_detect.return_value == 'zsh'  # Verify mock is configured
+        commands = [
+            'echo "export FOO=bar" >> ~/.bashrc',
+            'exec bash -l',
+        ]
+        translated = setup_environment.translate_shell_commands(commands)
+
+        expected_config = Path.home() / '.zprofile'
+        assert f'echo "export FOO=bar" >> {expected_config}' in translated
+        assert 'exec zsh -l' in translated
+
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    def test_translate_shell_commands_source(self, mock_detect):
+        """Test translating source commands."""
+        assert mock_detect.return_value == 'bash'  # Verify mock is configured
+        commands = [
+            'source ~/.zshrc',
+            'source ~/.bashrc',
+        ]
+        translated = setup_environment.translate_shell_commands(commands)
+
+        expected_config = Path.home() / '.bash_profile'
+        assert f'source {expected_config}' in translated
+        assert len(translated) == 2
+
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    def test_translate_shell_commands_non_shell_commands(self, mock_detect):
+        """Test that non-shell commands are preserved."""
+        assert mock_detect.return_value == 'bash'  # Verify mock is configured
+        commands = [
+            'npm install -g package',
+            'brew install tool',
+        ]
+        translated = setup_environment.translate_shell_commands(commands)
+
+        assert translated == commands
+
+    def test_get_shell_config_file_dual_shell(self):
+        """Test getting config files for dual-shell mode."""
+        config_files = setup_environment.get_shell_config_file('bash', dual_shell=True)
+        assert isinstance(config_files, list)
+        assert len(config_files) == 2
+        assert Path.home() / '.bash_profile' in config_files
+        assert Path.home() / '.zprofile' in config_files
+
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    def test_translate_shell_commands_dual_shell(self, mock_detect):
+        """Test translating commands in dual-shell mode."""
+        assert mock_detect.return_value == 'bash'  # Verify mock is configured
+        commands = [
+            'echo "export FOO=bar" >> ~/.zshrc',
+        ]
+        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
+
+        # Should write to both config files
+        assert len(translated) == 2
+        bash_profile = Path.home() / '.bash_profile'
+        zprofile = Path.home() / '.zprofile'
+        assert f'echo "export FOO=bar" >> {bash_profile}' in translated
+        assert f'echo "export FOO=bar" >> {zprofile}' in translated
+
+    @patch('setup_environment.detect_user_shell', return_value='zsh')
+    def test_translate_shell_commands_dual_shell_exec(self, mock_detect):
+        """Test translating exec commands in dual-shell mode."""
+        assert mock_detect.return_value == 'zsh'  # Verify mock is configured
+        commands = [
+            'exec bash -l',
+        ]
+        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
+
+        # Should use current shell for exec in dual mode
+        assert len(translated) == 1
+        assert 'exec zsh -l' in translated
+
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    def test_translate_shell_commands_dual_shell_source(self, mock_detect):
+        """Test translating source commands in dual-shell mode."""
+        assert mock_detect.return_value == 'bash'  # Verify mock is configured
+        commands = [
+            'source ~/.zshrc',
+        ]
+        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
+
+        # Should source the current shell's config file
+        assert len(translated) == 1
+        expected_config = Path.home() / '.bash_profile'
+        assert f'source {expected_config}' in translated
+
+
 class TestInstallDependencies:
     """Test dependency installation."""
 
@@ -363,6 +502,68 @@ class TestInstallDependencies:
         result = setup_environment.install_dependencies({'linux': ['apt-get install package']})
         assert result is True
         mock_run.assert_called_with(['bash', '-c', 'apt-get install package'], capture_output=False)
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('setup_environment.detect_user_shell', return_value='bash')
+    @patch('setup_environment.run_command')
+    def test_install_dependencies_macos_shell_translation(self, mock_run, mock_detect, mock_system):
+        """Test macOS shell command translation with dual-shell approach."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Darwin'
+        assert mock_detect.return_value == 'bash'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        # Test with zsh-specific commands that should be translated for both shells
+        result = setup_environment.install_dependencies({
+            'mac': [
+                'echo "export FOO=bar" >> ~/.zshrc',
+                'exec zsh -l',
+            ],
+        })
+        assert result is True
+
+        # With dual-shell approach, we expect writes to both config files
+        bash_profile = Path.home() / '.bash_profile'
+        zprofile = Path.home() / '.zprofile'
+        calls = mock_run.call_args_list
+
+        # Should have 3 calls: 2 for the echo command (both shells) + 1 for exec
+        assert len(calls) == 3
+
+        # First two calls should write to both shell config files
+        call_args = [call[0][0][2] for call in calls]
+        assert f'echo "export FOO=bar" >> {bash_profile}' in call_args
+        assert f'echo "export FOO=bar" >> {zprofile}' in call_args
+
+        # Last command should be exec for the current shell (bash)
+        assert 'exec bash -l' in call_args[2]
+
+    @patch('platform.system', return_value='Darwin')
+    @patch.dict('os.environ', {'SHELL': '/bin/zsh'})
+    @patch('setup_environment.run_command')
+    def test_install_dependencies_macos_zsh_user(self, mock_run, mock_system):
+        """Test macOS with zsh user - dual-shell approach writes to both configs."""
+        assert mock_system.return_value == 'Darwin'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_dependencies({
+            'mac': [
+                'echo "export FOO=bar" >> ~/.zshrc',
+            ],
+        })
+        assert result is True
+
+        # With dual-shell approach, should write to both config files
+        bash_profile = Path.home() / '.bash_profile'
+        zprofile = Path.home() / '.zprofile'
+        calls = mock_run.call_args_list
+
+        # Should have 2 calls: one for each shell config file
+        assert len(calls) == 2
+
+        call_args = [call[0][0][2] for call in calls]
+        assert f'echo "export FOO=bar" >> {bash_profile}' in call_args
+        assert f'echo "export FOO=bar" >> {zprofile}' in call_args
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')

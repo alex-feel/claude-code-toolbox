@@ -53,6 +53,7 @@ def is_admin() -> bool:
 
     try:
         import ctypes
+
         # Use getattr to access Windows-specific attributes dynamically
         # This prevents type checkers from failing on non-Windows platforms
         windll = getattr(ctypes, 'windll', None)
@@ -976,6 +977,140 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         raise
 
 
+def detect_user_shell() -> str:
+    """Detect the user's configured shell.
+
+    Returns:
+        str: Shell name (e.g., 'bash', 'zsh', 'sh')
+    """
+    shell_path = os.environ.get('SHELL', '/bin/bash')
+    return os.path.basename(shell_path)
+
+
+def get_shell_config_file(shell_name: str, dual_shell: bool = False) -> Path | list[Path]:
+    """Get the appropriate config file for shell environment variables.
+
+    Args:
+        shell_name: Name of the shell (e.g., 'bash', 'zsh')
+        dual_shell: If True, return both bash and zsh config files for compatibility
+
+    Returns:
+        Path | list[Path]: Path to the appropriate shell config file(s)
+    """
+    home = Path.home()
+
+    if dual_shell:
+        # Return both bash and zsh config files for maximum compatibility
+        return [home / '.bash_profile', home / '.zprofile']
+
+    if shell_name == 'zsh':
+        # Use .zprofile for environment variables in zsh
+        # Note: .zprofile is loaded for login shells which is what Terminal.app opens
+        return home / '.zprofile'
+    if shell_name in ['bash', 'sh']:
+        # Use .bash_profile for bash on macOS (Terminal.app opens login shells)
+        return home / '.bash_profile'
+    # Fallback for unknown shells
+    return home / '.profile'
+
+
+def translate_shell_commands(commands: list[str], target_shell: str | None = None, dual_shell: bool = False) -> list[str]:
+    """Translate shell configuration commands to target shell config file.
+
+    This function handles the translation of shell-specific commands, particularly
+    for macOS where the user's actual shell might differ from what the configuration
+    assumes (e.g., config writes to ~/.zshrc but user is using bash).
+
+    Args:
+        commands: List of shell commands to translate
+        target_shell: Target shell name (auto-detected if None)
+        dual_shell: If True, write to both bash and zsh config files for compatibility
+
+    Returns:
+        list[str]: Translated commands appropriate for the target shell
+    """
+    if target_shell is None:
+        target_shell = detect_user_shell()
+
+    config_files = get_shell_config_file(target_shell, dual_shell=dual_shell)
+    if not isinstance(config_files, list):
+        config_files = [config_files]
+
+    translated: list[str] = []
+
+    for cmd in commands:
+        # Handle environment variable exports written to shell config files
+        if any(pattern in cmd for pattern in ['>> ~/.zshrc', '>> ~/.zprofile', '>> ~/.bashrc', '>> ~/.bash_profile']):
+            # For dual shell mode, write to all config files
+            if dual_shell:
+                for config_file in config_files:
+                    # Extract the content being written
+                    if '>>' in cmd:
+                        parts = cmd.split('>>')
+                        if len(parts) == 2:
+                            content = parts[0].strip()
+                            translated_cmd = f'{content} >> {config_file}'
+                            translated.append(translated_cmd)
+                            info(f'Writing to shell config: {config_file}')
+            else:
+                # Single shell mode - write to appropriate config file
+                config_file = config_files[0]
+                translated_cmd = cmd
+                for pattern in ['~/.zshrc', '~/.zprofile', '~/.bashrc', '~/.bash_profile']:
+                    translated_cmd = translated_cmd.replace(f'>> {pattern}', f'>> {config_file}')
+                translated.append(translated_cmd)
+                info(f'Translated shell config write to: {config_file}')
+        elif 'exec zsh -l' in cmd:
+            # Replace shell reload with appropriate command
+            if dual_shell:
+                # For dual shell, reload current shell
+                translated.append(f'exec {target_shell} -l')
+                info(f'Shell reload command for current shell: exec {target_shell} -l')
+            elif target_shell == 'zsh':
+                translated.append('exec zsh -l')
+            elif target_shell == 'bash':
+                translated.append('exec bash -l')
+                info('Translated shell reload: exec zsh -l -> exec bash -l')
+            else:
+                translated.append(f'exec {target_shell} -l')
+                info(f'Translated shell reload to: exec {target_shell} -l')
+        elif 'exec bash -l' in cmd:
+            # Handle bash reload commands
+            if dual_shell:
+                # For dual shell, reload current shell
+                translated.append(f'exec {target_shell} -l')
+                info(f'Shell reload command for current shell: exec {target_shell} -l')
+            elif target_shell == 'zsh':
+                translated.append('exec zsh -l')
+                info('Translated shell reload: exec bash -l -> exec zsh -l')
+            elif target_shell == 'bash':
+                translated.append('exec bash -l')
+            else:
+                translated.append(f'exec {target_shell} -l')
+                info(f'Translated shell reload to: exec {target_shell} -l')
+        elif any(
+            pattern in cmd
+            for pattern in ['source ~/.zshrc', 'source ~/.zprofile', 'source ~/.bashrc', 'source ~/.bash_profile']
+        ):
+            # Handle source commands
+            if dual_shell:
+                # Source the current shell's config
+                single_config = get_shell_config_file(target_shell, dual_shell=False)
+                # Type guard: when dual_shell=False, it always returns a single Path
+                assert isinstance(single_config, Path)
+                translated.append(f'source {single_config}')
+                info(f'Source command for current shell: source {single_config}')
+            else:
+                config_file = config_files[0]
+                translated.append(f'source {config_file}')
+                info(f'Translated source command to: source {config_file}')
+        else:
+            # Keep command as-is for non-shell-specific commands
+            translated.append(cmd)
+
+    return translated
+
+
 def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     """Install dependencies from configuration."""
     if not dependencies:
@@ -1050,6 +1185,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     # Execute all collected dependencies
     for dep in deps_to_install:
         info(f'Running: {dep}')
+        result = None  # Initialize result for each dependency
 
         # Parse the command
         parts = dep.split()
@@ -1072,9 +1208,44 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
                 result = run_command(['bash', '-c', dep_with_force], capture_output=False)
             else:
-                result = run_command(['bash', '-c', dep], capture_output=False)
+                # For macOS, translate shell-specific commands based on user's actual shell
+                if system == 'Darwin' and current_platform_key == 'mac':
+                    # Detect if this is a shell config command that needs translation
+                    if any(
+                        pattern in dep
+                        for pattern in [
+                            '>> ~/.zshrc',
+                            '>> ~/.zprofile',
+                            '>> ~/.bashrc',
+                            '>> ~/.bash_profile',
+                            'exec zsh',
+                            'exec bash',
+                            'source ~/.zshrc',
+                            'source ~/.bashrc',
+                            'source ~/.zprofile',
+                            'source ~/.bash_profile',
+                        ]
+                    ):
+                        # Use dual-shell approach for better compatibility
+                        # This writes to both bash and zsh config files
+                        user_shell = detect_user_shell()
+                        info(f'Detected user shell: {user_shell}')
+                        info('Using dual-shell approach for maximum compatibility')
+                        translated_deps = translate_shell_commands([dep], user_shell, dual_shell=True)
+                        # Execute all translated commands (may be multiple for dual-shell)
+                        for translated_dep in translated_deps:
+                            info(f'Running: {translated_dep}')
+                            result = run_command(['bash', '-c', translated_dep], capture_output=False)
+                            if result.returncode != 0:
+                                error(f'Failed to execute: {translated_dep}')
+                                warning('Continuing with other dependencies...')
+                    else:
+                        # Non-shell config command, execute normally
+                        result = run_command(['bash', '-c', dep], capture_output=False)
+                else:
+                    result = run_command(['bash', '-c', dep], capture_output=False)
 
-        if result.returncode != 0:
+        if result and result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
             # Check if it failed due to admin rights on Windows
             if system == 'Windows' and not is_admin() and 'winget' in dep and '--scope machine' in dep:
@@ -2167,7 +2338,7 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
 
     if '--debug-elevation' in sys.argv:
         print(f'[DEBUG] Cleaned sys.argv: {remaining_args}')
-        print(f'[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+        print(f"[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
         print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
     return remaining_args, was_elevated_via_uac
@@ -2189,7 +2360,7 @@ def main() -> None:
         if '--debug-elevation' in original_argv:
             print('[DEBUG] Elevated process started successfully')
             print(f'[DEBUG] Admin status: {is_admin()}')
-            print(f'[DEBUG] Config from env: {os.environ.get("CLAUDE_ENV_CONFIG", "NOT SET")}')
+            print(f"[DEBUG] Config from env: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
             print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
         # Show that we're running elevated (only if via UAC)
