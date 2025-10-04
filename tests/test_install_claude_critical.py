@@ -318,16 +318,19 @@ class TestClaudeInstallationEdgeCases:
             call_args = mock_run.call_args[0][0]
             assert '@anthropic-ai/claude-code@latest' in call_args
 
+    @patch('scripts.install_claude.get_latest_claude_version')
     @patch('scripts.install_claude.get_claude_version')
-    def test_ensure_claude_already_installed_no_upgrade(self, mock_get_version):
-        """Test Claude when already installed (no upgrade attempted)."""
+    def test_ensure_claude_already_installed_no_upgrade(self, mock_get_version, mock_get_latest):
+        """Test Claude when already installed and up-to-date (no upgrade attempted)."""
         mock_get_version.return_value = '0.7.8'
+        mock_get_latest.return_value = '0.7.8'  # Same version - already up-to-date
 
         result = install_claude.ensure_claude()
 
         assert result is True
-        # Should only check version once, not attempt upgrade
+        # Should check version once and check latest once, but not upgrade
         mock_get_version.assert_called_once()
+        mock_get_latest.assert_called_once()
 
     @patch('scripts.install_claude.platform.system', return_value='Darwin')
     @patch('scripts.install_claude.get_claude_version', return_value=None)
