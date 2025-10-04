@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.5.1...v3.6.0) (2025-10-04)
+
+
+### Features
+
+* add automatic upgrade logic for claude-code-version latest ([c5e1df9](https://github.com/alex-feel/claude-code-toolbox/commit/c5e1df9afbd60c2a43c82d3099f575ca1e0e6f4a))
+
 ## [3.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.5.0...v3.5.1) (2025-10-03)
 
 
