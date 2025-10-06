@@ -1197,10 +1197,12 @@ class TestMainFunction:
     @patch('setup_environment.create_additional_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
     def test_main_success(
         self,
         mock_mkdir,
+        mock_is_admin,
         mock_register,
         mock_launcher,
         mock_settings,
@@ -1214,11 +1216,14 @@ class TestMainFunction:
         """Test successful main flow."""
         # Verify mock configuration is available
         assert mock_mkdir is not None
+        assert mock_is_admin.return_value is True
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
                 'command-name': 'test-env',
-                'dependencies': ['npm install -g test'],
+                'dependencies': {
+                    'windows': ['npm install -g test'],
+                },
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
                 'mcp-servers': [{'name': 'test'}],
@@ -1252,8 +1257,10 @@ class TestMainFunction:
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude')
-    def test_main_install_failure(self, mock_install, mock_load):
+    @patch('setup_environment.is_admin', return_value=True)
+    def test_main_install_failure(self, mock_is_admin, mock_install, mock_load):
         """Test main with Claude installation failure."""
+        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
         mock_install.return_value = False
 
@@ -1263,8 +1270,10 @@ class TestMainFunction:
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.find_command')
-    def test_main_skip_install(self, mock_find, mock_load):
+    @patch('setup_environment.is_admin', return_value=True)
+    def test_main_skip_install(self, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
+        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
