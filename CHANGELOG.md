@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.6.0...v3.7.0) (2025-10-06)
+
+
+### Features
+
+* use uv run for Python hook execution ([94cc17d](https://github.com/alex-feel/claude-code-toolbox/commit/94cc17db9bdfab6985b688914553330ef1e2d183))
+
 ## [3.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.5.1...v3.6.0) (2025-10-04)
 
 
