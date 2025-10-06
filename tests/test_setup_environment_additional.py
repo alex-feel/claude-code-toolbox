@@ -506,12 +506,14 @@ class TestInstallClaudeEdgeCases:
         assert mock_urlopen.call_count == 2
         mock_is_admin.assert_called()  # Verify is_admin was called
 
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    def test_install_claude_windows_failure(self, mock_run, mock_urlopen, mock_system):
+    def test_install_claude_windows_failure(self, mock_run, mock_urlopen, mock_system, mock_is_admin):
         """Test Claude installation failure on Windows."""
         assert mock_system.return_value == 'Windows'
+        assert mock_is_admin.return_value is True
         mock_urlopen.return_value = MagicMock(read=lambda: b'# Script')
         mock_run.return_value = subprocess.CompletedProcess([], 1, '', 'Error')
 
@@ -536,10 +538,12 @@ class TestInstallClaudeEdgeCases:
         result = setup_environment.install_claude()
         assert result is True
 
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
-    def test_install_claude_windows_network_error(self, mock_urlopen, _mock_system):
+    def test_install_claude_windows_network_error(self, mock_urlopen, _mock_system, mock_is_admin):
         """Test Claude installation with network error."""
+        assert mock_is_admin.return_value is True
         mock_urlopen.side_effect = urllib.error.URLError('Network error')
 
         result = setup_environment.install_claude()
@@ -905,9 +909,8 @@ class TestCreateAdditionalSettingsComplex:
             )
 
             assert result is True
-            # Skip executable check on Windows as chmod doesn't work the same way
-            if sys.platform != 'win32':
-                assert hook_file.stat().st_mode & 0o111  # Check executable
+            # Note: With uv run, executable permissions are no longer needed
+            # The script is executed via: uv run --python 3.12 script.py
 
     def test_create_additional_settings_hooks_invalid(self):
         """Test handling invalid hook configuration."""
@@ -1122,6 +1125,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.configure_all_mcp_servers', return_value=True)
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
@@ -1132,6 +1136,7 @@ class TestMainFunctionErrorPaths:
         mock_launcher,
         mock_settings,
         mock_mcp,
+        mock_is_admin,
         mock_handle_resource,
         mock_process_resources,
         mock_deps,
@@ -1140,6 +1145,7 @@ class TestMainFunctionErrorPaths:
         mock_load,
     ):
         """Test main when launcher creation fails."""
+        assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
         del mock_launcher  # Unused but required for patch
         del mock_settings  # Unused but required for patch
@@ -1163,6 +1169,7 @@ class TestMainFunctionErrorPaths:
             setup_environment.main()
             mock_exit.assert_not_called()  # Should continue despite launcher failure
 
+    @patch('setup_environment.is_admin', return_value=True)
     @patch.dict('os.environ', {'CLAUDE_ENV_CONFIG': 'env-config'})
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude', return_value=True)
@@ -1184,8 +1191,10 @@ class TestMainFunctionErrorPaths:
         mock_deps,
         mock_install,
         mock_load,
+        mock_is_admin,
     ):
         """Test main using CLAUDE_ENV_CONFIG environment variable."""
+        assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
         del mock_register  # Unused but required for patch
         del mock_settings  # Unused but required for patch
@@ -1204,6 +1213,7 @@ class TestMainFunctionErrorPaths:
             mock_exit.assert_not_called()
             mock_load.assert_called_with('env-config', None)
 
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude', return_value=True)
@@ -1228,8 +1238,10 @@ class TestMainFunctionErrorPaths:
         mock_install,
         mock_validate,
         mock_load,
+        mock_is_admin,
     ):
         """Test main with all configuration features enabled."""
+        assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
         del mock_download_resource  # Unused but required for patch
 
@@ -1252,7 +1264,9 @@ class TestMainFunctionErrorPaths:
                     'API_KEY': 'test123',
                     'DEBUG': 'true',
                 },
-                'dependencies': ['npm install test'],
+                'dependencies': {
+                    'windows': ['npm install test'],
+                },
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
                 'output-styles': ['styles/test.md'],
