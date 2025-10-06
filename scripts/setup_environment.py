@@ -1946,40 +1946,39 @@ def create_additional_settings(
                 hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
                 hooks_event_list.append(matcher_group)
 
-        # Build the proper command based on OS and file type
-        if command.endswith('.py'):
-            # Python script - need to handle cross-platform execution
-            # Use the absolute path to the downloaded hook file
-            # Strip query parameters from command if present
-            clean_command = command.split('?')[0] if '?' in command else command
-            hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
-            python_cmd: str | None
+        # Build the proper command based on file type
+        # Strip query parameters from command if present
+        clean_command = command.split('?')[0] if '?' in command else command
 
-            if platform.system() == 'Windows':
-                # Windows needs explicit Python interpreter
-                # Use 'py' which is more reliable on Windows, fallback to 'python'
-                python_cmd = 'py' if shutil.which('py') else 'python'
-                # Use forward slashes for the path (works on Windows and avoids JSON escaping issues)
+        # Check if this looks like a file reference or a direct command
+        # File references typically don't contain spaces (just the filename)
+        # Direct commands like 'echo "test"' contain spaces
+        is_file_reference = ' ' not in clean_command
+
+        if is_file_reference:
+            # Determine if this is a Python script (case-insensitive check)
+            # Supports both .py and .pyw extensions
+            is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
+
+            if is_python_script:
+                # Python script - use uv run for cross-platform execution
+                # Build absolute path to the hook file in .claude/hooks/
+                hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                # Use POSIX-style path (forward slashes) for cross-platform compatibility
+                # This works on Windows, macOS, and Linux, and avoids JSON escaping issues
                 hook_path_str = hook_path.as_posix()
-                full_command = f'{python_cmd} {hook_path_str}'
+                # Use uv run with Python 3.12 - works cross-platform without PATH dependency
+                # uv automatically downloads Python 3.12 if not installed
+                # For .pyw files on Windows, uv automatically uses pythonw
+                full_command = f'uv run --python 3.12 {hook_path_str}'
             else:
-                # Unix-like systems - explicitly use Python 3.12 for hooks
-                # This ensures compatibility with modern Python features (e.g., datetime.UTC)
-                python_cmd = 'python3.12' if shutil.which('python3.12') else None
-
-                if not python_cmd:
-                    error(f'Python 3.12 required for hook "{command}" but not found in PATH')
-                    error('Please install Python 3.12: uv python install 3.12')
-                    # Continue without this hook rather than failing the entire setup
-                    continue
-
-                # Make script executable
-                if hook_path.exists():
-                    hook_path.chmod(0o755)
-
-                full_command = f'{python_cmd} {hook_path}'
+                # Other file - build absolute path and use as-is
+                # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
+                hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                hook_path_str = hook_path.as_posix()
+                full_command = hook_path_str
         else:
-            # Not a Python script, use command as-is
+            # Direct command with spaces - use as-is
             full_command = command
 
         # Add hook configuration
