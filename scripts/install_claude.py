@@ -95,7 +95,14 @@ def banner() -> None:
 
 
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Run a command and return the result."""
+    """Run a command and return the result with robust encoding handling.
+
+    Uses UTF-8 encoding with 'replace' error handling to prevent UnicodeDecodeError
+    on Windows when subprocess output contains characters not in the system codepage.
+
+    Returns:
+        subprocess.CompletedProcess[str]: The completed process result with decoded output.
+    """
     try:
         # Debug: print command being run if not capturing output
         if not capture_output:
@@ -103,7 +110,8 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
         return subprocess.run(
             cmd,
             capture_output=capture_output,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             **kwargs,
         )
     except FileNotFoundError as e:
@@ -538,8 +546,22 @@ def install_nodejs_direct() -> bool:
 
         # Install based on OS
         if system == 'Windows':
+            # Create log directory for MSI installation
+            log_dir = Path(tempfile.gettempdir()) / 'claude-installer-logs'
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / f'nodejs-install-{int(time.time())}.log'
+
             info('Installing Node.js silently...')
-            result = run_command(['msiexec', '/i', temp_path, '/quiet', '/norestart'])
+
+            # Enhanced MSI command with verbose logging and explicit parameters
+            result = run_command([
+                'msiexec',
+                '/i', temp_path,
+                '/qn',                                      # No UI (more reliable than /quiet)
+                '/norestart',                               # Don't restart automatically
+                '/l*v', str(log_file),                      # Verbose logging for diagnostics
+                'INSTALLDIR="C:\\Program Files\\nodejs"',   # Explicit installation directory
+            ])
 
             # After MSI installation, add Node.js to PATH for current process
             if result.returncode == 0:
@@ -549,6 +571,34 @@ def install_nodejs_direct() -> bool:
                     if nodejs_path not in current_path:
                         os.environ['PATH'] = f'{nodejs_path};{current_path}'
                         info(f'Added {nodejs_path} to PATH for current session')
+            else:
+                # Provide diagnostic information for MSI failures
+                error(f'Node.js installer exited with code {result.returncode}')
+
+                if log_file.exists():
+                    warning(f'Installation log available at: {log_file}')
+                    # Read last 50 lines of log for immediate diagnostics
+                    try:
+                        # MSI logs are typically UTF-16 LE encoded
+                        log_content = log_file.read_text(encoding='utf-16-le', errors='ignore')
+                        lines = log_content.splitlines()
+                        if lines:
+                            error_context = '\n'.join(lines[-50:])
+                            info('Last 50 lines of installation log:')
+                            print(error_context)
+                    except Exception as e:
+                        warning(f'Could not read log file: {e}')
+
+                # Provide troubleshooting suggestions
+                info('Troubleshooting steps:')
+                info('1. Check if Node.js is already partially installed')
+                info('2. Remove Node.js from Control Panel if present')
+                info('3. Clear Node.js entries from registry (regedit)')
+                info('4. Remove Node.js from PATH environment variable')
+                info('5. Rerun installer as Administrator')
+
+                # Return early to maintain existing flow
+                return False
         elif system == 'Darwin':
             info('Installing Node.js (may require password)...')
             result = run_command(['sudo', 'installer', '-pkg', temp_path, '-target', '/'])
