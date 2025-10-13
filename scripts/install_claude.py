@@ -553,14 +553,14 @@ def install_nodejs_direct() -> bool:
 
             info('Installing Node.js silently...')
 
-            # Enhanced MSI command with verbose logging and explicit parameters
+            # Enhanced MSI command with verbose logging for truly silent installation
             result = run_command([
                 'msiexec',
                 '/i', temp_path,
-                '/qn',                                      # No UI (more reliable than /quiet)
+                '/qn',                                      # No UI (truly silent installation)
                 '/norestart',                               # Don't restart automatically
                 '/l*v', str(log_file),                      # Verbose logging for diagnostics
-                'INSTALLDIR="C:\\Program Files\\nodejs"',   # Explicit installation directory
+                # Node.js MSI installs to C:\Program Files\nodejs by default
             ])
 
             # After MSI installation, add Node.js to PATH for current process
