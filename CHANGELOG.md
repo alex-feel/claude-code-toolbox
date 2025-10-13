@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.0...v3.7.1) (2025-10-13)
+
+
+### Bug Fixes
+
+* resolve Windows installation encoding and MSI errors ([1d60fd5](https://github.com/alex-feel/claude-code-toolbox/commit/1d60fd559870c47bce0ec0356428cacab0b90e6c))
+
 ## [3.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.6.0...v3.7.0) (2025-10-06)
 
 
