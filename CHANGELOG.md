@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.1...v3.7.2) (2025-10-13)
+
+
+### Bug Fixes
+
+* improve MSI installation comments and remove redundant parameter ([b1bef16](https://github.com/alex-feel/claude-code-toolbox/commit/b1bef164609d4cfca7aa765f8478d2e467a3e4eb))
+
 ## [3.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.0...v3.7.1) (2025-10-13)
 
 
