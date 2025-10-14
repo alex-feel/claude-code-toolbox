@@ -668,11 +668,13 @@ class TestMCPServerConfigurationEdgeCases:
         # Verify 3 remove commands and 1 add command were called
         assert mock_run.call_count == 4
 
+    @patch('platform.system', return_value='Windows')
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_final_failure(self, mock_run, mock_find):
+    def test_configure_mcp_server_final_failure(self, mock_run, mock_find, mock_system):
         """Test MCP configuration final failure after retry."""
         del mock_find  # Unused but required for patch
+        del mock_system  # Unused but required for patch
         # 3 removes (one per scope), first add fails (PowerShell), fallback fails
         # retry add fails (PowerShell) - no second fallback
         mock_run.side_effect = [
