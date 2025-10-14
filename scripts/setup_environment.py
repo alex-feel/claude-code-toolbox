@@ -1847,6 +1847,15 @@ $LASTEXITCODE
                 # Special handling for npx (needs cmd /c wrapper on Windows)
                 command_str = f'cmd /c {command_escaped}' if 'npx' in command else command_escaped
 
+                # Ensure base_cmd has command args for potential retry at line 1902
+                if env:
+                    base_cmd.extend(['--env', env])
+                base_cmd.extend(['--'])
+                if 'npx' in command:
+                    base_cmd.extend(['cmd', '/c', command])
+                else:
+                    base_cmd.extend(command.split())
+
                 # Build PowerShell script with explicit PATH
                 if env:
                     ps_script = f'''
@@ -1860,6 +1869,7 @@ $env:Path = "{explicit_path}"
 & "{claude_cmd}" mcp add --scope "{scope}" "{name}" -- "{command_str}"
 $LASTEXITCODE
 '''
+                info(f'Attempting to configure stdio MCP server {name} via PowerShell...')
                 result = run_command(
                     [
                         'powershell',
@@ -1899,6 +1909,7 @@ $LASTEXITCODE
         time.sleep(2)
 
         # Direct execution with full path
+        info(f'Retrying with direct command: {" ".join(str(arg) for arg in base_cmd)}')
         result = run_command(base_cmd, capture_output=False)  # Show output for debugging
 
         if result.returncode == 0:
