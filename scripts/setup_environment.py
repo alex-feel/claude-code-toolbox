@@ -1760,11 +1760,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         if scope:
             base_cmd.extend(['--scope', scope])
 
-        base_cmd.append(name)
+        # Note: Don't add name here - it must be added after options for correct argument order
 
         # Handle different transport types
         if transport and url:
             # HTTP or SSE transport
+            base_cmd.append(name)  # Add name here for HTTP/SSE transport
             base_cmd.extend(['--transport', transport, url])
             if header:
                 base_cmd.extend(['--header', header])
@@ -1850,6 +1851,7 @@ $LASTEXITCODE
                 # Ensure base_cmd has command args for potential retry at line 1902
                 if env:
                     base_cmd.extend(['--env', env])
+                base_cmd.append(name)  # Add name AFTER all options for correct argument order
                 base_cmd.extend(['--'])
                 if 'npx' in command:
                     base_cmd.extend(['cmd', '/c', command])
