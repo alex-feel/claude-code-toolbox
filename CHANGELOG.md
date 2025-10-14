@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.7.3](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.2...v3.7.3) (2025-10-14)
+
+
+### Bug Fixes
+
+* add missing quotes around command_str in PowerShell scripts ([a440c7b](https://github.com/alex-feel/claude-code-toolbox/commit/a440c7b5bf546f8d3b3a0993af07b3229d27beb4))
+* add PATH propagation for stdio transport MCP servers on Windows ([d0ac563](https://github.com/alex-feel/claude-code-toolbox/commit/d0ac5635dd278832870c0f492136ed54d5d7e06a))
+* add proper quoting for PowerShell script variables in stdio transport ([43f9681](https://github.com/alex-feel/claude-code-toolbox/commit/43f96814e782729d85e0f636085ef0b0a7b61548))
+* complete base_cmd for Windows stdio retry mechanism ([c5802c0](https://github.com/alex-feel/claude-code-toolbox/commit/c5802c0cbe5308e908d117386c8ecbc2ba1969d2))
+* correct argument order in MCP server configuration for stdio transport ([415efe8](https://github.com/alex-feel/claude-code-toolbox/commit/415efe8575012ebc29a3aa088a8551b0a6a3cd45))
+* ensure Node.js PATH propagates to MCP configuration on Windows ([2c8f3be](https://github.com/alex-feel/claude-code-toolbox/commit/2c8f3be7820974cf9d916b097b75096441910325))
+
 ## [3.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.1...v3.7.2) (2025-10-13)
 
 
