@@ -1825,19 +1825,66 @@ $LASTEXITCODE
                 )
         elif command:
             # Stdio transport (command)
-            if env:
-                base_cmd.extend(['--env', env])
-            base_cmd.append('--')
 
-            # Platform-specific command handling
-            if system == 'Windows' and 'npx' in command:
-                # Windows needs cmd /c wrapper for npx
-                base_cmd.extend(['cmd', '/c', command])
+            # Try with PowerShell environment reload on Windows
+            if system == 'Windows':
+                # Build explicit PATH including Node.js location
+                # This fixes Windows 10+ PATH propagation bug where MSI registry updates
+                # don't propagate to running processes via WM_SETTINGCHANGE
+                nodejs_path = r'C:\Program Files\nodejs'
+                current_path = os.environ.get('PATH', '')
+
+                # Ensure Node.js is in PATH
+                if Path(nodejs_path).exists() and nodejs_path not in current_path:
+                    explicit_path = f'{nodejs_path};{current_path}'
+                else:
+                    explicit_path = current_path
+
+                # Build command string with proper escaping for PowerShell
+                # PowerShell uses backtick for escaping
+                command_escaped = command.replace('"', '`"')
+
+                # Special handling for npx (needs cmd /c wrapper on Windows)
+                command_str = f'cmd /c {command_escaped}' if 'npx' in command else command_escaped
+
+                # Build PowerShell script with explicit PATH
+                if env:
+                    ps_script = f'''
+$env:Path = "{explicit_path}"
+& "{claude_cmd}" mcp add --scope {scope} --env {env} {name} -- {command_str}
+$LASTEXITCODE
+'''
+                else:
+                    ps_script = f'''
+$env:Path = "{explicit_path}"
+& "{claude_cmd}" mcp add --scope {scope} {name} -- {command_str}
+$LASTEXITCODE
+'''
+                result = run_command(
+                    [
+                        'powershell',
+                        '-NoProfile',
+                        '-Command',
+                        ps_script,
+                    ],
+                    capture_output=True,
+                )
+
+                # Fallback to direct execution if PowerShell fails
+                if result.returncode != 0:
+                    info('PowerShell execution failed, trying direct execution...')
+                    fallback_cmd = [str(claude_cmd), 'mcp', 'add', '--scope', scope]
+                    if env:
+                        fallback_cmd.extend(['--env', env])
+                    fallback_cmd.extend([name, '--'])
+                    fallback_cmd.extend(command.split())
+                    result = run_command(fallback_cmd, capture_output=True)
             else:
-                # Unix-like systems can run command directly
+                # Unix-like systems - direct execution
+                base_cmd.extend(['--env', env] if env else [])
+                base_cmd.extend([name, '--'])
                 base_cmd.extend(command.split())
-
-            result = run_command(base_cmd, capture_output=True)
+                result = run_command(base_cmd, capture_output=True)
         else:
             error(f'MCP server {name} missing url or command')
             return False
