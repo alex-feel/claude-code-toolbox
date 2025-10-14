@@ -1851,13 +1851,13 @@ $LASTEXITCODE
                 if env:
                     ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope "{scope}" --env "{env}" "{name}" -- {command_str}
+& "{claude_cmd}" mcp add --scope "{scope}" --env "{env}" "{name}" -- "{command_str}"
 $LASTEXITCODE
 '''
                 else:
                     ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope "{scope}" "{name}" -- {command_str}
+& "{claude_cmd}" mcp add --scope "{scope}" "{name}" -- "{command_str}"
 $LASTEXITCODE
 '''
                 result = run_command(
