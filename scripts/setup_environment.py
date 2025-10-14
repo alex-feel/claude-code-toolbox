@@ -1618,6 +1618,69 @@ def install_claude(version: str | None = None) -> bool:
         return False
 
 
+def verify_nodejs_available() -> bool:
+    """Verify Node.js is available before MCP configuration.
+
+    This function addresses the Windows 10+ PATH propagation bug where MSI
+    installations update the registry but the changes don't propagate to
+    running processes immediately. We explicitly check for Node.js and
+    update the current process PATH if needed.
+
+    Returns:
+        True if Node.js is available, False otherwise.
+    """
+    if platform.system() != 'Windows':
+        return True  # Assume available on Unix
+
+    nodejs_path = r'C:\Program Files\nodejs'
+    node_exe = Path(nodejs_path) / 'node.exe'
+
+    # Check binary exists
+    if not node_exe.exists():
+        error(f'Node.js binary not found at {node_exe}')
+        return False
+
+    # Check if node command works (3 attempts with 2s delay)
+    for attempt in range(3):
+        try:
+            # Try with 'node' command
+            result = subprocess.run(
+                ['node', '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                success(f'Node.js verified: {result.stdout.strip()}')
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            # Try with full path
+            try:
+                result = subprocess.run(
+                    [str(node_exe), '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    # Works with full path, add to PATH
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH')
+                    success(f'Node.js verified: {result.stdout.strip()}')
+                    return True
+            except Exception:
+                pass
+
+        if attempt < 2:
+            info(f'Node.js not ready, waiting 2s... (attempt {attempt + 1}/3)')
+            time.sleep(2)
+
+    error('Node.js is not available')
+    return False
+
+
 def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
@@ -1708,19 +1771,28 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
             # Try with PowerShell environment reload on Windows
             if system == 'Windows':
+                # Build explicit PATH including Node.js location
+                # This fixes Windows 10+ PATH propagation bug where MSI registry updates
+                # don't propagate to running processes via WM_SETTINGCHANGE
+                nodejs_path = r'C:\Program Files\nodejs'
+                current_path = os.environ.get('PATH', '')
+
+                # Ensure Node.js is in PATH
+                if Path(nodejs_path).exists() and nodejs_path not in current_path:
+                    explicit_path = f'{nodejs_path};{current_path}'
+                else:
+                    explicit_path = current_path
+
                 # On Windows, we need to spawn a completely new shell process
+                # Use explicit PATH instead of reading from registry
                 ps_script = f'''
-$userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-$machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-$env:Path = $userPath + ";" + $machinePath
+$env:Path = "{explicit_path}"
 & "{claude_cmd}" mcp add --scope {scope} --transport {transport} {name} {url}
 $LASTEXITCODE
 '''
                 if header:
                     ps_script = f'''
-$userPath = [System.Environment]::GetEnvironmentVariable("Path", "User")
-$machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
-$env:Path = $userPath + ";" + $machinePath
+$env:Path = "{explicit_path}"
 & "{claude_cmd}" mcp add --scope {scope} --transport {transport} --header "{header}" {name} {url}
 $LASTEXITCODE
 '''
@@ -2572,6 +2644,14 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 8: Configuring MCP servers...{Colors.NC}')
         mcp_servers = config.get('mcp-servers', [])
+
+        # Verify Node.js is available before configuring MCP servers
+        # This ensures Node.js PATH is properly set after MSI installation
+        if mcp_servers and platform.system() == 'Windows' and not verify_nodejs_available():
+            warning('Node.js not available - MCP server configuration may fail')
+            warning('Please ensure Node.js is installed and in PATH')
+            # Don't fail hard, let user see the issue
+
         configure_all_mcp_servers(mcp_servers)
 
         # Check if command creation is needed
