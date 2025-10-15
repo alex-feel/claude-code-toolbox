@@ -701,12 +701,28 @@ def ensure_nodejs() -> bool:
         if check_winget():
             if install_nodejs_winget('user'):
                 time.sleep(2)
+                # Update PATH after winget installation
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
                 node_version = get_node_version()
                 if node_version and compare_versions(node_version, MIN_NODE_VERSION):
                     return True
 
             if is_admin() and install_nodejs_winget('machine'):
                 time.sleep(2)
+                # Update PATH after winget installation (machine scope)
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
                 node_version = get_node_version()
                 if node_version and compare_versions(node_version, MIN_NODE_VERSION):
                     return True
