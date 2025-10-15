@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.7.5](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.4...v3.7.5) (2025-10-15)
+
+
+### Bug Fixes
+
+* correct argument order in claude mcp add for stdio servers ([f6fd6b8](https://github.com/alex-feel/claude-code-toolbox/commit/f6fd6b89f19c08e6e4f5dcca58a3fc333c11c373))
+* replace PowerShell wrapper with direct subprocess for stdio MCP servers ([d7d8738](https://github.com/alex-feel/claude-code-toolbox/commit/d7d87380ff2df98936ab6a7b96d9ca862aeb8459))
+
 ## [3.7.4](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.3...v3.7.4) (2025-10-15)
 
 
