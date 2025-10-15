@@ -675,15 +675,13 @@ class TestMCPServerConfigurationEdgeCases:
         """Test MCP configuration final failure after retry."""
         del mock_find  # Unused but required for patch
         del mock_system  # Unused but required for patch
-        # 3 removes (one per scope), first add fails (PowerShell), fallback fails
-        # retry add fails (PowerShell) - no second fallback
+        # 3 removes (one per scope), first add fails, retry add fails
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add (PowerShell) fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # fallback add fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # retry add (PowerShell) fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # retry add fails
         ]
 
         server = {'name': 'test', 'command': 'test-server'}
@@ -692,8 +690,8 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
         assert result is False
-        # Expects 6 calls: 3 removes + 1st PowerShell + 1st fallback + retry PowerShell
-        assert mock_run.call_count == 6
+        # Expects 5 calls: 3 removes + first add + retry add
+        assert mock_run.call_count == 5
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.find_command', return_value='claude')
@@ -715,13 +713,11 @@ class TestMCPServerConfigurationEdgeCases:
 
         # Should call run_command 4 times: 3 for removing from all scopes, once for add
         assert mock_run.call_count == 4
-        # Check that PowerShell wrapper with cmd /c was used for npx in the last call (add)
+        # Check that cmd /c was used for npx in the last call (add)
         call_args = mock_run.call_args_list[3][0][0]
-        assert 'powershell' in call_args
-        # PowerShell script should contain cmd /c for npx command
-        ps_script = call_args[call_args.index('-Command') + 1]
-        assert 'cmd /c' in ps_script
-        assert 'npx' in ps_script
+        assert 'cmd' in call_args
+        assert '/c' in call_args
+        assert 'npx @modelcontextprotocol/server-memory' in call_args
 
     @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_exception(self, mock_find):
