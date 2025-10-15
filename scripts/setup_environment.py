@@ -1828,9 +1828,9 @@ exit $LASTEXITCODE
             # Stdio transport (command)
 
             # Build the command properly
+            base_cmd.append(name)  # Add name FIRST, before post-name options
             if env:
-                base_cmd.extend(['--env', env])
-            base_cmd.append(name)  # Add name AFTER all options for correct argument order
+                base_cmd.extend(['--env', env])  # Add env AFTER name
             base_cmd.extend(['--'])
 
             # Special handling for npx (needs cmd /c wrapper on Windows)
