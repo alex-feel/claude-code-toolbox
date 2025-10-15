@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.7.4](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.3...v3.7.4) (2025-10-15)
+
+
+### Bug Fixes
+
+* prevent Node.js triple installation by updating PATH after winget ([fd2344c](https://github.com/alex-feel/claude-code-toolbox/commit/fd2344c850079ccb9e7a2f664ac6bac788f69f2c))
+
 ## [3.7.3](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.2...v3.7.3) (2025-10-14)
 
 
