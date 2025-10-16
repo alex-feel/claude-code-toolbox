@@ -554,7 +554,7 @@ class TestMCPServerConfigurationEdgeCases:
     """Test MCP server configuration edge cases."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value=None)
+    @patch('setup_environment.find_command_robust', return_value=None)
     @patch('pathlib.Path.exists')
     def test_configure_mcp_server_claude_not_found(self, mock_exists, mock_find, _mock_system):
         """Test MCP configuration when claude command not found."""
@@ -1060,31 +1060,33 @@ class TestRegisterGlobalCommandEdgeCases:
             setx_called = any('setx' in str(call) for call in mock_run.call_args_list)
             assert setx_called
 
-    @patch('platform.system', return_value='Linux')
-    def test_register_global_command_linux_existing_symlink(self, _mock_system):
-        """Test registering command when symlink already exists."""
-        # Skip this test on Windows as symlinks require admin privileges
-        if sys.platform == 'win32':
-            pytest.skip('Symlink test requires admin privileges on Windows')
-
+    @patch('platform.system', return_value='Windows')
+    def test_register_global_command_windows_existing_wrappers(self, _mock_system):
+        """Test registering command when wrapper files already exist on Windows."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            launcher = Path(tmpdir) / 'launcher.sh'
-            launcher.write_text('#!/bin/bash')
-            launcher.chmod(0o755)
+            launcher = Path(tmpdir) / 'launcher.ps1'
+            launcher.write_text('# Launcher')
 
             local_bin = Path(tmpdir) / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            # Create existing symlink
-            existing_symlink = local_bin / 'test-cmd'
-            existing_symlink.symlink_to('/old/path')
+            # Create existing wrapper files
+            existing_cmd = local_bin / 'test-cmd.cmd'
+            existing_ps1 = local_bin / 'test-cmd.ps1'
+            existing_bash = local_bin / 'test-cmd'
+
+            existing_cmd.write_text('@echo off\necho old')
+            existing_ps1.write_text('# Old PowerShell')
+            existing_bash.write_text('#!/bin/bash\necho old')
 
             with patch('pathlib.Path.home', return_value=Path(tmpdir)):
                 result = setup_environment.register_global_command(launcher, 'test-cmd')
 
-            # Should return False when symlink operation fails
-            # The error "[Errno 17] File exists" indicates the symlink couldn't be replaced
-            assert result is False
+            assert result is True
+            # Verify files were overwritten with new content
+            assert 'Global test-cmd command for CMD' in existing_cmd.read_text()
+            assert 'Global test-cmd command for PowerShell' in existing_ps1.read_text()
+            assert 'launch-test-cmd.sh' in existing_bash.read_text()
 
     def test_register_global_command_exception(self):
         """Test command registration with exception."""
