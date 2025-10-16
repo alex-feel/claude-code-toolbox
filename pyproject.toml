@@ -79,6 +79,9 @@ select = [
     "FURB",  # refurb
 ]
 
+# Exclude rules that conflict with formatter
+extend-ignore = ["COM812"]  # Trailing comma (conflicts with formatter)
+
 [tool.ruff.lint.flake8-annotations]
 allow-star-arg-any = true
 ignore-fully-untyped = true
