@@ -610,7 +610,7 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_missing_transport_details(self, mock_find):
         """Test MCP configuration with missing transport details."""
         del mock_find  # Unused but required for patch
@@ -619,7 +619,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_windows_retry(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration retry on Windows."""
@@ -647,7 +647,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is True
         assert mock_run.call_count == 5
 
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_already_exists(self, mock_run, mock_find):
         """Test MCP configuration removes existing server before adding."""
@@ -669,7 +669,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert mock_run.call_count == 4
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_final_failure(self, mock_run, mock_find, mock_system):
         """Test MCP configuration final failure after retry."""
@@ -694,7 +694,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert mock_run.call_count == 5
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_windows_npx_command(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with npx command on Windows."""
@@ -719,7 +719,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert '/c' in call_args
         assert 'npx @modelcontextprotocol/server-memory' in call_args
 
-    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_exception(self, mock_find):
         """Test MCP configuration with exception."""
         del mock_find  # Unused but required for patch

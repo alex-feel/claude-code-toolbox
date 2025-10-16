@@ -611,7 +611,7 @@ class TestFetchUrlWithAuth:
 class TestConfigureMCPServer:
     """Test MCP server configuration."""
 
-    @patch('setup_environment.find_command')
+    @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http(self, mock_run, mock_find):
         """Test configuring HTTP MCP server."""
@@ -634,7 +634,7 @@ class TestConfigureMCPServer:
         assert 'mcp add' in add_cmd_str
         assert 'test-server' in add_cmd_str
 
-    @patch('setup_environment.find_command')
+    @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_stdio(self, mock_run, mock_find):
         """Test configuring stdio MCP server."""
@@ -1269,7 +1269,7 @@ class TestMainFunction:
             mock_exit.assert_called_with(1)
 
     @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.find_command')
+    @patch('setup_environment.find_command_robust')
     @patch('setup_environment.is_admin', return_value=True)
     def test_main_skip_install(self, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
