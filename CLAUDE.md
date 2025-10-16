@@ -64,21 +64,35 @@ uv run pytest -v
 ```
 
 ### Code Quality & Linting
+
+**CRITICAL: Always use pre-commit for code quality checks. DO NOT use `ruff format` directly.**
+
 ```bash
-# Fix all linting issues (run this after making code changes)
-uv run ruff check --fix
-
-# Format Python code
-uv run ruff format
-
-# Run all pre-commit hooks
+# Run all pre-commit hooks (this is the CORRECT way to validate code)
 uv run pre-commit run --all-files
 
 # Run specific pre-commit hooks
-uv run pre-commit run ruff-check
-uv run pre-commit run shellcheck
-uv run pre-commit run markdownlint
+uv run pre-commit run ruff-check    # Linting + autofix
+uv run pre-commit run mypy          # Type checking
+uv run pre-commit run pyright       # Additional type checking
+uv run pre-commit run shellcheck    # Shell script linting
+uv run pre-commit run markdownlint  # Markdown linting
 ```
+
+**Pre-commit hooks automatically handle:**
+- Ruff linting with `--fix` for auto-correction
+- MyPy type checking
+- Pyright type checking
+- JSON/YAML syntax validation
+- End-of-file and trailing whitespace fixes
+- Markdown and shell script linting
+
+**DO NOT use these commands directly:**
+- ❌ `uv run ruff format` - Not part of pre-commit configuration
+- ❌ `uv run ruff check --fix` - Use pre-commit instead
+
+**Use pre-commit for all code quality validation:**
+- ✅ `uv run pre-commit run --all-files` - Correct approach
 
 ## CRITICAL: Test Suite Requirements
 
@@ -94,11 +108,15 @@ uv run pytest
 
 **Testing workflow after code changes:**
 1. Make your code changes
-2. Run `uv run pytest` to check all tests pass
+2. Run `uv run pytest` to check all tests pass (must be 312/312, not 311/312)
 3. Fix any failing tests immediately
-4. Run `uv run ruff check --fix` to fix linting issues
-5. Run `uv run pre-commit run --all-files` for final validation
-6. Only commit when ALL tests pass and linting is clean
+4. Run `uv run pre-commit run --all-files` for code quality validation
+5. Only commit when ALL tests pass (312/312) and all pre-commit hooks pass
+
+**IMPORTANT:**
+- 312/312 tests passing is the ONLY acceptable result
+- 311/312 or any other number is a FAILURE
+- Use ONLY `uv run pre-commit run --all-files` for code quality checks
 
 **Important:** Never skip the test suite. Even small changes can have unexpected impacts.
 
