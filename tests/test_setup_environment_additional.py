@@ -1115,7 +1115,7 @@ class TestMainFunctionErrorPaths:
             mock_exit.assert_called_with(1)
 
     @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.find_command', return_value=None)
+    @patch('setup_environment.find_command_robust', return_value=None)
     def test_main_skip_install_claude_not_found(self, mock_find, mock_load):
         """Test main with --skip-install but Claude not found."""
         del mock_find  # Unused but required for patch

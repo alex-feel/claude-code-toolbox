@@ -2659,7 +2659,7 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
 
             # Verify Claude Code is available
-            if not find_command('claude'):
+            if not find_command_robust('claude'):
                 error('Claude Code is not available in PATH')
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
