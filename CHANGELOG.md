@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.7.6](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.5...v3.7.6) (2025-10-16)
+
+
+### Bug Fixes
+
+* complete find_command to find_command_robust migration ([af160ec](https://github.com/alex-feel/claude-code-toolbox/commit/af160ecc06410b4a1cfded657f5c841448c953e6))
+* complete find_command_robust migration in validation tests ([5ffa0be](https://github.com/alex-feel/claude-code-toolbox/commit/5ffa0bee00b8b8f1a8d224c61167dc1f22dc3980))
+* resolve transient MCP server configuration failures ([5b9930f](https://github.com/alex-feel/claude-code-toolbox/commit/5b9930f18520609ed505c2e5c29fbf159677bff1))
+
 ## [3.7.5](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.4...v3.7.5) (2025-10-15)
 
 
