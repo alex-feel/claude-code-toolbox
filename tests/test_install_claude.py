@@ -469,7 +469,7 @@ class TestNodeJsInstallation:
 class TestClaudeInstallation:
     """Test Claude Code installation functions."""
 
-    @patch('install_claude.find_command')
+    @patch('install_claude.find_command_robust')
     @patch('platform.system', return_value='Windows')
     @patch('pathlib.Path.exists', return_value=True)
     def test_get_claude_version_windows(self, mock_exists, mock_system, mock_find):
@@ -477,13 +477,13 @@ class TestClaudeInstallation:
         # Verify mock configurations
         assert mock_system.return_value == 'Windows'
         assert mock_exists.return_value is True
-        mock_find.return_value = None
+        mock_find.return_value = 'C:\\Program Files\\nodejs\\claude.cmd'
         with patch('install_claude.run_command') as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, 'claude, version 0.7.7', '')
             version = install_claude.get_claude_version()
             assert version == '0.7.7'
 
-    @patch('install_claude.find_command')
+    @patch('install_claude.find_command_robust')
     @patch('install_claude.run_command')
     def test_get_claude_version_found(self, mock_run, mock_find):
         """Test getting Claude version when found in PATH."""

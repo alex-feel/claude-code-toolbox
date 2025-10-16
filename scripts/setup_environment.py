@@ -294,6 +294,83 @@ def find_command(cmd: str) -> str | None:
     return shutil.which(cmd)
 
 
+def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+    """Find a command with robust platform-specific fallback search.
+
+    Args:
+        cmd: Command name to find (e.g., 'claude', 'node')
+        fallback_paths: Optional list of additional paths to check
+
+    Returns:
+        Full path to command if found, None otherwise
+    """
+    # Primary: Use standard PATH search with retry for PATH synchronization
+    for attempt in range(2):
+        cmd_path = shutil.which(cmd)
+        if cmd_path:
+            return cmd_path
+
+        # Brief delay for PATH synchronization (especially on Windows)
+        if attempt == 0:
+            time.sleep(0.5)
+
+    # Secondary: Platform-specific common locations
+    system = platform.system()
+    common_paths: list[str] = []
+
+    if system == 'Windows':
+        if cmd == 'claude':
+            common_paths = [
+                os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
+                os.path.expandvars(r'%APPDATA%\npm\claude'),
+                os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'),
+            ]
+        elif cmd == 'node':
+            common_paths = [
+                r'C:\Program Files\nodejs\node.exe',
+                r'C:\Program Files (x86)\nodejs\node.exe',
+            ]
+        elif cmd == 'npm':
+            common_paths = [
+                r'C:\Program Files\nodejs\npm.cmd',
+                r'C:\Program Files (x86)\nodejs\npm.cmd',
+            ]
+    else:
+        # Unix-like systems
+        if cmd == 'claude':
+            common_paths = [
+                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                '/usr/local/bin/claude',
+                '/usr/bin/claude',
+            ]
+        elif cmd == 'node':
+            common_paths = [
+                '/usr/local/bin/node',
+                '/usr/bin/node',
+            ]
+        elif cmd == 'npm':
+            common_paths = [
+                '/usr/local/bin/npm',
+                '/usr/bin/npm',
+            ]
+
+    # Check common locations
+    for path in common_paths:
+        expanded = os.path.expandvars(path)
+        if Path(expanded).exists():
+            return str(Path(expanded).resolve())
+
+    # Tertiary: Custom fallback paths
+    if fallback_paths:
+        for path in fallback_paths:
+            expanded = os.path.expandvars(path)
+            if Path(expanded).exists():
+                return str(Path(expanded).resolve())
+
+    return None
+
+
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
     """Check if file exists using HEAD request.
 
@@ -1696,44 +1773,16 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         return False
 
     info(f'Configuring MCP server: {name}')
-
     system = platform.system()
     claude_cmd = None
 
-    # First try to find claude in PATH
-    claude_cmd = find_command('claude')
-
-    # If not in PATH, look for it where npm installs it
-    if not claude_cmd:
-        if system == 'Windows':
-            # On Windows, npm installs to %APPDATA%\npm
-            npm_path = Path(os.environ.get('APPDATA', '')) / 'npm'
-            claude_cmd_path = npm_path / 'claude.cmd'
-            if claude_cmd_path.exists():
-                claude_cmd = str(claude_cmd_path)
-                info(f'Found claude at: {claude_cmd}')
-            else:
-                # Also check without .cmd extension
-                claude_path = npm_path / 'claude'
-                if claude_path.exists():
-                    claude_cmd = str(claude_path)
-                    info(f'Found claude at: {claude_cmd}')
-        else:
-            # On Unix, check common npm global locations
-            possible_paths = [
-                Path.home() / '.npm-global' / 'bin' / 'claude',
-                Path('/usr/local/bin/claude'),
-                Path('/usr/bin/claude'),
-            ]
-            for path in possible_paths:
-                if path.exists():
-                    claude_cmd = str(path)
-                    info(f'Found claude at: {claude_cmd}')
-                    break
+    # Use robust command discovery with built-in retry and fallback paths
+    claude_cmd = find_command_robust('claude')
 
     if not claude_cmd:
-        error('Claude command not found even after installation!')
-        error('This should not happen. Something went wrong with npm installation.')
+        error('Claude command not accessible after installation!')
+        error('This may indicate a PATH synchronization issue between installation and configuration steps.')
+        error('Try running the command again or opening a new terminal session.')
         return False
 
     try:
@@ -1873,7 +1922,7 @@ exit $LASTEXITCODE
         time.sleep(2)
 
         # Direct execution with full path
-        info(f'Retrying with direct command: {" ".join(str(arg) for arg in base_cmd)}')
+        info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
         result = run_command(base_cmd, capture_output=False)  # Show output for debugging
 
         if result.returncode == 0:
@@ -2610,7 +2659,7 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
 
             # Verify Claude Code is available
-            if not find_command('claude'):
+            if not find_command_robust('claude'):
                 error('Claude Code is not available in PATH')
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')

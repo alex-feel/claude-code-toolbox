@@ -152,6 +152,85 @@ def find_command(cmd: str) -> str | None:
     return shutil.which(cmd)
 
 
+def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+    """Find a command with robust platform-specific fallback search.
+
+    Args:
+        cmd: Command name to find (e.g., 'claude', 'node')
+        fallback_paths: Optional list of additional paths to check
+
+    Returns:
+        Full path to command if found, None otherwise
+    """
+    import time
+
+    # Primary: Use standard PATH search with retry for PATH synchronization
+    for attempt in range(2):
+        cmd_path = shutil.which(cmd)
+        if cmd_path:
+            return cmd_path
+
+        # Brief delay for PATH synchronization (especially on Windows)
+        if attempt == 0:
+            time.sleep(0.5)
+
+    # Secondary: Platform-specific common locations
+    system = platform.system()
+    common_paths: list[str] = []
+
+    if system == 'Windows':
+        if cmd == 'claude':
+            common_paths = [
+                os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
+                os.path.expandvars(r'%APPDATA%\npm\claude'),
+                os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
+                os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'),
+            ]
+        elif cmd == 'node':
+            common_paths = [
+                r'C:\Program Files\nodejs\node.exe',
+                r'C:\Program Files (x86)\nodejs\node.exe',
+            ]
+        elif cmd == 'npm':
+            common_paths = [
+                r'C:\Program Files\nodejs\npm.cmd',
+                r'C:\Program Files (x86)\nodejs\npm.cmd',
+            ]
+    else:
+        # Unix-like systems
+        if cmd == 'claude':
+            common_paths = [
+                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                '/usr/local/bin/claude',
+                '/usr/bin/claude',
+            ]
+        elif cmd == 'node':
+            common_paths = [
+                '/usr/local/bin/node',
+                '/usr/bin/node',
+            ]
+        elif cmd == 'npm':
+            common_paths = [
+                '/usr/local/bin/npm',
+                '/usr/bin/npm',
+            ]
+
+    # Check common locations
+    for path in common_paths:
+        expanded = os.path.expandvars(path)
+        if Path(expanded).exists():
+            return str(Path(expanded).resolve())
+
+    # Tertiary: Custom fallback paths
+    if fallback_paths:
+        for path in fallback_paths:
+            expanded = os.path.expandvars(path)
+            if Path(expanded).exists():
+                return str(Path(expanded).resolve())
+
+    return None
+
+
 def parse_version(version_str: str) -> tuple[int, int, int] | None:
     """Parse version string to tuple."""
     match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
@@ -556,10 +635,12 @@ def install_nodejs_direct() -> bool:
             # Enhanced MSI command with verbose logging for truly silent installation
             result = run_command([
                 'msiexec',
-                '/i', temp_path,
-                '/qn',                                      # No UI (truly silent installation)
-                '/norestart',                               # Don't restart automatically
-                '/l*v', str(log_file),                      # Verbose logging for diagnostics
+                '/i',
+                temp_path,
+                '/qn',  # No UI (truly silent installation)
+                '/norestart',  # Don't restart automatically
+                '/l*v',
+                str(log_file),  # Verbose logging for diagnostics
                 # Node.js MSI installs to C:\Program Files\nodejs by default
             ])
 
@@ -773,23 +854,9 @@ def ensure_nodejs() -> bool:
 # Claude Code installation
 def get_claude_version() -> str | None:
     """Get installed Claude Code version."""
-    claude_path = find_command('claude')
+    claude_path = find_command_robust('claude')
     if not claude_path:
-        # Check common locations on Windows
-        if platform.system() == 'Windows':
-            common_paths = [
-                os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
-                os.path.expandvars(r'%APPDATA%\npm\claude'),
-                os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
-                os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'),
-            ]
-            for path in common_paths:
-                if Path(path).exists():
-                    claude_path = path
-                    break
-
-        if not claude_path:
-            return None
+        return None
 
     result = run_command([claude_path, '--version'])
     if result.returncode == 0:
