@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.0...v3.8.1) (2025-10-19)
+
+
+### Bug Fixes
+
+* number steps correctly ([0c9195a](https://github.com/alex-feel/claude-code-toolbox/commit/0c9195a2f4931e1da9c8ae003e68f7613e6dae0a))
+
 ## [3.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.6...v3.8.0) (2025-10-19)
 
 
