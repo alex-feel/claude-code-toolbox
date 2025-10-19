@@ -543,6 +543,18 @@ def validate_all_config_files(
                     resolved_path, is_remote = resolve_resource_path(hook_file_item, config_source, base_url)
                     files_to_check.append(('hook', hook_file_item, resolved_path, is_remote))
 
+    # Files to download
+    files_to_download_raw = config.get('files-to-download', [])
+    if isinstance(files_to_download_raw, list):
+        files_list = cast(list[object], files_to_download_raw)
+        for file_item in files_list:
+            if isinstance(file_item, dict):
+                file_dict = cast(dict[str, Any], file_item)
+                source = file_dict.get('source')
+                if source and isinstance(source, str):
+                    resolved_path, is_remote = resolve_resource_path(source, config_source, base_url)
+                    files_to_check.append(('file_download', source, resolved_path, is_remote))
+
     # Validate each file
     info(f'Validating {len(files_to_check)} files...')
     all_valid = True
@@ -1575,6 +1587,89 @@ def process_resources(
         destination = destination_dir / filename
         handle_resource(resource, destination, config_source, base_url, auth_param)
 
+    return True
+
+
+def process_file_downloads(
+    file_specs: list[dict[str, Any]],
+    config_source: str,
+    base_url: str | None = None,
+    auth_param: str | None = None,
+) -> bool:
+    """Process file downloads/copies from configuration.
+
+    Downloads files from URLs or copies from local paths to specified destinations.
+    Supports cross-platform path expansion using ~ and environment variables.
+
+    Args:
+        file_specs: List of file specifications with 'source' and 'dest' keys.
+                   Each spec is a dict: {'source': 'path/to/file', 'dest': '~/destination'}
+        config_source: Where the config was loaded from (for resolving relative paths)
+        base_url: Optional base URL override from config
+        auth_param: Optional auth parameter for private repos
+
+    Returns:
+        True if all files processed successfully, False if any failed.
+
+    Example:
+        file_specs = [
+            {'source': 'configs/settings.json', 'dest': '~/.config/app/'},
+            {'source': 'https://example.com/file.txt', 'dest': '~/downloads/file.txt'}
+        ]
+        process_file_downloads(file_specs, config_source, base_url, auth)
+    """
+    if not file_specs:
+        info('No files to download configured')
+        return True
+
+    info(f'Processing {len(file_specs)} file downloads...')
+    success_count = 0
+    failed_count = 0
+
+    for file_spec in file_specs:
+        source = file_spec.get('source')
+        dest = file_spec.get('dest')
+
+        if not source or not dest:
+            # Emit a specific warning for missing keys
+            if not source:
+                warning(f'Invalid file specification: missing source ({file_spec})')
+            elif not dest:
+                warning(f'Invalid file specification: missing dest ({file_spec})')
+            else:
+                warning(f'Invalid file specification: {file_spec} (missing source or dest)')
+            failed_count += 1
+            continue
+
+        # Expand destination path (~ and environment variables)
+        # This makes it work cross-platform: ~/.config, %USERPROFILE%\bin, $HOME/.local
+        expanded_dest = os.path.expanduser(str(dest))
+        expanded_dest = os.path.expandvars(expanded_dest)
+        dest_path = Path(expanded_dest)
+
+        # Handle both file and directory destinations
+        # If dest ends with separator or is existing directory, append source filename
+        dest_str = str(dest)
+        if dest_str.endswith(('/', '\\')) or (dest_path.exists() and dest_path.is_dir()):
+            # Extract filename from source (remove query params if present)
+            clean_source = str(source).split('?')[0]
+            filename = Path(clean_source).name
+            dest_path = dest_path / filename
+
+        # Use existing handle_resource function for download/copy
+        # This handles: URL downloads, local file copying, overwriting, directory creation
+        if handle_resource(str(source), dest_path, config_source, base_url, auth_param):
+            success_count += 1
+        else:
+            failed_count += 1
+
+    # Print summary
+    print()  # Blank line for readability
+    if failed_count > 0:
+        warning(f'File downloads: {success_count} succeeded, {failed_count} failed')
+        return False
+
+    success(f'All {success_count} files downloaded/copied successfully')
     return True
 
 
@@ -2670,6 +2765,15 @@ def main() -> None:
         for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, output_styles_dir, hooks_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
+
+        # Step 2.5: Download/copy custom files
+        print()
+        print(f'{Colors.CYAN}Step 2.5: Processing file downloads...{Colors.NC}')
+        files_to_download = config.get('files-to-download', [])
+        if files_to_download:
+            process_file_downloads(files_to_download, config_source, base_url, args.auth)
+        else:
+            info('No custom files to download')
 
         # Step 3: Install dependencies (after Claude Code which provides tools)
         print()
