@@ -2766,45 +2766,45 @@ def main() -> None:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
-        # Step 2.5: Download/copy custom files
+        # Step 3: Download/copy custom files
         print()
-        print(f'{Colors.CYAN}Step 2.5: Processing file downloads...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 3: Processing file downloads...{Colors.NC}')
         files_to_download = config.get('files-to-download', [])
         if files_to_download:
             process_file_downloads(files_to_download, config_source, base_url, args.auth)
         else:
             info('No custom files to download')
 
-        # Step 3: Install dependencies (after Claude Code which provides tools)
+        # Step 4: Install dependencies (after Claude Code which provides tools)
         print()
-        print(f'{Colors.CYAN}Step 3: Installing dependencies...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 4: Installing dependencies...{Colors.NC}')
         dependencies = config.get('dependencies', {})
         install_dependencies(dependencies)
 
-        # Step 4: Process agents
+        # Step 5: Process agents
         print()
-        print(f'{Colors.CYAN}Step 4: Processing agents...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 5: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
         process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
 
-        # Step 5: Process slash commands
+        # Step 6: Process slash commands
         print()
-        print(f'{Colors.CYAN}Step 5: Processing slash commands...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 6: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
         process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 6: Process output styles
+        # Step 7: Process output styles
         print()
-        print(f'{Colors.CYAN}Step 6: Processing output styles...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 7: Processing output styles...{Colors.NC}')
         output_styles = config.get('output-styles', [])
         if output_styles:
             process_resources(output_styles, output_styles_dir, 'output styles', config_source, base_url, args.auth)
         else:
             info('No output styles configured')
 
-        # Step 7: Process system prompt (if specified)
+        # Step 8: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 7: Processing system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 8: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
@@ -2815,9 +2815,9 @@ def main() -> None:
         else:
             info('No additional system prompt configured')
 
-        # Step 8: Configure MCP servers
+        # Step 9: Configure MCP servers
         print()
-        print(f'{Colors.CYAN}Step 8: Configuring MCP servers...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Configuring MCP servers...{Colors.NC}')
         mcp_servers = config.get('mcp-servers', [])
 
         # Verify Node.js is available before configuring MCP servers
@@ -2831,9 +2831,9 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 9: Configure hooks and output style
+            # Step 10: Configure hooks and output style
             print()
-            print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 10: Configuring hooks and settings...{Colors.NC}')
             hooks = config.get('hooks', {})
             create_additional_settings(
                 hooks,
@@ -2850,9 +2850,9 @@ def main() -> None:
                 include_co_authored_by,
             )
 
-            # Step 10: Create launcher script
+            # Step 11: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 10: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 11: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -2860,10 +2860,10 @@ def main() -> None:
                 prompt_filename = Path(clean_prompt).name
             launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
 
-            # Step 11: Register global command
+            # Step 12: Register global command
             if launcher_path:
                 print()
-                print(f'{Colors.CYAN}Step 11: Registering global {command_name} command...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 12: Registering global {command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, command_name)
             else:
                 warning('Launcher script was not created')
