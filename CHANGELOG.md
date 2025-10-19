@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.6...v3.8.0) (2025-10-19)
+
+
+### Features
+
+* implement file download/copy feature in environment setup ([f84c468](https://github.com/alex-feel/claude-code-toolbox/commit/f84c46890e1d6d40cca7fb609a4587d899d50ebf))
+
 ## [3.7.6](https://github.com/alex-feel/claude-code-toolbox/compare/v3.7.5...v3.7.6) (2025-10-16)
 
 
