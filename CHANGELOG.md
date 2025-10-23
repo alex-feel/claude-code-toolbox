@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.8.2](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.1...v3.8.2) (2025-10-23)
+
+
+### Bug Fixes
+
+* resolve Git installer download failure on Windows ([811b50c](https://github.com/alex-feel/claude-code-toolbox/commit/811b50c2432983262b36bf78cd7de154ba79d577))
+
 ## [3.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.0...v3.8.1) (2025-10-19)
 
 
