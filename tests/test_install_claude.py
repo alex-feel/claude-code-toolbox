@@ -326,6 +326,142 @@ class TestWindowsGitBash:
             assert result is False
 
 
+class TestGitHubAPIDownload:
+    """Test GitHub API-based Git installation."""
+
+    @patch('install_claude.urlopen')
+    def test_get_git_installer_url_success(self, mock_urlopen):
+        """Test successful GitHub API response parsing."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'tag_name': 'v2.51.1.windows.1',
+            'assets': [
+                {
+                    'name': 'PortableGit-2.51.1-64-bit.7z.exe',
+                    'browser_download_url': 'https://github.com/.../PortableGit-2.51.1-64-bit.7z.exe',
+                },
+                {
+                    'name': 'Git-2.51.1-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.51.1-64-bit.exe',
+                    'content_type': 'application/executable',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.get_git_installer_url_from_github()
+        assert result is not None
+        assert 'Git-2.51.1-64-bit.exe' in result
+        assert result.startswith('https://github.com/')
+
+    @patch('install_claude.urlopen')
+    def test_get_git_installer_url_no_assets(self, mock_urlopen):
+        """Test handling of release with no suitable assets."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'tag_name': 'v2.51.1.windows.1',
+            'assets': [],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.get_git_installer_url_from_github()
+        assert result is None
+
+    @patch('install_claude.urlopen')
+    def test_get_git_installer_url_network_error(self, mock_urlopen):
+        """Test network failure returns None for graceful fallback."""
+        mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
+
+        result = install_claude.get_git_installer_url_from_github()
+        assert result is None
+
+    @patch('install_claude.urlopen')
+    def test_get_git_installer_url_ssl_fallback(self, mock_urlopen):
+        """Test SSL error fallback to unverified context."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'tag_name': 'v2.51.1.windows.1',
+            'assets': [
+                {
+                    'name': 'Git-2.51.1-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.51.1-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+
+        # First call raises SSL error, second succeeds with unverified context
+        mock_urlopen.side_effect = [
+            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            mock_response,
+        ]
+
+        result = install_claude.get_git_installer_url_from_github()
+        assert result is not None
+        assert 'Git-2.51.1-64-bit.exe' in result
+
+    @patch('install_claude.get_git_installer_url_from_github')
+    @patch('install_claude.urlretrieve')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.unlink')
+    def test_install_git_via_github_api(self, mock_unlink, mock_temp, mock_run, mock_retrieve, mock_github):
+        """Test successful Git installation via GitHub API."""
+        # Mock GitHub API returning URL
+        mock_github.return_value = 'https://github.com/git-for-windows/git/releases/download/v2.51.1.windows.1/Git-2.51.1-64-bit.exe'
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\temp\\git.exe'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        # Mock successful installation
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = install_claude.install_git_windows_download()
+        assert result is True
+        mock_github.assert_called_once()
+        mock_retrieve.assert_called_once()
+        mock_run.assert_called_once()
+        mock_unlink.assert_called_once()
+
+    @patch('install_claude.get_git_installer_url_from_github', return_value=None)
+    @patch('install_claude.urlopen')
+    @patch('install_claude.urlretrieve')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    def test_install_git_fallback_to_scraping(self, mock_temp, mock_run, mock_retrieve, mock_urlopen, mock_github):
+        """Test fallback to git-scm.com scraping when GitHub API fails."""
+        # Mock the download page response for fallback
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'<a href="https://github.com/git-for-windows/git/releases/download/v2.51.0.windows.1/Git-2.51.0-64-bit.exe">Download</a>'
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\temp\\git.exe'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        # Mock successful installation
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = install_claude.install_git_windows_download()
+        assert result is True
+        # Verify GitHub API was tried first
+        mock_github.assert_called_once()
+        # Verify fallback to scraping occurred
+        mock_urlopen.assert_called()
+        mock_retrieve.assert_called_once()
+        mock_run.assert_called_once()
+
+
 class TestWindowsEnvVar:
     """Test Windows environment variable setting."""
 
