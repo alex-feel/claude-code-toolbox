@@ -59,6 +59,7 @@ class Colors:
 MIN_NODE_VERSION = '18.0.0'
 NODE_LTS_API = 'https://nodejs.org/dist/index.json'
 GIT_WINDOWS_URL = 'https://git-scm.com/downloads/win'
+GIT_GITHUB_API = 'https://api.github.com/repos/git-for-windows/git/releases/latest'
 CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
 
@@ -317,36 +318,105 @@ def install_git_windows_winget(scope: str = 'user') -> bool:
     return False
 
 
-def install_git_windows_download() -> bool:
-    """Install Git for Windows by direct download."""
-    try:
-        info('Downloading Git for Windows installer...')
+def get_git_installer_url_from_github() -> str | None:
+    """Get Git for Windows installer URL from GitHub releases API.
 
-        # Get the download page (with SSL fallback)
+    Uses the official git-for-windows GitHub repository to find the latest
+    64-bit Windows installer. This is more reliable than web scraping.
+
+    Returns:
+        Direct download URL for Git-{version}-64-bit.exe, or None if unavailable.
+        Returns None on any error for graceful fallback to other download methods.
+    """
+    try:
+        # Fetch GitHub releases API (with SSL fallback pattern)
         try:
-            with urlopen(GIT_WINDOWS_URL) as response:
-                html = response.read().decode('utf-8')
+            with urlopen(GIT_GITHUB_API) as response:
+                data = json.loads(response.read())
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
                 warning('SSL certificate verification failed, trying with unverified context')
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                with urlopen(GIT_WINDOWS_URL, context=ctx) as response:
-                    html = response.read().decode('utf-8')
+                with urlopen(GIT_GITHUB_API, context=ctx) as response:
+                    data = json.loads(response.read())
             else:
-                raise
+                # Non-SSL error, return None for fallback
+                warning(f'Error fetching Git installer from GitHub API: {e}')
+                return None
 
-        # Find the installer link
-        match = re.search(r'href="([^"]+Git-[\d.]+-64-bit\.exe)"', html)
-        if not match:
-            raise Exception('Could not find Git installer link')
+        # Find 64-bit installer in assets
+        for asset in data.get('assets', []):
+            name = asset.get('name', '')
+            if name.endswith('-64-bit.exe') and 'Git-' in name:
+                download_url = asset.get('browser_download_url')
+                if download_url and isinstance(download_url, str):
+                    return str(download_url)
 
-        installer_url = match.group(1)
-        if not installer_url.startswith('http'):
-            installer_url = f'https://github.com{installer_url}'
+        warning('No 64-bit installer found in GitHub release assets')
+        return None
 
-        # Download installer
+    except Exception as e:
+        warning(f'Error fetching Git installer from GitHub API: {e}')
+        return None
+
+
+def install_git_windows_download() -> bool:
+    """Install Git for Windows by direct download.
+
+    Tries multiple download sources in order:
+    1. GitHub API (most reliable)
+    2. git-scm.com scraping (legacy fallback)
+
+    Returns:
+        True if installation succeeded, False otherwise.
+
+    Raises:
+        urllib.error.URLError: Network errors (caught internally, returns False).
+        Exception: General errors during download/install (caught internally, returns False).
+
+    Note:
+        All exceptions are caught and handled internally - this function never
+        propagates exceptions to callers.
+    """
+    try:
+        installer_url = None
+
+        # Method 1: GitHub API (NEW - primary method)
+        info('Attempting to download Git via GitHub API...')
+        installer_url = get_git_installer_url_from_github()
+
+        if not installer_url:
+            # Method 2: Legacy scraping (existing code as fallback)
+            info('GitHub API unavailable, trying git-scm.com download page...')
+
+            # Get the download page (with SSL fallback) - EXISTING CODE
+            try:
+                with urlopen(GIT_WINDOWS_URL) as response:
+                    html = response.read().decode('utf-8')
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    warning('SSL certificate verification failed, trying with unverified context')
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    with urlopen(GIT_WINDOWS_URL, context=ctx) as response:
+                        html = response.read().decode('utf-8')
+                else:
+                    raise
+
+            # Find the installer link - EXISTING CODE
+            match = re.search(r'href="([^"]+Git-[\d.]+-64-bit\.exe)"', html)
+            if match:
+                installer_url = match.group(1)
+                if not installer_url.startswith('http'):
+                    installer_url = f'https://github.com{installer_url}'
+
+        if not installer_url:
+            raise Exception('Could not find Git installer from any source')
+
+        # Download and install - EXISTING CODE
         with tempfile.NamedTemporaryFile(suffix='.exe', delete=False) as tmp:
             temp_path = tmp.name
 
@@ -365,7 +435,7 @@ def install_git_windows_download() -> bool:
             else:
                 raise
 
-        # Run installer silently
+        # Run installer silently - EXISTING CODE
         info('Running Git installer silently...')
         result = run_command([
             temp_path,
@@ -390,6 +460,11 @@ def install_git_windows_download() -> bool:
 
     except Exception as e:
         error(f'Failed to install Git by download: {e}')
+        error('This may be a network issue or service unavailability')
+        info('Manual installation options:')
+        info('  1. Install winget: https://learn.microsoft.com/windows/package-manager/winget/')
+        info('  2. Download Git manually: https://gitforwindows.org/')
+        info('  3. Set CLAUDE_CODE_GIT_BASH_PATH to existing Git installation')
         return False
 
 

@@ -44,8 +44,9 @@ class TestErrorHandling:
         result = install_claude.install_git_windows_download()
         assert result is False
 
+    @patch('install_claude.get_git_installer_url_from_github', return_value=None)
     @patch('install_claude.urlopen')
-    def test_install_git_windows_download_ssl_error(self, mock_urlopen):
+    def test_install_git_windows_download_ssl_error(self, mock_urlopen, mock_github):
         """Test Git download with SSL error and fallback."""
         mock_response = MagicMock()
         mock_response.read.return_value = b'<a href="/git/Git-2.43.0-64-bit.exe">Download</a>'
@@ -61,6 +62,8 @@ class TestErrorHandling:
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
             result = install_claude.install_git_windows_download()
             assert result is True
+            # Verify GitHub API was tried first
+            mock_github.assert_called_once()
 
     @patch('install_claude.urlopen')
     def test_install_git_windows_download_url_error_non_ssl(self, mock_urlopen):
