@@ -1060,8 +1060,12 @@ class TestCreateLauncherScriptEdgeCases:
             assert launcher is not None
             content = launcher.read_text()
             assert 'prompt.md' in content
-            assert '--system-prompt' in content
-            assert '--append-system-prompt' not in content
+            # Replace mode uses conditional logic: both flags are present
+            assert '--system-prompt' in content  # For new sessions
+            assert '--append-system-prompt' in content  # For continuation
+            # Verify conditional logic exists
+            assert 'HAS_CONTINUE' in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
 
     @patch('platform.system', return_value='Windows')
     def test_create_launcher_windows_mode_append(self, _mock_system):
@@ -1097,11 +1101,15 @@ class TestCreateLauncherScriptEdgeCases:
             )
 
             assert launcher is not None
-            # Check shared script for correct flag
+            # Check shared script for correct flags
             shared_script = claude_dir / 'launch-test-env.sh'
             content = shared_script.read_text()
-            assert '--system-prompt' in content
-            assert 'exec claude --system-prompt' in content
+            # Replace mode uses conditional logic: both flags are present
+            assert '--system-prompt' in content  # For new sessions
+            assert '--append-system-prompt' in content  # For continuation
+            # Verify conditional logic exists
+            assert 'HAS_CONTINUE' in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
 
     def test_create_launcher_script_exception(self):
         """Test launcher creation with exception."""
@@ -1661,3 +1669,384 @@ class TestSystemPromptWithUserFlags:
                     args_pos = claude_line.index('"$@"')
                     settings_pos = claude_line.index('--settings')
                     assert args_pos < settings_pos, f'User args must come before --settings: {claude_line}'
+
+
+class TestConditionalSystemPromptLoading:
+    """Test conditional system prompt loading based on resume flags.
+
+    This test class covers the implementation of Strategy 1 from the investigation
+    report: conditional system prompt loading that detects resume flags and only
+    applies custom prompts for new sessions, preserving original prompts for
+    continued sessions.
+    """
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_detects_continue_flags(self, _mock_system):
+        """Test Windows shared script has logic to detect --continue and --resume flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+            )
+
+            assert launcher is not None
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # Verify flag detection logic exists
+            assert 'HAS_CONTINUE=false' in content
+            assert 'for arg in "$@"' in content
+            assert '--continue' in content
+            assert '-c' in content
+            assert '--resume' in content
+            assert '-r' in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_conditional_branches(self, _mock_system):
+        """Test Windows shared script has conditional execution based on resume flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            _launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+            )
+
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # Verify conditional branches exist
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
+            assert 'else' in content
+            assert 'fi' in content
+
+            # Verify correct behavior in both branches
+            lines = content.split('\n')
+            in_continue_branch = False
+            in_new_session_branch = False
+
+            for line in lines:
+                if 'if [ "$HAS_CONTINUE" = true ]' in line:
+                    in_continue_branch = True
+                    in_new_session_branch = False
+                elif 'else' in line and in_continue_branch:
+                    in_continue_branch = False
+                    in_new_session_branch = True
+                elif 'fi' in line and (in_continue_branch or in_new_session_branch):
+                    break
+
+                # In continue branch: should use --append-system-prompt (only flag that works with --continue)
+                if in_continue_branch and 'exec claude' in line:
+                    assert '--append-system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--system-prompt' not in line or '--append-system-prompt' in line
+
+                # In new session branch: should use --system-prompt to replace
+                if in_new_session_branch and 'exec claude' in line:
+                    assert '--system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--append-system-prompt' not in line
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_append_mode_conditional(self, _mock_system):
+        """Test Windows shared script with append mode has conditional logic."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            _launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='append',
+            )
+
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # Should use append flag in new session branch
+            lines = content.split('\n')
+            in_new_session_branch = False
+
+            for line in lines:
+                if 'else' in line:
+                    in_new_session_branch = True
+                elif 'fi' in line:
+                    in_new_session_branch = False
+
+                if in_new_session_branch and 'exec claude' in line:
+                    assert '--append-system-prompt' in line
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_launcher_detects_continue_flags(self, _mock_system):
+        """Test Linux launcher has logic to detect --continue and --resume flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+            )
+
+            content = launcher.read_text()
+
+            # Verify flag detection logic exists
+            assert 'HAS_CONTINUE=false' in content
+            assert 'for arg in "$@"' in content
+            assert '--continue' in content
+            assert '-c' in content
+            assert '--resume' in content
+            assert '-r' in content
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_launcher_conditional_branches(self, _mock_system):
+        """Test Linux launcher has conditional execution based on resume flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+            )
+
+            content = launcher.read_text()
+
+            # Verify conditional branches exist
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
+            assert 'else' in content
+            assert 'fi' in content
+
+            # Verify correct behavior in both branches
+            lines = content.split('\n')
+            in_continue_branch = False
+            in_new_session_branch = False
+
+            for line in lines:
+                if 'if [ "$HAS_CONTINUE" = true ]' in line:
+                    in_continue_branch = True
+                    in_new_session_branch = False
+                elif 'else' in line and in_continue_branch:
+                    in_continue_branch = False
+                    in_new_session_branch = True
+                elif 'fi' in line and (in_continue_branch or in_new_session_branch):
+                    break
+
+                # In continue branch: should use --append-system-prompt (only flag that works with --continue)
+                if in_continue_branch and 'claude ' in line and '--settings' in line:
+                    assert '--append-system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--system-prompt' not in line or '--append-system-prompt' in line
+
+                # In new session branch: should use --system-prompt to replace
+                if in_new_session_branch and 'claude ' in line and '--settings' in line:
+                    assert '--system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--append-system-prompt' not in line
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_launcher_append_mode_conditional(self, _mock_system):
+        """Test Linux launcher with append mode has conditional logic."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='append',
+            )
+
+            content = launcher.read_text()
+
+            # Should use append flag in new session branch
+            lines = content.split('\n')
+            in_new_session_branch = False
+
+            for line in lines:
+                if 'else' in line:
+                    in_new_session_branch = True
+                elif 'fi' in line:
+                    in_new_session_branch = False
+
+                if in_new_session_branch and 'claude ' in line and '--settings' in line:
+                    assert '--append-system-prompt' in line
+
+    @patch('platform.system', return_value='Darwin')
+    def test_macos_launcher_conditional_logic(self, _mock_system):
+        """Test macOS launcher (same as Linux) has conditional logic."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+            )
+
+            content = launcher.read_text()
+
+            # macOS should behave like Linux
+            assert 'HAS_CONTINUE=false' in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_all_resume_flags(self, _mock_system):
+        """Test Windows launcher detects all resume flag variations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            _launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+            )
+
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # All four flag variations should be checked
+            assert '"$arg" == "--continue"' in content
+            assert '"$arg" == "-c"' in content
+            assert '"$arg" == "--resume"' in content
+            assert '"$arg" == "-r"' in content
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_launcher_all_resume_flags(self, _mock_system):
+        """Test Linux launcher detects all resume flag variations."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+            )
+
+            content = launcher.read_text()
+
+            # All four flag variations should be checked
+            assert '"$arg" == "--continue"' in content
+            assert '"$arg" == "-c"' in content
+            assert '"$arg" == "--resume"' in content
+            assert '"$arg" == "-r"' in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_without_prompt_no_conditional(self, _mock_system):
+        """Test Windows launcher without prompt doesn't have conditional logic."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            _launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                None,  # No system prompt
+            )
+
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # Should not have conditional logic when no prompt is configured
+            assert 'HAS_CONTINUE' not in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' not in content
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_launcher_without_prompt_no_conditional(self, _mock_system):
+        """Test Linux launcher without prompt doesn't have conditional logic."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                None,  # No system prompt
+            )
+
+            content = launcher.read_text()
+
+            # Should not have conditional logic when no prompt is configured
+            assert 'HAS_CONTINUE' not in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' not in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_continue_branch_preserves_settings(self, _mock_system):
+        """Test Windows continue branch still applies settings file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            _launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+            )
+
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            content = shared_script.read_text()
+
+            # Find the continue branch
+            lines = content.split('\n')
+            in_continue_branch = False
+
+            for line in lines:
+                if 'if [ "$HAS_CONTINUE" = true ]' in line:
+                    in_continue_branch = True
+                elif 'else' in line:
+                    break
+
+                # Continue branch should still use settings
+                if in_continue_branch and 'exec claude' in line:
+                    assert '--settings "$SETTINGS_WIN"' in line
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_continue_branch_preserves_settings(self, _mock_system):
+        """Test Linux continue branch still applies settings file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+            )
+
+            content = launcher.read_text()
+
+            # Find the continue branch
+            lines = content.split('\n')
+            in_continue_branch = False
+
+            for line in lines:
+                if 'if [ "$HAS_CONTINUE" = true ]' in line:
+                    in_continue_branch = True
+                elif 'else' in line:
+                    break
+
+                # Continue branch should still use settings
+                if in_continue_branch and 'claude ' in line:
+                    assert '--settings "$SETTINGS_PATH"' in line
+
+    @patch('platform.system', return_value='Linux')
+    def test_linux_continue_mode_message(self, _mock_system):
+        """Test Linux launcher shows appropriate message for continue mode."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+            )
+
+            content = launcher.read_text()
+
+            # Should have different echo message for continue mode
+            assert 'Resuming Claude Code session' in content or 'Continue mode' in content
