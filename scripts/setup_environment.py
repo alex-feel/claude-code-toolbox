@@ -2276,17 +2276,31 @@ set -euo pipefail
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
-# Read and prepare system prompt
-PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
-if [ ! -f "$PROMPT_PATH" ]; then
-  echo "Error: System prompt not found at $PROMPT_PATH" >&2
-  exit 1
+# Check if --continue or --resume is in the arguments
+HAS_CONTINUE=false
+for arg in "$@"; do
+  if [[ "$arg" == "--continue" || "$arg" == "-c" || "$arg" == "--resume" || "$arg" == "-r" ]]; then
+    HAS_CONTINUE=true
+    break
+  fi
+done
+
+if [ "$HAS_CONTINUE" = true ]; then
+  # Continue mode: don't override the system prompt, let the conversation's original prompt be used
+  exec claude "$@" --settings "$SETTINGS_WIN"
+else
+  # New session mode: apply custom system prompt
+  PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
+  if [ ! -f "$PROMPT_PATH" ]; then
+    echo "Error: System prompt not found at $PROMPT_PATH" >&2
+    exit 1
+  fi
+
+  # Read prompt and remove Windows CRLF
+  PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
+
+  exec claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 fi
-
-# Read prompt and remove Windows CRLF
-PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
-
-exec claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 '''
             else:
                 # No system prompt, only settings
@@ -2317,22 +2331,39 @@ exec claude "$@" --settings "$SETTINGS_WIN"
 # This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
-PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
-
-if [ ! -f "$PROMPT_PATH" ]; then
-    echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
-    echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
-    exit 1
-fi
-
-echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-
-# Read the prompt content
-PROMPT_CONTENT=$(cat "$PROMPT_PATH")
 SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 
-# Pass any additional arguments to Claude
-claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+# Check if --continue or --resume is in the arguments
+HAS_CONTINUE=false
+for arg in "$@"; do
+  if [[ "$arg" == "--continue" || "$arg" == "-c" || "$arg" == "--resume" || "$arg" == "-r" ]]; then
+    HAS_CONTINUE=true
+    break
+  fi
+done
+
+if [ "$HAS_CONTINUE" = true ]; then
+  # Continue mode: don't override the system prompt, let the conversation's original prompt be used
+  echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
+  claude "$@" --settings "$SETTINGS_PATH"
+else
+  # New session mode: apply custom system prompt
+  PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
+
+  if [ ! -f "$PROMPT_PATH" ]; then
+      echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
+      echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
+      exit 1
+  fi
+
+  echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+
+  # Read the prompt content
+  PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+  # Pass any additional arguments to Claude
+  claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+fi
 '''
             else:
                 launcher_content = f'''#!/usr/bin/env bash
