@@ -2286,7 +2286,7 @@ fi
 # Read prompt and remove Windows CRLF
 PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
 
-exec claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
+exec claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 '''
             else:
                 # No system prompt, only settings
@@ -2297,7 +2297,7 @@ set -euo pipefail
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
-exec claude --settings "$SETTINGS_WIN" "$@"
+exec claude "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -2332,12 +2332,7 @@ PROMPT_CONTENT=$(cat "$PROMPT_PATH")
 SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 
 # Pass any additional arguments to Claude
-if [ $# -gt 0 ]; then
-    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
-    claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
-else
-    claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
-fi
+claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
 '''
             else:
                 launcher_content = f'''#!/usr/bin/env bash
@@ -2350,12 +2345,7 @@ SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
-if [ $# -gt 0 ]; then
-    echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
-    claude --settings "$SETTINGS_PATH" "$@"
-else
-    claude --settings "$SETTINGS_PATH"
-fi
+claude "$@" --settings "$SETTINGS_PATH"
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
