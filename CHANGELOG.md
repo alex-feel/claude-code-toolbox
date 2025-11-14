@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.0.1...v4.1.0) (2025-11-14)
+
+
+### Features
+
+* add conditional system prompt loading for session continuity ([0e25808](https://github.com/alex-feel/claude-code-toolbox/commit/0e2580899fda146b0632b9d6ac362a138aa71617))
+
+
+### Bug Fixes
+
+* correct system prompt handling for session continuation ([8a5bb3b](https://github.com/alex-feel/claude-code-toolbox/commit/8a5bb3bb440ac5b69f2cea0c0ac4c8f40a40e7f7))
+
 ## [4.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.0.0...v4.0.1) (2025-11-14)
 
 
