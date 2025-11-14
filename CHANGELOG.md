@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.2...v4.0.0) (2025-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* Output-style configuration is completely removed. Users must migrate to the new system-prompt mode field.
+
+### Features
+
+* remove output-style support and add system-prompt mode field ([43e100a](https://github.com/alex-feel/claude-code-toolbox/commit/43e100aad80bd3de333607dfe2491d674c13f86a))
+
 ## [3.8.2](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.1...v3.8.2) (2025-10-23)
 
 
