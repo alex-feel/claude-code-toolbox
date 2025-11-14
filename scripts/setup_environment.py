@@ -513,16 +513,6 @@ def validate_all_config_files(
                 resolved_path, is_remote = resolve_resource_path(cmd_item, config_source, base_url)
                 files_to_check.append(('slash_command', cmd_item, resolved_path, is_remote))
 
-    # Output styles
-    styles_raw = config.get('output-styles', [])
-    if isinstance(styles_raw, list):
-        # Cast to typed list for pyright
-        styles_list = cast(list[object], styles_raw)
-        for style_item in styles_list:
-            if isinstance(style_item, str):
-                resolved_path, is_remote = resolve_resource_path(style_item, config_source, base_url)
-                files_to_check.append(('output_style', style_item, resolved_path, is_remote))
-
     # System prompts from command-defaults
     command_defaults = config.get('command-defaults', {})
     if command_defaults and command_defaults.get('system-prompt'):
@@ -1463,45 +1453,6 @@ def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def resolve_output_style_name(
-    output_style_ref: str,
-    output_styles_dir: Path,
-) -> str:
-    """Resolve the actual output style name from the file's front matter.
-
-    Args:
-        output_style_ref: Reference to output style (filename without extension or style name)
-        output_styles_dir: Directory containing output style files
-
-    Returns:
-        str: The actual style name from front matter, or cleaned reference as fallback
-    """
-    # Remove .md extension if present
-    base_name = output_style_ref.replace('.md', '')
-
-    # Try to find the output style file
-    possible_files = [
-        output_styles_dir / f'{base_name}.md',
-        output_styles_dir / base_name,  # In case it's already a full filename
-    ]
-
-    for file_path in possible_files:
-        if file_path.exists():
-            # Try to extract name from front matter
-            front_matter = extract_front_matter(file_path)
-            if front_matter and 'name' in front_matter:
-                resolved_name = front_matter['name']
-                if resolved_name != base_name:
-                    info(f'Resolved output style name: {base_name} → {resolved_name}')
-                return str(resolved_name)
-            warning(f'No front matter or name field in {file_path}, using filename')
-            return base_name
-
-    # File not found, return cleaned reference
-    warning(f'Output style file not found for "{output_style_ref}", using as-is')
-    return base_name
-
-
 def handle_resource(
     resource_path: str,
     destination: Path,
@@ -2050,14 +2001,12 @@ def create_additional_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
     command_name: str,
-    output_style: str | None = None,
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
     config_source: str | None = None,
     base_url: str | None = None,
     auth_param: str | None = None,
-    output_styles_dir: Path | None = None,
     include_co_authored_by: bool | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
@@ -2069,10 +2018,13 @@ def create_additional_settings(
         hooks: Hooks configuration dictionary with 'files' and 'events' keys
         claude_user_dir: Path to Claude user directory
         command_name: Name of the command for the environment-specific settings file
-        output_style: Optional output style filename (without extension) to set as default
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
+        config_source: Optional config source for resolving resource paths
+        base_url: Optional base URL for resolving resources
+        auth_param: Optional authentication parameter
+        include_co_authored_by: Optional flag to include co-authored-by in commits
 
     Returns:
         bool: True if successful, False otherwise.
@@ -2086,18 +2038,6 @@ def create_additional_settings(
     if model:
         settings['model'] = model
         info(f'Setting model: {model}')
-
-    # Add output style if specified
-    if output_style:
-        # Resolve the actual style name from front matter
-        if output_styles_dir:
-            style_name = resolve_output_style_name(output_style, output_styles_dir)
-        else:
-            # If directory not provided, just strip .md extension
-            style_name = output_style.replace('.md', '')
-
-        settings['outputStyle'] = style_name
-        info(f'Setting default output style: {style_name}')
 
     # Handle permissions from configuration
     final_permissions = {}
@@ -2247,6 +2187,7 @@ def create_launcher_script(
     claude_user_dir: Path,
     command_name: str,
     system_prompt_file: str | None = None,
+    mode: str = 'replace',
 ) -> Path | None:
     """Create launcher script for starting Claude with optional system prompt.
 
@@ -2254,6 +2195,7 @@ def create_launcher_script(
         claude_user_dir: Path to Claude user directory
         command_name: Name of the command to create launcher for
         system_prompt_file: Optional system prompt filename (if None, only settings are used)
+        mode: System prompt mode ('append' or 'replace'), defaults to 'replace'
 
     Returns:
         Path to launcher script if created successfully, None otherwise
@@ -2322,6 +2264,9 @@ if "%~1"=="" (
             # Create shared POSIX script that actually launches Claude
             shared_sh = claude_user_dir / f'launch-{command_name}.sh'
 
+            # Determine which flag to use based on mode
+            prompt_flag = '--system-prompt' if mode == 'replace' else '--append-system-prompt'
+
             # Build the exec command based on whether system prompt is provided
             if system_prompt_file:
                 shared_sh_content = f'''#!/usr/bin/env bash
@@ -2341,7 +2286,7 @@ fi
 # Read prompt and remove Windows CRLF
 PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
 
-exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
+exec claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
 '''
             else:
                 # No system prompt, only settings
@@ -2362,6 +2307,9 @@ exec claude --settings "$SETTINGS_WIN" "$@"
         else:
             # Create bash launcher for Unix-like systems
             launcher_path = launcher_path.with_suffix('.sh')
+
+            # Determine which flag to use based on mode
+            prompt_flag = '--system-prompt' if mode == 'replace' else '--append-system-prompt'
 
             if system_prompt_file:
                 launcher_content = f'''#!/usr/bin/env bash
@@ -2386,9 +2334,9 @@ SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 # Pass any additional arguments to Claude
 if [ $# -gt 0 ]; then
     echo -e "\\033[0;36mPassing additional arguments: $@\\033[0m"
-    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
+    claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_PATH" "$@"
 else
-    claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
+    claude {prompt_flag} "$PROMPT_CONTENT" --settings "$SETTINGS_PATH"
 fi
 '''
             else:
@@ -2676,8 +2624,13 @@ def main() -> None:
 
         # Extract command defaults
         command_defaults = config.get('command-defaults', {})
-        output_style = command_defaults.get('output-style')
         system_prompt = command_defaults.get('system-prompt')
+        mode = command_defaults.get('mode', 'replace')  # Default to 'replace'
+
+        # Validate mode value
+        if mode not in ['append', 'replace']:
+            error(f"Invalid mode value: {mode}. Must be 'append' or 'replace'")
+            sys.exit(1)
 
         # Extract model configuration
         model = config.get('model')
@@ -2742,7 +2695,6 @@ def main() -> None:
         agents_dir = claude_user_dir / 'agents'
         commands_dir = claude_user_dir / 'commands'
         prompts_dir = claude_user_dir / 'prompts'
-        output_styles_dir = claude_user_dir / 'output-styles'
         hooks_dir = claude_user_dir / 'hooks'
 
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
@@ -2762,7 +2714,7 @@ def main() -> None:
         # Step 2: Create directories
         print()
         print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, output_styles_dir, hooks_dir]:
+        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, hooks_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
@@ -2793,16 +2745,7 @@ def main() -> None:
         commands = config.get('slash-commands', [])
         process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 7: Process output styles
-        print()
-        print(f'{Colors.CYAN}Step 7: Processing output styles...{Colors.NC}')
-        output_styles = config.get('output-styles', [])
-        if output_styles:
-            process_resources(output_styles, output_styles_dir, 'output styles', config_source, base_url, args.auth)
-        else:
-            info('No output styles configured')
-
-        # Step 8: Process system prompt (if specified)
+        # Step 7: Process system prompt (if specified)
         print()
         print(f'{Colors.CYAN}Step 8: Processing system prompt...{Colors.NC}')
         prompt_path = None
@@ -2831,26 +2774,24 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 10: Configure hooks and output style
+            # Step 9: Configure hooks and settings
             print()
-            print(f'{Colors.CYAN}Step 10: Configuring hooks and settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
             hooks = config.get('hooks', {})
             create_additional_settings(
                 hooks,
                 claude_user_dir,
                 command_name,
-                output_style,
                 model,
                 permissions,
                 env_variables,
                 config_source,
                 base_url,
                 args.auth,
-                output_styles_dir,
                 include_co_authored_by,
             )
 
-            # Step 11: Create launcher script
+            # Step 10: Create launcher script
             print()
             print(f'{Colors.CYAN}Step 11: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
@@ -2858,7 +2799,7 @@ def main() -> None:
             if system_prompt:
                 clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
                 prompt_filename = Path(clean_prompt).name
-            launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename)
+            launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename, mode)
 
             # Step 12: Register global command
             if launcher_path:
@@ -2886,9 +2827,6 @@ def main() -> None:
         print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
-        print(f'   * Output styles: {len(output_styles) if output_styles else 0} installed')
-        if output_style:
-            print(f'   * Default output style: {output_style}')
         if system_prompt:
             print('   * Additional system prompt: Configured')
         if model:
@@ -2929,7 +2867,6 @@ def main() -> None:
         print('   * /agents - Manage subagents')
         print('   * /hooks - Manage hooks')
         print('   * /mcp - Manage MCP servers')
-        print('   * /output-style - Choose or manage output styles')
         print('   * /<slash-command> - Run specific slash command')
 
         print()

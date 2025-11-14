@@ -1010,7 +1010,7 @@ class TestCreateLauncherScriptEdgeCases:
 
     @patch('platform.system', return_value='Linux')
     def test_create_launcher_linux_with_prompt(self, _mock_system):
-        """Test creating Linux launcher with system prompt."""
+        """Test creating Linux launcher with system prompt (default mode='replace')."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -1023,7 +1023,85 @@ class TestCreateLauncherScriptEdgeCases:
             assert launcher is not None
             content = launcher.read_text()
             assert 'custom-prompt.md' in content
+            assert '--system-prompt' in content  # Default mode is 'replace'
+
+    @patch('platform.system', return_value='Linux')
+    def test_create_launcher_with_mode_append(self, _mock_system):
+        """Test creating launcher with mode='append'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-env',
+                'prompt.md',
+                mode='append',
+            )
+
+            assert launcher is not None
+            content = launcher.read_text()
+            assert 'prompt.md' in content
             assert '--append-system-prompt' in content
+            assert '--system-prompt' not in content or '--append-system-prompt' in content
+
+    @patch('platform.system', return_value='Linux')
+    def test_create_launcher_with_mode_replace(self, _mock_system):
+        """Test creating launcher with explicit mode='replace'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-env',
+                'prompt.md',
+                mode='replace',
+            )
+
+            assert launcher is not None
+            content = launcher.read_text()
+            assert 'prompt.md' in content
+            assert '--system-prompt' in content
+            assert '--append-system-prompt' not in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_create_launcher_windows_mode_append(self, _mock_system):
+        """Test creating Windows launcher with mode='append'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-env',
+                'prompt.md',
+                mode='append',
+            )
+
+            assert launcher is not None
+            # Check shared script for correct flag
+            shared_script = claude_dir / 'launch-test-env.sh'
+            content = shared_script.read_text()
+            assert '--append-system-prompt' in content
+            assert 'exec claude --append-system-prompt' in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_create_launcher_windows_mode_replace(self, _mock_system):
+        """Test creating Windows launcher with mode='replace'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-env',
+                'prompt.md',
+                mode='replace',
+            )
+
+            assert launcher is not None
+            # Check shared script for correct flag
+            shared_script = claude_dir / 'launch-test-env.sh'
+            content = shared_script.read_text()
+            assert '--system-prompt' in content
+            assert 'exec claude --system-prompt' in content
 
     def test_create_launcher_script_exception(self):
         """Test launcher creation with exception."""
@@ -1275,9 +1353,7 @@ class TestMainFunctionErrorPaths:
                 },
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
-                'output-styles': ['styles/test.md'],
                 'command-defaults': {
-                    'output-style': 'test-style',
                     'system-prompt': 'prompts/test.md',
                 },
                 'mcp-servers': [

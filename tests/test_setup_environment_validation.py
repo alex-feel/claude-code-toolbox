@@ -313,7 +313,6 @@ class TestValidateAllConfigFiles:
         config = {
             'agents': ['agent.md'],
             'slash-commands': ['cmd1.py', 'cmd2.py'],
-            'output-styles': ['style.md'],
             'command-defaults': {
                 'system-prompt': 'prompt.md',
             },
@@ -328,7 +327,6 @@ class TestValidateAllConfigFiles:
             ('https://example.com/agent.md', True),  # Remote
             ('/local/path/cmd1.py', False),  # Local
             ('https://example.com/cmd2.py', True),  # Remote
-            ('/local/path/style.md', False),  # Local
             ('https://example.com/prompt.md', True),  # Remote
             ('/local/path/hook1.py', False),  # Local
             ('https://example.com/hook2.py', True),  # Remote
@@ -336,7 +334,7 @@ class TestValidateAllConfigFiles:
 
         # Mock local file checks
         mock_path = MagicMock()
-        mock_path.exists.side_effect = [True, True, True]  # All local files exist
+        mock_path.exists.side_effect = [True, True]  # All local files exist
         mock_path.is_file.return_value = True
         mock_path_cls.return_value = mock_path
 
@@ -355,15 +353,14 @@ class TestValidateAllConfigFiles:
         )
 
         assert all_valid is True
-        assert len(results) == 7
+        assert len(results) == 6
         # Check result types and validation methods
         assert results[0] == ('agent', 'agent.md', True, 'HEAD')  # Remote
         assert results[1] == ('slash_command', 'cmd1.py', True, 'Local')  # Local
         assert results[2] == ('slash_command', 'cmd2.py', True, 'Range')  # Remote
-        assert results[3] == ('output_style', 'style.md', True, 'Local')  # Local
-        assert results[4] == ('system_prompt', 'prompt.md', True, 'HEAD')  # Remote
-        assert results[5] == ('hook', 'hook1.py', True, 'Local')  # Local
-        assert results[6] == ('hook', 'hook2.py', True, 'HEAD')  # Remote
+        assert results[3] == ('system_prompt', 'prompt.md', True, 'HEAD')  # Remote
+        assert results[4] == ('hook', 'hook1.py', True, 'Local')  # Local
+        assert results[5] == ('hook', 'hook2.py', True, 'HEAD')  # Remote
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
@@ -523,7 +520,6 @@ class TestValidateAllConfigFiles:
         config = {
             'agents': [],
             'slash-commands': None,
-            'output-styles': [],
             'hooks': {
                 'files': None,
             },

@@ -54,7 +54,6 @@ def sample_environment_config() -> dict[str, Any]:
             },
         ],
         'slash-commands': ['commands/test-command.md'],
-        'output-styles': ['styles/test-style.md'],
         'hooks': {
             'files': ['hooks/test-hook.py'],
             'events': [
@@ -73,7 +72,8 @@ def sample_environment_config() -> dict[str, Any]:
             'allow': ['mcp__test'],
         },
         'command-defaults': {
-            'output-style': 'test-style',
+            'system-prompt': 'prompts/test-prompt.md',
+            'mode': 'replace',  # Optional: 'append' or 'replace' (default: 'replace')
         },
     }
 
