@@ -2264,11 +2264,9 @@ if "%~1"=="" (
             # Create shared POSIX script that actually launches Claude
             shared_sh = claude_user_dir / f'launch-{command_name}.sh'
 
-            # Determine which flag to use based on mode
-            prompt_flag = '--system-prompt' if mode == 'replace' else '--append-system-prompt'
-
             # Build the exec command based on whether system prompt is provided
             if system_prompt_file:
+                # Load prompt file first (common for both modes)
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
@@ -2276,7 +2274,20 @@ set -euo pipefail
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
-# Check if --continue or --resume is in the arguments
+PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
+if [ ! -f "$PROMPT_PATH" ]; then
+  echo "Error: System prompt not found at $PROMPT_PATH" >&2
+  exit 1
+fi
+
+# Read prompt and remove Windows CRLF
+PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
+
+'''
+                # Add mode-specific logic
+                if mode == 'replace':
+                    # Replace mode: Check for continuation flags and use appropriate flag
+                    shared_sh_content += '''# Replace mode: Check for continuation flags
 HAS_CONTINUE=false
 for arg in "$@"; do
   if [[ "$arg" == "--continue" || "$arg" == "-c" || "$arg" == "--resume" || "$arg" == "-r" ]]; then
@@ -2286,21 +2297,17 @@ for arg in "$@"; do
 done
 
 if [ "$HAS_CONTINUE" = true ]; then
-  # Continue mode: don't override the system prompt, let the conversation's original prompt be used
-  exec claude "$@" --settings "$SETTINGS_WIN"
+  # Continuation: use --append-system-prompt (only flag that works with --continue)
+  exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 else
-  # New session mode: apply custom system prompt
-  PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
-  if [ ! -f "$PROMPT_PATH" ]; then
-    echo "Error: System prompt not found at $PROMPT_PATH" >&2
-    exit 1
-  fi
-
-  # Read prompt and remove Windows CRLF
-  PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
-
-  exec claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+  # New session: use --system-prompt to replace
+  exec claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 fi
+'''
+                else:  # mode == 'append'
+                    # Append mode: always use --append-system-prompt
+                    shared_sh_content += '''# Append mode: always use --append-system-prompt
+exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
 '''
             else:
                 # No system prompt, only settings
@@ -2322,18 +2329,30 @@ exec claude "$@" --settings "$SETTINGS_WIN"
             # Create bash launcher for Unix-like systems
             launcher_path = launcher_path.with_suffix('.sh')
 
-            # Determine which flag to use based on mode
-            prompt_flag = '--system-prompt' if mode == 'replace' else '--append-system-prompt'
-
             if system_prompt_file:
+                # Load prompt file first (common for both modes)
                 launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
 SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
+PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
 
-# Check if --continue or --resume is in the arguments
+if [ ! -f "$PROMPT_PATH" ]; then
+    echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
+    echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
+    exit 1
+fi
+
+# Read the prompt content
+PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+
+'''
+                # Add mode-specific logic
+                if mode == 'replace':
+                    # Replace mode: Check for continuation flags and use appropriate flag
+                    launcher_content += f'''# Replace mode: Check for continuation flags
 HAS_CONTINUE=false
 for arg in "$@"; do
   if [[ "$arg" == "--continue" || "$arg" == "-c" || "$arg" == "--resume" || "$arg" == "-r" ]]; then
@@ -2343,27 +2362,20 @@ for arg in "$@"; do
 done
 
 if [ "$HAS_CONTINUE" = true ]; then
-  # Continue mode: don't override the system prompt, let the conversation's original prompt be used
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
-  claude "$@" --settings "$SETTINGS_PATH"
+  # Continuation: use --append-system-prompt (only flag that works with --continue)
+  claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
 else
-  # New session mode: apply custom system prompt
-  PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
-
-  if [ ! -f "$PROMPT_PATH" ]; then
-      echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
-      echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
-      exit 1
-  fi
-
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-
-  # Read the prompt content
-  PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-
-  # Pass any additional arguments to Claude
-  claude {prompt_flag} "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+  # New session: use --system-prompt to replace
+  claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
 fi
+'''
+                else:  # mode == 'append'
+                    # Append mode: always use --append-system-prompt
+                    launcher_content += f'''# Append mode: always use --append-system-prompt
+echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
 '''
             else:
                 launcher_content = f'''#!/usr/bin/env bash

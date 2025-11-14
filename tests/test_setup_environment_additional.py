@@ -1060,8 +1060,12 @@ class TestCreateLauncherScriptEdgeCases:
             assert launcher is not None
             content = launcher.read_text()
             assert 'prompt.md' in content
-            assert '--system-prompt' in content
-            assert '--append-system-prompt' not in content
+            # Replace mode uses conditional logic: both flags are present
+            assert '--system-prompt' in content  # For new sessions
+            assert '--append-system-prompt' in content  # For continuation
+            # Verify conditional logic exists
+            assert 'HAS_CONTINUE' in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
 
     @patch('platform.system', return_value='Windows')
     def test_create_launcher_windows_mode_append(self, _mock_system):
@@ -1097,11 +1101,15 @@ class TestCreateLauncherScriptEdgeCases:
             )
 
             assert launcher is not None
-            # Check shared script for correct flag
+            # Check shared script for correct flags
             shared_script = claude_dir / 'launch-test-env.sh'
             content = shared_script.read_text()
-            assert '--system-prompt' in content
-            assert 'exec claude --system-prompt' in content
+            # Replace mode uses conditional logic: both flags are present
+            assert '--system-prompt' in content  # For new sessions
+            assert '--append-system-prompt' in content  # For continuation
+            # Verify conditional logic exists
+            assert 'HAS_CONTINUE' in content
+            assert 'if [ "$HAS_CONTINUE" = true ]' in content
 
     def test_create_launcher_script_exception(self):
         """Test launcher creation with exception."""
@@ -1718,7 +1726,7 @@ class TestConditionalSystemPromptLoading:
             assert 'else' in content
             assert 'fi' in content
 
-            # Verify continue mode doesn't apply prompt
+            # Verify correct behavior in both branches
             lines = content.split('\n')
             in_continue_branch = False
             in_new_session_branch = False
@@ -1733,15 +1741,17 @@ class TestConditionalSystemPromptLoading:
                 elif 'fi' in line and (in_continue_branch or in_new_session_branch):
                     break
 
-                # In continue branch: should NOT have prompt loading
+                # In continue branch: should use --append-system-prompt (only flag that works with --continue)
                 if in_continue_branch and 'exec claude' in line:
-                    assert '--system-prompt' not in line
-                    assert 'PROMPT_CONTENT' not in line
+                    assert '--append-system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--system-prompt' not in line or '--append-system-prompt' in line
 
-                # In new session branch: should have prompt loading
+                # In new session branch: should use --system-prompt to replace
                 if in_new_session_branch and 'exec claude' in line:
                     assert '--system-prompt' in line
                     assert 'PROMPT_CONTENT' in line
+                    assert '--append-system-prompt' not in line
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_append_mode_conditional(self, _mock_system):
@@ -1815,7 +1825,7 @@ class TestConditionalSystemPromptLoading:
             assert 'else' in content
             assert 'fi' in content
 
-            # Verify continue mode doesn't apply prompt
+            # Verify correct behavior in both branches
             lines = content.split('\n')
             in_continue_branch = False
             in_new_session_branch = False
@@ -1830,15 +1840,17 @@ class TestConditionalSystemPromptLoading:
                 elif 'fi' in line and (in_continue_branch or in_new_session_branch):
                     break
 
-                # In continue branch: should NOT have prompt loading
+                # In continue branch: should use --append-system-prompt (only flag that works with --continue)
                 if in_continue_branch and 'claude ' in line and '--settings' in line:
-                    assert '--system-prompt' not in line
-                    assert 'PROMPT_CONTENT' not in line
+                    assert '--append-system-prompt' in line
+                    assert 'PROMPT_CONTENT' in line
+                    assert '--system-prompt' not in line or '--append-system-prompt' in line
 
-                # In new session branch: should have prompt loading
+                # In new session branch: should use --system-prompt to replace
                 if in_new_session_branch and 'claude ' in line and '--settings' in line:
                     assert '--system-prompt' in line
                     assert 'PROMPT_CONTENT' in line
+                    assert '--append-system-prompt' not in line
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_append_mode_conditional(self, _mock_system):
