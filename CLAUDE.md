@@ -30,8 +30,7 @@ YAML configurations define complete development environments including:
 - Agents (subagents for Claude Code)
 - MCP servers (with automatic permission pre-allowing)
 - Slash commands
-- Output styles (complete system prompt replacements)
-- System prompts (append to default prompt)
+- System prompts (with configurable mode: append or replace)
 - Hooks (event-driven scripts)
 
 ### Cross-Shell Command Registration (Windows)
@@ -108,14 +107,13 @@ uv run pytest
 
 **Testing workflow after code changes:**
 1. Make your code changes
-2. Run `uv run pytest` to check all tests pass (must be 312/312, not 311/312)
+2. Run `uv run pytest` to check all tests pass
 3. Fix any failing tests immediately
 4. Run `uv run pre-commit run --all-files` for code quality validation
-5. Only commit when ALL tests pass (312/312) and all pre-commit hooks pass
+5. Only commit when ALL tests pass and all pre-commit hooks pass
 
 **IMPORTANT:**
-- 312/312 tests passing is the ONLY acceptable result
-- 311/312 or any other number is a FAILURE
+- All tests must pass (100% pass rate)
 - Use ONLY `uv run pre-commit run --all-files` for code quality checks
 
 **Important:** Never skip the test suite. Even small changes can have unexpected impacts.
@@ -187,11 +185,21 @@ hooks:
           command: linter.py  # References filename from 'files'
 ```
 
-### System Prompts vs Output Styles
+### System Prompt Configuration
 
-- **system-prompt**: Appends to Claude's default development prompt (use `--append-system-prompt`)
-- **output-style**: Completely replaces the system prompt (use `--output-style`)
-- These are mutually exclusive in `command-defaults`
+The `command-defaults` section supports system prompt configuration with two modes:
+
+```yaml
+command-defaults:
+  system-prompt: "prompts/my-prompt.md"  # Path to the system prompt file
+  mode: "replace"  # Optional: "append" or "replace" (default: "replace")
+```
+
+**Mode Behavior:**
+- **mode: "replace"** (default): Completely replaces the default system prompt using `--system-prompt` flag (added in Claude Code v2.0.14)
+- **mode: "append"**: Appends to Claude's default development prompt using `--append-system-prompt` flag (added in Claude Code v1.0.55)
+
+**Important:** If `mode` is not specified, it defaults to `"replace"` for a clean slate experience.
 
 ## Testing Workflows
 

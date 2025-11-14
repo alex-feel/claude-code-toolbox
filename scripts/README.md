@@ -125,8 +125,7 @@ Configuration-driven environment setup that installs based on YAML files:
 - **Slash commands** specified in YAML
 - **MCP servers** with support for HTTP, SSE, and stdio transports
 - **Hooks** for automatic actions on events
-- **System prompts** for role-specific behavior
-- **Output styles** for formatted responses
+- **System prompts** with configurable mode (append or replace)
 - **Global commands** (e.g., `claude-python`) that work in all shells
 
 Example Python environment includes:
@@ -264,8 +263,7 @@ Directory structure created:
 ~/.claude/
 ├── agents/          # Subagent configurations
 ├── commands/        # Slash command definitions
-├── prompts/         # System prompts
-├── output-styles/   # Output style configurations
+├── prompts/         # System prompts (with mode: append/replace)
 ├── hooks/           # Event handler scripts
 └── start-<command-name>.{ps1,sh}  # Launcher script
 ```
