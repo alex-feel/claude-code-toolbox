@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.0.0...v4.0.1) (2025-11-14)
+
+
+### Bug Fixes
+
+* resolve system prompt application with command flags ([c67d4da](https://github.com/alex-feel/claude-code-toolbox/commit/c67d4da26738f59f6951c4cfa685729ac5247c34))
+
 ## [4.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v3.8.2...v4.0.0) (2025-11-14)
 
 
