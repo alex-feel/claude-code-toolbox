@@ -1129,11 +1129,12 @@ class TestRegisterGlobalCommandEdgeCases:
     """Test global command registration edge cases."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.run_command')
+    @patch('setup_environment.add_directory_to_windows_path')
     @patch.dict('os.environ', {'PATH': 'C:\\existing\\path'})
-    def test_register_global_command_windows_update_path(self, mock_run, _mock_system):
-        """Test updating PATH on Windows."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+    def test_register_global_command_windows_update_path(self, mock_add_path, _mock_system):
+        """Test updating PATH on Windows using registry-based function."""
+        # Mock the new registry-based PATH update function
+        mock_add_path.return_value = (True, 'Successfully added to PATH: C:\\local\\bin')
 
         with tempfile.TemporaryDirectory() as tmpdir, patch('pathlib.Path.home', return_value=Path(tmpdir)):
             launcher = Path(tmpdir) / 'launcher.ps1'
@@ -1142,9 +1143,11 @@ class TestRegisterGlobalCommandEdgeCases:
             result = setup_environment.register_global_command(launcher, 'test-cmd')
 
             assert result is True
-            # Check setx was called to update PATH
-            setx_called = any('setx' in str(call) for call in mock_run.call_args_list)
-            assert setx_called
+            # Verify the registry-based PATH update function was called
+            assert mock_add_path.called
+            # Check it was called with the correct directory
+            local_bin_path = str(Path(tmpdir) / '.local' / 'bin')
+            mock_add_path.assert_called_once_with(local_bin_path)
 
     @patch('platform.system', return_value='Windows')
     def test_register_global_command_windows_existing_wrappers(self, _mock_system):

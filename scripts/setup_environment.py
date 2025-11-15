@@ -23,12 +23,20 @@ import time
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
 
 import yaml
+
+# Platform-specific imports with proper type checking support
+if sys.platform == 'win32':
+    import winreg
+elif TYPE_CHECKING:
+    # This allows type checkers on non-Windows platforms to understand winreg types
+    import winreg  # noqa: F401
 
 
 # Helper function to detect if we're running in pytest
@@ -369,6 +377,104 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
                 return str(Path(expanded).resolve())
 
     return None
+
+
+def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
+    """Add a directory to the Windows user PATH environment variable.
+
+    This function properly reads the current PATH from the Windows registry,
+    checks if the directory is already present, and adds it if needed.
+    It handles PATH length limits and provides detailed error messages.
+
+    Args:
+        directory: The directory path to add to PATH (will be normalized)
+
+    Returns:
+        tuple[bool, str]: (success, message) - success status and detailed message
+
+    Note:
+        - Only works on Windows (returns False, error message on other platforms)
+        - Modifies the user PATH variable (HKEY_CURRENT_USER), not system PATH
+        - Updates both the registry and current session's os.environ['PATH']
+        - Windows has a 1024-character limit for environment variables via setx
+        - New terminals must be restarted to see the persistent changes
+    """
+    if sys.platform == 'win32':
+        try:
+            # Normalize the directory path
+            normalized_dir = str(Path(directory).resolve())
+
+            # Open the registry key for user environment variables
+            # HKEY_CURRENT_USER\Environment contains user-level environment variables
+            reg_key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Environment',
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE,
+            )
+
+            try:
+                # Read current PATH value from registry
+                current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
+            except FileNotFoundError:
+                # PATH variable doesn't exist in user registry, create it
+                current_path = ''
+
+            # Split PATH into components and normalize them for comparison
+            # Windows PATH separator is semicolon
+            path_components = [p.strip() for p in current_path.split(';') if p.strip()]
+            normalized_components = [str(Path(p).resolve()) if Path(p).exists() else p for p in path_components]
+
+            # Check if directory is already in PATH (case-insensitive on Windows)
+            normalized_dir_lower = normalized_dir.lower()
+            already_in_path = any(comp.lower() == normalized_dir_lower for comp in normalized_components)
+
+            if already_in_path:
+                winreg.CloseKey(reg_key)
+                # Still update current session in case it's not there yet
+                session_path = os.environ.get('PATH', '')
+                if normalized_dir not in session_path:
+                    os.environ['PATH'] = f'{normalized_dir};{session_path}'
+                return True, f'Directory already in PATH: {normalized_dir}'
+
+            # Add directory to PATH (prepend for higher priority)
+            new_path = f'{normalized_dir};{current_path}' if current_path else normalized_dir
+
+            # Check PATH length limit (setx has 1024 character limit)
+            # Registry itself can hold longer values, but setx command is limited
+            if len(new_path) > 1024:
+                winreg.CloseKey(reg_key)
+                return (
+                    False,
+                    f'PATH too long ({len(new_path)} chars, limit 1024). '
+                    f'Please manually add: {normalized_dir}',
+                )
+
+            # Write new PATH to registry
+            winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
+            winreg.CloseKey(reg_key)
+
+            # Update current session's PATH
+            os.environ['PATH'] = f'{normalized_dir};{os.environ.get("PATH", "")}'
+
+            # Broadcast WM_SETTINGCHANGE to notify other processes
+            # This is done via setx which broadcasts the change
+            # We use a dummy variable to trigger the broadcast without modifying anything
+            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+            subprocess.run(
+                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                capture_output=True,
+                check=False,
+            )
+
+            return True, f'Successfully added to PATH: {normalized_dir}'
+
+        except PermissionError:
+            return False, 'Permission denied. Try running with administrator privileges.'
+        except Exception as e:
+            return False, f'Failed to update PATH: {e}'
+    else:
+        return False, 'This function only works on Windows'
 
 
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
@@ -2450,28 +2556,24 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
             info('Created wrappers for all Windows shells (PowerShell, CMD, Git Bash)')
 
-            # Add .local/bin to PATH if not already there
-            user_path = os.environ.get('PATH', '')
+            # Add .local/bin to PATH using the robust registry-based function
             local_bin_str = str(local_bin)
-            if local_bin_str not in user_path:
-                # Update current session
-                os.environ['PATH'] = f'{local_bin_str};{user_path}'
+            path_success, path_message = add_directory_to_windows_path(local_bin_str)
 
-                # Update persistent user PATH (Windows only)
-                result = run_command(['setx', 'PATH', f'{local_bin_str};%PATH%'], capture_output=True)
-                if result.returncode == 0:
-                    success(f'Added {local_bin_str} to PATH')
-                    info('You may need to restart your terminal for PATH changes to take effect')
+            if path_success:
+                if 'already in PATH' in path_message:
+                    info(path_message)
                 else:
-                    warning(f'Failed to update PATH with setx: {result.stderr}')
-                    if not is_admin():
-                        info('This may be due to lack of admin rights or PATH length limits')
-                    info('')
-                    info('To manually add to PATH:')
-                    info('1. Open System Properties > Environment Variables')
-                    info('2. Edit the User PATH variable')
-                    info(f'3. Add: {local_bin_str}')
-                    info('4. Click OK and restart your terminal')
+                    success(path_message)
+                    info('You may need to restart your terminal for PATH changes to take effect')
+            else:
+                warning(f'Failed to add directory to PATH: {path_message}')
+                info('')
+                info('To manually add to PATH:')
+                info('1. Open System Properties > Environment Variables')
+                info('2. Edit the User PATH variable')
+                info(f'3. Add: {local_bin_str}')
+                info('4. Click OK and restart your terminal')
 
         else:
             # Create symlink in ~/.local/bin
