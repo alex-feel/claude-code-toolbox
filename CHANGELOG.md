@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.1...v4.1.2) (2025-11-15)
+
+
+### Bug Fixes
+
+* detect Node.js v25 incompatibility and npm permission issues ([18684f2](https://github.com/alex-feel/claude-code-toolbox/commit/18684f2283c821078b715cc9dde8b6c2140152bc))
+* improve PATH handling and system prompt summary messages ([54391e3](https://github.com/alex-feel/claude-code-toolbox/commit/54391e3c6fa4b9f50911f6d3c3657b6eeabf296b))
+
 ## [4.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.0...v4.1.1) (2025-11-15)
 
 
