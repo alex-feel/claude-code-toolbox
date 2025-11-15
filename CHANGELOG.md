@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.0...v4.1.1) (2025-11-15)
+
+
+### Bug Fixes
+
+* proper winreg typing for cross-platform type checking ([3397b84](https://github.com/alex-feel/claude-code-toolbox/commit/3397b84b4edd4dc12f1ffba1c3bf544ee9f616d1))
+* resolve MyPy unreachable code error by inverting platform check ([6fde60e](https://github.com/alex-feel/claude-code-toolbox/commit/6fde60e6641713766de28371bfd124a8367dde0f))
+* use Windows registry for reliable PATH registration ([532fe4d](https://github.com/alex-feel/claude-code-toolbox/commit/532fe4d6712722d306881426f54fe1a8a464dc46))
+
 ## [4.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.0.1...v4.1.0) (2025-11-14)
 
 
