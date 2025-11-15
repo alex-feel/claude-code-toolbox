@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.3...v4.1.4) (2025-11-15)
+
+
+### Bug Fixes
+
+* prevent Windows PATH pollution from temporary directories ([cb69080](https://github.com/alex-feel/claude-code-toolbox/commit/cb69080845a0866da82de831bbabaea38843823f))
+* resolve MyPy unreachable code error in cleanup function ([a87a884](https://github.com/alex-feel/claude-code-toolbox/commit/a87a88409238b394e05e034e0ae3b2907f8ac445))
+
 ## [4.1.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.2...v4.1.3) (2025-11-15)
 
 
