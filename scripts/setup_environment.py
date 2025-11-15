@@ -477,6 +477,32 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
         return False, 'This function only works on Windows'
 
 
+def ensure_local_bin_in_path() -> None:
+    """Ensure .local/bin is in PATH for Windows systems.
+
+    This is called early to prevent uv tool warnings about PATH.
+    On Windows, .local/bin must be added to PATH before installing dependencies
+    with 'uv tool install', otherwise uv displays warnings.
+
+    Note:
+        - Only runs on Windows (no-op on other platforms)
+        - Creates .local/bin directory if it doesn't exist
+        - Adds directory to Windows registry PATH
+        - Updates current session's os.environ['PATH']
+        - Provides user feedback only if PATH was newly added
+    """
+    if platform.system() != 'Windows':
+        return
+
+    local_bin = Path.home() / '.local' / 'bin'
+    local_bin.mkdir(parents=True, exist_ok=True)
+
+    path_success, path_message = add_directory_to_windows_path(str(local_bin))
+
+    if path_success and 'already in PATH' not in path_message:
+        info('Pre-configured .local/bin in PATH for tool installations')
+
+
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
     """Check if file exists using HEAD request.
 
@@ -2080,7 +2106,19 @@ exit $LASTEXITCODE
         if result.returncode == 0:
             success(f'MCP server {name} configured successfully!')
             return True
+
+        # Enhanced error detection for common issues
         error(f'MCP configuration failed with exit code: {result.returncode}')
+
+        # Check for Node.js v25 incompatibility signature
+        stderr_text = str(result.stderr) if result.stderr else ''
+        if 'TypeError' in stderr_text and 'prototype' in stderr_text:
+            error('This appears to be a Node.js v25 incompatibility issue')
+            error('Claude Code is not yet compatible with Node.js v25+')
+            info('Node.js v25 removed the SlowBuffer API that Claude Code depends on')
+            info('Please downgrade to Node.js v22 or v20 (LTS)')
+            return False
+
         if result.stderr:
             error(f'Error: {result.stderr}')
         return False
@@ -2853,6 +2891,9 @@ def main() -> None:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
+        # Ensure .local/bin is in PATH early to prevent uv tool warnings
+        ensure_local_bin_in_path()
+
         # Step 3: Download/copy custom files
         print()
         print(f'{Colors.CYAN}Step 3: Processing file downloads...{Colors.NC}')
@@ -2963,7 +3004,10 @@ def main() -> None:
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         if system_prompt:
-            print('   * Additional system prompt: Configured')
+            if mode == 'append':
+                print(f'   * System prompt: Appending to default ({system_prompt})')
+            else:  # mode == 'replace'
+                print(f'   * System prompt: Replacing default ({system_prompt})')
         if model:
             print(f'   * Model: {model}')
         print(f'   * MCP servers: {len(mcp_servers)} configured')

@@ -604,6 +604,46 @@ def get_node_version() -> str | None:
     return None
 
 
+def check_nodejs_compatibility() -> bool:
+    """Check if Node.js version is compatible with Claude Code.
+
+    Node.js v25+ removed the SlowBuffer API that Claude Code depends on,
+    causing TypeError when running MCP servers and other operations.
+
+    Returns:
+        True if Node.js version is compatible, False otherwise.
+    """
+    node_version = get_node_version()
+    if not node_version:
+        return False
+
+    version_match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', node_version)
+    if not version_match:
+        return False
+
+    major = int(version_match.group(1))
+
+    # Node.js v25+ is incompatible due to SlowBuffer removal (DEP0030)
+    if major >= 25:
+        error(f'Node.js {node_version} is incompatible with Claude Code')
+        error('Node.js v25+ removed the SlowBuffer API that Claude Code depends on')
+        info('Please downgrade to Node.js v22 or v20 (LTS)')
+        if platform.system() == 'Darwin':
+            info('On Mac: brew uninstall node && brew install node@22 && brew link --force --overwrite node@22')
+        elif platform.system() == 'Linux':
+            info('On Linux: Use nvm or n to install Node.js 22')
+            info('  nvm install 22 && nvm use 22')
+        elif platform.system() == 'Windows':
+            info('On Windows: Download Node.js 22 from https://nodejs.org/')
+        return False
+
+    if major < 18:
+        error(f'Node.js {node_version} is too old (minimum v18 required)')
+        return False
+
+    return True
+
+
 def install_nodejs_winget(scope: str = 'user') -> bool:
     """Install Node.js using winget on Windows."""
     if not check_winget():
@@ -842,6 +882,12 @@ def ensure_nodejs() -> bool:
     current_version = get_node_version()
     if current_version:
         info(f'Node.js {current_version} found')
+
+        # Check for Node.js compatibility (v25+ incompatibility)
+        if not check_nodejs_compatibility():
+            error('Node.js version is incompatible with Claude Code')
+            return False
+
         if compare_versions(current_version, MIN_NODE_VERSION):
             success(f'Node.js version meets minimum requirement (>= {MIN_NODE_VERSION})')
             return True
@@ -974,6 +1020,31 @@ def get_latest_claude_version() -> str | None:
     return None
 
 
+def needs_sudo_for_npm() -> bool:
+    """Check if npm global directory requires sudo on Unix-like systems.
+
+    Returns:
+        True if sudo is needed for npm global installation, False otherwise.
+    """
+    if platform.system() == 'Windows':
+        return False
+
+    npm_path = find_command('npm')
+    if not npm_path:
+        return False
+
+    # Get npm global installation directory
+    result = run_command([npm_path, 'config', 'get', 'prefix'], capture_output=True)
+    if result.returncode == 0:
+        prefix_path = Path(result.stdout.strip()) / 'lib' / 'node_modules'
+        # Check if we have write access to the directory
+        try:
+            return not os.access(prefix_path, os.W_OK)
+        except Exception:
+            return False
+    return False
+
+
 def install_claude_npm(upgrade: bool = False, version: str | None = None) -> bool:
     """Install Claude Code using npm.
 
@@ -1032,6 +1103,11 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     else:
         package_spec = f'{CLAUDE_NPM_PACKAGE}@latest'
         info(f'{action} Claude Code CLI (latest version) via npm (npm path: {npm_path})...')
+
+    # Check if sudo will be needed on Unix-like systems
+    will_need_sudo = platform.system() != 'Windows' and needs_sudo_for_npm()
+    if will_need_sudo:
+        info('Global npm directory requires elevated permissions')
 
     # Try without sudo first (show output for debugging)
     cmd = [npm_path, 'install', '-g', package_spec]
