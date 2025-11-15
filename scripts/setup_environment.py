@@ -399,82 +399,82 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
         - Windows has a 1024-character limit for environment variables via setx
         - New terminals must be restarted to see the persistent changes
     """
-    if sys.platform != 'win32':
-        return False, 'This function only works on Windows'
-
-    try:
-        # Normalize the directory path
-        normalized_dir = str(Path(directory).resolve())
-
-        # Open the registry key for user environment variables
-        # HKEY_CURRENT_USER\Environment contains user-level environment variables
-        reg_key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r'Environment',
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
-        )
-
+    if sys.platform == 'win32':
         try:
-            # Read current PATH value from registry
-            current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
-        except FileNotFoundError:
-            # PATH variable doesn't exist in user registry, create it
-            current_path = ''
+            # Normalize the directory path
+            normalized_dir = str(Path(directory).resolve())
 
-        # Split PATH into components and normalize them for comparison
-        # Windows PATH separator is semicolon
-        path_components = [p.strip() for p in current_path.split(';') if p.strip()]
-        normalized_components = [str(Path(p).resolve()) if Path(p).exists() else p for p in path_components]
-
-        # Check if directory is already in PATH (case-insensitive on Windows)
-        normalized_dir_lower = normalized_dir.lower()
-        already_in_path = any(comp.lower() == normalized_dir_lower for comp in normalized_components)
-
-        if already_in_path:
-            winreg.CloseKey(reg_key)
-            # Still update current session in case it's not there yet
-            session_path = os.environ.get('PATH', '')
-            if normalized_dir not in session_path:
-                os.environ['PATH'] = f'{normalized_dir};{session_path}'
-            return True, f'Directory already in PATH: {normalized_dir}'
-
-        # Add directory to PATH (prepend for higher priority)
-        new_path = f'{normalized_dir};{current_path}' if current_path else normalized_dir
-
-        # Check PATH length limit (setx has 1024 character limit)
-        # Registry itself can hold longer values, but setx command is limited
-        if len(new_path) > 1024:
-            winreg.CloseKey(reg_key)
-            return (
-                False,
-                f'PATH too long ({len(new_path)} chars, limit 1024). '
-                f'Please manually add: {normalized_dir}',
+            # Open the registry key for user environment variables
+            # HKEY_CURRENT_USER\Environment contains user-level environment variables
+            reg_key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Environment',
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE,
             )
 
-        # Write new PATH to registry
-        winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
-        winreg.CloseKey(reg_key)
+            try:
+                # Read current PATH value from registry
+                current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
+            except FileNotFoundError:
+                # PATH variable doesn't exist in user registry, create it
+                current_path = ''
 
-        # Update current session's PATH
-        os.environ['PATH'] = f'{normalized_dir};{os.environ.get("PATH", "")}'
+            # Split PATH into components and normalize them for comparison
+            # Windows PATH separator is semicolon
+            path_components = [p.strip() for p in current_path.split(';') if p.strip()]
+            normalized_components = [str(Path(p).resolve()) if Path(p).exists() else p for p in path_components]
 
-        # Broadcast WM_SETTINGCHANGE to notify other processes
-        # This is done via setx which broadcasts the change
-        # We use a dummy variable to trigger the broadcast without modifying anything
-        subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
-        subprocess.run(
-            ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
-            capture_output=True,
-            check=False,
-        )
+            # Check if directory is already in PATH (case-insensitive on Windows)
+            normalized_dir_lower = normalized_dir.lower()
+            already_in_path = any(comp.lower() == normalized_dir_lower for comp in normalized_components)
 
-        return True, f'Successfully added to PATH: {normalized_dir}'
+            if already_in_path:
+                winreg.CloseKey(reg_key)
+                # Still update current session in case it's not there yet
+                session_path = os.environ.get('PATH', '')
+                if normalized_dir not in session_path:
+                    os.environ['PATH'] = f'{normalized_dir};{session_path}'
+                return True, f'Directory already in PATH: {normalized_dir}'
 
-    except PermissionError:
-        return False, 'Permission denied. Try running with administrator privileges.'
-    except Exception as e:
-        return False, f'Failed to update PATH: {e}'
+            # Add directory to PATH (prepend for higher priority)
+            new_path = f'{normalized_dir};{current_path}' if current_path else normalized_dir
+
+            # Check PATH length limit (setx has 1024 character limit)
+            # Registry itself can hold longer values, but setx command is limited
+            if len(new_path) > 1024:
+                winreg.CloseKey(reg_key)
+                return (
+                    False,
+                    f'PATH too long ({len(new_path)} chars, limit 1024). '
+                    f'Please manually add: {normalized_dir}',
+                )
+
+            # Write new PATH to registry
+            winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
+            winreg.CloseKey(reg_key)
+
+            # Update current session's PATH
+            os.environ['PATH'] = f'{normalized_dir};{os.environ.get("PATH", "")}'
+
+            # Broadcast WM_SETTINGCHANGE to notify other processes
+            # This is done via setx which broadcasts the change
+            # We use a dummy variable to trigger the broadcast without modifying anything
+            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+            subprocess.run(
+                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                capture_output=True,
+                check=False,
+            )
+
+            return True, f'Successfully added to PATH: {normalized_dir}'
+
+        except PermissionError:
+            return False, 'Permission denied. Try running with administrator privileges.'
+        except Exception as e:
+            return False, f'Failed to update PATH: {e}'
+    else:
+        return False, 'This function only works on Windows'
 
 
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
