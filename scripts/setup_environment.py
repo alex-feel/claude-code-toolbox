@@ -449,6 +449,40 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             # Normalize the directory path
             normalized_dir = str(Path(directory).resolve())
 
+            # CRITICAL: Prevent adding temporary directory paths to PATH
+            # Temporary directories cause PATH pollution and don't persist
+            temp_dir_env = os.environ.get('TEMP', '').lower()
+            temp_dir_alt = os.environ.get('TMP', '').lower()
+            normalized_lower = normalized_dir.lower()
+
+            # Check if path is in a temp directory
+            if temp_dir_env and temp_dir_env in normalized_lower:
+                return (
+                    False,
+                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
+                )
+            if temp_dir_alt and temp_dir_alt in normalized_lower:
+                return (
+                    False,
+                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
+                )
+
+            # Additional check for common temp path patterns
+            if r'\appdata\local\temp\tmp' in normalized_lower:
+                return (
+                    False,
+                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
+                )
+
+            # Validate it's the expected .local\bin directory
+            expected_local_bin = str(Path.home() / '.local' / 'bin')
+            if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(Path.home()).lower()):
+                # Allow only paths under user's home directory
+                return (
+                    False,
+                    f'Refusing to add non-home directory to PATH: {normalized_dir}',
+                )
+
             # Open the registry key for user environment variables
             # HKEY_CURRENT_USER\Environment contains user-level environment variables
             reg_key = winreg.OpenKey(
@@ -546,6 +580,95 @@ def ensure_local_bin_in_path() -> None:
 
     if path_success and 'already in PATH' not in path_message:
         info('Pre-configured .local/bin in PATH for tool installations')
+
+
+def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
+    """Remove temporary directory paths from Windows PATH registry.
+
+    This function scans the user's PATH environment variable and removes any
+    entries that point to temporary directories. These paths are typically
+    added by mistake when scripts execute from temporary locations.
+
+    Returns:
+        tuple[int, list[str]]: (count of removed paths, list of removed path strings)
+
+    Note:
+        - Only works on Windows (returns (0, []) on other platforms)
+        - Modifies the user PATH variable (HKEY_CURRENT_USER), not system PATH
+        - Preserves the correct ~/.local/bin path
+        - Automatically detects temp paths using TEMP/TMP environment variables
+        - Also removes paths matching common temp patterns
+    """
+    if sys.platform != 'win32':
+        return 0, []
+
+    try:
+        removed_paths: list[str] = []
+        temp_dir_env = os.environ.get('TEMP', '').lower()
+        temp_dir_alt = os.environ.get('TMP', '').lower()
+
+        # Open the registry key for user environment variables
+        reg_key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r'Environment',
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        )
+
+        try:
+            current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
+        except FileNotFoundError:
+            # PATH variable doesn't exist, nothing to clean
+            winreg.CloseKey(reg_key)
+            return (0, [])
+
+        # Split PATH into components
+        path_components = [p.strip() for p in current_path.split(';') if p.strip()]
+        clean_components: list[str] = []
+
+        for path_entry in path_components:
+            path_lower = path_entry.lower()
+
+            # Check if this is a temporary directory path
+            is_temp_path = False
+
+            # Check against TEMP environment variable
+            if temp_dir_env and temp_dir_env in path_lower:
+                is_temp_path = True
+
+            # Check against TMP environment variable
+            if temp_dir_alt and temp_dir_alt in path_lower:
+                is_temp_path = True
+
+            # Check for common temp path patterns
+            if r'\appdata\local\temp\tmp' in path_lower:
+                is_temp_path = True
+
+            if is_temp_path:
+                removed_paths.append(path_entry)
+            else:
+                clean_components.append(path_entry)
+
+        # Update PATH if any temp paths were found
+        if removed_paths:
+            new_path = ';'.join(clean_components)
+            winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
+
+            # Broadcast WM_SETTINGCHANGE to notify other processes
+            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+            subprocess.run(
+                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                capture_output=True,
+                check=False,
+            )
+
+        winreg.CloseKey(reg_key)
+        return (len(removed_paths), removed_paths)
+
+    except Exception as e:
+        # Log error but don't fail the entire setup
+        warning(f'Failed to clean temporary paths from registry: {e}')
+        return (0, [])
 
 
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
@@ -2796,6 +2919,21 @@ def main() -> None:
         info('   or: CLAUDE_ENV_CONFIG=<config_name> setup_environment.py')
         info('Example: setup_environment.py python')
         sys.exit(1)
+
+    # Clean up any temporary directory paths from Windows PATH registry
+    # This must run early to remove pollution from previous script executions
+    if platform.system() == 'Windows':
+        removed_count, removed_paths = cleanup_temp_paths_from_registry()
+        if removed_count > 0:
+            print()
+            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+            print(f'{Colors.YELLOW}     PATH Cleanup{Colors.NC}')
+            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+            print()
+            success(f'Removed {removed_count} temporary directory path(s) from Windows PATH')
+            for path in removed_paths:
+                info(f'  Removed: {path}')
+            print()
 
     try:
         # Load configuration from source (URL, local file, or repository)

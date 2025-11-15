@@ -54,9 +54,16 @@ Write-Host ""
 $scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 
 try {
-    # Download the Python script to a temp file
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".py"
-    Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
+    # Create stable directory for downloaded scripts
+    # This prevents PATH pollution from temporary directory execution contexts
+    $toolboxDir = Join-Path $env:USERPROFILE '.claude-toolbox'
+    if (-not (Test-Path $toolboxDir)) {
+        New-Item -ItemType Directory -Path $toolboxDir -Force | Out-Null
+    }
+
+    # Download the Python script to stable location
+    $stableScript = Join-Path $toolboxDir 'setup_environment.py'
+    Invoke-WebRequest -Uri $scriptUrl -OutFile $stableScript -UseBasicParsing
 
     # Check if configuration is specified
     $config = if ($env:CLAUDE_ENV_CONFIG) { $env:CLAUDE_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
@@ -91,15 +98,16 @@ try {
     }
 
     # Run with uv (it will handle Python 3.12 installation automatically)
+    # Script runs from stable location to prevent PATH pollution
     if ($authArgs.Count -gt 0) {
-        & uv run --python 3.12 $tempScript $config @authArgs
+        & uv run --python 3.12 $stableScript $config @authArgs
     } else {
-        & uv run --python 3.12 $tempScript $config
+        & uv run --python 3.12 $stableScript $config
     }
     $exitCode = $LASTEXITCODE
 
-    # Clean up
-    Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+    # Keep the script in stable location for future use and debugging
+    # No cleanup needed - stable location is intentional
 
     exit $exitCode
 } catch {
