@@ -599,76 +599,76 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
         - Automatically detects temp paths using TEMP/TMP environment variables
         - Also removes paths matching common temp patterns
     """
-    if sys.platform != 'win32':
-        return 0, []
-
-    try:
-        removed_paths: list[str] = []
-        temp_dir_env = os.environ.get('TEMP', '').lower()
-        temp_dir_alt = os.environ.get('TMP', '').lower()
-
-        # Open the registry key for user environment variables
-        reg_key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r'Environment',
-            0,
-            winreg.KEY_READ | winreg.KEY_WRITE,
-        )
-
+    if sys.platform == 'win32':
         try:
-            current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
-        except FileNotFoundError:
-            # PATH variable doesn't exist, nothing to clean
-            winreg.CloseKey(reg_key)
-            return (0, [])
+            removed_paths: list[str] = []
+            temp_dir_env = os.environ.get('TEMP', '').lower()
+            temp_dir_alt = os.environ.get('TMP', '').lower()
 
-        # Split PATH into components
-        path_components = [p.strip() for p in current_path.split(';') if p.strip()]
-        clean_components: list[str] = []
-
-        for path_entry in path_components:
-            path_lower = path_entry.lower()
-
-            # Check if this is a temporary directory path
-            is_temp_path = False
-
-            # Check against TEMP environment variable
-            if temp_dir_env and temp_dir_env in path_lower:
-                is_temp_path = True
-
-            # Check against TMP environment variable
-            if temp_dir_alt and temp_dir_alt in path_lower:
-                is_temp_path = True
-
-            # Check for common temp path patterns
-            if r'\appdata\local\temp\tmp' in path_lower:
-                is_temp_path = True
-
-            if is_temp_path:
-                removed_paths.append(path_entry)
-            else:
-                clean_components.append(path_entry)
-
-        # Update PATH if any temp paths were found
-        if removed_paths:
-            new_path = ';'.join(clean_components)
-            winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
-
-            # Broadcast WM_SETTINGCHANGE to notify other processes
-            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
-            subprocess.run(
-                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
-                capture_output=True,
-                check=False,
+            # Open the registry key for user environment variables
+            reg_key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Environment',
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE,
             )
 
-        winreg.CloseKey(reg_key)
-        return (len(removed_paths), removed_paths)
+            try:
+                current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
+            except FileNotFoundError:
+                # PATH variable doesn't exist, nothing to clean
+                winreg.CloseKey(reg_key)
+                return 0, []
 
-    except Exception as e:
-        # Log error but don't fail the entire setup
-        warning(f'Failed to clean temporary paths from registry: {e}')
-        return (0, [])
+            # Split PATH into components
+            path_components = [p.strip() for p in current_path.split(';') if p.strip()]
+            clean_components: list[str] = []
+
+            for path_entry in path_components:
+                path_lower = path_entry.lower()
+
+                # Check if this is a temporary directory path
+                is_temp_path = False
+
+                # Check against TEMP environment variable
+                if temp_dir_env and temp_dir_env in path_lower:
+                    is_temp_path = True
+
+                # Check against TMP environment variable
+                if temp_dir_alt and temp_dir_alt in path_lower:
+                    is_temp_path = True
+
+                # Check for common temp path patterns
+                if r'\appdata\local\temp\tmp' in path_lower:
+                    is_temp_path = True
+
+                if is_temp_path:
+                    removed_paths.append(path_entry)
+                else:
+                    clean_components.append(path_entry)
+
+            # Update PATH if any temp paths were found
+            if removed_paths:
+                new_path = ';'.join(clean_components)
+                winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
+
+                # Broadcast WM_SETTINGCHANGE to notify other processes
+                subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+                subprocess.run(
+                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                    capture_output=True,
+                    check=False,
+                )
+
+            winreg.CloseKey(reg_key)
+            return (len(removed_paths), removed_paths)
+
+        except Exception as e:
+            # Log error but don't fail the entire setup
+            warning(f'Failed to clean temporary paths from registry: {e}')
+            return 0, []
+    else:
+        return 0, []
 
 
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
