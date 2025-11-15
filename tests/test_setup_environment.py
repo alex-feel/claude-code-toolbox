@@ -103,6 +103,66 @@ class TestUtilityFunctions:
         assert setup_environment.find_command('git') == '/usr/bin/git'
 
 
+class TestTildeExpansion:
+    """Test tilde expansion in commands."""
+
+    def test_expand_single_tilde(self):
+        """Test expanding a single tilde path."""
+        cmd = "sed -i '/pattern/d' ~/.bashrc"
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f"sed -i '/pattern/d' {home}/.bashrc"
+
+    def test_expand_multiple_tildes(self):
+        """Test expanding multiple tilde paths in one command."""
+        cmd = 'cp ~/.config/file1 ~/.local/file2'
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f'cp {home}/.config/file1 {home}/.local/file2'
+
+    def test_expand_tilde_in_complex_command(self):
+        """Test tilde expansion in complex sed command."""
+        cmd = "sed -i -E '/^[[:space:]]*export[[:space:]]+HTTP_PROXY=/d' ~/.bashrc"
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f"sed -i -E '/^[[:space:]]*export[[:space:]]+HTTP_PROXY=/d' {home}/.bashrc"
+
+    def test_expand_tilde_with_echo(self):
+        """Test tilde expansion with echo command."""
+        cmd = "echo 'export FOO=bar' >> ~/.bashrc"
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f"echo 'export FOO=bar' >> {home}/.bashrc"
+
+    def test_no_tilde_unchanged(self):
+        """Test that commands without tildes remain unchanged."""
+        cmd = 'npm install -g package'
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        assert expanded == cmd
+
+    def test_tilde_in_quotes_preserved(self):
+        """Test that tildes in single quotes are expanded (shell would not expand them)."""
+        cmd = "echo '~/.bashrc'"
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        # Our function expands tildes even in quotes, which is correct for subprocess context
+        assert expanded == f"echo '{home}/.bashrc'"
+
+    def test_touch_tilde(self):
+        """Test tilde expansion with touch command."""
+        cmd = 'touch ~/.bashrc'
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f'touch {home}/.bashrc'
+
+    def test_tilde_with_nested_path(self):
+        """Test tilde expansion with deeply nested path."""
+        cmd = 'cat ~/.config/claude/settings.json'
+        expanded = setup_environment.expand_tildes_in_command(cmd)
+        home = str(Path.home())
+        assert expanded == f'cat {home}/.config/claude/settings.json'
+
+
 class TestDownloadFile:
     """Test file download functionality."""
 

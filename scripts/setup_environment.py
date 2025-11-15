@@ -379,6 +379,51 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     return None
 
 
+def expand_tildes_in_command(command: str) -> str:
+    """Expand tilde paths in a shell command.
+
+    When commands are executed via subprocess with shell=False or wrapped in bash -c,
+    the shell's tilde expansion doesn't occur. This function explicitly expands
+    tilde paths to their absolute equivalents using os.path.expanduser.
+
+    Args:
+        command: Shell command that may contain tilde paths
+
+    Returns:
+        Command with expanded tilde paths
+
+    Examples:
+        >>> expand_tildes_in_command("sed -i '/pattern/d' ~/.bashrc")
+        "sed -i '/pattern/d' /home/user/.bashrc"
+
+        >>> expand_tildes_in_command("echo 'text' >> ~/.config/file")
+        "echo 'text' >> /home/user/.config/file"
+    """
+    import re
+
+    # Pattern matches ~ and ~username paths
+    # Matches: ~ followed by optional username, then slash and path components
+    # Examples: ~/.bashrc, ~/dir/file, ~user/.config
+    tilde_pattern = r'(~[^/\s]*(?:/[^\s]*)?)'
+
+    def expand_match(match: re.Match[str]) -> str:
+        """Expand a single tilde path match."""
+        path = match.group(1)
+        try:
+            # os.path.expanduser handles both ~ and ~username
+            expanded = os.path.expanduser(path)
+            # Only return expanded path if expansion actually occurred
+            # This prevents expanding tildes in strings like "~test" that aren't paths
+            if expanded != path:
+                return expanded
+            return path
+        except Exception:
+            # If expansion fails for any reason, return original path
+            return path
+
+    return re.sub(tilde_pattern, expand_match, command)
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -1446,15 +1491,21 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                         # Execute all translated commands (may be multiple for dual-shell)
                         for translated_dep in translated_deps:
                             info(f'Running: {translated_dep}')
-                            result = run_command(['bash', '-c', translated_dep], capture_output=False)
+                            # Expand tilde paths before execution
+                            expanded_dep = expand_tildes_in_command(translated_dep)
+                            result = run_command(['bash', '-c', expanded_dep], capture_output=False)
                             if result.returncode != 0:
                                 error(f'Failed to execute: {translated_dep}')
                                 warning('Continuing with other dependencies...')
                     else:
                         # Non-shell config command, execute normally
-                        result = run_command(['bash', '-c', dep], capture_output=False)
+                        # Expand tilde paths before execution
+                        expanded_dep = expand_tildes_in_command(dep)
+                        result = run_command(['bash', '-c', expanded_dep], capture_output=False)
                 else:
-                    result = run_command(['bash', '-c', dep], capture_output=False)
+                    # Expand tilde paths before execution
+                    expanded_dep = expand_tildes_in_command(dep)
+                    result = run_command(['bash', '-c', expanded_dep], capture_output=False)
 
         if result and result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
