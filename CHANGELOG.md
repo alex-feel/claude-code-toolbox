@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.2...v4.1.3) (2025-11-15)
+
+
+### Bug Fixes
+
+* ensure uv-managed Python 3.12 is used regardless of system Python version ([9fbf4a5](https://github.com/alex-feel/claude-code-toolbox/commit/9fbf4a5c3558c79b65b766b05f6f8e0588671b65))
+* expand tilde paths in dependency commands for proper execution ([5c0db4a](https://github.com/alex-feel/claude-code-toolbox/commit/5c0db4acba45631e3049a8489e912a96cd0a6c66))
+
 ## [4.1.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.1...v4.1.2) (2025-11-15)
 
 
