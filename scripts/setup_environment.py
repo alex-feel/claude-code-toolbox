@@ -23,12 +23,20 @@ import time
 import urllib.error
 import urllib.parse
 from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
 
 import yaml
+
+# Platform-specific imports with proper type checking support
+if sys.platform == 'win32':
+    import winreg
+elif TYPE_CHECKING:
+    # This allows type checkers on non-Windows platforms to understand winreg types
+    import winreg  # noqa: F401
 
 
 # Helper function to detect if we're running in pytest
@@ -391,12 +399,8 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
         - Windows has a 1024-character limit for environment variables via setx
         - New terminals must be restarted to see the persistent changes
     """
-    if platform.system() != 'Windows':
+    if sys.platform != 'win32':
         return False, 'This function only works on Windows'
-
-    # Import winreg here to avoid issues on non-Windows platforms
-    # This also satisfies type checkers since it's guaranteed to exist when we reach this code
-    import winreg
 
     try:
         # Normalize the directory path
