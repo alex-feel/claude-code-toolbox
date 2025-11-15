@@ -2106,7 +2106,19 @@ exit $LASTEXITCODE
         if result.returncode == 0:
             success(f'MCP server {name} configured successfully!')
             return True
+
+        # Enhanced error detection for common issues
         error(f'MCP configuration failed with exit code: {result.returncode}')
+
+        # Check for Node.js v25 incompatibility signature
+        stderr_text = str(result.stderr) if result.stderr else ''
+        if 'TypeError' in stderr_text and 'prototype' in stderr_text:
+            error('This appears to be a Node.js v25 incompatibility issue')
+            error('Claude Code is not yet compatible with Node.js v25+')
+            info('Node.js v25 removed the SlowBuffer API that Claude Code depends on')
+            info('Please downgrade to Node.js v22 or v20 (LTS)')
+            return False
+
         if result.stderr:
             error(f'Error: {result.stderr}')
         return False

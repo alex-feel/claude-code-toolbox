@@ -645,12 +645,14 @@ class TestClaudeInstallation:
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.find_command', return_value='npm')
+    @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
-    def test_install_claude_npm_sudo_fallback(self, mock_run, mock_find, mock_system):
+    def test_install_claude_npm_sudo_fallback(self, mock_run, mock_needs_sudo, mock_find, mock_system):
         """Test Claude installation with sudo fallback."""
         # Verify mock configurations
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == 'npm'
+        assert mock_needs_sudo.return_value is True
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'permission denied'),
             subprocess.CompletedProcess([], 0, '', ''),
