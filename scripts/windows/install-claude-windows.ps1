@@ -47,16 +47,24 @@ Write-Host ""
 $scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 try {
-    # Download the Python script to a temp file
-    $tempScript = [System.IO.Path]::GetTempFileName() + ".py"
-    Invoke-WebRequest -Uri $scriptUrl -OutFile $tempScript -UseBasicParsing
+    # Create stable directory for downloaded scripts
+    # This prevents PATH pollution from temporary directory execution contexts
+    $toolboxDir = Join-Path $env:USERPROFILE '.claude-toolbox'
+    if (-not (Test-Path $toolboxDir)) {
+        New-Item -ItemType Directory -Path $toolboxDir -Force | Out-Null
+    }
+
+    # Download the Python script to stable location
+    $stableScript = Join-Path $toolboxDir 'install_claude.py'
+    Invoke-WebRequest -Uri $scriptUrl -OutFile $stableScript -UseBasicParsing
 
     # Run with uv (it will handle Python 3.12 installation automatically)
-    & uv run --python 3.12 $tempScript
+    # Script runs from stable location to prevent PATH pollution
+    & uv run --python 3.12 $stableScript
     $exitCode = $LASTEXITCODE
 
-    # Clean up
-    Remove-Item $tempScript -Force -ErrorAction SilentlyContinue
+    # Keep the script in stable location for future use and debugging
+    # No cleanup needed - stable location is intentional
 
     exit $exitCode
 } catch {

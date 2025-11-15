@@ -239,3 +239,57 @@ When loading environment configurations:
 - Local files are under user control (can contain API keys)
 - Remote URLs show warning messages (verify source first)
 - Never commit configurations with sensitive data to the repo
+
+## Windows PATH Management Architecture
+
+### Critical Implementation Details
+
+**Platform-Specific Patterns:**
+
+When writing Windows-specific functions that should no-op on other platforms:
+
+```python
+# CORRECT: Use positive platform check (MyPy-friendly)
+def windows_specific_function() -> ReturnType:
+    if sys.platform == 'win32':
+        # Main Windows-specific logic here
+        # ...
+        return result
+    # Non-Windows platforms
+    return default_value
+
+# INCORRECT: Avoid negative checks with early returns (causes MyPy "unreachable" errors in CI)
+def windows_specific_function() -> ReturnType:
+    if sys.platform != 'win32':
+        return default_value  # MyPy on Linux CI considers code after this unreachable
+    # This code becomes "unreachable" in MyPy's analysis on Linux
+    try:
+        # Windows logic
+        pass
+```
+
+**Why this matters:** MyPy on Linux CI (GitHub Actions) performs static analysis differently than on Windows. Using `if sys.platform != 'win32':` with early returns causes MyPy to conclude that subsequent code is unreachable, even though it's reachable on Windows. Always use positive platform checks with the main logic inside the conditional block.
+
+## MyPy Platform-Specific Behavior
+
+**CRITICAL:** MyPy's static analysis behaves differently across platforms when analyzing platform-specific code:
+
+- **Local Testing (Windows):** MyPy may pass locally even with negative platform checks
+- **CI Testing (Linux):** MyPy on Linux uses different control flow analysis and will fail on the same code
+
+**Best Practice:**
+- Always use positive platform checks: `if sys.platform == 'win32':`
+- Avoid early returns with negative checks: `if sys.platform != 'win32': return ...`
+- Test with `uv run mypy scripts/` before pushing
+- Expect CI to catch platform-specific analysis issues that local testing might miss
+
+**Pattern to Follow:**
+```python
+# In add_directory_to_windows_path(), cleanup_temp_paths_from_registry(), etc.
+if sys.platform == 'win32':
+    # All Windows-specific logic inside this block
+    # ...
+    return windows_result
+# Fallback for other platforms
+return default_result
+```
