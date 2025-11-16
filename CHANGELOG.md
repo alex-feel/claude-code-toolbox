@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.4...v4.1.5) (2025-11-16)
+
+
+### Bug Fixes
+
+* use file-based flags to resolve argument list too long error ([664b6f8](https://github.com/alex-feel/claude-code-toolbox/commit/664b6f88ff3f7ab1f3246d433e8cd21bb1be9bac))
+
 ## [4.1.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.3...v4.1.4) (2025-11-15)
 
 
