@@ -507,9 +507,9 @@ class TestValidateAllConfigFiles:
         assert all_valid is False
         # Check info messages
         mock_info.assert_any_call('Validating 2 files...')
-        mock_info.assert_any_call('  ✓ agent: good.md (remote, validated via HEAD)')
+        mock_info.assert_any_call('  [OK] agent: good.md (remote, validated via HEAD)')
         # Check error message
-        mock_error.assert_called_once_with('  ✗ agent: bad.md (remote, not accessible)')
+        mock_error.assert_called_once_with('  [FAIL] agent: bad.md (remote, not accessible)')
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
