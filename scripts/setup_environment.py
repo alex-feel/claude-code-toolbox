@@ -2598,9 +2598,6 @@ if [ ! -f "$PROMPT_PATH" ]; then
   exit 1
 fi
 
-# Read prompt and remove Windows CRLF
-PROMPT_CONTENT=$(tr -d '\\r' < "$PROMPT_PATH")
-
 '''
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -2615,17 +2612,17 @@ for arg in "$@"; do
 done
 
 if [ "$HAS_CONTINUE" = true ]; then
-  # Continuation: use --append-system-prompt (only flag that works with --continue)
-  exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+  # Continuation: use --append-system-prompt-file (only flag that works with --continue)
+  exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
-  # New session: use --system-prompt to replace
-  exec claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+  # New session: use --system-prompt-file to replace
+  exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 fi
 '''
                 else:  # mode == 'append'
-                    # Append mode: always use --append-system-prompt
-                    shared_sh_content += '''# Append mode: always use --append-system-prompt
-exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+                    # Append mode: always use --append-system-prompt-file
+                    shared_sh_content += '''# Append mode: always use --append-system-prompt-file
+exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 '''
             else:
                 # No system prompt, only settings
@@ -2663,9 +2660,6 @@ if [ ! -f "$PROMPT_PATH" ]; then
     exit 1
 fi
 
-# Read the prompt content
-PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-
 '''
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -2681,19 +2675,19 @@ done
 
 if [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
-  # Continuation: use --append-system-prompt (only flag that works with --continue)
-  claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+  # Continuation: use --append-system-prompt-file (only flag that works with --continue)
+  claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-  # New session: use --system-prompt to replace
-  claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+  # New session: use --system-prompt-file to replace
+  claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 fi
 '''
                 else:  # mode == 'append'
-                    # Append mode: always use --append-system-prompt
-                    launcher_content += f'''# Append mode: always use --append-system-prompt
+                    # Append mode: always use --append-system-prompt-file
+                    launcher_content += f'''# Append mode: always use --append-system-prompt-file
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 '''
             else:
                 launcher_content = f'''#!/usr/bin/env bash
