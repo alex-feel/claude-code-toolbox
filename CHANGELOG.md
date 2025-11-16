@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.5...v4.1.6) (2025-11-16)
+
+
+### Bug Fixes
+
+* add version check for --append-system-prompt-file flag ([fe5cfc0](https://github.com/alex-feel/claude-code-toolbox/commit/fe5cfc06c2c4e22dd7c9ac732c415a15796e0a31))
+
 ## [4.1.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.4...v4.1.5) (2025-11-16)
 
 
