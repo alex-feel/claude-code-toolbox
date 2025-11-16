@@ -1760,7 +1760,7 @@ class TestConditionalSystemPromptLoading:
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_append_mode_conditional(self, _mock_system):
-        """Test Windows shared script with append mode has conditional logic."""
+        """Test Windows shared script with append mode has three-tier size checking logic."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -1774,18 +1774,25 @@ class TestConditionalSystemPromptLoading:
             shared_script = claude_dir / 'launch-test-cmd.sh'
             content = shared_script.read_text()
 
-            # Should use append flag in new session branch
-            lines = content.split('\n')
-            in_new_session_branch = False
+            # Verify version-aware flag usage
+            assert 'if version_ge "$CLAUDE_VERSION" "2.0.34"' in content
+            # Should have file-based flag for newer versions
+            assert '--append-system-prompt-file "$PROMPT_PATH"' in content
 
-            for line in lines:
-                if 'else' in line:
-                    in_new_session_branch = True
-                elif 'fi' in line:
-                    in_new_session_branch = False
+            # Verify three-tier logic for older versions
+            assert 'get_file_size()' in content  # File size detection function
+            assert 'SAFE_PROMPT_SIZE=4096' in content  # 4KB threshold
+            assert 'PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")' in content
+            assert 'if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]' in content
 
-                if in_new_session_branch and 'exec claude' in line:
-                    assert '--append-system-prompt-file' in line
+            # Should have content-based fallback for small prompts
+            assert '--append-system-prompt "$PROMPT_CONTENT"' in content
+            assert 'PROMPT_CONTENT=$(cat "$PROMPT_PATH")' in content
+
+            # Should skip prompt for large prompts
+            assert 'Warning: System prompt too large' in content
+            assert 'Skipping prompt to prevent' in content
+            assert 'Argument list too long' in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_detects_continue_flags(self, _mock_system):
@@ -1859,7 +1866,7 @@ class TestConditionalSystemPromptLoading:
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_append_mode_conditional(self, _mock_system):
-        """Test Linux launcher with append mode has conditional logic."""
+        """Test Linux launcher with append mode has three-tier size checking logic."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -1872,18 +1879,25 @@ class TestConditionalSystemPromptLoading:
 
             content = launcher.read_text()
 
-            # Should use append flag in new session branch
-            lines = content.split('\n')
-            in_new_session_branch = False
+            # Verify version-aware flag usage
+            assert 'if version_ge "$CLAUDE_VERSION" "2.0.34"' in content
+            # Should have file-based flag for newer versions
+            assert '--append-system-prompt-file "$PROMPT_PATH"' in content
 
-            for line in lines:
-                if 'else' in line:
-                    in_new_session_branch = True
-                elif 'fi' in line:
-                    in_new_session_branch = False
+            # Verify three-tier logic for older versions
+            assert 'get_file_size()' in content  # File size detection function
+            assert 'SAFE_PROMPT_SIZE=4096' in content  # 4KB threshold
+            assert 'PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")' in content
+            assert 'if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]' in content
 
-                if in_new_session_branch and 'claude ' in line and '--settings' in line:
-                    assert '--append-system-prompt-file' in line
+            # Should have content-based fallback for small prompts
+            assert '--append-system-prompt "$PROMPT_CONTENT"' in content
+            assert 'PROMPT_CONTENT=$(cat "$PROMPT_PATH")' in content
+
+            # Should skip prompt for large prompts
+            assert 'Warning: System prompt too large' in content
+            assert 'Skipping prompt to prevent' in content
+            assert 'Argument list too long' in content
 
     @patch('platform.system', return_value='Darwin')
     def test_macos_launcher_conditional_logic(self, _mock_system):

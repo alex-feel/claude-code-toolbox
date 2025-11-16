@@ -856,19 +856,19 @@ def validate_all_config_files(
             results.append((file_type, original_path, is_valid, method))
 
             if is_valid:
-                info(f'  ✓ {file_type}: {original_path} (remote, validated via {method})')
+                info(f'  [OK] {file_type}: {original_path} (remote, validated via {method})')
             else:
-                error(f'  ✗ {file_type}: {original_path} (remote, not accessible)')
+                error(f'  [FAIL] {file_type}: {original_path} (remote, not accessible)')
                 all_valid = False
         else:
             # Validate local file
             local_path = Path(resolved_path)
             if local_path.exists() and local_path.is_file():
                 results.append((file_type, original_path, True, 'Local'))
-                info(f'  ✓ {file_type}: {original_path} (local file exists)')
+                info(f'  [OK] {file_type}: {original_path} (local file exists)')
             else:
                 results.append((file_type, original_path, False, 'Local'))
-                error(f'  ✗ {file_type}: {original_path} (local file not found at {resolved_path})')
+                error(f'  [FAIL] {file_type}: {original_path} (local file not found at {resolved_path})')
                 all_valid = False
 
     return all_valid, results
@@ -2598,6 +2598,66 @@ if [ ! -f "$PROMPT_PATH" ]; then
   exit 1
 fi
 
+# Version detection function
+get_claude_version() {{
+  claude --version 2>/dev/null | grep -oP '\\d+\\.\\d+\\.\\d+' | head -1
+}}
+
+# Version comparison function (checks if version1 >= version2)
+version_ge() {{
+  local version1="$1"
+  local version2="$2"
+
+  # If version detection failed, return false (fallback to safe defaults)
+  if [ -z "$version1" ]; then
+    return 1
+  fi
+
+  # Try using sort -V if available (most reliable)
+  if command -v sort >/dev/null 2>&1 && echo | sort -V >/dev/null 2>&1; then
+    [ "$(printf '%s\\n' "$version1" "$version2" | sort -V | tail -n1)" = "$version1" ]
+  else
+    # Manual comparison fallback
+    local IFS='.'
+    local i ver1=($version1) ver2=($version2)
+    # Fill empty positions with zeros
+    for ((i=0; i<3; i++)); do
+      ver1[i]=${{ver1[i]:-0}}
+      ver2[i]=${{ver2[i]:-0}}
+    done
+    # Compare each component
+    for ((i=0; i<3; i++)); do
+      if ((10#${{ver1[i]}} > 10#${{ver2[i]}})); then
+        return 0
+      elif ((10#${{ver1[i]}} < 10#${{ver2[i]}})); then
+        return 1
+      fi
+    done
+    return 0
+  fi
+}}
+
+# Detect Claude Code version
+CLAUDE_VERSION=$(get_claude_version)
+
+# File size detection function (cross-platform)
+get_file_size() {{
+  local file="$1"
+  # Try GNU/Linux syntax
+  if stat -c %s "$file" 2>/dev/null; then
+    return 0
+  # Try BSD/macOS syntax
+  elif stat -f %z "$file" 2>/dev/null; then
+    return 0
+  # Universal fallback
+  else
+    wc -c < "$file" | tr -d ' '
+  fi
+}}
+
+# Safe prompt size threshold (4KB)
+SAFE_PROMPT_SIZE=4096
+
 '''
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -2612,17 +2672,55 @@ for arg in "$@"; do
 done
 
 if [ "$HAS_CONTINUE" = true ]; then
-  # Continuation: use --append-system-prompt-file (only flag that works with --continue)
-  exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  # Continuation: use --append-system-prompt-file if available (v2.0.34+)
+  if version_ge "$CLAUDE_VERSION" "2.0.34"; then
+    exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  else
+    # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
+    PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
+    if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
+      # Small prompt: safe to use content-based flag
+      PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+      exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    else
+      # Large prompt: skip to prevent error
+      echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
+      echo "Skipping prompt to prevent 'Argument list too long' error" >&2
+      echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
+      exec claude "$@" --settings "$SETTINGS_WIN"
+    fi
+  fi
 else
-  # New session: use --system-prompt-file to replace
-  exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  # New session: use --system-prompt-file (available in v2.0.14+)
+  if version_ge "$CLAUDE_VERSION" "2.0.14"; then
+    exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  else
+    # Fallback to content-based flag for very old versions
+    PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+    exec claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+  fi
 fi
 '''
                 else:  # mode == 'append'
-                    # Append mode: always use --append-system-prompt-file
-                    shared_sh_content += '''# Append mode: always use --append-system-prompt-file
-exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+                    # Append mode: use --append-system-prompt-file if available
+                    shared_sh_content += '''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
+if version_ge "$CLAUDE_VERSION" "2.0.34"; then
+  exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+else
+  # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
+  PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
+  if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
+    # Small prompt: safe to use content-based flag
+    PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+    exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+  else
+    # Large prompt: skip to prevent error
+    echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
+    echo "Skipping prompt to prevent 'Argument list too long' error" >&2
+    echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
+    exec claude "$@" --settings "$SETTINGS_WIN"
+  fi
+fi
 '''
             else:
                 # No system prompt, only settings
@@ -2660,6 +2758,66 @@ if [ ! -f "$PROMPT_PATH" ]; then
     exit 1
 fi
 
+# Version detection function
+get_claude_version() {{
+  claude --version 2>/dev/null | grep -oP '\\d+\\.\\d+\\.\\d+' | head -1
+}}
+
+# Version comparison function (checks if version1 >= version2)
+version_ge() {{
+  local version1="$1"
+  local version2="$2"
+
+  # If version detection failed, return false (fallback to safe defaults)
+  if [ -z "$version1" ]; then
+    return 1
+  fi
+
+  # Try using sort -V if available (most reliable)
+  if command -v sort >/dev/null 2>&1 && echo | sort -V >/dev/null 2>&1; then
+    [ "$(printf '%s\\n' "$version1" "$version2" | sort -V | tail -n1)" = "$version1" ]
+  else
+    # Manual comparison fallback
+    local IFS='.'
+    local i ver1=($version1) ver2=($version2)
+    # Fill empty positions with zeros
+    for ((i=0; i<3; i++)); do
+      ver1[i]=${{ver1[i]:-0}}
+      ver2[i]=${{ver2[i]:-0}}
+    done
+    # Compare each component
+    for ((i=0; i<3; i++)); do
+      if ((10#${{ver1[i]}} > 10#${{ver2[i]}})); then
+        return 0
+      elif ((10#${{ver1[i]}} < 10#${{ver2[i]}})); then
+        return 1
+      fi
+    done
+    return 0
+  fi
+}}
+
+# Detect Claude Code version
+CLAUDE_VERSION=$(get_claude_version)
+
+# File size detection function (cross-platform)
+get_file_size() {{
+  local file="$1"
+  # Try GNU/Linux syntax
+  if stat -c %s "$file" 2>/dev/null; then
+    return 0
+  # Try BSD/macOS syntax
+  elif stat -f %z "$file" 2>/dev/null; then
+    return 0
+  # Universal fallback
+  else
+    wc -c < "$file" | tr -d ' '
+  fi
+}}
+
+# Safe prompt size threshold (4KB)
+SAFE_PROMPT_SIZE=4096
+
 '''
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -2675,19 +2833,57 @@ done
 
 if [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
-  # Continuation: use --append-system-prompt-file (only flag that works with --continue)
-  claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  # Continuation: use --append-system-prompt-file if available (v2.0.34+)
+  if version_ge "$CLAUDE_VERSION" "2.0.34"; then
+    claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  else
+    # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
+    PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
+    if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
+      # Small prompt: safe to use content-based flag
+      PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+      claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    else
+      # Large prompt: skip to prevent error
+      echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
+      echo "Skipping prompt to prevent 'Argument list too long' error" >&2
+      echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
+      claude "$@" --settings "$SETTINGS_PATH"
+    fi
+  fi
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-  # New session: use --system-prompt-file to replace
-  claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  # New session: use --system-prompt-file (available in v2.0.14+)
+  if version_ge "$CLAUDE_VERSION" "2.0.14"; then
+    claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  else
+    # Fallback to content-based flag for very old versions
+    PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+    claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+  fi
 fi
 '''
                 else:  # mode == 'append'
-                    # Append mode: always use --append-system-prompt-file
-                    launcher_content += f'''# Append mode: always use --append-system-prompt-file
+                    # Append mode: use --append-system-prompt-file if available
+                    launcher_content += f'''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
-claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+if version_ge "$CLAUDE_VERSION" "2.0.34"; then
+  claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+else
+  # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
+  PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
+  if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
+    # Small prompt: safe to use content-based flag
+    PROMPT_CONTENT=$(cat "$PROMPT_PATH")
+    claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+  else
+    # Large prompt: skip to prevent error
+    echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
+    echo "Skipping prompt to prevent 'Argument list too long' error" >&2
+    echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
+    claude "$@" --settings "$SETTINGS_PATH"
+  fi
+fi
 '''
             else:
                 launcher_content = f'''#!/usr/bin/env bash
