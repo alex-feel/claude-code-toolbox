@@ -87,19 +87,20 @@ elif [ -n "${CLAUDE_ENV_AUTH:-}" ]; then
 fi
 
 # Download and run the Python script with uv
-# uv will handle Python 3.12 installation automatically
-if [ -n "$AUTH_ARGS" ]; then
-    if curl -fsSL "$SCRIPT_URL" | uv run --python 3.12 - "$CONFIG" $AUTH_ARGS; then
-        exit 0
+# Use temporary file to avoid "Argument list too long" error with large scripts
+TEMP_SCRIPT=$(mktemp /tmp/claude_setup.XXXXXX.py)
+trap 'rm -f "$TEMP_SCRIPT"' EXIT
+
+if curl -fsSL "$SCRIPT_URL" -o "$TEMP_SCRIPT"; then
+    if [ -n "$AUTH_ARGS" ]; then
+        uv run --python 3.12 "$TEMP_SCRIPT" "$CONFIG" $AUTH_ARGS
     else
-        echo -e "${RED}[FAIL]${NC} Setup failed"
-        exit 1
+        uv run --python 3.12 "$TEMP_SCRIPT" "$CONFIG"
     fi
+    EXIT_CODE=$?
 else
-    if curl -fsSL "$SCRIPT_URL" | uv run --python 3.12 - "$CONFIG"; then
-        exit 0
-    else
-        echo -e "${RED}[FAIL]${NC} Setup failed"
-        exit 1
-    fi
+    echo -e "${RED}[FAIL]${NC} Failed to download setup script"
+    EXIT_CODE=1
 fi
+
+exit $EXIT_CODE
