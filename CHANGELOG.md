@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.7](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.6...v4.1.7) (2025-11-17)
+
+
+### Bug Fixes
+
+* isolate hook execution from project Python requirements ([5e2516a](https://github.com/alex-feel/claude-code-toolbox/commit/5e2516aac62cbc556bfa4b5a05c4df547a25a764))
+
 ## [4.1.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.5...v4.1.6) (2025-11-16)
 
 
