@@ -60,7 +60,7 @@ try {
 
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location to prevent PATH pollution
-    & uv run --python 3.12 $stableScript
+    & uv run --no-project --python 3.12 $stableScript
     $exitCode = $LASTEXITCODE
 
     # Keep the script in stable location for future use and debugging

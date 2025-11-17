@@ -100,9 +100,9 @@ try {
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location to prevent PATH pollution
     if ($authArgs.Count -gt 0) {
-        & uv run --python 3.12 $stableScript $config @authArgs
+        & uv run --no-project --python 3.12 $stableScript $config @authArgs
     } else {
-        & uv run --python 3.12 $stableScript $config
+        & uv run --no-project --python 3.12 $stableScript $config
     }
     $exitCode = $LASTEXITCODE
 
