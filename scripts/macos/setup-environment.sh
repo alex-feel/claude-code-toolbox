@@ -93,9 +93,9 @@ trap 'rm -f "$TEMP_SCRIPT"' EXIT
 
 if curl -fsSL "$SCRIPT_URL" -o "$TEMP_SCRIPT"; then
     if [ -n "$AUTH_ARGS" ]; then
-        uv run --python 3.12 "$TEMP_SCRIPT" "$CONFIG" $AUTH_ARGS
+        uv run --no-project --python 3.12 "$TEMP_SCRIPT" "$CONFIG" $AUTH_ARGS
     else
-        uv run --python 3.12 "$TEMP_SCRIPT" "$CONFIG"
+        uv run --no-project --python 3.12 "$TEMP_SCRIPT" "$CONFIG"
     fi
     EXIT_CODE=$?
 else
