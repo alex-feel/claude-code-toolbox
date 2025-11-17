@@ -2466,7 +2466,8 @@ def create_additional_settings(
                 # Use uv run with Python 3.12 - works cross-platform without PATH dependency
                 # uv automatically downloads Python 3.12 if not installed
                 # For .pyw files on Windows, uv automatically uses pythonw
-                full_command = f'uv run --python 3.12 {hook_path_str}'
+                # Use --no-project flag to prevent uv from detecting and applying project Python requirements
+                full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
             else:
                 # Other file - build absolute path and use as-is
                 # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
