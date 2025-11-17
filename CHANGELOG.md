@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.1.8](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.7...v4.1.8) (2025-11-17)
+
+
+### Bug Fixes
+
+* add --no-project flag to prevent uv version conflicts ([0f7950a](https://github.com/alex-feel/claude-code-toolbox/commit/0f7950ad16e2950edc0c4a9ec09fa94817c76aa2))
+* resolve argument length error in bootstrap scripts ([4ffa712](https://github.com/alex-feel/claude-code-toolbox/commit/4ffa712aa318559a4f04189a9ca0b0083682d797))
+
 ## [4.1.7](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.6...v4.1.7) (2025-11-17)
 
 
