@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.9](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.8...v4.1.9) (2025-11-18)
+
+
+### Bug Fixes
+
+* eliminate unnecessary PowerShell execution policy warnings ([9085bc4](https://github.com/alex-feel/claude-code-toolbox/commit/9085bc453041f6983d3df56fe0df206e472730ce))
+
 ## [4.1.8](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.7...v4.1.8) (2025-11-17)
 
 
