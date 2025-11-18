@@ -572,23 +572,52 @@ def set_disable_autoupdater() -> None:
 
 
 def configure_powershell_policy() -> None:
-    """Configure PowerShell execution policy for npm scripts."""
-    if platform.system() != 'Windows':
-        return
+    """Configure PowerShell execution policy for npm scripts.
 
-    info('Configuring PowerShell execution policy...')
+    This function checks the current PowerShell execution policy before attempting
+    to set it. If the policy is already RemoteSigned or less restrictive, no action
+    is needed. This prevents unnecessary warnings in environments where the policy
+    is already configured or restricted by Group Policy.
 
-    # Try to set for current user
-    result = run_command([
-        'powershell',
-        '-Command',
-        'Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force',
-    ])
+    Note: PowerShell execution policy primarily affects .ps1 scripts. NPM global
+    commands use .cmd files which bypass PowerShell restrictions, so Claude will
+    work correctly even if this configuration fails.
+    """
+    if platform.system() == 'Windows':
+        info('Checking PowerShell execution policy...')
 
-    if result.returncode == 0:
-        success('PowerShell execution policy configured for current user')
-    else:
-        warning('Could not set PowerShell execution policy (may be restricted by Group Policy)')
+        # Check current execution policy
+        check_result = run_command([
+            'powershell',
+            '-Command',
+            'Get-ExecutionPolicy -Scope CurrentUser',
+        ])
+
+        if check_result.returncode == 0:
+            current_policy = check_result.stdout.strip()
+
+            # Only set if not already RemoteSigned or less restrictive
+            # Policy hierarchy (least to most restrictive): Bypass < Unrestricted < RemoteSigned < AllSigned < Restricted
+            if current_policy in ['RemoteSigned', 'Unrestricted', 'Bypass']:
+                success(f'PowerShell execution policy already configured ({current_policy})')
+                return
+
+        info('Configuring PowerShell execution policy...')
+
+        # Try to set for current user
+        result = run_command([
+            'powershell',
+            '-Command',
+            'Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force',
+        ])
+
+        if result.returncode == 0:
+            success('PowerShell execution policy configured for current user')
+        else:
+            # Improved warning message with actionable guidance
+            warning('Could not set PowerShell execution policy (may be restricted by Group Policy)')
+            info('This warning can be safely ignored - Claude will still work correctly')
+            info('NPM global commands use .cmd files which bypass PowerShell restrictions')
 
 
 # Node.js functions
