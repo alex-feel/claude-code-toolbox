@@ -490,17 +490,54 @@ class TestPowerShellPolicy:
 
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.run_command')
-    def test_configure_powershell_policy_success(self, mock_run, mock_system):
-        """Test successful PowerShell policy configuration."""
+    def test_configure_powershell_policy_already_configured(self, mock_run, mock_system):
+        """Test PowerShell policy when already configured (no action needed)."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Mock Get-ExecutionPolicy returning RemoteSigned
+        mock_run.return_value = subprocess.CompletedProcess([], 0, 'RemoteSigned\n', '')
         install_claude.configure_powershell_policy()
+        # Should only call Get-ExecutionPolicy, not Set-ExecutionPolicy
         mock_run.assert_called_once()
-        # Check that the command list contains powershell and Set-ExecutionPolicy
         cmd = mock_run.call_args[0][0]
-        assert 'powershell' in cmd or 'powershell.exe' in cmd
-        assert any('Set-ExecutionPolicy' in str(arg) for arg in cmd)
+        assert 'Get-ExecutionPolicy' in str(cmd)
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude.run_command')
+    def test_configure_powershell_policy_needs_configuration(self, mock_run, mock_system):
+        """Test PowerShell policy when it needs to be set."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        # First call returns Restricted (needs configuration)
+        # Second call sets the policy successfully
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 0, 'Restricted\n', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+        ]
+        install_claude.configure_powershell_policy()
+        # Should call Get-ExecutionPolicy first, then Set-ExecutionPolicy
+        assert mock_run.call_count == 2
+        # First call should be Get-ExecutionPolicy
+        first_cmd = mock_run.call_args_list[0][0][0]
+        assert 'Get-ExecutionPolicy' in str(first_cmd)
+        # Second call should be Set-ExecutionPolicy
+        second_cmd = mock_run.call_args_list[1][0][0]
+        assert 'Set-ExecutionPolicy' in str(second_cmd)
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude.run_command')
+    def test_configure_powershell_policy_group_policy_restriction(self, mock_run, mock_system):
+        """Test PowerShell policy when restricted by Group Policy."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        # First call returns Restricted, second call fails (Group Policy restriction)
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 0, 'Restricted\n', ''),
+            subprocess.CompletedProcess([], 1, '', 'Access denied'),
+        ]
+        install_claude.configure_powershell_policy()
+        # Should attempt both Get and Set
+        assert mock_run.call_count == 2
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.run_command')
