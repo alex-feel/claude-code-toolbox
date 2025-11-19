@@ -236,6 +236,72 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     return None
 
 
+def verify_claude_installation() -> tuple[bool, str | None, str]:
+    """Verify Claude installation with source detection and explicit file existence checks.
+
+    This function performs robust verification by checking actual file existence,
+    not just PATH availability. It distinguishes between different installation sources
+    to prevent false positives when native installer fails but npm installation exists.
+
+    Returns:
+        Tuple of (is_installed, path, source) where:
+        - is_installed: True if Claude exists and is accessible
+        - path: Full path to Claude executable (or None if not found)
+        - source: Installation source ('native', 'npm', 'winget', 'unknown', 'none')
+
+    Note:
+        Minimum file size check (1KB) ensures the file is not empty or corrupted.
+    """
+    result: tuple[bool, str | None, str]
+
+    if sys.platform == 'win32':
+        # Check native installer location first
+        native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        if native_path.exists() and native_path.stat().st_size > 1000:
+            result = (True, str(native_path), 'native')
+        else:
+            # Check npm global installation locations
+            npm_cmd = Path(os.path.expandvars(r'%APPDATA%\npm\claude.cmd'))
+            if npm_cmd.exists():
+                result = (True, str(npm_cmd), 'npm')
+            else:
+                npm_exe = Path(os.path.expandvars(r'%APPDATA%\npm\claude'))
+                if npm_exe.exists():
+                    result = (True, str(npm_exe), 'npm')
+                else:
+                    # Check winget installation location
+                    winget_path = Path(os.path.expandvars(r'%LOCALAPPDATA%\Programs\claude\claude.exe'))
+                    if winget_path.exists() and winget_path.stat().st_size > 1000:
+                        result = (True, str(winget_path), 'winget')
+                    else:
+                        # Fallback to PATH search (with source detection)
+                        claude_path = find_command_robust('claude')
+                        if claude_path:
+                            source = 'unknown'
+                            claude_lower = claude_path.lower()
+                            if 'npm' in claude_lower or 'roaming' in claude_lower:
+                                source = 'npm'
+                            elif '.local\\bin' in claude_lower:
+                                source = 'native'
+                            elif 'programs\\claude' in claude_lower:
+                                source = 'winget'
+                            result = (True, claude_path, source)
+                        else:
+                            result = (False, None, 'none')
+    else:
+        # Non-Windows platforms
+        claude_path = find_command_robust('claude')
+        if claude_path:
+            if 'npm' in claude_path or '.npm-global' in claude_path:
+                result = (True, claude_path, 'npm')
+            else:
+                result = (True, claude_path, 'unknown')
+        else:
+            result = (False, None, 'none')
+
+    return result
+
+
 def parse_version(version_str: str) -> tuple[int, int, int] | None:
     """Parse version string to tuple."""
     match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
@@ -1229,14 +1295,21 @@ def install_claude_native() -> bool:
             # Give Windows time to process PATH update
             time.sleep(1)
 
-            # Verify installation is accessible
-            claude_path = find_command_robust('claude')
-            if claude_path:
-                success(f'Claude verified at: {claude_path}')
+            # Verify installation with source detection
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed and source == 'native':
+                success(f'Native installation verified at: {claude_path}')
                 return True
-            warning('Claude installed but not yet accessible in PATH')
+            if is_installed:
+                warning(f'Claude found but from {source} source at: {claude_path}')
+                warning('Native installer did not create expected file at ~/.local/bin/claude.exe')
+                error('Native installation failed - file not created at expected location')
+                info('This indicates the native installer completed but did not install correctly')
+                return False
+            warning('Native installation failed - no Claude executable found')
+            error('Claude not accessible after native installer execution')
             info('You may need to restart your terminal or run in a new session')
-            return True  # Installation succeeded, PATH may need refresh
+            return False
 
     except Exception as e:
         error(f'Native installer failed: {e}')

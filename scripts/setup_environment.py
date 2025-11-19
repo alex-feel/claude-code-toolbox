@@ -329,6 +329,10 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     if system == 'Windows':
         if cmd == 'claude':
             common_paths = [
+                # Native installer location (checked first)
+                os.path.expandvars(r'%USERPROFILE%\.local\bin\claude.exe'),
+                os.path.expandvars(r'%USERPROFILE%\.local\bin\claude'),
+                # npm global installation paths
                 os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
                 os.path.expandvars(r'%APPDATA%\npm\claude'),
                 os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
