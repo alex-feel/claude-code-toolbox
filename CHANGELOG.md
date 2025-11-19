@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.12](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.11...v4.1.12) (2025-11-19)
+
+
+### Bug Fixes
+
+* use robust npm discovery to prevent WinError 193 on Windows ([6ef2ff6](https://github.com/alex-feel/claude-code-toolbox/commit/6ef2ff608376bfc9b46cca6aea1081ec327e6506))
+
 ## [4.1.11](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.10...v4.1.11) (2025-11-19)
 
 
