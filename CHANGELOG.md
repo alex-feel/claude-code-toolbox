@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.10](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.9...v4.1.10) (2025-11-19)
+
+
+### Bug Fixes
+
+* ensure claude command accessibility after native installer on Windows ([5641a73](https://github.com/alex-feel/claude-code-toolbox/commit/5641a73a5a34b21b75e00dd968c0f772a29e5974))
+
 ## [4.1.9](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.8...v4.1.9) (2025-11-18)
 
 
