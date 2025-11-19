@@ -703,7 +703,17 @@ class TestClaudeInstallation:
     @patch('urllib.request.urlopen')
     @patch('tempfile.NamedTemporaryFile')
     @patch('install_claude.run_command')
-    def test_install_claude_native_windows(self, mock_run, mock_temp, mock_urlopen, mock_system):
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.ensure_local_bin_in_path_windows')
+    def test_install_claude_native_windows(
+        self,
+        mock_ensure_path,
+        mock_verify,
+        mock_run,
+        mock_temp,
+        mock_urlopen,
+        mock_system,
+    ):
         """Test native Claude installer on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
@@ -719,6 +729,11 @@ class TestClaudeInstallation:
         mock_temp.return_value.__enter__.return_value = temp_file
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        # Mock the new verification and PATH functions
+        mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+        mock_ensure_path.return_value = True
+
         result = install_claude.install_claude_native()
         assert result is True
 
@@ -908,3 +923,250 @@ class TestUpdatePath:
         original_path = os.environ.get('PATH', '')
         install_claude.update_path()
         assert os.environ.get('PATH', '') == original_path
+
+
+class TestVerifyClaudeInstallation:
+    """Test verify_claude_installation() function for robust installation verification."""
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    def test_verify_claude_installation_native_exists(self, mock_stat, mock_exists):
+        """Test verification when native installation exists with valid file."""
+        # Mock native path exists and has valid size
+        mock_stat.return_value.st_size = 5000000  # 5MB file
+        mock_exists.return_value = True
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert '.local' in path.lower()
+        assert 'bin' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    def test_verify_claude_installation_native_file_too_small(self, mock_stat, mock_exists):
+        """Test verification rejects native file that's too small (corrupted/empty)."""
+        # Mock native path exists but file is too small (< 1KB)
+        mock_stat.return_value.st_size = 500  # 500 bytes - too small
+
+        def exists_side_effect():
+            return '.local' in str(mock_exists.call_args)
+
+        mock_exists.side_effect = exists_side_effect
+
+        with patch('install_claude.find_command_robust', return_value=None):
+            is_installed, path, source = install_claude.verify_claude_installation()
+
+            # Should reject the small file and continue searching
+            assert is_installed is False or source != 'native'
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists')
+    @patch('os.path.expandvars')
+    def test_verify_claude_installation_npm_cmd(self, mock_expandvars, mock_exists):
+        """Test verification when only npm .cmd installation exists."""
+        # Mock: native doesn't exist, npm .cmd exists
+        # Order of exists() calls: native, npm_cmd, npm_executable, winget
+        mock_exists.side_effect = [
+            False,  # native_path.exists() -> False
+            True,  # npm_cmd_path.exists() -> True
+        ]
+        mock_expandvars.side_effect = lambda x: x.replace('%APPDATA%', 'C:\\Users\\Test\\AppData\\Roaming')
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'npm'
+        assert 'npm' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists')
+    @patch('os.path.expandvars')
+    def test_verify_claude_installation_npm_executable(self, mock_expandvars, mock_exists):
+        """Test verification when npm executable (without .cmd) exists."""
+        # Mock: native doesn't exist, npm .cmd doesn't exist, npm executable exists
+        # Order of exists() calls: native, npm_cmd, npm_executable, winget
+        mock_exists.side_effect = [
+            False,  # native_path.exists() -> False
+            False,  # npm_cmd_path.exists() -> False
+            True,  # npm_path.exists() -> True
+        ]
+        mock_expandvars.side_effect = lambda x: x.replace('%APPDATA%', 'C:\\Users\\Test\\AppData\\Roaming')
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'npm'
+        assert 'npm' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('os.path.expandvars')
+    def test_verify_claude_installation_winget(self, mock_expandvars, mock_stat, mock_exists):
+        """Test verification when winget installation exists."""
+        # Mock: native and npm don't exist, winget exists with valid size
+        # Order of exists() calls: native, npm_cmd, npm_executable, winget
+        mock_exists.side_effect = [
+            False,  # native_path.exists() -> False
+            False,  # npm_cmd_path.exists() -> False
+            False,  # npm_path.exists() -> False
+            True,  # winget_path.exists() -> True
+        ]
+        mock_stat.return_value.st_size = 5000000  # 5MB file
+        mock_expandvars.side_effect = lambda x: x.replace('%LOCALAPPDATA%', 'C:\\Users\\Test\\AppData\\Local')
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'winget'
+        assert 'programs\\claude' in path.lower() or 'programs/claude' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_path_fallback_npm_detection(self, mock_find, mock_exists):
+        """Test PATH fallback with npm source detection from path string."""
+        # Mock: no direct paths exist, but find_command_robust finds npm installation
+        assert mock_exists.return_value is False
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.cmd'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'npm'
+        assert 'npm' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_path_fallback_native_detection(self, mock_find, mock_exists):
+        """Test PATH fallback with native source detection from path string."""
+        # Mock: no direct paths exist, but find_command_robust finds native location
+        assert mock_exists.return_value is False
+        mock_find.return_value = 'C:\\Users\\Test\\.local\\bin\\claude.exe'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert '.local\\bin' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_path_fallback_winget_detection(self, mock_find, mock_exists):
+        """Test PATH fallback with winget source detection from path string."""
+        # Mock: no direct paths exist, but find_command_robust finds winget installation
+        assert mock_exists.return_value is False
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Local\\Programs\\claude\\claude.exe'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'winget'
+        assert 'programs\\claude' in path.lower()
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_path_fallback_unknown(self, mock_find, mock_exists):
+        """Test PATH fallback with unknown source (doesn't match patterns)."""
+        # Mock: find_command_robust finds claude but in unexpected location
+        assert mock_exists.return_value is False
+        mock_find.return_value = 'C:\\CustomPath\\claude.exe'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'unknown'
+        assert path == 'C:\\CustomPath\\claude.exe'
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust', return_value=None)
+    def test_verify_claude_installation_not_found(self, mock_find, mock_exists):
+        """Test verification when Claude is not installed anywhere."""
+        # Mock: no paths exist, find_command_robust returns None
+        assert mock_exists.return_value is False
+        assert mock_find.return_value is None
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is False
+        assert path is None
+        assert source == 'none'
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_npm(self, mock_find):
+        """Test verification on Linux with npm installation."""
+        mock_find.return_value = '/home/user/.npm-global/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'npm'
+        assert '.npm-global' in path or 'npm' in path
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_unknown(self, mock_find):
+        """Test verification on Linux with unknown source."""
+        mock_find.return_value = '/usr/local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'unknown'
+        assert path == '/usr/local/bin/claude'
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust', return_value=None)
+    def test_verify_claude_installation_linux_not_found(self, mock_find):
+        """Test verification on Linux when not installed."""
+        assert mock_find.return_value is None
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is False
+        assert path is None
+        assert source == 'none'
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_macos(self, mock_find):
+        """Test verification on macOS."""
+        mock_find.return_value = '/usr/local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'unknown'
+        assert path == '/usr/local/bin/claude'
+
+    @patch('sys.platform', 'win32')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_false_positive_scenario(self, mock_find, mock_exists):
+        """Test the exact false positive scenario from user report.
+
+        Native installer claims installation at ~/.local/bin/claude.exe
+        but file doesn't exist. npm installation exists elsewhere.
+        Should return npm source, NOT native.
+        """
+        # This is the critical test case that validates the fix
+        assert mock_exists.return_value is False  # Native file doesn't exist
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude'  # npm exists
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        # CRITICAL ASSERTIONS - this is what fixes the bug
+        assert is_installed is True
+        assert source == 'npm', 'Should detect npm source, not native'
+        assert path is not None
+        assert '.local\\bin' not in path.lower(), 'Should NOT report native path'
+        assert 'npm' in path.lower(), 'Should report actual npm location'

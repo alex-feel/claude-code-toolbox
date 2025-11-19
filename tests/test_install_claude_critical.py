@@ -149,7 +149,11 @@ class TestSSLErrorHandling:
 
     @patch('scripts.install_claude.ssl.create_default_context')
     @patch('scripts.install_claude.urlopen')
-    def test_install_claude_native_ssl_error(self, mock_urlopen, mock_ssl_context):
+    @patch('scripts.install_claude.verify_claude_installation')
+    @patch('scripts.install_claude.ensure_local_bin_in_path_windows')
+    def test_install_claude_native_ssl_error(
+        self, mock_ensure_path, mock_verify, mock_urlopen, mock_ssl_context,
+    ):
         """Test Claude native installer with SSL certificate error."""
         with patch('scripts.install_claude.platform.system', return_value='Windows'):
             # First urlopen raises SSL error
@@ -162,6 +166,10 @@ class TestSSLErrorHandling:
             # Mock SSL context
             mock_ctx = MagicMock()
             mock_ssl_context.return_value = mock_ctx
+
+            # Mock the new verification and PATH functions
+            mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+            mock_ensure_path.return_value = True
 
             with (
                 patch('scripts.install_claude.run_command') as mock_run,
