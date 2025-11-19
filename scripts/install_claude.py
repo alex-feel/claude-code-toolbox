@@ -1096,17 +1096,9 @@ def get_latest_claude_version() -> str | None:
     Returns:
         Latest version string (e.g., "1.0.135") or None if cannot determine.
     """
-    npm_path = find_command('npm')
+    npm_path = find_command_robust('npm')
     if not npm_path:
-        # On Windows, try to find npm.cmd explicitly
-        if platform.system() == 'Windows':
-            npm_cmd_path = Path(r'C:\Program Files\nodejs\npm.cmd')
-            if npm_cmd_path.exists():
-                npm_path = str(npm_cmd_path)
-            else:
-                return None
-        else:
-            return None
+        return None
 
     # Query npm for latest version
     cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
@@ -1168,7 +1160,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         if npm_cmd.exists():
             info(f'Found npm.cmd at {npm_cmd}')
 
-    npm_path = find_command('npm')
+    npm_path = find_command_robust('npm')
     if not npm_path:
         # On Windows, try to find npm.cmd explicitly
         if platform.system() == 'Windows':
@@ -1182,6 +1174,28 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         else:
             error('npm not found. Please install Node.js with npm')
             return False
+
+    # Validate npm path before execution
+    if npm_path:
+        npm_path_obj = Path(npm_path)
+        if not npm_path_obj.exists():
+            error(f'npm executable not found at: {npm_path}')
+            error('This usually indicates a PATH synchronization issue')
+            return False
+
+        # On Windows, ensure we're using the .cmd version
+        if platform.system() == 'Windows' and not npm_path.lower().endswith('.cmd'):
+            # Check if .cmd version exists
+            npm_cmd_path_str = npm_path if npm_path.lower().endswith('.cmd') else npm_path + '.cmd'
+            if Path(npm_cmd_path_str).exists():
+                warning(f'Using {npm_cmd_path_str} instead of {npm_path}')
+                npm_path = npm_cmd_path_str
+            else:
+                error(f'npm.cmd not found. Found non-executable: {npm_path}')
+                error('This file cannot be executed directly on Windows')
+                return False
+
+        info(f'Validated npm executable: {npm_path}')
 
     action = 'Upgrading' if upgrade else 'Installing'
 
