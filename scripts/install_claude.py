@@ -182,6 +182,10 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     if system == 'Windows':
         if cmd == 'claude':
             common_paths = [
+                # Native installer location (checked first)
+                os.path.expandvars(r'%USERPROFILE%\.local\bin\claude.exe'),
+                os.path.expandvars(r'%USERPROFILE%\.local\bin\claude'),
+                # npm global installation paths
                 os.path.expandvars(r'%APPDATA%\npm\claude.cmd'),
                 os.path.expandvars(r'%APPDATA%\npm\claude'),
                 os.path.expandvars(r'%ProgramFiles%\nodejs\claude.cmd'),
@@ -1217,7 +1221,22 @@ def install_claude_native() -> bool:
 
         if result.returncode == 0:
             success('Claude Code installed via native installer')
-            return True
+
+            # CRITICAL: Ensure ~/.local/bin is in PATH after native installation
+            info('Updating PATH for native installation...')
+            ensure_local_bin_in_path_windows()
+
+            # Give Windows time to process PATH update
+            time.sleep(1)
+
+            # Verify installation is accessible
+            claude_path = find_command_robust('claude')
+            if claude_path:
+                success(f'Claude verified at: {claude_path}')
+                return True
+            warning('Claude installed but not yet accessible in PATH')
+            info('You may need to restart your terminal or run in a new session')
+            return True  # Installation succeeded, PATH may need refresh
 
     except Exception as e:
         error(f'Native installer failed: {e}')
@@ -1279,10 +1298,17 @@ def ensure_claude() -> bool:
     info('Claude Code not found, installing...')
     # Fresh installation
     if install_claude_npm(upgrade=False, version=requested_version):
-        new_version = get_claude_version()
-        if new_version:
-            success(f'Claude Code version {new_version} installed successfully')
-        return True
+        # Verify with retries to handle PATH synchronization delays
+        for attempt in range(3):
+            claude_path = find_command_robust('claude')
+            if claude_path:
+                new_version = get_claude_version()
+                if new_version:
+                    success(f'Claude Code version {new_version} installed successfully')
+                return True
+            if attempt < 2:
+                info(f'Waiting for PATH synchronization... (attempt {attempt + 1}/3)')
+                time.sleep(2)
 
     # Try native installer on Windows
     if platform.system() == 'Windows' and install_claude_native():
@@ -1310,6 +1336,81 @@ def update_path() -> None:
         if npm_path not in current_path:
             os.environ['PATH'] = f'{npm_path};{current_path}'
             info(f'Added {npm_path} to PATH')
+
+
+def ensure_local_bin_in_path_windows() -> bool:
+    """Ensure ~/.local/bin is in PATH on Windows after Claude installation.
+
+    This function updates both the Windows registry (for persistence across sessions)
+    and the current process environment (for immediate availability).
+
+    Returns:
+        True if PATH was updated or already correct, False on error.
+    """
+    success = True
+    if sys.platform == 'win32':
+        try:
+            local_bin = Path.home() / '.local' / 'bin'
+            local_bin.mkdir(parents=True, exist_ok=True)
+
+            # Import winreg here to avoid import errors on non-Windows platforms
+            import winreg
+
+            # Open registry key for user environment variables
+            reg_key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Environment',
+                0,
+                winreg.KEY_READ | winreg.KEY_WRITE,
+            )
+
+            try:
+                current_path, _ = winreg.QueryValueEx(reg_key, 'PATH')
+            except FileNotFoundError:
+                current_path = ''
+
+            local_bin_str = str(local_bin)
+
+            # Check if already in PATH (case-insensitive)
+            path_components = [p.strip() for p in current_path.split(';') if p.strip()]
+            already_in_path = any(p.lower() == local_bin_str.lower() for p in path_components)
+
+            if not already_in_path:
+                # Add to PATH
+                new_path = f'{local_bin_str};{current_path}' if current_path else local_bin_str
+
+                # Check PATH length limit (setx has a 1024 character limit)
+                if len(new_path) > 1024:
+                    warning(f'PATH too long ({len(new_path)} chars, limit 1024). Manual intervention needed.')
+                    winreg.CloseKey(reg_key)
+                    success = False
+                else:
+                    # Update registry
+                    winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
+                    info(f'Added {local_bin_str} to Windows PATH registry')
+
+                    # Broadcast WM_SETTINGCHANGE to notify other processes
+                    # Use setx with a temporary variable to trigger the broadcast
+                    run_command(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True)
+                    run_command(
+                        ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                        capture_output=True,
+                    )
+
+            if success:
+                winreg.CloseKey(reg_key)
+
+                # CRITICAL: Update current process PATH immediately for same-session availability
+                current_env_path = os.environ.get('PATH', '')
+                if local_bin_str.lower() not in current_env_path.lower():
+                    os.environ['PATH'] = f'{local_bin_str};{current_env_path}'
+                    info(f'Updated current session PATH with {local_bin_str}')
+
+        except Exception as e:
+            warning(f'Failed to update PATH: {e}')
+            success = False
+
+    return success
 
 
 def main() -> None:
