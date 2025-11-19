@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.11](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.10...v4.1.11) (2025-11-19)
+
+
+### Bug Fixes
+
+* prevent false positive when verifying Claude installation ([8f983b0](https://github.com/alex-feel/claude-code-toolbox/commit/8f983b0173ac874ddad51a785734deaf4c944119))
+
 ## [4.1.10](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.9...v4.1.10) (2025-11-19)
 
 
