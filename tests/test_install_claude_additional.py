@@ -194,31 +194,65 @@ class TestNodeJsInstallationAdditional:
 class TestClaudeInstallationAdditional:
     """Additional tests for Claude installation."""
 
-    @patch('platform.system', return_value='Linux')
-    def test_install_claude_native_linux(self, mock_system):
-        """Test native Claude installation on Linux."""
-        # Verify platform mock
-        assert mock_system.return_value == 'Linux'
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    def test_install_claude_native_linux(self, mock_verify, mock_run, mock_urlopen):
+        """Test native Claude installation on Linux with mocked dependencies."""
+        # Mock urlopen to return installer script
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\necho "Installing Claude"'
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
 
-        # install_claude_native returns False for non-Windows platforms
-        result = install_claude.install_claude_native()
-        assert result is False
+        # Mock run_command to succeed
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-    @patch('platform.system', return_value='Darwin')
-    def test_install_claude_native_macos(self, mock_system):
-        """Test native Claude installation on macOS."""
-        # Verify platform mock
-        assert mock_system.return_value == 'Darwin'
+        # Mock verification to succeed
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'native')
 
-        # install_claude_native returns False for non-Windows platforms
-        result = install_claude.install_claude_native()
-        assert result is False
+        result = install_claude.install_claude_native_linux()
+        assert result is True
+
+        # Verify external calls were made
+        mock_urlopen.assert_called()
+        mock_run.assert_called()
+        mock_verify.assert_called()
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    def test_install_claude_native_macos(self, mock_verify, mock_run, mock_urlopen):
+        """Test native Claude installation on macOS with mocked dependencies."""
+        # Mock urlopen to return installer script
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\necho "Installing Claude"'
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        # Mock run_command to succeed
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        # Mock verification to succeed
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_macos()
+        assert result is True
+
+        # Verify external calls were made
+        mock_urlopen.assert_called()
+        mock_run.assert_called()
+        mock_verify.assert_called()
 
     @patch('install_claude.urlopen')
     def test_install_claude_native_download_error(self, mock_urlopen):
         """Test native Claude installation with download error."""
         mock_urlopen.side_effect = urllib.error.URLError('Connection error')
-        result = install_claude.install_claude_native()
+        result = install_claude.install_claude_native_windows()
         assert result is False
 
 

@@ -734,7 +734,7 @@ class TestClaudeInstallation:
         mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
         mock_ensure_path.return_value = True
 
-        result = install_claude.install_claude_native()
+        result = install_claude.install_claude_native_windows()
         assert result is True
 
 
@@ -810,7 +810,7 @@ class TestEnsureFunctions:
     @patch('install_claude.get_claude_version', return_value=None)
     @patch('install_claude.install_claude_npm', return_value=False)
     @patch('platform.system', return_value='Windows')
-    @patch('install_claude.install_claude_native', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     def test_ensure_claude_native_fallback(self, mock_native, mock_system, mock_npm, mock_get_version):
         """Test Claude installation fallback to native installer."""
         # Verify mock configurations
