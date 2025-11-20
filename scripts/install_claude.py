@@ -1497,7 +1497,7 @@ def install_claude_native_linux() -> bool:
 
         except Exception as e:
             error(f'Native installer failed: {e}')
-            return False
+            # Fall through to final return
     return False
 
 
