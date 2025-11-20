@@ -201,7 +201,7 @@ class TestClaudeInstallationAdditional:
         assert mock_system.return_value == 'Linux'
 
         # install_claude_native returns False for non-Windows platforms
-        result = install_claude.install_claude_native()
+        result = install_claude.install_claude_native_linux()
         assert result is False
 
     @patch('platform.system', return_value='Darwin')
@@ -211,14 +211,14 @@ class TestClaudeInstallationAdditional:
         assert mock_system.return_value == 'Darwin'
 
         # install_claude_native returns False for non-Windows platforms
-        result = install_claude.install_claude_native()
+        result = install_claude.install_claude_native_macos()
         assert result is False
 
     @patch('install_claude.urlopen')
     def test_install_claude_native_download_error(self, mock_urlopen):
         """Test native Claude installation with download error."""
         mock_urlopen.side_effect = urllib.error.URLError('Connection error')
-        result = install_claude.install_claude_native()
+        result = install_claude.install_claude_native_windows()
         assert result is False
 
 

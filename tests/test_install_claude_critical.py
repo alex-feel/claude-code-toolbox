@@ -180,7 +180,7 @@ class TestSSLErrorHandling:
                 mock_temp.return_value.__enter__.return_value.write = MagicMock()
                 mock_run.return_value = subprocess.CompletedProcess([], 0)
 
-                result = install_claude.install_claude_native()
+                result = install_claude.install_claude_native_windows()
 
                 assert result is True
                 assert mock_ssl_context.called
@@ -346,7 +346,7 @@ class TestClaudeInstallationEdgeCases:
     @patch('scripts.install_claude.platform.system', return_value='Darwin')
     @patch('scripts.install_claude.get_claude_version', return_value=None)
     @patch('scripts.install_claude.install_claude_npm', return_value=False)
-    @patch('scripts.install_claude.install_claude_native', return_value=False)
+    @patch('scripts.install_claude.install_claude_native_cross_platform', return_value=False)
     def test_ensure_claude_all_methods_fail(self, mock_native, mock_npm, mock_get_version, mock_system):
         """Test Claude installation when all methods fail."""
         del mock_native, mock_npm, mock_get_version, mock_system  # Mark as intentionally unused
