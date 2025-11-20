@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.12...v4.2.0) (2025-11-20)
+
+
+### Features
+
+* add native Claude Code installation support ([44eefe7](https://github.com/alex-feel/claude-code-toolbox/commit/44eefe7b956e465811104068100e1db014a82f75))
+
+
+### Bug Fixes
+
+* remove unreachable return in install_claude_native_linux ([2606d67](https://github.com/alex-feel/claude-code-toolbox/commit/2606d67ce26e4e72b64a1ddc6998a1571503ab33))
+* update native installation tests with proper mocks for CI ([a103933](https://github.com/alex-feel/claude-code-toolbox/commit/a10393311a7cc49ce8961e4f0fc10997b80c37c1))
+
 ## [4.1.12](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.11...v4.1.12) (2025-11-19)
 
 
