@@ -16,12 +16,33 @@ This is the Claude Code Toolbox - a community project providing automated instal
    - These install `uv` (Astral's Python package manager) and run Python scripts
 
 2. **Cross-platform Python scripts** (comprehensive installers)
-   - `scripts/install_claude.py`: Installs Git Bash, Node.js, and Claude Code
+   - `scripts/install_claude.py`: Installs Git Bash (Windows) and Claude Code via native installers with npm fallback
    - `scripts/setup_environment.py`: Configuration-driven environment setup from YAML
    - Support three configuration sources:
      - Repository configs: `python` → downloads from repo
      - Local files: `./my-config.yaml` → loads from disk
      - Remote URLs: `https://example.com/config.yaml` → downloads from web
+
+### Native Claude Code Installation Support
+
+The installer uses a native-first approach with automatic npm fallback:
+
+**Native Installation Functions:**
+- `install_claude_native_windows()` - PowerShell installer for Windows
+- `install_claude_native_macos()` - Shell installer for macOS
+- `install_claude_native_linux()` - Shell installer for Linux
+- `install_claude_native_cross_platform()` - Platform dispatcher
+- `ensure_claude()` - Main orchestrator with native-first logic
+
+**Environment Variables:**
+- `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`
+- `CLAUDE_VERSION` - Forces specific version via npm (native installers don't support version selection)
+
+**Benefits:**
+- Resolves Node.js v25+ compatibility issues (bug #9628)
+- Eliminates Node.js dependency for most users
+- More reliable auto-updates via official Anthropic installers
+- Maintains full backward compatibility with existing npm installations
 
 ### Environment Configuration System
 

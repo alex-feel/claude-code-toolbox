@@ -31,7 +31,7 @@ The installation system uses a two-tier architecture:
    - Handle platform-specific PATH setup
 
 2. **Cross-platform Python scripts** (comprehensive installers)
-   - `install_claude.py`: Handles Git Bash, Node.js, and Claude Code installation
+   - `install_claude.py`: Handles Git Bash installation (Windows) and Claude Code installation via native installers (with npm fallback)
    - `setup_environment.py`: Sets up complete development environment based on YAML configuration
    - Work identically across Windows, Linux, and macOS
    - Require Python 3.12 (automatically handled by uv)
@@ -42,14 +42,14 @@ The installation system uses a two-tier architecture:
 The scripts automatically install all requirements, including:
 - **uv** - Astral's fast Python package and project manager
 - **Python 3.12** - Managed automatically by uv
-- **Node.js 18+** - For Claude Code CLI
+- **Node.js 18+** - Only installed if npm installation method is needed (optional for native installation)
 - **Git** (Windows only) - For Git Bash
 
 ### Manual Prerequisites
 If you prefer manual installation:
 - **uv**: Install from [docs.astral.sh/uv](https://docs.astral.sh/uv/)
 - **Python**: Version 3.12 or higher
-- **Node.js**: Version 18.0.0 or higher
+- **Node.js**: Version 18.0.0 or higher (only required if using npm installation method)
 - **Git**: Required on Windows for Git Bash
 
 ## 🚀 Quick Start
@@ -110,12 +110,17 @@ bash scripts/macos/install-claude-macos.sh
 
 Comprehensive Claude Code installer that:
 - **Windows**: Installs Git Bash via winget or direct download
-- **All Platforms**: Installs Node.js LTS (>= 18.0.0) if needed
-- Downloads and installs Claude Code CLI via npm
+- **All Platforms**: Installs Claude Code CLI using native installers (default)
+  - Windows: PowerShell installer from `https://claude.ai/install.ps1`
+  - macOS: Shell installer from `https://claude.ai/install.sh`
+  - Linux: Shell installer from `https://claude.ai/install.sh`
+- **Automatic Fallback**: Falls back to npm installation if native method fails
+- **Node.js Management**: Only installs Node.js LTS (>= 18.0.0) if npm method is needed
+- **Environment Variables**: Supports `CLAUDE_INSTALL_METHOD` and `CLAUDE_VERSION` for installation control
 - Configures PowerShell execution policy (Windows)
 - Sets up environment variables (PATH, CLAUDE_CODE_GIT_BASH_PATH)
 - Handles SSL certificate issues in corporate environments
-- Provides fallback installation methods
+- Provides multiple fallback installation methods
 
 ### Environment Setup Scripts (`setup_environment.py`)
 
@@ -241,6 +246,10 @@ Scripts provide detailed output with:
 Scripts respect these environment variables:
 
 ```bash
+# Installation method control
+CLAUDE_INSTALL_METHOD=auto     # auto (default), native, or npm
+CLAUDE_VERSION=1.0.128         # Specific version to install (forces npm method)
+
 # Proxy settings (all platforms)
 HTTP_PROXY=http://proxy:port
 HTTPS_PROXY=http://proxy:port
@@ -251,6 +260,16 @@ CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe
 # Terminal session detection (Windows)
 WT_SESSION=1  # Windows Terminal detection for ANSI colors
 ```
+
+**CLAUDE_INSTALL_METHOD Options:**
+- `auto` (default) - Try native installation first, fall back to npm if needed
+- `native` - Use only native installation, no npm fallback
+- `npm` - Use only npm installation method
+
+**CLAUDE_VERSION:**
+- Specify a particular Claude Code version to install
+- Forces npm installation method (native installers don't support version selection)
+- Example: `CLAUDE_VERSION=1.0.128`
 
 ### Configuration Files
 

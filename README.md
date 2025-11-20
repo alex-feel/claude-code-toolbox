@@ -160,19 +160,38 @@ For configurations stored in private repositories, you need to provide authentic
 
 ## ⏬ Only Claude Code Installation
 
+### Installation Methods
+
+The installer supports two installation methods for Claude Code:
+
+#### 🎯 Native Installation (Default)
+
+- Uses official installers from Anthropic
+- No Node.js dependency required
+- More reliable auto-updates
+- Resolves Node.js v25+ compatibility issues
+- Recommended for most users
+
+#### 📦 NPM Installation (Fallback)
+- Installs via npm package manager
+- Requires Node.js 18+
+- Used automatically if native installation fails
+- Can be forced via environment variable
+
 ### Windows (PowerShell)
 
 The Windows installer automatically:
 - ✅ Installs Git for Windows (Git Bash) if not present
-- ✅ Installs Node.js LTS (v18+) if not present or outdated
+- ✅ Installs Node.js LTS (v18+) only if needed for npm method
 - ✅ Handles dependencies (Microsoft.UI.Xaml) for winget if needed
 - ✅ Falls back to direct downloads if winget is unavailable
 - ✅ Configures `CLAUDE_CODE_GIT_BASH_PATH` if bash.exe is not on PATH
-- ✅ Installs Claude Code CLI using the official installer
+- ✅ Installs Claude Code CLI using native installer (with npm fallback)
 
 **Reliability Features:**
+- Native-first installation approach (bypasses Node.js dependency)
 - Smart dependency resolution for winget/App Installer
-- Automatic fallback to direct downloads
+- Automatic fallback to npm if native installation fails
 - Cached availability checks to prevent redundant attempts
 - Comprehensive PATH refresh for immediate command availability
 
@@ -188,11 +207,76 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.gi
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
 ```
 
+The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
+
 ### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
 ```
+
+The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
+
+### Environment Variables
+
+Control the installation behavior with these environment variables:
+
+#### CLAUDE_INSTALL_METHOD
+
+- `auto` (default) - Try native installation first, fall back to npm if needed
+- `native` - Use only native installation, no npm fallback
+- `npm` - Use only npm installation method
+
+#### CLAUDE_VERSION
+
+- Specify a particular version to install (e.g., `1.0.128`)
+- Forces npm installation method (native installers don't support version selection)
+
+**Examples:**
+
+```powershell
+# Windows - Force npm installation
+$env:CLAUDE_INSTALL_METHOD='npm'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
+
+# Windows - Install specific version
+$env:CLAUDE_VERSION='1.0.128'
+iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
+
+# Linux/macOS - Force native installation only
+export CLAUDE_INSTALL_METHOD=native
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+
+# Linux/macOS - Install specific version
+export CLAUDE_VERSION=1.0.128
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+```
+
+### Troubleshooting
+
+#### Native installation fails on Windows
+
+- The installer will automatically fall back to npm method
+- Check Windows firewall or corporate proxy settings
+- Try manual installation: `irm https://claude.ai/install.ps1 | iex`
+
+#### Native installation fails on macOS/Linux
+
+- The installer will automatically fall back to npm method
+- Ensure you have `curl` and `bash` installed
+- Check sudo permissions if needed
+- Try manual installation: `curl -fsSL https://claude.ai/install.sh | bash`
+
+#### Node.js v25+ compatibility issues
+
+- Native installation bypasses this issue entirely
+- If you must use npm method, downgrade to Node.js v18 or v20 LTS
+
+#### Switching from npm to native installation
+
+- Uninstall npm version: `npm uninstall -g @anthropic-ai/claude-code`
+- Run the installer again (it will use native method by default)
+- Your configurations are preserved (both methods use the same config directory)
 
 ## 🤝 Contributing
 
