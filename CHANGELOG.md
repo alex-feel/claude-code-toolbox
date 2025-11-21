@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.3.0...v4.4.0) (2025-11-21)
+
+
+### Features
+
+* enable npm-to-native migration with specific versions ([4afef89](https://github.com/alex-feel/claude-code-toolbox/commit/4afef89241bca5846fd65f9787894d463dda0b51))
+
 ## [4.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.2.0...v4.3.0) (2025-11-21)
 
 
