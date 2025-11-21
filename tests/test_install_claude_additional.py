@@ -405,7 +405,8 @@ class TestMainFlowAdditional:
         assert mock_git.return_value == 'C:\\Git\\bash.exe'
         assert mock_node.return_value is False
 
-        with patch('sys.exit') as mock_exit:
+        # Force npm installation method to ensure Node.js is required
+        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_called_with(1)
 

@@ -1253,12 +1253,17 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     return False
 
 
-def install_claude_native_windows() -> bool:
+def install_claude_native_windows(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Windows.
 
     Downloads and executes the official PowerShell installer script from claude.ai.
     The native installer places the executable at %USERPROFILE%\\.local\bin\\claude.exe
     and automatically updates the Windows PATH registry.
+
+    Args:
+        version: Specific version to install (e.g., "2.0.14", "latest", "stable").
+                 If None, installs stable channel. Supports semantic versions
+                 and pre-release tags (e.g., "2.0.0-beta").
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -1296,18 +1301,23 @@ def install_claude_native_windows() -> bool:
             tmp.write(installer_script)
             temp_path = tmp.name
 
-        # Execute installer (show output for debugging)
-        result = run_command(
-            [
-                'powershell',
-                '-NoProfile',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-File',
-                temp_path,
-            ],
-            capture_output=False,
-        )
+        # Build command with optional version parameter
+        cmd = [
+            'powershell',
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            temp_path,
+        ]
+
+        # Add version parameter if specified
+        if version:
+            cmd.append(version)  # PowerShell uses positional parameter
+
+        version_msg = f' version {version}' if version else ''
+        info(f'Installing Claude Code{version_msg} via native installer...')
+        result = run_command(cmd, capture_output=False)
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -1345,12 +1355,17 @@ def install_claude_native_windows() -> bool:
     return False
 
 
-def install_claude_native_macos() -> bool:
+def install_claude_native_macos(version: str | None = None) -> bool:
     """Install Claude Code using native installer on macOS.
 
     Downloads and executes the official shell installer script from claude.ai.
     The native installer places the executable at /usr/local/bin/claude
     and handles PATH configuration automatically.
+
+    Args:
+        version: Specific version to install (e.g., "2.0.14"). If None,
+                 installs latest stable version. Supports semantic versions
+                 and pre-release tags.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -1389,9 +1404,14 @@ def install_claude_native_macos() -> bool:
             # Make executable
             os.chmod(temp_path, 0o755)
 
-            # Execute installer (may require sudo)
-            info('Running native installer (may require password)...')
-            result = run_command(['bash', temp_path], capture_output=False)
+            # Execute installer with optional version argument
+            cmd = ['bash', temp_path]
+            if version:
+                cmd.append(version)  # Shell script accepts version as $1
+
+            version_msg = f' for version {version}' if version else ''
+            info(f'Running native installer{version_msg} (may require password)...')
+            result = run_command(cmd, capture_output=False)
 
             # Clean up
             with contextlib.suppress(Exception):
@@ -1422,7 +1442,7 @@ def install_claude_native_macos() -> bool:
     return False
 
 
-def install_claude_native_linux() -> bool:
+def install_claude_native_linux(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Linux.
 
     Downloads and executes the official shell installer script from claude.ai.
@@ -1430,6 +1450,10 @@ def install_claude_native_linux() -> bool:
     or ~/.local/bin/claude depending on permissions.
 
     Supports: Ubuntu 20.04+, Debian 10+, and other modern Linux distributions.
+
+    Args:
+        version: Specific version to install (e.g., "2.0.14"). If None,
+                 installs latest stable version. Supports semantic versions.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -1468,9 +1492,14 @@ def install_claude_native_linux() -> bool:
             # Make executable
             os.chmod(temp_path, 0o755)
 
-            # Execute installer (may require sudo)
-            info('Running native installer (may require password for system-wide installation)...')
-            result = run_command(['bash', temp_path], capture_output=False)
+            # Execute installer with optional version argument
+            cmd = ['bash', temp_path]
+            if version:
+                cmd.append(version)  # Shell script accepts version as $1
+
+            version_msg = f' for version {version}' if version else ''
+            info(f'Running native installer{version_msg} (may require password)...')
+            result = run_command(cmd, capture_output=False)
 
             # Clean up
             with contextlib.suppress(Exception):
@@ -1501,7 +1530,7 @@ def install_claude_native_linux() -> bool:
     return False
 
 
-def install_claude_native_cross_platform() -> bool:
+def install_claude_native_cross_platform(version: str | None = None) -> bool:
     """Install Claude Code using native installer (cross-platform dispatcher).
 
     Dispatches to platform-specific native installation functions based on
@@ -1513,6 +1542,11 @@ def install_claude_native_cross_platform() -> bool:
         - macOS: Uses shell installer script
         - Linux: Uses shell installer script
 
+    Args:
+        version: Specific version to install. If None, installs stable version.
+                 Supports semantic versions (x.y.z) and pre-release tags.
+                 Passed to platform-specific installer scripts.
+
     Returns:
         True if installation succeeded, False otherwise.
 
@@ -1523,11 +1557,11 @@ def install_claude_native_cross_platform() -> bool:
     system = platform.system()
 
     if system == 'Windows':
-        return install_claude_native_windows()
+        return install_claude_native_windows(version)
     if system == 'Darwin':
-        return install_claude_native_macos()
+        return install_claude_native_macos(version)
     # Linux and other Unix-like systems
-    return install_claude_native_linux()
+    return install_claude_native_linux(version)
 
 
 def ensure_claude() -> bool:
@@ -1554,13 +1588,6 @@ def ensure_claude() -> bool:
     # Check if a specific version is requested
     requested_version = os.environ.get('CLAUDE_VERSION')
 
-    # Specific version requires npm (native installer doesn't support version selection)
-    if requested_version and install_method == 'native':
-        warning('Specific version requested, but install method is "native"')
-        warning('Native installer does not support version selection')
-        info('Switching to npm installation for version control')
-        install_method = 'npm'
-
     # Check if already installed
     current_version = get_claude_version()
 
@@ -1569,18 +1596,77 @@ def ensure_claude() -> bool:
             # Specific version requested - check if it matches
             if current_version != requested_version:
                 info(f'Claude Code version {current_version} is installed, but version {requested_version} is requested')
-                info(f'Installing Claude Code version {requested_version} via npm...')
+
+                # Try installation based on method preference
+                if install_method == 'npm':
+                    # NPM-only mode
+                    info(f'Installing Claude Code version {requested_version} via npm (method: npm)...')
+                    if install_claude_npm(upgrade=False, version=requested_version):
+                        new_version = get_claude_version()
+                        if new_version:
+                            success(f'Claude Code version {new_version} installed successfully')
+                        return True
+                    error(f'Failed to install specific version {requested_version}')
+                    return False
+
+                if install_method == 'native':
+                    # Native-only mode with version support
+                    info(f'Installing Claude Code version {requested_version} via native installer (method: native)...')
+                    if install_claude_native_cross_platform(version=requested_version):
+                        return True
+                    error('Native installation failed and npm fallback is disabled (method: native)')
+                    return False
+
+                # 'auto'
+                # Auto mode: Try native first with version, npm fallback
+                info(f'Trying native installation for version {requested_version} (method: auto)...')
+                if install_claude_native_cross_platform(version=requested_version):
+                    return True
+
+                warning('Native installation failed, falling back to npm...')
                 if install_claude_npm(upgrade=False, version=requested_version):
                     new_version = get_claude_version()
                     if new_version:
-                        success(f'Claude Code version {new_version} installed successfully')
+                        success(f'Claude Code version {new_version} installed successfully via npm fallback')
                     return True
-                error(f'Failed to install specific version {requested_version}')
+
+                error(f'Failed to install specific version {requested_version} with all methods')
                 return False
             success(f'Claude Code version {current_version} is already installed (matches requested version)')
             # Set DISABLE_AUTOUPDATER since a specific version was requested
             set_disable_autoupdater()
             return True
+
+        # Check if migration from npm to native is beneficial
+        # Only auto-migrate if: (1) auto mode, (2) no specific version, (3) currently npm
+        if install_method == 'auto' and not requested_version:
+            is_installed, claude_path, source = verify_claude_installation()
+
+            if is_installed and source == 'npm':
+                info(f'Detected npm installation at: {claude_path}')
+                info('Attempting migration to native installer for better stability...')
+
+                # Store current version before migration
+                pre_migration_version = current_version
+
+                # Try native installation (will install latest stable)
+                if install_claude_native_cross_platform(version=None):
+                    # Verify native installation succeeded
+                    post_install, _, post_source = verify_claude_installation()
+
+                    if post_install and post_source == 'native':
+                        success('Successfully migrated from npm to native installation')
+                        info(f'Previous version: {pre_migration_version}')
+                        new_version = get_claude_version()
+                        info(f'Current version: {new_version}')
+                        info('The npm installation can be removed with: npm uninstall -g @anthropic-ai/claude-code')
+                        return True
+                    warning('Migration attempted but native installation not detected')
+                    warning(f'Continuing with npm installation at: {claude_path}')
+                    return True  # Don't fail, npm still works
+                warning('Native installation failed during migration')
+                info(f'Continuing with existing npm installation at: {claude_path}')
+                return True  # Don't fail, npm still works
 
         # No specific version requested - check if update needed
         latest_version = get_latest_claude_version()
@@ -1631,7 +1717,7 @@ def ensure_claude() -> bool:
     if install_method == 'native':
         # native-only mode
         info('Using native installation (method: native)...')
-        if install_claude_native_cross_platform():
+        if install_claude_native_cross_platform(version=requested_version):
             return True
 
         error('Native installation failed and npm fallback is disabled (method: native)')
@@ -1640,7 +1726,7 @@ def ensure_claude() -> bool:
 
     # auto mode (default) - try native first, npm fallback
     info('Trying native installation first (method: auto)...')
-    if install_claude_native_cross_platform():
+    if install_claude_native_cross_platform(version=requested_version):
         return True
 
     warning('Native installation failed, falling back to npm...')
@@ -1778,11 +1864,21 @@ def main() -> None:
                 info('bash.exe is not on PATH, configuring CLAUDE_CODE_GIT_BASH_PATH...')
                 set_windows_env_var('CLAUDE_CODE_GIT_BASH_PATH', bash_path)
 
-        # Step 2: Check/Install Node.js
+        # Step 2: Check/Install Node.js (only if npm method will be used)
         step_num = '2/4' if system == 'Windows' else '1/3'
-        info(f'Step {step_num}: Checking Node.js (minimum version: {MIN_NODE_VERSION})...')
-        if not ensure_nodejs():
-            raise Exception(f'Node.js >= {MIN_NODE_VERSION} unavailable after installation attempts')
+        info(f'Step {step_num}: Checking Node.js...')
+
+        # Determine if we'll need Node.js based on installation method
+        install_method = os.environ.get('CLAUDE_INSTALL_METHOD', 'auto').lower()
+        will_need_nodejs = install_method == 'npm'
+
+        if will_need_nodejs:
+            info(f'Node.js will be needed for npm installation method (minimum version: {MIN_NODE_VERSION})')
+            if not ensure_nodejs():
+                error('Node.js installation failed')
+                raise Exception(f'Node.js >= {MIN_NODE_VERSION} unavailable after installation attempts')
+        else:
+            info('Skipping Node.js installation (native method will be used)')
 
         # Step 3: Configure environment (Windows only)
         if system == 'Windows':

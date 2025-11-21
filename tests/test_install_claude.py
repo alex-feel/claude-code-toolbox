@@ -795,16 +795,19 @@ class TestEnsureFunctions:
                 mock_install.assert_called_once()
                 mock_sleep.assert_called()
 
+    @patch('install_claude.verify_claude_installation')
     @patch('install_claude.get_latest_claude_version')
     @patch('install_claude.get_claude_version')
-    def test_ensure_claude_already_installed(self, mock_get_version, mock_get_latest):
+    def test_ensure_claude_already_installed(self, mock_get_version, mock_get_latest, mock_verify):
         """Test Claude when already installed and up-to-date (no upgrade attempted)."""
         mock_get_version.return_value = '0.7.0'
         mock_get_latest.return_value = '0.7.0'  # Same version - already up-to-date
+        # Mock verify to return native source to prevent migration logic
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'native')
         result = install_claude.ensure_claude()
         assert result is True
         # Should check version once and check latest once, but not upgrade
-        mock_get_version.assert_called_once()
+        assert mock_get_version.call_count >= 1  # At least once (may be more with migration check)
         mock_get_latest.assert_called_once()
 
     @patch('install_claude.get_claude_version', return_value=None)
@@ -852,7 +855,8 @@ class TestMainFunction:
         assert mock_node.return_value is True
         assert mock_claude.return_value is True
         assert mock_find.return_value is None
-        with patch('sys.exit') as mock_exit:
+        # Force npm installation method to ensure Node.js is installed
+        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_not_called()
             mock_git.assert_called_once()
@@ -871,7 +875,8 @@ class TestMainFunction:
         assert mock_system.return_value == 'Linux'
         assert mock_node.return_value is True
         assert mock_claude.return_value is True
-        with patch('sys.exit') as mock_exit:
+        # Force npm installation method to ensure Node.js is installed
+        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_not_called()
             mock_node.assert_called_once()
@@ -895,7 +900,8 @@ class TestMainFunction:
         # Verify mock configurations
         assert mock_system.return_value == 'Darwin'
         assert mock_node.return_value is False
-        with patch('sys.exit') as mock_exit:
+        # Force npm installation method to ensure Node.js is required
+        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_called_with(1)
 
