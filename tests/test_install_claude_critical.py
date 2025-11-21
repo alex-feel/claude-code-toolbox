@@ -329,12 +329,17 @@ class TestClaudeInstallationEdgeCases:
             call_args = mock_run.call_args[0][0]
             assert '@anthropic-ai/claude-code@latest' in call_args
 
+    @patch('scripts.install_claude.verify_claude_installation')
     @patch('scripts.install_claude.get_latest_claude_version')
     @patch('scripts.install_claude.get_claude_version')
-    def test_ensure_claude_already_installed_no_upgrade(self, mock_get_version, mock_get_latest):
+    def test_ensure_claude_already_installed_no_upgrade(
+        self, mock_get_version: MagicMock, mock_get_latest: MagicMock, mock_verify: MagicMock,
+    ) -> None:
         """Test Claude when already installed and up-to-date (no upgrade attempted)."""
         mock_get_version.return_value = '0.7.8'
         mock_get_latest.return_value = '0.7.8'  # Same version - already up-to-date
+        # Mock as native installation to prevent migration
+        mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
 
         result = install_claude.ensure_claude()
 

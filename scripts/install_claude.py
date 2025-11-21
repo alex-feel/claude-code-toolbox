@@ -1635,11 +1635,41 @@ def ensure_claude() -> bool:
             success(f'Claude Code version {current_version} is already installed (matches requested version)')
             # Set DISABLE_AUTOUPDATER since a specific version was requested
             set_disable_autoupdater()
+
+            # Check if migration from npm to native is beneficial (even when version matches)
+            # Only auto-migrate if: (1) auto mode, (2) currently npm
+            if install_method == 'auto':
+                is_installed, claude_path, source = verify_claude_installation()
+
+                if is_installed and source == 'npm':
+                    info(f'Detected npm installation at: {claude_path}')
+                    info('Attempting migration to native installer for better stability...')
+
+                    # Store current version before migration
+                    pre_migration_version = current_version
+
+                    # Try native installation WITH the requested version
+                    if install_claude_native_cross_platform(version=requested_version):
+                        # Verify native installation succeeded
+                        post_install, _, post_source = verify_claude_installation()
+
+                        if post_install and post_source == 'native':
+                            success('Successfully migrated from npm to native installation')
+                            info(f'Version maintained: {requested_version}')
+                            info('The npm installation can be removed with: npm uninstall -g @anthropic-ai/claude-code')
+                            return True
+                        warning('Migration attempted but native installation not detected')
+                        warning(f'Continuing with npm installation at: {claude_path}')
+                        return True  # Don't fail, npm still works
+                    warning('Native installation failed during migration')
+                    info(f'Continuing with existing npm installation at: {claude_path}')
+                    return True  # Don't fail, npm still works
+
             return True
 
         # Check if migration from npm to native is beneficial
         # Only auto-migrate if: (1) auto mode, (2) no specific version, (3) currently npm
-        if install_method == 'auto' and not requested_version:
+        if install_method == 'auto':
             is_installed, claude_path, source = verify_claude_installation()
 
             if is_installed and source == 'npm':
