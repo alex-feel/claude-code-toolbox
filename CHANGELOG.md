@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.2.0...v4.3.0) (2025-11-21)
+
+
+### Features
+
+* add version parameter support and migration for native installers ([514beee](https://github.com/alex-feel/claude-code-toolbox/commit/514beeedb09d5dc91ffc64047eb7b81e416c4e68))
+
 ## [4.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.1.12...v4.2.0) (2025-11-20)
 
 
