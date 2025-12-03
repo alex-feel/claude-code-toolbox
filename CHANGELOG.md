@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.4.0...v4.5.0) (2025-12-03)
+
+
+### Features
+
+* add skills installation support with base URL and files pattern ([8616e6f](https://github.com/alex-feel/claude-code-toolbox/commit/8616e6f9684614410968140caa3963d2d07f73e9))
+
 ## [4.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.3.0...v4.4.0) (2025-11-21)
 
 
