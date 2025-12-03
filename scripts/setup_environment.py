@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import platform
+import re
 import shutil
 import ssl
 import subprocess
@@ -403,7 +404,6 @@ def expand_tildes_in_command(command: str) -> str:
         >>> expand_tildes_in_command("echo 'text' >> ~/.config/file")
         "echo 'text' >> /home/user/.config/file"
     """
-    import re
 
     # Pattern matches ~ and ~username paths
     # Matches: ~ followed by optional username, then slash and path components
@@ -866,7 +866,9 @@ def validate_all_config_files(
                         if isinstance(skill_file_item, str):
                             # Build full path for validation
                             if skill_base.startswith(('http://', 'https://')):
-                                full_url = f"{skill_base.rstrip('/')}/{skill_file_item}"
+                                # Convert tree/blob URLs to raw URLs for validation
+                                raw_base = convert_to_raw_url(skill_base)
+                                full_url = f"{raw_base.rstrip('/')}/{skill_file_item}"
                                 files_to_check.append(('skill', f'{skill_name}/{skill_file_item}', full_url, True))
                             else:
                                 resolved_base, _ = resolve_resource_path(skill_base, config_source, None)
@@ -958,6 +960,65 @@ def detect_repo_type(url: str) -> str | None:
         return 'bitbucket'
 
     return None
+
+
+def convert_to_raw_url(url: str) -> str:
+    """Convert GitHub/GitLab web UI URLs to raw content URLs.
+
+    Transforms repository web interface URLs (tree/blob views) to their raw
+    content equivalents that can be downloaded directly.
+
+    Supports:
+    - GitHub: tree/blob URLs -> raw.githubusercontent.com
+    - GitLab: tree/blob URLs -> raw URLs (works with self-hosted instances)
+
+    Args:
+        url: URL to convert (may be a web UI URL, raw URL, or local path)
+
+    Returns:
+        Raw content URL if conversion was possible, otherwise the original URL unchanged.
+
+    Examples:
+        >>> convert_to_raw_url("https://github.com/org/repo/tree/main/path")
+        'https://raw.githubusercontent.com/org/repo/main/path'
+
+        >>> convert_to_raw_url("https://gitlab.com/ns/proj/-/tree/main/path")
+        'https://gitlab.com/ns/proj/-/raw/main/path'
+
+        >>> convert_to_raw_url("https://raw.githubusercontent.com/org/repo/main/path")
+        'https://raw.githubusercontent.com/org/repo/main/path'
+
+        >>> convert_to_raw_url("./local/path")
+        './local/path'
+    """
+    # Return unchanged if not a URL
+    if not url.startswith(('http://', 'https://')):
+        return url
+
+    # Already a raw URL - return unchanged
+    if 'raw.githubusercontent.com' in url:
+        return url
+
+    # GitHub transformation
+    # Pattern: github.com/{owner}/{repo}/(tree|blob)/{branch}/{path}
+    # Also handles refs/heads/ prefix in branch name
+    github_pattern = r'https://github\.com/([^/]+)/([^/]+)/(tree|blob)/(.+)'
+    github_match = re.match(github_pattern, url.rstrip('/'))
+    if github_match:
+        owner, repo, _, branch_and_path = github_match.groups()
+        # Handle refs/heads/ prefix if present
+        branch_and_path = branch_and_path.removeprefix('refs/heads/')
+        return f'https://raw.githubusercontent.com/{owner}/{repo}/{branch_and_path}'
+
+    # GitLab transformation (works with self-hosted instances)
+    # Pattern: any URL containing /-/tree/ or /-/blob/
+    if '/-/tree/' in url:
+        return url.replace('/-/tree/', '/-/raw/')
+    if '/-/blob/' in url:
+        return url.replace('/-/blob/', '/-/raw/')
+
+    # Return unchanged if no transformation applied
+    return url
 
 
 def convert_gitlab_url_to_api(url: str) -> str:
@@ -1997,8 +2058,9 @@ def validate_skill_files(
 
         # Build full path: base + file_path
         if base.startswith(('http://', 'https://')):
-            # Remote base - combine URL
-            full_url = f"{base.rstrip('/')}/{file_path}"
+            # Remote base - convert tree/blob URLs to raw URLs
+            raw_base = convert_to_raw_url(base)
+            full_url = f"{raw_base.rstrip('/')}/{file_path}"
             auth_headers = get_auth_headers(full_url, auth_param)
             is_valid, method = validate_file_availability(full_url, auth_headers)
         else:
@@ -2064,8 +2126,9 @@ def process_skill(
 
         # Build source path
         if base.startswith(('http://', 'https://')):
-            # Remote source - download file
-            source_url = f"{base.rstrip('/')}/{file_path}"
+            # Remote source - convert tree/blob URLs to raw URLs for download
+            raw_base = convert_to_raw_url(base)
+            source_url = f"{raw_base.rstrip('/')}/{file_path}"
             try:
                 content = fetch_url_with_auth(source_url, auth_param=auth_param)
                 destination.write_text(content, encoding='utf-8')
