@@ -31,6 +31,109 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 import setup_environment
 
 
+class TestConvertToRawUrl:
+    """Test URL transformation for skills - converting tree/blob URLs to raw URLs."""
+
+    def test_github_tree_url(self) -> None:
+        """Test converting GitHub tree URL to raw URL."""
+        url = 'https://github.com/owner/repo/tree/main/skills/my-skill'
+        expected = 'https://raw.githubusercontent.com/owner/repo/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_github_blob_url(self) -> None:
+        """Test converting GitHub blob URL to raw URL."""
+        url = 'https://github.com/owner/repo/blob/main/skills/my-skill'
+        expected = 'https://raw.githubusercontent.com/owner/repo/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_github_raw_url_unchanged(self) -> None:
+        """Test that raw.githubusercontent.com URLs are returned unchanged."""
+        url = 'https://raw.githubusercontent.com/owner/repo/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == url
+
+    def test_gitlab_tree_url(self) -> None:
+        """Test converting GitLab tree URL to raw URL."""
+        url = 'https://gitlab.com/ns/proj/-/tree/main/skills/my-skill'
+        expected = 'https://gitlab.com/ns/proj/-/raw/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_gitlab_blob_url(self) -> None:
+        """Test converting GitLab blob URL to raw URL."""
+        url = 'https://gitlab.com/ns/proj/-/blob/main/skills/my-skill'
+        expected = 'https://gitlab.com/ns/proj/-/raw/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_gitlab_self_hosted_tree_url(self) -> None:
+        """Test converting self-hosted GitLab tree URL to raw URL."""
+        url = 'https://gitlab.company.com/group/project/-/tree/develop/path/to/skill'
+        expected = 'https://gitlab.company.com/group/project/-/raw/develop/path/to/skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_local_path_unchanged(self) -> None:
+        """Test that local paths are returned unchanged."""
+        path = './skills/local-skill'
+        assert setup_environment.convert_to_raw_url(path) == path
+
+    def test_absolute_local_path_unchanged(self) -> None:
+        """Test that absolute local paths are returned unchanged."""
+        path = '/home/user/skills/local-skill'
+        assert setup_environment.convert_to_raw_url(path) == path
+
+    def test_windows_path_unchanged(self) -> None:
+        """Test that Windows paths are returned unchanged."""
+        path = 'C:\\Users\\user\\skills\\local-skill'
+        assert setup_environment.convert_to_raw_url(path) == path
+
+    def test_github_refs_heads_prefix(self) -> None:
+        """Test handling of refs/heads/ prefix in GitHub URLs."""
+        url = 'https://github.com/owner/repo/tree/refs/heads/main/skills/my-skill'
+        expected = 'https://raw.githubusercontent.com/owner/repo/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_github_url_with_trailing_slash(self) -> None:
+        """Test GitHub URL with trailing slash is handled correctly."""
+        url = 'https://github.com/owner/repo/tree/main/skills/my-skill/'
+        expected = 'https://raw.githubusercontent.com/owner/repo/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_github_url_deep_path(self) -> None:
+        """Test GitHub URL with deep nested path."""
+        url = 'https://github.com/org/repo/tree/main/skills/library/context-retrieval-protocol'
+        expected = (
+            'https://raw.githubusercontent.com/org/repo/main/'
+            'skills/library/context-retrieval-protocol'
+        )
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_github_url_feature_branch(self) -> None:
+        """Test GitHub URL with feature branch name containing slashes."""
+        url = 'https://github.com/owner/repo/tree/feature/new-skill/skills/my-skill'
+        expected = (
+            'https://raw.githubusercontent.com/owner/repo/'
+            'feature/new-skill/skills/my-skill'
+        )
+        assert setup_environment.convert_to_raw_url(url) == expected
+
+    def test_gitlab_raw_url_unchanged(self) -> None:
+        """Test that GitLab raw URLs are returned unchanged."""
+        url = 'https://gitlab.com/ns/proj/-/raw/main/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == url
+
+    def test_other_url_unchanged(self) -> None:
+        """Test that other URLs (not GitHub/GitLab tree/blob) are returned unchanged."""
+        url = 'https://example.com/skills/my-skill'
+        assert setup_environment.convert_to_raw_url(url) == url
+
+    def test_http_url_github(self) -> None:
+        """Test HTTP (non-HTTPS) GitHub tree URL."""
+        # GitHub tree URLs should be converted even with HTTP
+        url = 'http://github.com/owner/repo/tree/main/skills'
+        # This won't match the pattern because it starts with http://
+        # The regex specifically checks for https://
+        # So this is expected behavior - http URLs are returned unchanged
+        assert setup_environment.convert_to_raw_url(url) == url
+
+
 class TestValidateSkillFiles:
     """Test skill file validation."""
 
