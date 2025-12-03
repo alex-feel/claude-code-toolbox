@@ -849,6 +849,30 @@ def validate_all_config_files(
                     resolved_path, is_remote = resolve_resource_path(source, config_source, base_url)
                     files_to_check.append(('file_download', source, resolved_path, is_remote))
 
+    # Skills
+    skills_raw = config.get('skills', [])
+    if isinstance(skills_raw, list):
+        skills_list = cast(list[object], skills_raw)
+        for skill_item in skills_list:
+            if isinstance(skill_item, dict):
+                skill_dict = cast(dict[str, Any], skill_item)
+                skill_name = skill_dict.get('name', 'unknown')
+                skill_base = skill_dict.get('base', '')
+                skill_files = skill_dict.get('files', [])
+
+                if isinstance(skill_files, list):
+                    skill_files_list = cast(list[object], skill_files)
+                    for skill_file_item in skill_files_list:
+                        if isinstance(skill_file_item, str):
+                            # Build full path for validation
+                            if skill_base.startswith(('http://', 'https://')):
+                                full_url = f"{skill_base.rstrip('/')}/{skill_file_item}"
+                                files_to_check.append(('skill', f'{skill_name}/{skill_file_item}', full_url, True))
+                            else:
+                                resolved_base, _ = resolve_resource_path(skill_base, config_source, None)
+                                full_path = str(Path(resolved_base) / skill_file_item)
+                                files_to_check.append(('skill', f'{skill_name}/{skill_file_item}', full_path, False))
+
     # Validate each file
     info(f'Validating {len(files_to_check)} files...')
     all_valid = True
@@ -1932,6 +1956,181 @@ def process_file_downloads(
 
     success(f'All {success_count} files downloaded/copied successfully')
     return True
+
+
+def validate_skill_files(
+    skill_config: dict[str, Any],
+    config_source: str,
+    auth_param: str | None = None,
+) -> tuple[bool, list[tuple[str, bool, str]]]:
+    """Validate all files in a skill configuration before download.
+
+    Checks that all files specified in the skill configuration are accessible.
+    For remote skills, this uses HEAD/Range requests to verify URL accessibility.
+    For local skills, this checks that the files exist on disk.
+
+    Args:
+        skill_config: Skill configuration dict with 'name', 'base', and 'files' keys
+        config_source: Where the config was loaded from (URL or local path)
+        auth_param: Optional authentication parameter for private repos
+
+    Returns:
+        Tuple of (all_valid, validation_results)
+        validation_results is a list of (file_path, is_valid, method) tuples
+    """
+    skill_name = skill_config.get('name', 'unknown')
+    base = skill_config.get('base', '')
+    files = skill_config.get('files', [])
+
+    results: list[tuple[str, bool, str]] = []
+    all_valid = True
+
+    # Check if SKILL.md is in files list (required per Claude documentation)
+    if 'SKILL.md' not in files:
+        error(f"Skill '{skill_name}': SKILL.md is required but not in files list")
+        all_valid = False
+
+    # Validate each file
+    for file_path in files:
+        if not isinstance(file_path, str):
+            continue
+
+        # Build full path: base + file_path
+        if base.startswith(('http://', 'https://')):
+            # Remote base - combine URL
+            full_url = f"{base.rstrip('/')}/{file_path}"
+            auth_headers = get_auth_headers(full_url, auth_param)
+            is_valid, method = validate_file_availability(full_url, auth_headers)
+        else:
+            # Local base - resolve path
+            resolved_base, _ = resolve_resource_path(base, config_source, None)
+            full_path = Path(resolved_base) / file_path
+            is_valid = full_path.exists() and full_path.is_file()
+            method = 'Local'
+
+        results.append((file_path, is_valid, method))
+        if not is_valid:
+            all_valid = False
+
+    return all_valid, results
+
+
+def process_skill(
+    skill_config: dict[str, Any],
+    skills_dir: Path,
+    config_source: str,
+    auth_param: str | None = None,
+) -> bool:
+    """Process and install a single skill.
+
+    Downloads or copies all files specified in the skill configuration to the
+    skill's directory, preserving the relative directory structure.
+
+    Args:
+        skill_config: Skill configuration dict with 'name', 'base', and 'files' keys
+        skills_dir: Base skills directory (.claude/skills/)
+        config_source: Where the config was loaded from
+        auth_param: Optional authentication parameter for private repos
+
+    Returns:
+        bool: True if skill installed successfully, False otherwise
+    """
+    skill_name = skill_config.get('name')
+    base = skill_config.get('base', '')
+    files = skill_config.get('files', [])
+
+    if not skill_name:
+        error("Skill configuration missing 'name' field")
+        return False
+
+    if not files:
+        error(f"Skill '{skill_name}': No files specified")
+        return False
+
+    # Create skill directory
+    skill_dir = skills_dir / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+
+    info(f'Installing skill: {skill_name}')
+
+    success_count = 0
+    for file_path in files:
+        if not isinstance(file_path, str):
+            continue
+
+        # Destination preserves relative path structure (e.g., scripts/fill_form.py)
+        destination = skill_dir / file_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        # Build source path
+        if base.startswith(('http://', 'https://')):
+            # Remote source - download file
+            source_url = f"{base.rstrip('/')}/{file_path}"
+            try:
+                content = fetch_url_with_auth(source_url, auth_param=auth_param)
+                destination.write_text(content, encoding='utf-8')
+                success(f'  Downloaded: {file_path}')
+                success_count += 1
+            except Exception as e:
+                error(f'  Failed to download {file_path}: {e}')
+        else:
+            # Local source - copy file
+            resolved_base, _ = resolve_resource_path(base, config_source, None)
+            source_path = Path(resolved_base) / file_path
+
+            if not source_path.exists():
+                error(f'  Local file not found: {source_path}')
+                continue
+
+            try:
+                shutil.copy2(source_path, destination)
+                success(f'  Copied: {file_path}')
+                success_count += 1
+            except Exception as e:
+                error(f'  Failed to copy {file_path}: {e}')
+
+    # Verify SKILL.md was installed (required for a valid skill)
+    skill_md = skill_dir / 'SKILL.md'
+    if not skill_md.exists():
+        error(f"Skill '{skill_name}': SKILL.md was not installed - skill may be invalid")
+        return False
+
+    success(f"Skill '{skill_name}' installed ({success_count}/{len(files)} files)")
+    return success_count == len(files)
+
+
+def process_skills(
+    skills_config: list[dict[str, Any]],
+    skills_dir: Path,
+    config_source: str,
+    auth_param: str | None = None,
+) -> bool:
+    """Process all skills from configuration.
+
+    Iterates through all skill configurations and installs each one to the
+    skills directory.
+
+    Args:
+        skills_config: List of skill configuration dictionaries
+        skills_dir: Base skills directory (.claude/skills/)
+        config_source: Where the config was loaded from
+        auth_param: Optional authentication parameter for private repos
+
+    Returns:
+        bool: True if all skills installed successfully, False otherwise
+    """
+    if not skills_config:
+        info('No skills configured')
+        return True
+
+    info(f'Processing {len(skills_config)} skill(s)...')
+    all_success = True
+
+    for skill_config in skills_config:
+        if not process_skill(skill_config, skills_dir, config_source, auth_param):
+            all_success = False
+
+    return all_success
 
 
 def install_claude(version: str | None = None) -> bool:
@@ -3253,6 +3452,7 @@ def main() -> None:
         commands_dir = claude_user_dir / 'commands'
         prompts_dir = claude_user_dir / 'prompts'
         hooks_dir = claude_user_dir / 'hooks'
+        skills_dir = claude_user_dir / 'skills'
 
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
         if not args.skip_install:
@@ -3271,7 +3471,7 @@ def main() -> None:
         # Step 2: Create directories
         print()
         print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, hooks_dir]:
+        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, hooks_dir, skills_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
@@ -3305,7 +3505,19 @@ def main() -> None:
         commands = config.get('slash-commands', [])
         process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 7: Process system prompt (if specified)
+        # Step 7: Process skills
+        print()
+        print(f'{Colors.CYAN}Step 7: Processing skills...{Colors.NC}')
+        skills_raw = config.get('skills', [])
+        # Convert to properly typed list using cast and list comprehension
+        skills: list[dict[str, Any]] = (
+            [cast(dict[str, Any], s) for s in cast(list[object], skills_raw) if isinstance(s, dict)]
+            if isinstance(skills_raw, list)
+            else []
+        )
+        process_skills(skills, skills_dir, config_source, args.auth)
+
+        # Step 8: Process system prompt (if specified)
         print()
         print(f'{Colors.CYAN}Step 8: Processing system prompt...{Colors.NC}')
         prompt_path = None
@@ -3387,6 +3599,7 @@ def main() -> None:
         print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
+        print(f'   * Skills: {len(skills)} installed')
         if system_prompt:
             if mode == 'append':
                 print(f'   * System prompt: Appending to default ({system_prompt})')
