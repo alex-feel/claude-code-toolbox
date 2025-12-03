@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.5.0...v4.5.1) (2025-12-03)
+
+
+### Bug Fixes
+
+* convert GitHub/GitLab tree URLs to raw URLs for skills validation ([edfe096](https://github.com/alex-feel/claude-code-toolbox/commit/edfe096c9fbd0d9466cee4f69430f7ec86175209))
+
 ## [4.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.4.0...v4.5.0) (2025-12-03)
 
 
