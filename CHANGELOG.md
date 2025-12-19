@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.5.1...v4.6.0) (2025-12-19)
+
+
+### Features
+
+* add support for multiple environment variables in MCP server configuration ([b721bac](https://github.com/alex-feel/claude-code-toolbox/commit/b721bac738ea774f2e66d69c8d79de8c41ff7570))
+
 ## [4.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.5.0...v4.5.1) (2025-12-03)
 
 
