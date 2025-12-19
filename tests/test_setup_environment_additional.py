@@ -737,6 +737,134 @@ class TestMCPServerConfigurationEdgeCases:
 
         assert result is False
 
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_env_single_string(self, mock_run, mock_find):
+        """Test MCP configuration with single env string (backward compatibility)."""
+        del mock_find  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+            'env': 'API_KEY=secret123',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Find the add command (4th call after 3 remove calls)
+        add_call = mock_run.call_args_list[3]
+        cmd = add_call[0][0]
+
+        # Verify --env flag is present with correct value
+        assert '--env' in cmd
+        env_idx = cmd.index('--env')
+        assert cmd[env_idx + 1] == 'API_KEY=secret123'
+
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_env_multiple_list(self, mock_run, mock_find):
+        """Test MCP configuration with multiple env vars as list."""
+        del mock_find  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+            'env': [
+                'API_KEY=secret123',
+                'DEBUG=true',
+                'LOG_LEVEL=info',
+            ],
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Find the add command (4th call after 3 remove calls)
+        add_call = mock_run.call_args_list[3]
+        cmd = add_call[0][0]
+
+        # Count --env flags
+        env_count = cmd.count('--env')
+        assert env_count == 3
+
+        # Verify all env vars are present
+        assert 'API_KEY=secret123' in cmd
+        assert 'DEBUG=true' in cmd
+        assert 'LOG_LEVEL=info' in cmd
+
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_env_empty_list(self, mock_run, mock_find):
+        """Test MCP configuration with empty env list."""
+        del mock_find  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+            'env': [],
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Find the add command (4th call after 3 remove calls)
+        add_call = mock_run.call_args_list[3]
+        cmd = add_call[0][0]
+
+        # No --env flags should be present
+        assert '--env' not in cmd
+
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    def test_configure_mcp_server_env_invalid_type(self, mock_find):
+        """Test MCP configuration with invalid env type returns False."""
+        del mock_find  # Unused but required for patch
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+            'env': {'invalid': 'dict'},  # Invalid type - should be string or list
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is False
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_with_env_list(self, mock_run, mock_find, _mock_system):
+        """Test HTTP transport MCP configuration with multiple env vars."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-http-server',
+            'transport': 'http',
+            'url': 'http://localhost:8080',
+            'env': [
+                'AUTH_TOKEN=token123',
+                'REGION=us-west',
+            ],
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # The first call after removes is the PowerShell command
+        # Check the base_cmd which is used in fallback
+        add_call = mock_run.call_args_list[3]  # 4th call
+        cmd = add_call[0][0]
+
+        # PowerShell execution - check the script contains env flags
+        if 'powershell' in cmd:
+            ps_script = cmd[3]  # The -Command argument
+            assert '--env "AUTH_TOKEN=token123"' in ps_script
+            assert '--env "REGION=us-west"' in ps_script
+
 
 class TestCreateAdditionalSettingsComplex:
     """Test complex additional settings creation scenarios."""

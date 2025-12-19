@@ -2384,7 +2384,21 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
     url = server.get('url')
     command = server.get('command')
     header = server.get('header')
-    env = server.get('env')
+    env_config = server.get('env')
+
+    # Normalize env to list for consistent handling (supports both string and list syntax)
+    env_list: list[str] = []
+    if env_config:
+        if isinstance(env_config, str):
+            # Single env var (backward compatibility)
+            env_list = [env_config]
+        elif isinstance(env_config, list):
+            # Multiple env vars (new functionality)
+            for item in cast(list[object], env_config):
+                env_list.append(str(item))
+        else:
+            error(f'Invalid env format for {name}: expected string or list')
+            return False
 
     if not name:
         error('MCP server configuration missing name')
@@ -2433,6 +2447,9 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         if transport and url:
             # HTTP or SSE transport
             base_cmd.append(name)  # Add name here for HTTP/SSE transport
+            # Add all environment variables
+            for env_var in env_list:
+                base_cmd.extend(['--env', env_var])
             base_cmd.extend(['--transport', transport, url])
             if header:
                 base_cmd.extend(['--header', header])
@@ -2453,15 +2470,19 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 # On Windows, we need to spawn a completely new shell process
                 # Use explicit PATH instead of reading from registry
+                # Build env flags for PowerShell command
+                env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
+                env_part = f' {env_flags}' if env_flags else ''
+
                 ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} --transport {transport} {name} {url}
+& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} {url}
 exit $LASTEXITCODE
 '''
                 if header:
                     ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} --transport {transport} --header "{header}" {name} {url}
+& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} --header "{header}" {url}
 exit $LASTEXITCODE
 '''
                 result = run_command(
@@ -2496,8 +2517,9 @@ exit $LASTEXITCODE
 
             # Build the command properly
             base_cmd.append(name)  # Add name FIRST, before post-name options
-            if env:
-                base_cmd.extend(['--env', env])  # Add env AFTER name
+            # Add all environment variables
+            for env_var in env_list:
+                base_cmd.extend(['--env', env_var])
             base_cmd.extend(['--'])
 
             # Special handling for npx (needs cmd /c wrapper on Windows)
