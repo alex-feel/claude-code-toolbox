@@ -1,5 +1,19 @@
 # Changelog
 
+## [4.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.6.0...v4.7.0) (2025-12-24)
+
+
+### Features
+
+* add configuration inheritance support with top-level key override ([6847f7b](https://github.com/alex-feel/claude-code-toolbox/commit/6847f7b7f3745809110c751d2cc0eef285fd0673))
+* add os-env-variables for cross-platform persistent environment variables ([c15e459](https://github.com/alex-feel/claude-code-toolbox/commit/c15e459e59f787d0fe8038dc51c80138228e9d3e))
+
+
+### Bug Fixes
+
+* correct duplicate step numbering in console output ([02887c1](https://github.com/alex-feel/claude-code-toolbox/commit/02887c16ab131a975fc4a7f3b0ea796f1ad44d38))
+* use positive platform check to prevent MyPy unreachable error ([00c563e](https://github.com/alex-feel/claude-code-toolbox/commit/00c563eeff038bcf59946801f88f35d7ec176228))
+
 ## [4.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.5.1...v4.6.0) (2025-12-19)
 
 
