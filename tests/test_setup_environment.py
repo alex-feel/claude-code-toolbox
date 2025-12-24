@@ -12,6 +12,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
@@ -1342,3 +1344,378 @@ dependencies:
                     claude_code_version_normalized = claude_code_version_str
 
             assert claude_code_version_normalized is None
+
+
+class TestMergeConfigs:
+    """Test the _merge_configs helper function."""
+
+    def test_basic_merge(self):
+        """Test basic merge with no conflicts."""
+        parent = {'a': 1, 'b': 2}
+        child = {'c': 3, 'd': 4}
+        result = setup_environment._merge_configs(parent, child)
+        assert result == {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+
+    def test_child_override(self):
+        """Test that child overrides parent for same key."""
+        parent = {'a': 1, 'b': 2}
+        child = {'b': 20, 'c': 3}
+        result = setup_environment._merge_configs(parent, child)
+        assert result == {'a': 1, 'b': 20, 'c': 3}
+
+    def test_no_deep_merge(self):
+        """Test that nested dicts are completely replaced, not merged."""
+        parent = {'config': {'x': 1, 'y': 2}}
+        child = {'config': {'z': 3}}
+        result = setup_environment._merge_configs(parent, child)
+        assert result['config'] == {'z': 3}
+        assert 'x' not in result['config']
+
+    def test_inherit_key_excluded(self):
+        """Test that 'inherit' key from child is not in result."""
+        parent = {'a': 1}
+        child = {'inherit': 'something', 'b': 2}
+        result = setup_environment._merge_configs(parent, child)
+        assert result == {'a': 1, 'b': 2}
+        assert 'inherit' not in result
+
+
+class TestResolveInheritPath:
+    """Test the _resolve_inherit_path helper function."""
+
+    def test_full_url_unchanged(self):
+        """Test that full URLs are returned unchanged."""
+        result = setup_environment._resolve_inherit_path(
+            'https://example.com/config.yaml',
+            '/local/child.yaml',
+        )
+        assert result == 'https://example.com/config.yaml'
+
+    def test_http_url_unchanged(self):
+        """Test that HTTP URLs are returned unchanged."""
+        result = setup_environment._resolve_inherit_path(
+            'http://example.com/config.yaml',
+            '/local/child.yaml',
+        )
+        assert result == 'http://example.com/config.yaml'
+
+    def test_absolute_path_unchanged(self):
+        """Test that absolute paths are returned unchanged."""
+        # Use platform-appropriate absolute path
+        if sys.platform == 'win32':
+            abs_path = 'C:\\absolute\\path\\config.yaml'
+            result = setup_environment._resolve_inherit_path(
+                abs_path,
+                'C:\\different\\child.yaml',
+            )
+            assert result == abs_path
+        else:
+            result = setup_environment._resolve_inherit_path(
+                '/absolute/path/config.yaml',
+                '/different/child.yaml',
+            )
+            assert result == '/absolute/path/config.yaml'
+
+    def test_relative_from_url(self):
+        """Test relative path resolution from URL source."""
+        result = setup_environment._resolve_inherit_path(
+            'parent.yaml',
+            'https://example.com/configs/child.yaml',
+        )
+        assert result == 'https://example.com/configs/parent.yaml'
+
+    def test_repo_name_from_repo_name(self):
+        """Test repo name resolution when source is also repo name."""
+        result = setup_environment._resolve_inherit_path(
+            'python-base',
+            'python-web',
+        )
+        assert result == 'python-base'
+
+
+class TestConfigInheritance:
+    """Test configuration inheritance functionality."""
+
+    def test_no_inheritance_returns_config_unchanged(self):
+        """Test that config without 'inherit' key is returned as-is."""
+        config = {'name': 'Test', 'model': 'claude-3'}
+        result = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        assert result == config
+
+    def test_inherit_key_removed_from_result(self):
+        """Test that 'inherit' key is not in the final result."""
+        with patch.object(setup_environment, 'load_config_from_source') as mock_load:
+            mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
+            config = {'inherit': 'parent.yaml', 'model': 'claude-3'}
+            result = setup_environment.resolve_config_inheritance(config, 'child.yaml')
+            assert 'inherit' not in result
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_simple_inheritance(self, mock_load):
+        """Test simple single-level inheritance."""
+        mock_load.return_value = (
+            {'name': 'Parent', 'model': 'claude-2', 'dependencies': {'common': ['uv']}},
+            'parent.yaml',
+        )
+        child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
+        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+
+        assert result['name'] == 'Parent'  # Inherited from parent
+        assert result['model'] == 'claude-3'  # Overridden by child
+        assert result['dependencies'] == {'common': ['uv']}  # Inherited
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_child_completely_overrides_parent_key(self, mock_load):
+        """Test that child completely replaces parent's top-level key (no deep merge)."""
+        mock_load.return_value = (
+            {'dependencies': {'common': ['uv'], 'windows': ['npm']}},
+            'parent.yaml',
+        )
+        child = {
+            'inherit': 'parent.yaml',
+            'dependencies': {'linux': ['apt']},  # Completely replaces
+        }
+        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+
+        # Child's dependencies should COMPLETELY replace parent's
+        assert result['dependencies'] == {'linux': ['apt']}
+        assert 'common' not in result['dependencies']
+        assert 'windows' not in result['dependencies']
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_multi_level_inheritance(self, mock_load):
+        """Test grandparent -> parent -> child inheritance chain."""
+
+        def load_side_effect(config_spec: str, _auth_param: str | None = None) -> tuple[dict, str]:
+            if 'grandparent' in config_spec:
+                return ({'name': 'Grandparent', 'a': 1, 'b': 2}, 'grandparent.yaml')
+            if 'parent' in config_spec:
+                return ({'inherit': 'grandparent.yaml', 'b': 20, 'c': 3}, 'parent.yaml')
+            raise FileNotFoundError(f'Not found: {config_spec}')
+
+        mock_load.side_effect = load_side_effect
+
+        child = {'inherit': 'parent.yaml', 'c': 30, 'd': 4}
+        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+
+        assert result['name'] == 'Grandparent'  # From grandparent
+        assert result['a'] == 1  # From grandparent
+        assert result['b'] == 20  # Parent overrides grandparent
+        assert result['c'] == 30  # Child overrides parent
+        assert result['d'] == 4  # Child only
+
+    def test_circular_dependency_self_reference(self):
+        """Test circular dependency detection for self-reference."""
+        config = {'inherit': 'self.yaml', 'name': 'Self'}
+        with patch.object(setup_environment, 'load_config_from_source') as mock_load:
+            mock_load.return_value = (config, 'self.yaml')
+            import pytest
+
+            with pytest.raises(ValueError, match='Circular dependency'):
+                setup_environment.resolve_config_inheritance(config, 'self.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_circular_dependency_a_b_a(self, mock_load):
+        """Test circular dependency detection: A -> B -> A."""
+
+        def load_side_effect(config_spec: str, _auth_param: str | None = None) -> tuple[dict, str]:
+            if 'a.yaml' in config_spec:
+                return ({'inherit': 'b.yaml', 'name': 'A'}, 'a.yaml')
+            if 'b.yaml' in config_spec:
+                return ({'inherit': 'a.yaml', 'name': 'B'}, 'b.yaml')
+            raise FileNotFoundError(f'Not found: {config_spec}')
+
+        mock_load.side_effect = load_side_effect
+
+        config = {'inherit': 'b.yaml', 'model': 'test'}
+        import pytest
+
+        with pytest.raises(ValueError, match='Circular dependency'):
+            setup_environment.resolve_config_inheritance(config, 'a.yaml')
+
+    def test_max_depth_exceeded(self):
+        """Test maximum depth limit enforcement."""
+        with patch.object(setup_environment, 'load_config_from_source') as mock_load:
+            # Create a chain that exceeds MAX_INHERITANCE_DEPTH
+            call_count = [0]
+
+            def deep_chain(
+                _config_spec: str, _auth_param: str | None = None,
+            ) -> tuple[dict, str]:
+                call_count[0] += 1
+                # Create configs: level0 -> level1 -> level2 -> ...
+                return ({'inherit': f'level{call_count[0]}.yaml'}, f'level{call_count[0] - 1}.yaml')
+
+            mock_load.side_effect = deep_chain
+
+            config = {'inherit': 'level0.yaml'}
+            import pytest
+
+            with pytest.raises(ValueError, match='Maximum inheritance depth'):
+                setup_environment.resolve_config_inheritance(config, 'start.yaml')
+
+    def test_invalid_inherit_value_not_string(self):
+        """Test error when inherit value is not a string."""
+        config = {'inherit': ['parent.yaml'], 'name': 'Test'}  # List instead of string
+        import pytest
+
+        with pytest.raises(ValueError, match='must be a string'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    def test_invalid_inherit_value_dict(self):
+        """Test error when inherit value is a dict."""
+        config = {'inherit': {'source': 'parent.yaml'}, 'name': 'Test'}
+        import pytest
+
+        with pytest.raises(ValueError, match='must be a string'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    def test_empty_inherit_value(self):
+        """Test error when inherit value is empty string."""
+        config = {'inherit': '', 'name': 'Test'}
+        import pytest
+
+        with pytest.raises(ValueError, match='cannot be empty'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    def test_whitespace_inherit_value(self):
+        """Test error when inherit value is only whitespace."""
+        config = {'inherit': '   ', 'name': 'Test'}
+        import pytest
+
+        with pytest.raises(ValueError, match='cannot be empty'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_parent_not_found_local(self, mock_load):
+        """Test error when local parent config doesn't exist."""
+        mock_load.side_effect = FileNotFoundError('Configuration not found')
+        config = {'inherit': './missing.yaml', 'name': 'Test'}
+        import pytest
+
+        with pytest.raises(FileNotFoundError):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_parent_not_found_url(self, mock_load):
+        """Test error when URL parent config doesn't exist."""
+        mock_load.side_effect = urllib.error.HTTPError(
+            'url', 404, 'Not Found', {}, None,
+        )
+        config = {'inherit': 'https://example.com/missing.yaml', 'name': 'Test'}
+        with pytest.raises(urllib.error.HTTPError):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_inherit_full_url(self, mock_load):
+        """Test inheriting from full URL."""
+        mock_load.return_value = ({'name': 'Remote'}, 'https://example.com/base.yaml')
+        config = {'inherit': 'https://example.com/base.yaml', 'model': 'test'}
+        result = setup_environment.resolve_config_inheritance(config, './local.yaml')
+
+        assert result['name'] == 'Remote'
+        mock_load.assert_called_once_with('https://example.com/base.yaml', None)
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_inherit_relative_from_url(self, mock_load):
+        """Test inheriting relative path when current config is from URL."""
+        mock_load.return_value = ({'name': 'Parent'}, 'https://example.com/configs/parent.yaml')
+        config = {'inherit': 'parent.yaml', 'model': 'test'}
+
+        setup_environment.resolve_config_inheritance(
+            config, 'https://example.com/configs/child.yaml',
+        )
+
+        # Should resolve to same directory as child
+        mock_load.assert_called_once_with(
+            'https://example.com/configs/parent.yaml', None,
+        )
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_inherit_relative_from_local(self, mock_load):
+        """Test inheriting relative path when current config is local."""
+        mock_load.return_value = ({'name': 'Parent'}, '/home/user/configs/parent.yaml')
+        config = {'inherit': 'parent.yaml', 'model': 'test'}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            child_path = Path(tmpdir) / 'child.yaml'
+            child_path.touch()
+
+            setup_environment.resolve_config_inheritance(config, str(child_path))
+
+            # Should resolve relative to child's directory
+            mock_load.assert_called_once()
+            call_args = mock_load.call_args[0][0]
+            assert Path(call_args).name == 'parent.yaml'
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_inherit_repo_name(self, mock_load):
+        """Test inheriting repository config by name."""
+        mock_load.return_value = ({'name': 'Base Python'}, 'python-base.yaml')
+        config = {'inherit': 'python-base', 'model': 'test'}
+
+        setup_environment.resolve_config_inheritance(config, 'python')
+
+        # Should pass through as repo name
+        mock_load.assert_called_once_with('python-base', None)
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_auth_propagated_through_chain(self, mock_load):
+        """Test that auth_param is passed through inheritance chain."""
+
+        def check_auth(config_spec, auth_param=None):
+            assert auth_param == 'my-token'
+            if 'grandparent' in config_spec:
+                return ({'name': 'GP'}, 'grandparent.yaml')
+            return ({'inherit': 'grandparent.yaml'}, 'parent.yaml')
+
+        mock_load.side_effect = check_auth
+
+        config = {'inherit': 'parent.yaml', 'model': 'test'}
+        setup_environment.resolve_config_inheritance(
+            config, 'child.yaml', auth_param='my-token',
+        )
+
+    def test_full_inheritance_with_temp_files(self):
+        """Integration test with actual temp files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create grandparent
+            grandparent = Path(tmpdir) / 'grandparent.yaml'
+            grandparent.write_text('''
+name: Grandparent Config
+model: claude-2
+dependencies:
+  common:
+    - pip install base
+''')
+
+            # Create parent that inherits from grandparent
+            parent = Path(tmpdir) / 'parent.yaml'
+            parent.write_text(f'''
+inherit: {grandparent}
+command-name: my-env
+mcp-servers:
+  - name: server1
+''')
+
+            # Create child that inherits from parent
+            child = Path(tmpdir) / 'child.yaml'
+            child.write_text(f'''
+inherit: {parent}
+model: claude-3
+agents:
+  - my-agent.md
+''')
+
+            # Load and resolve
+            config, source = setup_environment.load_config_from_source(str(child))
+            resolved = setup_environment.resolve_config_inheritance(config, source)
+
+            # Verify inheritance
+            assert resolved['name'] == 'Grandparent Config'  # From grandparent
+            assert resolved['model'] == 'claude-3'  # Overridden by child
+            assert resolved['command-name'] == 'my-env'  # From parent
+            assert resolved['mcp-servers'] == [{'name': 'server1'}]  # From parent
+            assert resolved['agents'] == ['my-agent.md']  # From child
+            assert resolved['dependencies'] == {'common': ['pip install base']}  # From grandparent
+            assert 'inherit' not in resolved

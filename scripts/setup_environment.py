@@ -32,6 +32,10 @@ from urllib.request import urlopen
 
 import yaml
 
+# Configuration inheritance constants
+MAX_INHERITANCE_DEPTH = 10
+INHERIT_KEY = 'inherit'
+
 # Platform-specific imports with proper type checking support
 if sys.platform == 'win32':
     import winreg
@@ -1443,6 +1447,222 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         if 'Configuration not found' not in str(e):
             error(f'Failed to load repository configuration: {e}')
         raise
+
+
+def _normalize_source_for_comparison(source: str) -> str:
+    """Normalize a source path/URL for circular dependency comparison.
+
+    Args:
+        source: The source path or URL.
+
+    Returns:
+        str: Normalized source for comparison.
+    """
+    # For local paths, resolve to absolute
+    if not source.startswith(('http://', 'https://')):
+        try:
+            return str(Path(source).resolve())
+        except Exception:
+            return source
+
+    # For URLs, normalize by removing trailing slashes
+    # But keep the essential parts for accurate cycle detection
+    return source.rstrip('/')
+
+
+def _resolve_inherit_path(inherit_value: str, current_source: str) -> str:
+    """Resolve the inherit path relative to current config source.
+
+    Args:
+        inherit_value: The value of the 'inherit' key (URL, path, or name).
+        current_source: Source path/URL of the current config.
+
+    Returns:
+        str: Resolved path/URL for the parent config.
+    """
+    # If inherit_value is already a full URL, use as-is
+    if inherit_value.startswith(('http://', 'https://')):
+        return inherit_value
+
+    # If inherit_value is an absolute path, use as-is
+    if os.path.isabs(inherit_value):
+        return inherit_value
+
+    # If current source is a URL, resolve relative to it
+    if current_source.startswith(('http://', 'https://')):
+        # Get the directory part of the URL
+        base_url = current_source.rsplit('/', 1)[0]
+        return f'{base_url}/{inherit_value}'
+
+    # If current source is a local path, resolve relative to it
+    if os.path.exists(current_source) or '/' in current_source or '\\' in current_source:
+        current_path = Path(current_source)
+        parent_dir = current_path.parent if current_path.is_file() else Path(current_source).parent
+        resolved = (parent_dir / inherit_value).resolve()
+        return str(resolved)
+
+    # Current source is a repo config name (e.g., 'python')
+    # Inherit value should also be treated as a repo config name
+    return inherit_value
+
+
+def _merge_configs(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Merge parent and child configs with top-level key override semantics.
+
+    Child values completely replace parent values for the same key.
+    No deep merging is performed.
+
+    Args:
+        parent: The parent configuration (base).
+        child: The child configuration (overrides parent).
+
+    Returns:
+        dict[str, Any]: Merged configuration.
+    """
+    # Start with parent's keys
+    result = parent.copy()
+
+    # Override with child's keys (excluding 'inherit')
+    for key, value in child.items():
+        if key != INHERIT_KEY:
+            result[key] = value
+
+    return result
+
+
+def resolve_config_inheritance(
+    config: dict[str, Any],
+    source: str,
+    auth_param: str | None = None,
+    visited: set[str] | None = None,
+    depth: int = 0,
+) -> dict[str, Any]:
+    """Resolve configuration inheritance by loading and merging parent configs.
+
+    Implements top-level key override semantics: child config values completely
+    replace parent values for the same key. No deep merging is performed.
+
+    The inheritance chain is resolved recursively:
+    1. If config has 'inherit' key, load the parent config
+    2. If parent also has 'inherit', load its parent (recursive)
+    3. Merge configs from oldest ancestor to newest child
+
+    Args:
+        config: The configuration dictionary to resolve inheritance for.
+        source: Source path/URL where this config was loaded from.
+            Used to resolve relative inherit paths.
+        auth_param: Optional authentication parameter for private repositories.
+            Passed through the inheritance chain.
+        visited: Set of already-visited sources for circular dependency detection.
+            Used internally for recursion tracking. Callers should not provide this.
+        depth: Current recursion depth for safety limits.
+            Used internally. Callers should not provide this.
+
+    Returns:
+        dict[str, Any]: Merged configuration with inheritance resolved.
+            The 'inherit' key is removed from the result.
+
+    Raises:
+        ValueError: If circular dependency is detected, maximum inheritance
+            depth is exceeded, or inherit value is invalid.
+        FileNotFoundError: If parent config file not found (propagated from
+            load_config_from_source).
+
+    Examples:
+        >>> # Simple inheritance
+        >>> child = {'inherit': 'base.yaml', 'name': 'Child'}
+        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> # resolved contains parent's keys + child's 'name' override
+
+        >>> # Chain: grandparent -> parent -> child
+        >>> child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
+        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> # resolved contains all ancestors' keys, child overrides take precedence
+    """
+    # Initialize visited set for circular dependency detection
+    if visited is None:
+        visited = set()
+
+    # Check for maximum depth exceeded
+    if depth > MAX_INHERITANCE_DEPTH:
+        error(f'Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded')
+        error('This may indicate a very deep inheritance chain or a logic error')
+        raise ValueError(
+            f'Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded. '
+            f'Check your configuration inheritance chain.',
+        )
+
+    # Check if this config has inheritance
+    inherit_value = config.get(INHERIT_KEY)
+    if inherit_value is None:
+        # No inheritance - return config as-is (without the inherit key if present)
+        return {k: v for k, v in config.items() if k != INHERIT_KEY}
+
+    # Validate inherit value is a string
+    if not isinstance(inherit_value, str):
+        error(f"Invalid 'inherit' value: expected string, got {type(inherit_value).__name__}")
+        raise ValueError(
+            f"The 'inherit' key must be a string (URL or path), "
+            f"got {type(inherit_value).__name__}: {inherit_value!r}",
+        )
+
+    # Validate inherit value is not empty
+    inherit_value = inherit_value.strip()
+    if not inherit_value:
+        error("Empty 'inherit' value in configuration")
+        raise ValueError("The 'inherit' key cannot be empty")
+
+    # Resolve the parent path (could be URL, local path, or repo name)
+    parent_source = _resolve_inherit_path(inherit_value, source)
+
+    # Normalize source for circular dependency detection
+    normalized_source = _normalize_source_for_comparison(parent_source)
+
+    # Check for circular dependency
+    if normalized_source in visited:
+        cycle_path = ' -> '.join(list(visited) + [normalized_source])
+        error('Circular dependency detected in configuration inheritance')
+        error(f'Cycle: {cycle_path}')
+        raise ValueError(
+            f'Circular dependency detected: {normalized_source} was already visited. '
+            f'Inheritance chain: {cycle_path}',
+        )
+
+    # Add current source to visited set
+    visited.add(normalized_source)
+
+    # Log inheritance resolution
+    info(f'Resolving inheritance from: {inherit_value}')
+
+    # Load parent configuration
+    try:
+        parent_config, actual_parent_source = load_config_from_source(
+            parent_source, auth_param,
+        )
+    except FileNotFoundError:
+        error(f'Parent configuration not found: {inherit_value}')
+        error(f'Resolved path: {parent_source}')
+        raise
+    except Exception as e:
+        error(f'Failed to load parent configuration: {inherit_value}')
+        error(f'Error: {e}')
+        raise
+
+    # Recursively resolve parent's inheritance
+    resolved_parent = resolve_config_inheritance(
+        parent_config,
+        actual_parent_source,
+        auth_param=auth_param,
+        visited=visited,
+        depth=depth + 1,
+    )
+
+    # Merge: parent first, then child overrides (top-level key override)
+    merged = _merge_configs(resolved_parent, config)
+
+    success(f'Inherited from: {inherit_value}')
+
+    return merged
 
 
 def detect_user_shell() -> str:
@@ -3417,6 +3637,12 @@ def main() -> None:
     try:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
+
+        # Resolve configuration inheritance if present
+        if INHERIT_KEY in config:
+            info('Configuration uses inheritance, resolving parent configs...')
+            config = resolve_config_inheritance(config, config_source, auth_param=args.auth)
+            success('Configuration inheritance resolved successfully')
 
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
