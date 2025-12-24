@@ -3857,9 +3857,9 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 9: Configure hooks and settings
+            # Step 10: Configure hooks and settings
             print()
-            print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 10: Configuring hooks and settings...{Colors.NC}')
             hooks = config.get('hooks', {})
             create_additional_settings(
                 hooks,
@@ -3874,7 +3874,7 @@ def main() -> None:
                 include_co_authored_by,
             )
 
-            # Step 10: Create launcher script
+            # Step 11: Create launcher script
             print()
             print(f'{Colors.CYAN}Step 11: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
@@ -3894,7 +3894,7 @@ def main() -> None:
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 9-11: Skipping command creation (no command-name specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 10-12: Skipping command creation (no command-name specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create a custom command, add "command-name: your-command-name" to your config')
 
