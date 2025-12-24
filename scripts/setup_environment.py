@@ -1907,37 +1907,38 @@ def set_os_env_variable_windows(name: str, value: str | None) -> bool:
     Returns:
         bool: True if successful, False otherwise.
     """
-    if sys.platform != 'win32':
-        return False
+    success = False
 
-    try:
-        if value is None:
-            # Delete the variable using registry
-            result = subprocess.run(
-                ['reg', 'delete', r'HKCU\Environment', '/v', name, '/f'],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0 and 'unable to find' not in result.stderr.lower():
-                # Only warn if it's not a "not found" error
-                warning(f'Could not delete environment variable {name}: {result.stderr}')
-                return False
-        else:
-            # Set the variable using setx
-            result = subprocess.run(
-                ['setx', name, value],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                warning(f'Could not set environment variable {name}: {result.stderr}')
-                return False
+    if sys.platform == 'win32':
+        try:
+            if value is None:
+                # Delete the variable using registry
+                result = subprocess.run(
+                    ['reg', 'delete', r'HKCU\Environment', '/v', name, '/f'],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0 and 'unable to find' not in result.stderr.lower():
+                    # Only warn if it's not a "not found" error
+                    warning(f'Could not delete environment variable {name}: {result.stderr}')
+                else:
+                    success = True
+            else:
+                # Set the variable using setx
+                result = subprocess.run(
+                    ['setx', name, value],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    warning(f'Could not set environment variable {name}: {result.stderr}')
+                else:
+                    success = True
 
-        return True
+        except OSError as e:
+            warning(f'Error setting environment variable {name}: {e}')
 
-    except OSError as e:
-        warning(f'Error setting environment variable {name}: {e}')
-        return False
+    return success
 
 
 def set_os_env_variable_unix(name: str, value: str | None) -> bool:
