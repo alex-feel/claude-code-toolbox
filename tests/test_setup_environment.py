@@ -4,6 +4,8 @@ Comprehensive tests for setup_environment.py - the main environment setup script
 
 import json
 import os
+import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -399,143 +401,235 @@ class TestLoadConfig:
         mock_fetch.assert_called_once()
 
 
-class TestShellDetection:
-    """Test shell detection and configuration for macOS."""
+class TestGetRealUserHome:
+    """Tests for get_real_user_home() function."""
 
-    @patch.dict('os.environ', {'SHELL': '/bin/bash'})
-    def test_detect_user_shell_bash(self):
-        """Test detecting bash shell."""
-        assert setup_environment.detect_user_shell() == 'bash'
+    def test_returns_path_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns Path.home() on Windows."""
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        result = setup_environment.get_real_user_home()
+        assert isinstance(result, Path)
 
-    @patch.dict('os.environ', {'SHELL': '/bin/zsh'})
-    def test_detect_user_shell_zsh(self):
-        """Test detecting zsh shell."""
-        assert setup_environment.detect_user_shell() == 'zsh'
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_returns_sudo_user_home_when_sudo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns sudo user's home when running under sudo."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setenv('SUDO_USER', 'testuser')
 
-    @patch.dict('os.environ', {}, clear=True)
-    def test_detect_user_shell_default(self):
-        """Test default shell when SHELL env var is missing."""
-        assert setup_environment.detect_user_shell() == 'bash'
+        # Create mock pwd module to avoid importing real pwd on Windows
+        class MockPasswd:
+            pw_dir = '/home/testuser'
 
-    def test_get_shell_config_file_bash(self):
-        """Test getting config file for bash shell."""
-        config_file = setup_environment.get_shell_config_file('bash')
-        assert config_file == Path.home() / '.bash_profile'
+        class MockPwdModule:
+            @staticmethod
+            def getpwnam(_name: str) -> MockPasswd:
+                return MockPasswd()
 
-    def test_get_shell_config_file_zsh(self):
-        """Test getting config file for zsh shell."""
-        config_file = setup_environment.get_shell_config_file('zsh')
-        assert config_file == Path.home() / '.zprofile'
+        # Inject mock pwd into sys.modules before the function imports it
+        monkeypatch.setitem(sys.modules, 'pwd', MockPwdModule())
 
-    def test_get_shell_config_file_unknown(self):
-        """Test getting config file for unknown shell."""
-        config_file = setup_environment.get_shell_config_file('fish')
-        assert config_file == Path.home() / '.profile'
+        result = setup_environment.get_real_user_home()
+        assert result == Path('/home/testuser')
 
-    @patch('setup_environment.detect_user_shell', return_value='bash')
-    def test_translate_shell_commands_zsh_to_bash(self, mock_detect):
-        """Test translating zsh commands to bash."""
-        assert mock_detect.return_value == 'bash'  # Verify mock is configured
-        commands = [
-            'echo "export FOO=bar" >> ~/.zshrc',
-            'exec zsh -l',
-        ]
-        translated = setup_environment.translate_shell_commands(commands)
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_returns_home_when_no_sudo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns Path.home() when not running under sudo."""
+        monkeypatch.delenv('SUDO_USER', raising=False)
+        result = setup_environment.get_real_user_home()
+        assert result == Path.home()
 
-        expected_config = Path.home() / '.bash_profile'
-        assert f'echo "export FOO=bar" >> {expected_config}' in translated
-        assert 'exec bash -l' in translated
 
-    @patch('setup_environment.detect_user_shell', return_value='zsh')
-    def test_translate_shell_commands_bash_to_zsh(self, mock_detect):
-        """Test translating bash commands to zsh."""
-        assert mock_detect.return_value == 'zsh'  # Verify mock is configured
-        commands = [
-            'echo "export FOO=bar" >> ~/.bashrc',
-            'exec bash -l',
-        ]
-        translated = setup_environment.translate_shell_commands(commands)
+class TestGetAllShellConfigFiles:
+    """Tests for get_all_shell_config_files() function."""
 
-        expected_config = Path.home() / '.zprofile'
-        assert f'echo "export FOO=bar" >> {expected_config}' in translated
-        assert 'exec zsh -l' in translated
+    def test_returns_empty_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns empty list on Windows."""
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        result = setup_environment.get_all_shell_config_files()
+        assert result == []
 
-    @patch('setup_environment.detect_user_shell', return_value='bash')
-    def test_translate_shell_commands_source(self, mock_detect):
-        """Test translating source commands."""
-        assert mock_detect.return_value == 'bash'  # Verify mock is configured
-        commands = [
-            'source ~/.zshrc',
-            'source ~/.bashrc',
-        ]
-        translated = setup_environment.translate_shell_commands(commands)
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_returns_all_files_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns all config files on macOS."""
+        monkeypatch.setattr(sys, 'platform', 'darwin')
+        monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+        result = setup_environment.get_all_shell_config_files()
+        filenames = [f.name for f in result]
+        assert '.bashrc' in filenames
+        assert '.bash_profile' in filenames
+        assert '.zshenv' in filenames
+        assert '.zprofile' in filenames
+        assert '.zshrc' in filenames
 
-        expected_config = Path.home() / '.bash_profile'
-        assert f'source {expected_config}' in translated
-        assert len(translated) == 2
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_excludes_zsh_files_on_linux_without_zsh(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test excludes zsh files on Linux when zsh is not installed."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
+        monkeypatch.setattr(shutil, 'which', lambda x: None if x == 'zsh' else '/bin/bash')
+        result = setup_environment.get_all_shell_config_files()
+        filenames = [f.name for f in result]
+        assert '.bashrc' in filenames
+        assert '.zshrc' not in filenames
+        assert '.zshenv' not in filenames
 
-    @patch('setup_environment.detect_user_shell', return_value='bash')
-    def test_translate_shell_commands_non_shell_commands(self, mock_detect):
-        """Test that non-shell commands are preserved."""
-        assert mock_detect.return_value == 'bash'  # Verify mock is configured
-        commands = [
-            'npm install -g package',
-            'brew install tool',
-        ]
-        translated = setup_environment.translate_shell_commands(commands)
 
-        assert translated == commands
+class TestAddExportToFile:
+    """Tests for add_export_to_file() function."""
 
-    def test_get_shell_config_file_dual_shell(self):
-        """Test getting config files for dual-shell mode."""
-        config_files = setup_environment.get_shell_config_file('bash', dual_shell=True)
-        assert isinstance(config_files, list)
-        assert len(config_files) == 2
-        assert Path.home() / '.bash_profile' in config_files
-        assert Path.home() / '.zprofile' in config_files
+    def test_creates_file_with_export(self, tmp_path: Path) -> None:
+        """Test creates new file with export line."""
+        config_file = tmp_path / '.bashrc'
+        result = setup_environment.add_export_to_file(config_file, 'MY_VAR', 'my_value')
+        assert result is True
+        assert config_file.exists()
+        content = config_file.read_text()
+        assert 'export MY_VAR="my_value"' in content
+        assert setup_environment.ENV_VAR_MARKER_START in content
+        assert setup_environment.ENV_VAR_MARKER_END in content
 
-    @patch('setup_environment.detect_user_shell', return_value='bash')
-    def test_translate_shell_commands_dual_shell(self, mock_detect):
-        """Test translating commands in dual-shell mode."""
-        assert mock_detect.return_value == 'bash'  # Verify mock is configured
-        commands = [
-            'echo "export FOO=bar" >> ~/.zshrc',
-        ]
-        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
+    def test_updates_existing_variable(self, tmp_path: Path) -> None:
+        """Test updates existing variable in marker block."""
+        config_file = tmp_path / '.bashrc'
+        setup_environment.add_export_to_file(config_file, 'MY_VAR', 'old_value')
+        result = setup_environment.add_export_to_file(config_file, 'MY_VAR', 'new_value')
+        assert result is True
+        content = config_file.read_text()
+        assert 'export MY_VAR="new_value"' in content
+        assert 'old_value' not in content
+        # Should only have one marker block
+        assert content.count(setup_environment.ENV_VAR_MARKER_START) == 1
 
-        # Should write to both config files
-        assert len(translated) == 2
-        bash_profile = Path.home() / '.bash_profile'
-        zprofile = Path.home() / '.zprofile'
-        assert f'echo "export FOO=bar" >> {bash_profile}' in translated
-        assert f'echo "export FOO=bar" >> {zprofile}' in translated
+    def test_adds_multiple_variables(self, tmp_path: Path) -> None:
+        """Test adds multiple variables to same block."""
+        config_file = tmp_path / '.bashrc'
+        setup_environment.add_export_to_file(config_file, 'VAR1', 'value1')
+        setup_environment.add_export_to_file(config_file, 'VAR2', 'value2')
+        content = config_file.read_text()
+        assert 'export VAR1="value1"' in content
+        assert 'export VAR2="value2"' in content
+        assert content.count(setup_environment.ENV_VAR_MARKER_START) == 1
 
-    @patch('setup_environment.detect_user_shell', return_value='zsh')
-    def test_translate_shell_commands_dual_shell_exec(self, mock_detect):
-        """Test translating exec commands in dual-shell mode."""
-        assert mock_detect.return_value == 'zsh'  # Verify mock is configured
-        commands = [
-            'exec bash -l',
-        ]
-        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
 
-        # Should use current shell for exec in dual mode
-        assert len(translated) == 1
-        assert 'exec zsh -l' in translated
+class TestRemoveExportFromFile:
+    """Tests for remove_export_from_file() function."""
 
-    @patch('setup_environment.detect_user_shell', return_value='bash')
-    def test_translate_shell_commands_dual_shell_source(self, mock_detect):
-        """Test translating source commands in dual-shell mode."""
-        assert mock_detect.return_value == 'bash'  # Verify mock is configured
-        commands = [
-            'source ~/.zshrc',
-        ]
-        translated = setup_environment.translate_shell_commands(commands, dual_shell=True)
+    def test_removes_variable(self, tmp_path: Path) -> None:
+        """Test removes variable from marker block."""
+        config_file = tmp_path / '.bashrc'
+        setup_environment.add_export_to_file(config_file, 'MY_VAR', 'my_value')
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
 
-        # Should source the current shell's config file
-        assert len(translated) == 1
-        expected_config = Path.home() / '.bash_profile'
-        assert f'source {expected_config}' in translated
+    def test_removes_only_target_variable(self, tmp_path: Path) -> None:
+        """Test removes only the target variable, keeps others."""
+        config_file = tmp_path / '.bashrc'
+        setup_environment.add_export_to_file(config_file, 'VAR1', 'value1')
+        setup_environment.add_export_to_file(config_file, 'VAR2', 'value2')
+        setup_environment.remove_export_from_file(config_file, 'VAR1')
+        content = config_file.read_text()
+        assert 'VAR1' not in content
+        assert 'export VAR2="value2"' in content
+
+    def test_returns_true_for_nonexistent_file(self, tmp_path: Path) -> None:
+        """Test returns True when file doesn't exist."""
+        config_file = tmp_path / '.nonexistent'
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+
+
+class TestSetOsEnvVariableWindows:
+    """Tests for set_os_env_variable_windows() function."""
+
+    def test_returns_false_on_non_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test returns False on non-Windows platforms."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        result = setup_environment.set_os_env_variable_windows('MY_VAR', 'value')
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_calls_setx_for_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test calls setx command to set variable."""
+        called_with: list[list[str]] = []
+
+        class MockResult:
+            returncode = 0
+            stderr = ''
+
+        def mock_run(cmd: list[str], **_kwargs: object) -> MockResult:
+            called_with.append(cmd)
+            return MockResult()
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        result = setup_environment.set_os_env_variable_windows('MY_VAR', 'my_value')
+        assert result is True
+        assert called_with[0] == ['setx', 'MY_VAR', 'my_value']
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_calls_reg_delete_for_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test calls reg delete command to delete variable."""
+        called_with: list[list[str]] = []
+
+        class MockResult:
+            returncode = 0
+            stderr = ''
+
+        def mock_run(cmd: list[str], **_kwargs: object) -> MockResult:
+            called_with.append(cmd)
+            return MockResult()
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        result = setup_environment.set_os_env_variable_windows('MY_VAR', None)
+        assert result is True
+        assert called_with[0] == ['reg', 'delete', r'HKCU\Environment', '/v', 'MY_VAR', '/f']
+
+
+class TestSetAllOsEnvVariables:
+    """Tests for set_all_os_env_variables() function."""
+
+    def test_empty_dict_returns_true(self) -> None:
+        """Test returns True for empty dictionary."""
+        result = setup_environment.set_all_os_env_variables({})
+        assert result is True
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_sets_multiple_variables(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Test sets multiple variables successfully."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        # Mock get_all_shell_config_files to return temp path
+        monkeypatch.setattr(
+            setup_environment,
+            'get_all_shell_config_files',
+            lambda: [tmp_path / '.bashrc'],
+        )
+        result = setup_environment.set_all_os_env_variables({
+            'VAR1': 'value1',
+            'VAR2': 'value2',
+        })
+        assert result is True
+        content = (tmp_path / '.bashrc').read_text()
+        assert 'export VAR1="value1"' in content
+        assert 'export VAR2="value2"' in content
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_handles_null_values_for_deletion(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Test handles None values as deletion requests."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        config_file = tmp_path / '.bashrc'
+        monkeypatch.setattr(
+            setup_environment,
+            'get_all_shell_config_files',
+            lambda: [config_file],
+        )
+        # First set a variable
+        setup_environment.add_export_to_file(config_file, 'OLD_VAR', 'old_value')
+        # Then delete it
+        result = setup_environment.set_all_os_env_variables({'OLD_VAR': None})
+        assert result is True
+        content = config_file.read_text()
+        assert 'OLD_VAR' not in content
 
 
 class TestInstallDependencies:
@@ -566,66 +660,29 @@ class TestInstallDependencies:
         mock_run.assert_called_with(['bash', '-c', 'apt-get install package'], capture_output=False)
 
     @patch('platform.system', return_value='Darwin')
-    @patch('setup_environment.detect_user_shell', return_value='bash')
     @patch('setup_environment.run_command')
-    def test_install_dependencies_macos_shell_translation(self, mock_run, mock_detect, mock_system):
-        """Test macOS shell command translation with dual-shell approach."""
-        # Verify mock configuration
+    def test_install_dependencies_macos_executes_as_is(self, mock_run, mock_system):
+        """Test macOS executes commands as-is with tilde expansion."""
         assert mock_system.return_value == 'Darwin'
-        assert mock_detect.return_value == 'bash'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        # Test with zsh-specific commands that should be translated for both shells
+        # Commands should be executed as-is (with tilde expansion)
         result = setup_environment.install_dependencies({
             'mac': [
                 'echo "export FOO=bar" >> ~/.zshrc',
-                'exec zsh -l',
+                'brew install tool',
             ],
         })
         assert result is True
 
-        # With dual-shell approach, we expect writes to both config files
-        bash_profile = Path.home() / '.bash_profile'
-        zprofile = Path.home() / '.zprofile'
         calls = mock_run.call_args_list
-
-        # Should have 3 calls: 2 for the echo command (both shells) + 1 for exec
-        assert len(calls) == 3
-
-        # First two calls should write to both shell config files
-        call_args = [call[0][0][2] for call in calls]
-        assert f'echo "export FOO=bar" >> {bash_profile}' in call_args
-        assert f'echo "export FOO=bar" >> {zprofile}' in call_args
-
-        # Last command should be exec for the current shell (bash)
-        assert 'exec bash -l' in call_args[2]
-
-    @patch('platform.system', return_value='Darwin')
-    @patch.dict('os.environ', {'SHELL': '/bin/zsh'})
-    @patch('setup_environment.run_command')
-    def test_install_dependencies_macos_zsh_user(self, mock_run, mock_system):
-        """Test macOS with zsh user - dual-shell approach writes to both configs."""
-        assert mock_system.return_value == 'Darwin'
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
-
-        result = setup_environment.install_dependencies({
-            'mac': [
-                'echo "export FOO=bar" >> ~/.zshrc',
-            ],
-        })
-        assert result is True
-
-        # With dual-shell approach, should write to both config files
-        bash_profile = Path.home() / '.bash_profile'
-        zprofile = Path.home() / '.zprofile'
-        calls = mock_run.call_args_list
-
-        # Should have 2 calls: one for each shell config file
         assert len(calls) == 2
 
+        # Commands should be executed as-is with expanded tilde paths
+        home = str(Path.home())
         call_args = [call[0][0][2] for call in calls]
-        assert f'echo "export FOO=bar" >> {bash_profile}' in call_args
-        assert f'echo "export FOO=bar" >> {zprofile}' in call_args
+        assert f'echo "export FOO=bar" >> {home}/.zshrc' in call_args
+        assert 'brew install tool' in call_args
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
