@@ -32,6 +32,20 @@ from urllib.request import urlopen
 
 import yaml
 
+# Import pwd module for Unix-like systems (used for detecting real user home under sudo)
+# The import happens here but pwd is used in get_real_user_home() function
+if sys.platform != 'win32':
+    pass  # Used in get_real_user_home() for resolving sudo user's home directory
+
+# Configuration inheritance constants
+MAX_INHERITANCE_DEPTH = 10
+INHERIT_KEY = 'inherit'
+
+# OS environment variables constants
+OS_ENV_VARIABLES_KEY = 'os-env-variables'
+ENV_VAR_MARKER_START = '# >>> claude-code-toolbox >>>'
+ENV_VAR_MARKER_END = '# <<< claude-code-toolbox <<<'
+
 # Platform-specific imports with proper type checking support
 if sys.platform == 'win32':
     import winreg
@@ -1445,138 +1459,589 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         raise
 
 
-def detect_user_shell() -> str:
-    """Detect the user's configured shell.
-
-    Returns:
-        str: Shell name (e.g., 'bash', 'zsh', 'sh')
-    """
-    shell_path = os.environ.get('SHELL', '/bin/bash')
-    return os.path.basename(shell_path)
-
-
-def get_shell_config_file(shell_name: str, dual_shell: bool = False) -> Path | list[Path]:
-    """Get the appropriate config file for shell environment variables.
+def _normalize_source_for_comparison(source: str) -> str:
+    """Normalize a source path/URL for circular dependency comparison.
 
     Args:
-        shell_name: Name of the shell (e.g., 'bash', 'zsh')
-        dual_shell: If True, return both bash and zsh config files for compatibility
+        source: The source path or URL.
 
     Returns:
-        Path | list[Path]: Path to the appropriate shell config file(s)
+        str: Normalized source for comparison.
     """
-    home = Path.home()
+    # For local paths, resolve to absolute
+    if not source.startswith(('http://', 'https://')):
+        try:
+            return str(Path(source).resolve())
+        except Exception:
+            return source
 
-    if dual_shell:
-        # Return both bash and zsh config files for maximum compatibility
-        return [home / '.bash_profile', home / '.zprofile']
-
-    if shell_name == 'zsh':
-        # Use .zprofile for environment variables in zsh
-        # Note: .zprofile is loaded for login shells which is what Terminal.app opens
-        return home / '.zprofile'
-    if shell_name in ['bash', 'sh']:
-        # Use .bash_profile for bash on macOS (Terminal.app opens login shells)
-        return home / '.bash_profile'
-    # Fallback for unknown shells
-    return home / '.profile'
+    # For URLs, normalize by removing trailing slashes
+    # But keep the essential parts for accurate cycle detection
+    return source.rstrip('/')
 
 
-def translate_shell_commands(commands: list[str], target_shell: str | None = None, dual_shell: bool = False) -> list[str]:
-    """Translate shell configuration commands to target shell config file.
-
-    This function handles the translation of shell-specific commands, particularly
-    for macOS where the user's actual shell might differ from what the configuration
-    assumes (e.g., config writes to ~/.zshrc but user is using bash).
+def _resolve_inherit_path(inherit_value: str, current_source: str) -> str:
+    """Resolve the inherit path relative to current config source.
 
     Args:
-        commands: List of shell commands to translate
-        target_shell: Target shell name (auto-detected if None)
-        dual_shell: If True, write to both bash and zsh config files for compatibility
+        inherit_value: The value of the 'inherit' key (URL, path, or name).
+        current_source: Source path/URL of the current config.
 
     Returns:
-        list[str]: Translated commands appropriate for the target shell
+        str: Resolved path/URL for the parent config.
     """
-    if target_shell is None:
-        target_shell = detect_user_shell()
+    # If inherit_value is already a full URL, use as-is
+    if inherit_value.startswith(('http://', 'https://')):
+        return inherit_value
 
-    config_files = get_shell_config_file(target_shell, dual_shell=dual_shell)
-    if not isinstance(config_files, list):
-        config_files = [config_files]
+    # If inherit_value is an absolute path, use as-is
+    if os.path.isabs(inherit_value):
+        return inherit_value
 
-    translated: list[str] = []
+    # If current source is a URL, resolve relative to it
+    if current_source.startswith(('http://', 'https://')):
+        # Get the directory part of the URL
+        base_url = current_source.rsplit('/', 1)[0]
+        return f'{base_url}/{inherit_value}'
 
-    for cmd in commands:
-        # Handle environment variable exports written to shell config files
-        if any(pattern in cmd for pattern in ['>> ~/.zshrc', '>> ~/.zprofile', '>> ~/.bashrc', '>> ~/.bash_profile']):
-            # For dual shell mode, write to all config files
-            if dual_shell:
-                for config_file in config_files:
-                    # Extract the content being written
-                    if '>>' in cmd:
-                        parts = cmd.split('>>')
-                        if len(parts) == 2:
-                            content = parts[0].strip()
-                            translated_cmd = f'{content} >> {config_file}'
-                            translated.append(translated_cmd)
-                            info(f'Writing to shell config: {config_file}')
-            else:
-                # Single shell mode - write to appropriate config file
-                config_file = config_files[0]
-                translated_cmd = cmd
-                for pattern in ['~/.zshrc', '~/.zprofile', '~/.bashrc', '~/.bash_profile']:
-                    translated_cmd = translated_cmd.replace(f'>> {pattern}', f'>> {config_file}')
-                translated.append(translated_cmd)
-                info(f'Translated shell config write to: {config_file}')
-        elif 'exec zsh -l' in cmd:
-            # Replace shell reload with appropriate command
-            if dual_shell:
-                # For dual shell, reload current shell
-                translated.append(f'exec {target_shell} -l')
-                info(f'Shell reload command for current shell: exec {target_shell} -l')
-            elif target_shell == 'zsh':
-                translated.append('exec zsh -l')
-            elif target_shell == 'bash':
-                translated.append('exec bash -l')
-                info('Translated shell reload: exec zsh -l -> exec bash -l')
-            else:
-                translated.append(f'exec {target_shell} -l')
-                info(f'Translated shell reload to: exec {target_shell} -l')
-        elif 'exec bash -l' in cmd:
-            # Handle bash reload commands
-            if dual_shell:
-                # For dual shell, reload current shell
-                translated.append(f'exec {target_shell} -l')
-                info(f'Shell reload command for current shell: exec {target_shell} -l')
-            elif target_shell == 'zsh':
-                translated.append('exec zsh -l')
-                info('Translated shell reload: exec bash -l -> exec zsh -l')
-            elif target_shell == 'bash':
-                translated.append('exec bash -l')
-            else:
-                translated.append(f'exec {target_shell} -l')
-                info(f'Translated shell reload to: exec {target_shell} -l')
-        elif any(
-            pattern in cmd
-            for pattern in ['source ~/.zshrc', 'source ~/.zprofile', 'source ~/.bashrc', 'source ~/.bash_profile']
-        ):
-            # Handle source commands
-            if dual_shell:
-                # Source the current shell's config
-                single_config = get_shell_config_file(target_shell, dual_shell=False)
-                # Type guard: when dual_shell=False, it always returns a single Path
-                assert isinstance(single_config, Path)
-                translated.append(f'source {single_config}')
-                info(f'Source command for current shell: source {single_config}')
-            else:
-                config_file = config_files[0]
-                translated.append(f'source {config_file}')
-                info(f'Translated source command to: source {config_file}')
+    # If current source is a local path, resolve relative to it
+    if os.path.exists(current_source) or '/' in current_source or '\\' in current_source:
+        current_path = Path(current_source)
+        parent_dir = current_path.parent if current_path.is_file() else Path(current_source).parent
+        resolved = (parent_dir / inherit_value).resolve()
+        return str(resolved)
+
+    # Current source is a repo config name (e.g., 'python')
+    # Inherit value should also be treated as a repo config name
+    return inherit_value
+
+
+def _merge_configs(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
+    """Merge parent and child configs with top-level key override semantics.
+
+    Child values completely replace parent values for the same key.
+    No deep merging is performed.
+
+    Args:
+        parent: The parent configuration (base).
+        child: The child configuration (overrides parent).
+
+    Returns:
+        dict[str, Any]: Merged configuration.
+    """
+    # Start with parent's keys
+    result = parent.copy()
+
+    # Override with child's keys (excluding 'inherit')
+    for key, value in child.items():
+        if key != INHERIT_KEY:
+            result[key] = value
+
+    return result
+
+
+def resolve_config_inheritance(
+    config: dict[str, Any],
+    source: str,
+    auth_param: str | None = None,
+    visited: set[str] | None = None,
+    depth: int = 0,
+) -> dict[str, Any]:
+    """Resolve configuration inheritance by loading and merging parent configs.
+
+    Implements top-level key override semantics: child config values completely
+    replace parent values for the same key. No deep merging is performed.
+
+    The inheritance chain is resolved recursively:
+    1. If config has 'inherit' key, load the parent config
+    2. If parent also has 'inherit', load its parent (recursive)
+    3. Merge configs from oldest ancestor to newest child
+
+    Args:
+        config: The configuration dictionary to resolve inheritance for.
+        source: Source path/URL where this config was loaded from.
+            Used to resolve relative inherit paths.
+        auth_param: Optional authentication parameter for private repositories.
+            Passed through the inheritance chain.
+        visited: Set of already-visited sources for circular dependency detection.
+            Used internally for recursion tracking. Callers should not provide this.
+        depth: Current recursion depth for safety limits.
+            Used internally. Callers should not provide this.
+
+    Returns:
+        dict[str, Any]: Merged configuration with inheritance resolved.
+            The 'inherit' key is removed from the result.
+
+    Raises:
+        ValueError: If circular dependency is detected, maximum inheritance
+            depth is exceeded, or inherit value is invalid.
+        FileNotFoundError: If parent config file not found (propagated from
+            load_config_from_source).
+
+    Examples:
+        >>> # Simple inheritance
+        >>> child = {'inherit': 'base.yaml', 'name': 'Child'}
+        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> # resolved contains parent's keys + child's 'name' override
+
+        >>> # Chain: grandparent -> parent -> child
+        >>> child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
+        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> # resolved contains all ancestors' keys, child overrides take precedence
+    """
+    # Initialize visited set for circular dependency detection
+    if visited is None:
+        visited = set()
+
+    # Check for maximum depth exceeded
+    if depth > MAX_INHERITANCE_DEPTH:
+        error(f'Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded')
+        error('This may indicate a very deep inheritance chain or a logic error')
+        raise ValueError(
+            f'Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded. '
+            f'Check your configuration inheritance chain.',
+        )
+
+    # Check if this config has inheritance
+    inherit_value = config.get(INHERIT_KEY)
+    if inherit_value is None:
+        # No inheritance - return config as-is (without the inherit key if present)
+        return {k: v for k, v in config.items() if k != INHERIT_KEY}
+
+    # Validate inherit value is a string
+    if not isinstance(inherit_value, str):
+        error(f"Invalid 'inherit' value: expected string, got {type(inherit_value).__name__}")
+        raise ValueError(
+            f"The 'inherit' key must be a string (URL or path), "
+            f"got {type(inherit_value).__name__}: {inherit_value!r}",
+        )
+
+    # Validate inherit value is not empty
+    inherit_value = inherit_value.strip()
+    if not inherit_value:
+        error("Empty 'inherit' value in configuration")
+        raise ValueError("The 'inherit' key cannot be empty")
+
+    # Resolve the parent path (could be URL, local path, or repo name)
+    parent_source = _resolve_inherit_path(inherit_value, source)
+
+    # Normalize source for circular dependency detection
+    normalized_source = _normalize_source_for_comparison(parent_source)
+
+    # Check for circular dependency
+    if normalized_source in visited:
+        cycle_path = ' -> '.join(list(visited) + [normalized_source])
+        error('Circular dependency detected in configuration inheritance')
+        error(f'Cycle: {cycle_path}')
+        raise ValueError(
+            f'Circular dependency detected: {normalized_source} was already visited. '
+            f'Inheritance chain: {cycle_path}',
+        )
+
+    # Add current source to visited set
+    visited.add(normalized_source)
+
+    # Log inheritance resolution
+    info(f'Resolving inheritance from: {inherit_value}')
+
+    # Load parent configuration
+    try:
+        parent_config, actual_parent_source = load_config_from_source(
+            parent_source, auth_param,
+        )
+    except FileNotFoundError:
+        error(f'Parent configuration not found: {inherit_value}')
+        error(f'Resolved path: {parent_source}')
+        raise
+    except Exception as e:
+        error(f'Failed to load parent configuration: {inherit_value}')
+        error(f'Error: {e}')
+        raise
+
+    # Recursively resolve parent's inheritance
+    resolved_parent = resolve_config_inheritance(
+        parent_config,
+        actual_parent_source,
+        auth_param=auth_param,
+        visited=visited,
+        depth=depth + 1,
+    )
+
+    # Merge: parent first, then child overrides (top-level key override)
+    merged = _merge_configs(resolved_parent, config)
+
+    success(f'Inherited from: {inherit_value}')
+
+    return merged
+
+
+def get_real_user_home() -> Path:
+    """Get the real user's home directory, even when running under sudo.
+
+    On Linux/macOS, when running with sudo, the HOME environment variable
+    and Path.home() return /root instead of the actual user's home.
+    This function detects the real user via SUDO_USER and returns their home.
+
+    Returns:
+        Path: The real user's home directory.
+    """
+    if sys.platform != 'win32':
+        # Check if running under sudo (Unix-only)
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            try:
+                # Get the home directory of the user who invoked sudo
+                # pwd is imported at module level for non-Windows platforms
+                import pwd as pwd_module
+
+                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+            except KeyError:
+                # User not found in password database, fall back
+                warning(f'Could not find home directory for sudo user: {sudo_user}')
+
+    # Windows or not running under sudo - use default home
+    return Path.home()
+
+
+def get_all_shell_config_files() -> list[Path]:
+    """Get all shell configuration files to update for environment variables.
+
+    Returns files for all common shells to ensure environment variables
+    are available regardless of which shell the user opens.
+
+    Returns:
+        list[Path]: List of shell config file paths that exist or should be created.
+    """
+    # Windows uses registry, not shell config files
+    config_files: list[Path] = []
+
+    if sys.platform != 'win32':
+        # Unix-like systems - get all shell config files
+        home = get_real_user_home()
+
+        # All possible shell config files for environment variables
+        # Listed in order of preference/importance
+        config_files = [
+            # Bash files
+            home / '.bashrc',       # Interactive bash shells (most common on Linux)
+            home / '.bash_profile',  # Login bash shells (macOS Terminal.app, SSH)
+            home / '.profile',      # Fallback for sh/dash (Ubuntu default login shell)
+            # Zsh files
+            home / '.zshenv',       # All zsh instances (recommended for env vars)
+            home / '.zprofile',     # Zsh login shells (macOS default since Catalina)
+            home / '.zshrc',        # Interactive zsh shells
+        ]
+
+        # On Linux, only include zsh files if zsh is installed
+        if platform.system() == 'Linux':
+            zsh_path = shutil.which('zsh')
+            if not zsh_path:
+                # Filter out zsh-specific files if zsh is not installed
+                config_files = [f for f in config_files if not f.name.startswith('.zsh')]
+
+    return config_files
+
+
+def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
+    """Add or update an environment variable export in a shell config file.
+
+    Uses markers to manage a block of exports set by claude-code-toolbox.
+    Updates existing variables within the block, or adds new ones.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name.
+        value: Environment variable value.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    export_line = f'export {name}="{value}"'
+
+    try:
+        # Read existing content
+        if config_file.exists():
+            content = config_file.read_text(encoding='utf-8')
         else:
-            # Keep command as-is for non-shell-specific commands
-            translated.append(cmd)
+            # Create the file if it doesn't exist
+            config_file.parent.mkdir(parents=True, exist_ok=True)
+            content = ''
 
-    return translated
+        # Check if our marker block exists
+        if ENV_VAR_MARKER_START in content:
+            # Extract the block between markers
+            start_idx = content.find(ENV_VAR_MARKER_START)
+            end_idx = content.find(ENV_VAR_MARKER_END)
+
+            if end_idx == -1:
+                # Malformed block, append end marker
+                end_idx = len(content)
+                content = content + '\n' + ENV_VAR_MARKER_END + '\n'
+
+            # Get content before, in, and after the block
+            before = content[:start_idx]
+            block = content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
+            after = content[end_idx + len(ENV_VAR_MARKER_END) :]
+
+            # Parse existing exports in the block
+            block_lines = block.split('\n')
+            new_block_lines = [ENV_VAR_MARKER_START]
+            found = False
+
+            for line in block_lines:
+                if line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
+                    continue
+                if line.strip().startswith(f'export {name}='):
+                    # Update existing variable
+                    new_block_lines.append(export_line)
+                    found = True
+                elif line.strip():
+                    new_block_lines.append(line)
+
+            if not found:
+                # Add new variable
+                new_block_lines.append(export_line)
+
+            new_block_lines.append(ENV_VAR_MARKER_END)
+
+            # Reconstruct content
+            new_content = before + '\n'.join(new_block_lines) + after
+        else:
+            # No marker block exists, create one at the end
+            if content and not content.endswith('\n'):
+                content += '\n'
+            new_content = (
+                content
+                + '\n'
+                + ENV_VAR_MARKER_START
+                + '\n'
+                + export_line
+                + '\n'
+                + ENV_VAR_MARKER_END
+                + '\n'
+            )
+
+        # Write back
+        config_file.write_text(new_content, encoding='utf-8')
+        return True
+
+    except OSError as e:
+        warning(f'Could not write to {config_file}: {e}')
+        return False
+
+
+def remove_export_from_file(config_file: Path, name: str) -> bool:
+    """Remove an environment variable export from a shell config file.
+
+    Removes the variable from the claude-code-toolbox marker block.
+    If the block becomes empty, removes the entire block.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name to remove.
+
+    Returns:
+        bool: True if successful (or file doesn't exist), False on error.
+    """
+    if not config_file.exists():
+        return True
+
+    try:
+        content = config_file.read_text(encoding='utf-8')
+
+        if ENV_VAR_MARKER_START not in content:
+            # No marker block, nothing to remove
+            return True
+
+        start_idx = content.find(ENV_VAR_MARKER_START)
+        end_idx = content.find(ENV_VAR_MARKER_END)
+
+        if end_idx == -1:
+            end_idx = len(content)
+
+        before = content[:start_idx]
+        block = content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
+        after = content[end_idx + len(ENV_VAR_MARKER_END) :]
+
+        # Parse and filter the block
+        block_lines = block.split('\n')
+        new_block_lines: list[str] = []
+
+        for line in block_lines:
+            if line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
+                continue
+            if line.strip().startswith(f'export {name}='):
+                # Skip this line (remove the variable)
+                continue
+            if line.strip():
+                new_block_lines.append(line)
+
+        # Reconstruct
+        if new_block_lines:
+            # Block still has content
+            new_block = ENV_VAR_MARKER_START + '\n' + '\n'.join(new_block_lines) + '\n' + ENV_VAR_MARKER_END
+            new_content = before + new_block + after
+        else:
+            # Block is empty, remove it entirely
+            # Clean up extra newlines
+            new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
+
+        config_file.write_text(new_content, encoding='utf-8')
+        return True
+
+    except OSError as e:
+        warning(f'Could not modify {config_file}: {e}')
+        return False
+
+
+def set_os_env_variable_windows(name: str, value: str | None) -> bool:
+    """Set or delete an OS environment variable on Windows.
+
+    Uses setx for setting and REG delete for removing.
+    Changes affect new processes only.
+
+    Args:
+        name: Environment variable name.
+        value: Value to set, or None to delete the variable.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    success = False
+
+    if sys.platform == 'win32':
+        try:
+            if value is None:
+                # Delete the variable using registry
+                result = subprocess.run(
+                    ['reg', 'delete', r'HKCU\Environment', '/v', name, '/f'],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0 and 'unable to find' not in result.stderr.lower():
+                    # Only warn if it's not a "not found" error
+                    warning(f'Could not delete environment variable {name}: {result.stderr}')
+                else:
+                    success = True
+            else:
+                # Set the variable using setx
+                result = subprocess.run(
+                    ['setx', name, value],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    warning(f'Could not set environment variable {name}: {result.stderr}')
+                else:
+                    success = True
+
+        except OSError as e:
+            warning(f'Error setting environment variable {name}: {e}')
+
+    return success
+
+
+def set_os_env_variable_unix(name: str, value: str | None) -> bool:
+    """Set or delete an OS environment variable on Unix-like systems.
+
+    Writes to all shell config files for maximum compatibility.
+
+    Args:
+        name: Environment variable name.
+        value: Value to set, or None to delete the variable.
+
+    Returns:
+        bool: True if all operations succeeded, False if any failed.
+    """
+    # Windows doesn't use shell config files
+    all_success = False
+
+    if sys.platform != 'win32':
+        config_files = get_all_shell_config_files()
+        all_success = True
+
+        for config_file in config_files:
+            if value is None:
+                # Delete the variable
+                if not remove_export_from_file(config_file, name):
+                    all_success = False
+            else:
+                # Set the variable
+                if not add_export_to_file(config_file, name, value):
+                    all_success = False
+
+    return all_success
+
+
+def set_os_env_variable(name: str, value: str | None) -> bool:
+    """Set or delete an OS-level persistent environment variable.
+
+    This function sets environment variables that persist across shell sessions.
+    - On Windows: Uses setx (set) or registry (delete)
+    - On macOS/Linux: Writes to all shell config files
+
+    Args:
+        name: Environment variable name.
+        value: Value to set, or None to delete the variable.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    result = False
+    if sys.platform == 'win32':
+        result = set_os_env_variable_windows(name, value)
+    else:
+        result = set_os_env_variable_unix(name, value)
+    return result
+
+
+def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
+    """Set or delete all OS environment variables from configuration.
+
+    Args:
+        env_vars: Dictionary of variable names to values.
+                  None values indicate the variable should be deleted.
+
+    Returns:
+        bool: True if all operations succeeded, False if any failed.
+    """
+    if not env_vars:
+        info('No OS environment variables to configure')
+        return True
+
+    set_count = 0
+    delete_count = 0
+    failed_count = 0
+
+    for name, value in env_vars.items():
+        if value is None:
+            # Delete the variable
+            info(f'Deleting environment variable: {name}')
+            if set_os_env_variable(name, None):
+                delete_count += 1
+            else:
+                failed_count += 1
+        else:
+            # Set the variable
+            info(f'Setting environment variable: {name}')
+            if set_os_env_variable(name, str(value)):
+                set_count += 1
+            else:
+                failed_count += 1
+
+    # Summary
+    if set_count > 0:
+        success(f'Set {set_count} environment variable(s)')
+    if delete_count > 0:
+        success(f'Deleted {delete_count} environment variable(s)')
+    if failed_count > 0:
+        warning(f'Failed to configure {failed_count} environment variable(s)')
+
+    # Provide reload instructions for Unix systems
+    if sys.platform != 'win32' and (set_count > 0 or delete_count > 0):
+        info('Note: Open a new terminal or run "source ~/.bashrc" to apply changes')
+
+    return failed_count == 0
 
 
 def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
@@ -1653,7 +2118,6 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     # Execute all collected dependencies
     for dep in deps_to_install:
         info(f'Running: {dep}')
-        result = None  # Initialize result for each dependency
 
         # Parse the command
         parts = dep.split()
@@ -1676,50 +2140,11 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
                 result = run_command(['bash', '-c', dep_with_force], capture_output=False)
             else:
-                # For macOS, translate shell-specific commands based on user's actual shell
-                if system == 'Darwin' and current_platform_key == 'mac':
-                    # Detect if this is a shell config command that needs translation
-                    if any(
-                        pattern in dep
-                        for pattern in [
-                            '>> ~/.zshrc',
-                            '>> ~/.zprofile',
-                            '>> ~/.bashrc',
-                            '>> ~/.bash_profile',
-                            'exec zsh',
-                            'exec bash',
-                            'source ~/.zshrc',
-                            'source ~/.bashrc',
-                            'source ~/.zprofile',
-                            'source ~/.bash_profile',
-                        ]
-                    ):
-                        # Use dual-shell approach for better compatibility
-                        # This writes to both bash and zsh config files
-                        user_shell = detect_user_shell()
-                        info(f'Detected user shell: {user_shell}')
-                        info('Using dual-shell approach for maximum compatibility')
-                        translated_deps = translate_shell_commands([dep], user_shell, dual_shell=True)
-                        # Execute all translated commands (may be multiple for dual-shell)
-                        for translated_dep in translated_deps:
-                            info(f'Running: {translated_dep}')
-                            # Expand tilde paths before execution
-                            expanded_dep = expand_tildes_in_command(translated_dep)
-                            result = run_command(['bash', '-c', expanded_dep], capture_output=False)
-                            if result.returncode != 0:
-                                error(f'Failed to execute: {translated_dep}')
-                                warning('Continuing with other dependencies...')
-                    else:
-                        # Non-shell config command, execute normally
-                        # Expand tilde paths before execution
-                        expanded_dep = expand_tildes_in_command(dep)
-                        result = run_command(['bash', '-c', expanded_dep], capture_output=False)
-                else:
-                    # Expand tilde paths before execution
-                    expanded_dep = expand_tildes_in_command(dep)
-                    result = run_command(['bash', '-c', expanded_dep], capture_output=False)
+                # Execute command as-is (expand tilde paths before execution)
+                expanded_dep = expand_tildes_in_command(dep)
+                result = run_command(['bash', '-c', expanded_dep], capture_output=False)
 
-        if result and result.returncode != 0:
+        if result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
             # Check if it failed due to admin rights on Windows
             if system == 'Windows' and not is_admin() and 'winget' in dep and '--scope machine' in dep:
@@ -3418,6 +3843,12 @@ def main() -> None:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
 
+        # Resolve configuration inheritance if present
+        if INHERIT_KEY in config:
+            info('Configuration uses inheritance, resolving parent configs...')
+            config = resolve_config_inheritance(config, config_source, auth_param=args.auth)
+            success('Configuration inheritance resolved successfully')
+
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
             print()
@@ -3481,6 +3912,9 @@ def main() -> None:
 
         # Extract environment variables configuration
         env_variables = config.get('env-variables')
+
+        # Extract OS-level environment variables configuration
+        os_env_variables = config.get('os-env-variables')
 
         # Extract include_co_authored_by configuration
         include_co_authored_by = config.get('include-co-authored-by')
@@ -3578,21 +4012,29 @@ def main() -> None:
         dependencies = config.get('dependencies', {})
         install_dependencies(dependencies)
 
-        # Step 5: Process agents
+        # Step 5: Set OS environment variables
         print()
-        print(f'{Colors.CYAN}Step 5: Processing agents...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 5: Setting OS environment variables...{Colors.NC}')
+        if os_env_variables:
+            set_all_os_env_variables(os_env_variables)
+        else:
+            info('No OS environment variables to configure')
+
+        # Step 6: Process agents
+        print()
+        print(f'{Colors.CYAN}Step 6: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
         process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
 
-        # Step 6: Process slash commands
+        # Step 7: Process slash commands
         print()
-        print(f'{Colors.CYAN}Step 6: Processing slash commands...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 7: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
         process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 7: Process skills
+        # Step 8: Process skills
         print()
-        print(f'{Colors.CYAN}Step 7: Processing skills...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 8: Processing skills...{Colors.NC}')
         skills_raw = config.get('skills', [])
         # Convert to properly typed list using cast and list comprehension
         skills: list[dict[str, Any]] = (
@@ -3602,9 +4044,9 @@ def main() -> None:
         )
         process_skills(skills, skills_dir, config_source, args.auth)
 
-        # Step 8: Process system prompt (if specified)
+        # Step 9: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 8: Processing system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
@@ -3615,9 +4057,9 @@ def main() -> None:
         else:
             info('No additional system prompt configured')
 
-        # Step 9: Configure MCP servers
+        # Step 10: Configure MCP servers
         print()
-        print(f'{Colors.CYAN}Step 9: Configuring MCP servers...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 10: Configuring MCP servers...{Colors.NC}')
         mcp_servers = config.get('mcp-servers', [])
 
         # Verify Node.js is available before configuring MCP servers
@@ -3631,9 +4073,9 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 9: Configure hooks and settings
+            # Step 11: Configure hooks and settings
             print()
-            print(f'{Colors.CYAN}Step 9: Configuring hooks and settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 11: Configuring hooks and settings...{Colors.NC}')
             hooks = config.get('hooks', {})
             create_additional_settings(
                 hooks,
@@ -3648,9 +4090,9 @@ def main() -> None:
                 include_co_authored_by,
             )
 
-            # Step 10: Create launcher script
+            # Step 12: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 11: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 12: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -3658,17 +4100,17 @@ def main() -> None:
                 prompt_filename = Path(clean_prompt).name
             launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename, mode)
 
-            # Step 12: Register global command
+            # Step 13: Register global command
             if launcher_path:
                 print()
-                print(f'{Colors.CYAN}Step 12: Registering global {command_name} command...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 13: Registering global {command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, command_name)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 9-11: Skipping command creation (no command-name specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 11-13: Skipping command creation (no command-name specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create a custom command, add "command-name: your-command-name" to your config')
 
@@ -3707,6 +4149,13 @@ def main() -> None:
                 print(f"   * Permissions: {', '.join(perm_items)}")
         if env_variables:
             print(f'   * Environment variables: {len(env_variables)} configured')
+        if os_env_variables:
+            set_vars = sum(1 for v in os_env_variables.values() if v is not None)
+            del_vars = sum(1 for v in os_env_variables.values() if v is None)
+            if set_vars > 0:
+                print(f'   * OS env variables set: {set_vars}')
+            if del_vars > 0:
+                print(f'   * OS env variables deleted: {del_vars}')
         # Only show hooks count if command_name was specified (hooks was defined)
         if command_name:
             hooks = config.get('hooks', {})
