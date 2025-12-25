@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.8.0...v4.8.1) (2025-12-25)
+
+
+### Bug Fixes
+
+* install platform-specific dependencies before common ones ([90ea8b7](https://github.com/alex-feel/claude-code-toolbox/commit/90ea8b738d7e117099a2f6536c539f9a16ed6c35))
+
 ## [4.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.2...v4.8.0) (2025-12-25)
 
 
