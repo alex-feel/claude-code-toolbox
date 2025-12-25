@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.9.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.8.1...v4.9.0) (2025-12-25)
+
+
+### Features
+
+* add refresh_path_from_registry() to fix Windows PATH propagation ([6dfe97c](https://github.com/alex-feel/claude-code-toolbox/commit/6dfe97c6f4ec190ee38a62a87987a54ee5bc6a26))
+
+
+### Bug Fixes
+
+* resolve Windows batch file commands in run_command() ([883ec81](https://github.com/alex-feel/claude-code-toolbox/commit/883ec81591b279ef153ca0763242dfa7ed2089ca))
+
 ## [4.8.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.8.0...v4.8.1) (2025-12-25)
 
 
