@@ -697,6 +697,109 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
         return 0, []
 
 
+def refresh_path_from_registry() -> bool:
+    """Refresh os.environ['PATH'] from Windows registry.
+
+    Reads both system and user PATH values from the Windows registry and
+    updates os.environ['PATH'] with the combined value. This addresses
+    the Windows PATH propagation bug where installations (e.g., winget)
+    update the registry but running processes don't see the changes.
+
+    Registry sources:
+        - System PATH: HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment
+        - User PATH: HKEY_CURRENT_USER\\Environment
+
+    Returns:
+        True if PATH was successfully refreshed, False otherwise.
+
+    Note:
+        - Only works on Windows (returns True on other platforms as no-op)
+        - Handles REG_EXPAND_SZ values with environment variable expansion
+        - Combines system PATH + user PATH (system first for security)
+        - Logs info message when PATH is refreshed
+    """
+    if sys.platform == 'win32':
+        try:
+
+            def expand_env_vars(value: str) -> str:
+                """Expand environment variables like %USERPROFILE% in registry values."""
+                # Use os.path.expandvars which handles %VAR% on Windows
+                return os.path.expandvars(value)
+
+            system_path = ''
+            user_path = ''
+
+            # Read system PATH from HKEY_LOCAL_MACHINE
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+                    0,
+                    winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+                ) as key:
+                    raw_value, reg_type = winreg.QueryValueEx(key, 'Path')
+                    if raw_value:
+                        # Expand environment variables if REG_EXPAND_SZ
+                        system_path = expand_env_vars(raw_value) if reg_type == winreg.REG_EXPAND_SZ else raw_value
+            except FileNotFoundError:
+                # System PATH key doesn't exist (very unusual)
+                pass
+            except PermissionError:
+                # May not have permission to read system PATH
+                warning('Permission denied reading system PATH from registry')
+            except OSError as e:
+                warning(f'Failed to read system PATH from registry: {e}')
+
+            # Read user PATH from HKEY_CURRENT_USER
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CURRENT_USER,
+                    r'Environment',
+                    0,
+                    winreg.KEY_READ,
+                ) as key:
+                    raw_value, reg_type = winreg.QueryValueEx(key, 'Path')
+                    if raw_value:
+                        # Expand environment variables if REG_EXPAND_SZ
+                        user_path = expand_env_vars(raw_value) if reg_type == winreg.REG_EXPAND_SZ else raw_value
+            except FileNotFoundError:
+                # User PATH doesn't exist (possible on fresh systems)
+                pass
+            except PermissionError:
+                warning('Permission denied reading user PATH from registry')
+            except OSError as e:
+                warning(f'Failed to read user PATH from registry: {e}')
+
+            # Combine paths: system PATH first, then user PATH
+            # This matches Windows behavior where system PATH takes precedence
+            if system_path and user_path:
+                new_path = f'{system_path};{user_path}'
+            elif system_path:
+                new_path = system_path
+            elif user_path:
+                new_path = user_path
+            else:
+                # No PATH found in registry, keep current
+                warning('No PATH found in registry, keeping current os.environ PATH')
+                return False
+
+            # Update os.environ with the refreshed PATH
+            old_path = os.environ.get('PATH', '')
+            if new_path != old_path:
+                os.environ['PATH'] = new_path
+                info('Refreshed PATH from Windows registry')
+                return True
+            # PATH unchanged, no need to log
+            return True
+
+        except Exception as e:
+            warning(f'Failed to refresh PATH from registry: {e}')
+            return False
+    else:
+        # Non-Windows platforms: no-op, return True
+        return True
+
+
 def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
     """Check if file exists using HEAD request.
 
@@ -2107,61 +2210,69 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     # Collect dependencies: platform-specific first, then common
     # This ensures platform runtimes (e.g., Node.js) are installed before
     # common tools that depend on them (e.g., npm packages)
-    deps_to_install: list[str] = []
+    platform_deps_list: list[str] = []
+    common_deps_list: list[str] = []
 
-    # Add platform-specific dependencies first (e.g., Node.js runtime)
+    # Collect platform-specific dependencies (e.g., Node.js runtime)
     if current_platform_key:
         platform_deps = dependencies.get(current_platform_key, [])
         if platform_deps:
             info(f'Found {len(platform_deps)} {current_platform_key}-specific dependencies')
-            deps_to_install.extend(platform_deps)
+            platform_deps_list = list(platform_deps)
 
-    # Add common dependencies second (e.g., npm packages that need Node.js)
+    # Collect common dependencies (e.g., npm packages that need Node.js)
     common_deps = dependencies.get('common', [])
     if common_deps:
         info(f'Found {len(common_deps)} common dependencies')
-        deps_to_install.extend(common_deps)
+        common_deps_list = list(common_deps)
 
-    if not deps_to_install:
+    if not platform_deps_list and not common_deps_list:
         info('No dependencies to install for this platform')
         return True
 
-    # Execute all collected dependencies
-    for dep in deps_to_install:
+    # Helper function to execute a single dependency
+    def execute_dependency(dep: str) -> bool:
+        """Execute a single dependency command. Returns True on success."""
         info(f'Running: {dep}')
-
-        # Parse the command
         parts = dep.split()
 
-        # Handle platform-specific commands
         if system == 'Windows':
             if parts[0] in ['winget', 'npm', 'pip', 'pipx']:
                 result = run_command(parts, capture_output=False)
-            elif parts[0] == 'uv' and parts[1] == 'tool' and parts[2] == 'install':
-                # For uv tool install, add --force to update if already installed
+            elif parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
                 parts_with_force = parts[:3] + ['--force'] + parts[3:]
                 result = run_command(parts_with_force, capture_output=False)
             else:
-                # Try PowerShell for other commands
                 result = run_command(['powershell', '-Command', dep], capture_output=False)
         else:
-            # Unix-like systems
             if parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
-                # For uv tool install, add --force to update if already installed
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
                 result = run_command(['bash', '-c', dep_with_force], capture_output=False)
             else:
-                # Execute command as-is (expand tilde paths before execution)
                 expanded_dep = expand_tildes_in_command(dep)
                 result = run_command(['bash', '-c', expanded_dep], capture_output=False)
 
         if result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
-            # Check if it failed due to admin rights on Windows
             if system == 'Windows' and not is_admin() and 'winget' in dep and '--scope machine' in dep:
                 warning('This may have failed due to lack of admin rights')
                 info('Try: 1) Run as administrator, or 2) Use --scope user instead')
             warning('Continuing with other dependencies...')
+            return False
+        return True
+
+    # Phase 1: Execute platform-specific dependencies
+    for dep in platform_deps_list:
+        execute_dependency(dep)
+
+    # Phase 2: Refresh PATH from registry on Windows
+    # This picks up any PATH changes from platform-specific installations (e.g., Node.js)
+    if system == 'Windows' and platform_deps_list:
+        refresh_path_from_registry()
+
+    # Phase 3: Execute common dependencies
+    for dep in common_deps_list:
+        execute_dependency(dep)
 
     return True
 

@@ -2204,3 +2204,144 @@ class TestConditionalSystemPromptLoading:
 
             # Should have different echo message for continue mode
             assert 'Resuming Claude Code session' in content or 'Continue mode' in content
+
+
+class TestRefreshPathFromRegistry:
+    """Test refresh_path_from_registry() function."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_success(self):
+        """Test successful PATH refresh from registry."""
+        # This test runs on actual Windows - verifies function doesn't crash
+        result = setup_environment.refresh_path_from_registry()
+        assert result is True
+        assert os.environ.get('PATH')  # PATH should exist after refresh
+
+    def test_refresh_path_from_registry_non_windows(self):
+        """Test function is no-op on non-Windows platforms."""
+        with patch('sys.platform', 'linux'):
+            result = setup_environment.refresh_path_from_registry()
+            assert result is True  # Should return True (no-op success)
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_system_path_only(self):
+        """Test when only system PATH exists."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        # First call for system PATH succeeds, second for user PATH raises FileNotFoundError
+        call_count = [0]
+
+        def open_key_side_effect(*_args, **_kwargs):  # noqa: ARG001
+            call_count[0] += 1
+            if call_count[0] == 1:  # System PATH
+                return mock_key
+            # User PATH
+            raise FileNotFoundError
+
+        with (
+            patch('setup_environment.winreg.OpenKey', side_effect=open_key_side_effect),
+            patch('setup_environment.winreg.QueryValueEx') as mock_query,
+        ):
+            mock_query.return_value = (r'C:\Windows\System32', winreg.REG_SZ)
+
+            result = setup_environment.refresh_path_from_registry()
+            assert result is True
+            assert r'C:\Windows\System32' in os.environ.get('PATH', '')
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_user_path_only(self):
+        """Test when only user PATH exists."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        # First call for system PATH raises, second for user PATH succeeds
+        call_count = [0]
+
+        def open_key_side_effect(*_args, **_kwargs):  # noqa: ARG001
+            call_count[0] += 1
+            if call_count[0] == 1:  # System PATH
+                raise FileNotFoundError
+            # User PATH
+            return mock_key
+
+        with (
+            patch('setup_environment.winreg.OpenKey', side_effect=open_key_side_effect),
+            patch('setup_environment.winreg.QueryValueEx') as mock_query,
+        ):
+            mock_query.return_value = (r'C:\Users\Test\.local\bin', winreg.REG_SZ)
+
+            result = setup_environment.refresh_path_from_registry()
+            assert result is True
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_combined_paths(self):
+        """Test combining system and user PATH."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        with patch('setup_environment.winreg.OpenKey', return_value=mock_key):
+            # Return different values for system and user PATH
+            call_count = [0]
+
+            def query_side_effect(*_args, **_kwargs):  # noqa: ARG001
+                call_count[0] += 1
+                if call_count[0] == 1:  # System PATH
+                    return (r'C:\Windows\System32', winreg.REG_SZ)
+                # User PATH
+                return (r'C:\Users\Test\.local\bin', winreg.REG_SZ)
+
+            with patch('setup_environment.winreg.QueryValueEx', side_effect=query_side_effect):
+                result = setup_environment.refresh_path_from_registry()
+                assert result is True
+                path = os.environ.get('PATH', '')
+                # System PATH should come first
+                assert path.startswith(r'C:\Windows\System32')
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_expands_env_vars(self):
+        """Test that REG_EXPAND_SZ values are expanded."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        with (
+            patch('setup_environment.winreg.OpenKey', return_value=mock_key),
+            patch('setup_environment.winreg.QueryValueEx') as mock_query,
+            patch.dict(os.environ, {'USERPROFILE': r'C:\Users\TestUser'}),
+        ):
+            # Return a path with %USERPROFILE%
+            mock_query.return_value = (r'%USERPROFILE%\.local\bin', winreg.REG_EXPAND_SZ)
+
+            result = setup_environment.refresh_path_from_registry()
+            assert result is True
+            path = os.environ.get('PATH', '')
+            # %USERPROFILE% should be expanded
+            assert r'C:\Users\TestUser' in path
+            assert '%USERPROFILE%' not in path
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_permission_error(self):
+        """Test handling of permission errors."""
+        with patch('setup_environment.winreg.OpenKey', side_effect=PermissionError('Access denied')):
+            result = setup_environment.refresh_path_from_registry()
+            # Should return False but not crash
+            assert result is False
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_no_path_found(self):
+        """Test when no PATH found in registry."""
+        with patch('setup_environment.winreg.OpenKey', side_effect=FileNotFoundError()):
+            result = setup_environment.refresh_path_from_registry()
+            assert result is False  # Should return False when no PATH found
