@@ -885,6 +885,62 @@ class TestCreateAdditionalSettings:
             assert 'hooks' in settings
             assert 'PostToolUse' in settings['hooks']
 
+    def test_create_additional_settings_always_thinking_enabled_true(self):
+        """Test alwaysThinkingEnabled set to true."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                always_thinking_enabled=True,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'alwaysThinkingEnabled' in settings
+            assert settings['alwaysThinkingEnabled'] is True
+
+    def test_create_additional_settings_always_thinking_enabled_false(self):
+        """Test alwaysThinkingEnabled set to false."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                always_thinking_enabled=False,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'alwaysThinkingEnabled' in settings
+            assert settings['alwaysThinkingEnabled'] is False
+
+    def test_create_additional_settings_always_thinking_enabled_none_not_included(self):
+        """Test alwaysThinkingEnabled not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                always_thinking_enabled=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'alwaysThinkingEnabled' not in settings
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""

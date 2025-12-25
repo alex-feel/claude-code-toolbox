@@ -3088,6 +3088,7 @@ def create_additional_settings(
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
     include_co_authored_by: bool | None = None,
+    always_thinking_enabled: bool | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -3102,6 +3103,7 @@ def create_additional_settings(
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
         include_co_authored_by: Optional flag to include co-authored-by in commits
+        always_thinking_enabled: Optional flag to enable always-on thinking mode
 
     Returns:
         bool: True if successful, False otherwise.
@@ -3139,6 +3141,11 @@ def create_additional_settings(
     if include_co_authored_by is not None:
         settings['includeCoAuthoredBy'] = include_co_authored_by
         info(f'Setting includeCoAuthoredBy: {include_co_authored_by}')
+
+    # Add alwaysThinkingEnabled if explicitly set (None means not configured, leave as default)
+    if always_thinking_enabled is not None:
+        settings['alwaysThinkingEnabled'] = always_thinking_enabled
+        info(f'Setting alwaysThinkingEnabled: {always_thinking_enabled}')
 
     # Handle hooks if present
     hook_events: list[dict[str, Any]] = []
@@ -3947,6 +3954,9 @@ def main() -> None:
         # Extract include_co_authored_by configuration
         include_co_authored_by = config.get('include-co-authored-by')
 
+        # Extract always_thinking_enabled configuration
+        always_thinking_enabled = config.get('always-thinking-enabled')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -4118,6 +4128,7 @@ def main() -> None:
                 permissions,
                 env_variables,
                 include_co_authored_by,
+                always_thinking_enabled,
             )
 
             # Step 13: Create launcher script
