@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.2...v4.8.0) (2025-12-25)
+
+
+### Features
+
+* add always-thinking-enabled config option ([bfe36cf](https://github.com/alex-feel/claude-code-toolbox/commit/bfe36cfcdd543a30536dcc7ec5a8dfa7cebd72d5))
+
+
+### Bug Fixes
+
+* add overwriting message for Skills file downloads ([c420284](https://github.com/alex-feel/claude-code-toolbox/commit/c420284f62336b580844a70a154e4a0fd1bf4618))
+* correct settings message ([ff727e2](https://github.com/alex-feel/claude-code-toolbox/commit/ff727e21eaad73804ba182b1bd55552609d928c5))
+
 ## [4.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.1...v4.7.2) (2025-12-25)
 
 
