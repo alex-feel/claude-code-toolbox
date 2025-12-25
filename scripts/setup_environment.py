@@ -3236,7 +3236,7 @@ def create_additional_settings(
     try:
         with open(additional_settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
-        success(f'Created {command_name}-additional-settings.json with environment hooks')
+        success(f'Created {command_name}-additional-settings.json')
         return True
     except Exception as e:
         error(f'Failed to save {command_name}-additional-settings.json: {e}')
