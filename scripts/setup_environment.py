@@ -2549,6 +2549,11 @@ def process_skill(
 
         # Destination preserves relative path structure (e.g., scripts/fill_form.py)
         destination = skill_dir / file_path
+
+        # Check if destination already exists (consistent with handle_resource)
+        if destination.exists():
+            info(f'  File already exists: {file_path} (overwriting)')
+
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         # Build source path
