@@ -2047,6 +2047,7 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
 def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     """Install dependencies from configuration."""
     if not dependencies:
+        info('No dependencies to install')
         return True
 
     # Type annotation already ensures dependencies is a dict
@@ -2347,6 +2348,7 @@ def process_resources(
         bool: True if all successful
     """
     if not resources:
+        info(f'No {resource_type} to process')
         return True
 
     info(f'Processing {resource_type}...')
@@ -3018,6 +3020,7 @@ exit $LASTEXITCODE
 def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
     """Configure all MCP servers from configuration."""
     if not servers:
+        info('No MCP servers to configure')
         return True
 
     info('Configuring MCP servers...')
