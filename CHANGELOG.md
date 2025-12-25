@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.0...v4.7.1) (2025-12-25)
+
+
+### Bug Fixes
+
+* add consistent INFO messages for empty config sections ([bfb5426](https://github.com/alex-feel/claude-code-toolbox/commit/bfb542614154429f29ad1f3628c6d3da7a1917f9))
+
 ## [4.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.6.0...v4.7.0) (2025-12-24)
 
 
