@@ -2096,21 +2096,23 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
         warning(f'Unknown platform: {system}. Skipping platform-specific dependencies.')
         current_platform_key = None
 
-    # Collect dependencies: common first, then platform-specific
+    # Collect dependencies: platform-specific first, then common
+    # This ensures platform runtimes (e.g., Node.js) are installed before
+    # common tools that depend on them (e.g., npm packages)
     deps_to_install: list[str] = []
 
-    # Add common dependencies
-    common_deps = dependencies.get('common', [])
-    if common_deps:
-        info(f'Found {len(common_deps)} common dependencies')
-        deps_to_install.extend(common_deps)
-
-    # Add platform-specific dependencies
+    # Add platform-specific dependencies first (e.g., Node.js runtime)
     if current_platform_key:
         platform_deps = dependencies.get(current_platform_key, [])
         if platform_deps:
             info(f'Found {len(platform_deps)} {current_platform_key}-specific dependencies')
             deps_to_install.extend(platform_deps)
+
+    # Add common dependencies second (e.g., npm packages that need Node.js)
+    common_deps = dependencies.get('common', [])
+    if common_deps:
+        info(f'Found {len(common_deps)} common dependencies')
+        deps_to_install.extend(common_deps)
 
     if not deps_to_install:
         info('No dependencies to install for this platform')
