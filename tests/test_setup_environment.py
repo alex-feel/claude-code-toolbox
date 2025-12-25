@@ -100,6 +100,63 @@ class TestUtilityFunctions:
         assert result.returncode == 1
         assert 'Command not found' in result.stderr
 
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_windows_batch_resolution(self, mock_run, mock_which):
+        """Test that on Windows, batch files are resolved via shutil.which()."""
+        mock_which.return_value = r'C:\Program Files\nodejs\npm.cmd'
+        mock_run.return_value = subprocess.CompletedProcess(
+            [r'C:\Program Files\nodejs\npm.cmd', 'install'], 0, '', '',
+        )
+        result = setup_environment.run_command(['npm', 'install'])
+        assert result.returncode == 0
+        # Verify shutil.which was called with the command
+        mock_which.assert_called_once_with('npm')
+        # Verify subprocess.run was called with the resolved path
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == r'C:\Program Files\nodejs\npm.cmd'
+        assert call_args[1] == 'install'
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_windows_which_returns_none(self, mock_run, mock_which):
+        """Test that when shutil.which returns None, original command is used."""
+        mock_which.return_value = None
+        mock_run.return_value = subprocess.CompletedProcess(['npm', 'install'], 0, '', '')
+        result = setup_environment.run_command(['npm', 'install'])
+        assert result.returncode == 0
+        # Verify subprocess.run was called with the original command
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == 'npm'
+        assert call_args[1] == 'install'
+
+    @patch('scripts.setup_environment.sys.platform', 'linux')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_non_windows_no_resolution(self, mock_run, mock_which):
+        """Test that on non-Windows platforms, batch file resolution is skipped."""
+        mock_run.return_value = subprocess.CompletedProcess(['npm', 'install'], 0, '', '')
+        result = setup_environment.run_command(['npm', 'install'])
+        assert result.returncode == 0
+        # Verify shutil.which was NOT called
+        mock_which.assert_not_called()
+        # Verify subprocess.run was called with the original command
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == 'npm'
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_empty_cmd_list(self, mock_run, mock_which):
+        """Test that empty command list doesn't cause issues."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        result = setup_environment.run_command([])
+        assert result.returncode == 0
+        # Verify shutil.which was NOT called for empty list
+        mock_which.assert_not_called()
+
     @patch('shutil.which')
     def test_find_command(self, mock_which):
         """Test finding command in PATH."""

@@ -302,6 +302,14 @@ def header(environment_name: str = 'Development') -> None:
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     try:
+        # On Windows, resolve batch files (.cmd, .bat) to their full path
+        # This is necessary because subprocess.run() with shell=False cannot find
+        # batch files directly - it only finds .exe files
+        if sys.platform == 'win32' and cmd:
+            resolved = shutil.which(cmd[0])
+            if resolved:
+                cmd = [resolved] + cmd[1:]
+
         return subprocess.run(
             cmd,
             capture_output=capture_output,
