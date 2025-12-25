@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.1...v4.7.2) (2025-12-25)
+
+
+### Bug Fixes
+
+* improve console output formatting and separate hooks from settings ([f99a2a9](https://github.com/alex-feel/claude-code-toolbox/commit/f99a2a966dfd7e30516f52bb870c884c82347c44))
+
 ## [4.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.7.0...v4.7.1) (2025-12-25)
 
 
