@@ -3031,6 +3031,50 @@ def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
     return True
 
 
+def download_hook_files(
+    hooks: dict[str, Any],
+    claude_user_dir: Path,
+    config_source: str | None = None,
+    base_url: str | None = None,
+    auth_param: str | None = None,
+) -> bool:
+    """Download hook files from configuration.
+
+    Args:
+        hooks: Hooks configuration dictionary with 'files' key
+        claude_user_dir: Path to Claude user directory
+        config_source: Optional config source for resolving resource paths
+        base_url: Optional base URL for resolving resources
+        auth_param: Optional authentication parameter
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    hook_files = hooks.get('files', [])
+
+    if not hook_files:
+        info('No hook files to download')
+        return True
+
+    hooks_dir = claude_user_dir / 'hooks'
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    for file in hook_files:
+        # Strip query parameters from URL to get clean filename
+        clean_file = file.split('?')[0] if '?' in file else file
+        filename = Path(clean_file).name
+        destination = hooks_dir / filename
+        # Handle hook files (download or copy)
+        if config_source:
+            handle_resource(file, destination, config_source, base_url, auth_param)
+        else:
+            # This shouldn't happen, but handle gracefully
+            error(f'No config source provided for hook file: {file}')
+            return False
+
+    return True
+
+
 def create_additional_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
@@ -3038,9 +3082,6 @@ def create_additional_settings(
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
-    config_source: str | None = None,
-    base_url: str | None = None,
-    auth_param: str | None = None,
     include_co_authored_by: bool | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
@@ -3055,9 +3096,6 @@ def create_additional_settings(
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
-        config_source: Optional config source for resolving resource paths
-        base_url: Optional base URL for resolving resources
-        auth_param: Optional authentication parameter
         include_co_authored_by: Optional flag to include co-authored-by in commits
 
     Returns:
@@ -3098,30 +3136,12 @@ def create_additional_settings(
         info(f'Setting includeCoAuthoredBy: {include_co_authored_by}')
 
     # Handle hooks if present
-    hook_files: list[str] = []
     hook_events: list[dict[str, Any]] = []
 
     if hooks:
         settings['hooks'] = {}
-        # Extract files and events from the hooks configuration
-        hook_files = hooks.get('files', [])
+        # Extract events from the hooks configuration (files are downloaded separately)
         hook_events = hooks.get('events', [])
-
-    # Process all hook files first
-    if hook_files:
-        hooks_dir = claude_user_dir / 'hooks'
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-        for file in hook_files:
-            # Strip query parameters from URL to get clean filename
-            clean_file = file.split('?')[0] if '?' in file else file
-            filename = Path(clean_file).name
-            destination = hooks_dir / filename
-            # Handle hook files (download or copy)
-            if config_source:
-                handle_resource(file, destination, config_source, base_url, auth_param)
-            else:
-                # This shouldn't happen, but handle gracefully
-                error(f'No config source provided for hook file: {file}')
 
     # Process each hook event
     for hook in hook_events:
@@ -4076,10 +4096,15 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 11: Configure hooks and settings
+            # Step 11: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 11: Configuring hooks and settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 11: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
+            download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth)
+
+            # Step 12: Configure settings
+            print()
+            print(f'{Colors.CYAN}Step 12: Configuring settings...{Colors.NC}')
             create_additional_settings(
                 hooks,
                 claude_user_dir,
@@ -4087,15 +4112,12 @@ def main() -> None:
                 model,
                 permissions,
                 env_variables,
-                config_source,
-                base_url,
-                args.auth,
                 include_co_authored_by,
             )
 
-            # Step 12: Create launcher script
+            # Step 13: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 12: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 13: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -4103,17 +4125,17 @@ def main() -> None:
                 prompt_filename = Path(clean_prompt).name
             launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename, mode)
 
-            # Step 13: Register global command
+            # Step 14: Register global command
             if launcher_path:
                 print()
-                print(f'{Colors.CYAN}Step 13: Registering global {command_name} command...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 14: Registering global {command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, command_name)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 11-13: Skipping command creation (no command-name specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 11-14: Skipping command creation (no command-name specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create a custom command, add "command-name: your-command-name" to your config')
 
@@ -4132,9 +4154,9 @@ def main() -> None:
         print(f'   * Skills: {len(skills)} installed')
         if system_prompt:
             if mode == 'append':
-                print(f'   * System prompt: Appending to default ({system_prompt})')
+                print('   * System prompt: appending to default')
             else:  # mode == 'replace'
-                print(f'   * System prompt: Replacing default ({system_prompt})')
+                print('   * System prompt: replacing default')
         if model:
             print(f'   * Model: {model}')
         print(f'   * MCP servers: {len(mcp_servers)} configured')
@@ -4156,9 +4178,9 @@ def main() -> None:
             set_vars = sum(1 for v in os_env_variables.values() if v is not None)
             del_vars = sum(1 for v in os_env_variables.values() if v is None)
             if set_vars > 0:
-                print(f'   * OS env variables set: {set_vars}')
+                print(f'   * OS environment variables: {set_vars} configured')
             if del_vars > 0:
-                print(f'   * OS env variables deleted: {del_vars}')
+                print(f'   * OS environment variables: {del_vars} deleted')
         # Only show hooks count if command_name was specified (hooks was defined)
         if command_name:
             hooks = config.get('hooks', {})
@@ -4190,7 +4212,7 @@ def main() -> None:
         print()
         print(f'{Colors.YELLOW}Documentation:{Colors.NC}')
         print('   * Setup Guide: https://github.com/alex-feel/claude-code-toolbox')
-        print('   * Claude Code Docs: https://docs.anthropic.com/claude-code')
+        print('   * Claude Code Docs: https://code.claude.com/docs')
         print()
 
         # If running elevated via UAC, add a pause so user can see the results

@@ -1033,11 +1033,18 @@ class TestCreateAdditionalSettingsComplex:
                 ],
             }
 
+            # First download hook files
+            setup_environment.download_hook_files(
+                hooks,
+                claude_dir,
+                config_source='https://example.com/config.yaml',
+            )
+
+            # Then create additional settings
             result = setup_environment.create_additional_settings(
                 hooks,
                 claude_dir,
                 'test',
-                config_source='https://example.com/config.yaml',
             )
 
             assert result is True
