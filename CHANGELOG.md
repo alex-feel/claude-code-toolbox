@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.10.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.9.0...v4.10.0) (2025-12-27)
+
+
+### Features
+
+* add on-demand Node.js LTS installation via install-nodejs config ([f6dd60e](https://github.com/alex-feel/claude-code-toolbox/commit/f6dd60ea1b162b1d0bc147d0e725c8c9f39db164))
+
 ## [4.9.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.8.1...v4.9.0) (2025-12-25)
 
 
