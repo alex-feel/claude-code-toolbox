@@ -754,6 +754,61 @@ class TestInstallDependencies:
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
 
+class TestInstallNodejsIfRequested:
+    """Test install_nodejs_if_requested() function."""
+
+    def test_not_requested_returns_true(self):
+        """Test that function returns True when install-nodejs is not set."""
+        config: dict = {'name': 'Test'}
+        result = setup_environment.install_nodejs_if_requested(config)
+        assert result is True
+
+    def test_false_returns_true(self):
+        """Test that function returns True when install-nodejs is False."""
+        config = {'install-nodejs': False}
+        result = setup_environment.install_nodejs_if_requested(config)
+        assert result is True
+
+    @patch('install_claude.ensure_nodejs')
+    def test_true_calls_ensure_nodejs(self, mock_ensure):
+        """Test that function calls ensure_nodejs when install-nodejs is True."""
+        mock_ensure.return_value = True
+        config = {'install-nodejs': True}
+        result = setup_environment.install_nodejs_if_requested(config)
+        assert result is True
+        mock_ensure.assert_called_once()
+
+    @patch('install_claude.ensure_nodejs')
+    def test_installation_failure_returns_false(self, mock_ensure):
+        """Test that function returns False when ensure_nodejs fails."""
+        mock_ensure.return_value = False
+        config = {'install-nodejs': True}
+        result = setup_environment.install_nodejs_if_requested(config)
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
+    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment.refresh_path_from_registry')
+    def test_windows_refreshes_path(self, mock_refresh, mock_ensure):
+        """Test that PATH is refreshed on Windows after installation."""
+        mock_ensure.return_value = True
+        config = {'install-nodejs': True}
+        setup_environment.install_nodejs_if_requested(config)
+        mock_refresh.assert_called_once()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment.refresh_path_from_registry')
+    def test_non_windows_skips_path_refresh(self, mock_refresh, mock_ensure, mock_system):
+        """Test that PATH refresh is skipped on non-Windows platforms."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Linux'
+        mock_ensure.return_value = True
+        config = {'install-nodejs': True}
+        setup_environment.install_nodejs_if_requested(config)
+        mock_refresh.assert_not_called()
+
+
 class TestFetchUrlWithAuth:
     """Test URL fetching with authentication."""
 

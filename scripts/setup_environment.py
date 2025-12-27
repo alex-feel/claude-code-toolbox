@@ -2155,6 +2155,44 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     return failed_count == 0
 
 
+def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
+    """Install Node.js LTS if requested in configuration.
+
+    Checks the 'install-nodejs' config parameter and installs Node.js
+    if set to True. Uses the existing ensure_nodejs() function which:
+    - Checks if Node.js is already installed (prevents duplicate installation)
+    - Tries multiple installation methods with fallbacks
+    - Updates PATH after installation
+
+    Args:
+        config: Environment configuration dictionary
+
+    Returns:
+        True if Node.js is installed or not requested, False if installation fails.
+    """
+    install_nodejs_flag = config.get('install-nodejs', False)
+
+    if not install_nodejs_flag:
+        info('Node.js installation not requested (install-nodejs: false or not set)')
+        return True
+
+    info('Node.js installation requested (install-nodejs: true)')
+
+    # Late import to avoid circular dependency (install_claude imports from setup_environment)
+    from install_claude import ensure_nodejs as _ensure_nodejs
+
+    if not _ensure_nodejs():
+        error('Node.js installation failed')
+        return False
+
+    # Refresh PATH from registry on Windows to pick up new installation
+    if platform.system() == 'Windows':
+        refresh_path_from_registry()
+
+    success('Node.js is available')
+    return True
+
+
 def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     """Install dependencies from configuration."""
     if not dependencies:
@@ -4165,35 +4203,41 @@ def main() -> None:
         else:
             info('No custom files to download')
 
-        # Step 4: Install dependencies (after Claude Code which provides tools)
+        # Step 4: Install Node.js if requested (before dependencies)
         print()
-        print(f'{Colors.CYAN}Step 4: Installing dependencies...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 4: Checking Node.js installation...{Colors.NC}')
+        if not install_nodejs_if_requested(config):
+            raise Exception('Node.js installation failed')
+
+        # Step 5: Install dependencies (after Claude Code which provides tools)
+        print()
+        print(f'{Colors.CYAN}Step 5: Installing dependencies...{Colors.NC}')
         dependencies = config.get('dependencies', {})
         install_dependencies(dependencies)
 
-        # Step 5: Set OS environment variables
+        # Step 6: Set OS environment variables
         print()
-        print(f'{Colors.CYAN}Step 5: Setting OS environment variables...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
         if os_env_variables:
             set_all_os_env_variables(os_env_variables)
         else:
             info('No OS environment variables to configure')
 
-        # Step 6: Process agents
+        # Step 7: Process agents
         print()
-        print(f'{Colors.CYAN}Step 6: Processing agents...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 7: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
         process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
 
-        # Step 7: Process slash commands
+        # Step 8: Process slash commands
         print()
-        print(f'{Colors.CYAN}Step 7: Processing slash commands...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 8: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
         process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
 
-        # Step 8: Process skills
+        # Step 9: Process skills
         print()
-        print(f'{Colors.CYAN}Step 8: Processing skills...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Processing skills...{Colors.NC}')
         skills_raw = config.get('skills', [])
         # Convert to properly typed list using cast and list comprehension
         skills: list[dict[str, Any]] = (
@@ -4203,9 +4247,9 @@ def main() -> None:
         )
         process_skills(skills, skills_dir, config_source, args.auth)
 
-        # Step 9: Process system prompt (if specified)
+        # Step 10: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 9: Processing system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 10: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
@@ -4216,9 +4260,9 @@ def main() -> None:
         else:
             info('No additional system prompt configured')
 
-        # Step 10: Configure MCP servers
+        # Step 11: Configure MCP servers
         print()
-        print(f'{Colors.CYAN}Step 10: Configuring MCP servers...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 11: Configuring MCP servers...{Colors.NC}')
         mcp_servers = config.get('mcp-servers', [])
 
         # Verify Node.js is available before configuring MCP servers
@@ -4232,15 +4276,15 @@ def main() -> None:
 
         # Check if command creation is needed
         if command_name:
-            # Step 11: Download hooks
+            # Step 12: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 11: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 12: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth)
 
-            # Step 12: Configure settings
+            # Step 13: Configure settings
             print()
-            print(f'{Colors.CYAN}Step 12: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 13: Configuring settings...{Colors.NC}')
             create_additional_settings(
                 hooks,
                 claude_user_dir,
@@ -4252,9 +4296,9 @@ def main() -> None:
                 always_thinking_enabled,
             )
 
-            # Step 13: Create launcher script
+            # Step 14: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 13: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 14: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -4262,17 +4306,17 @@ def main() -> None:
                 prompt_filename = Path(clean_prompt).name
             launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename, mode)
 
-            # Step 14: Register global command
+            # Step 15: Register global command
             if launcher_path:
                 print()
-                print(f'{Colors.CYAN}Step 14: Registering global {command_name} command...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 15: Registering global {command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, command_name)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 11-14: Skipping command creation (no command-name specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 12-15: Skipping command creation (no command-name specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create a custom command, add "command-name: your-command-name" to your config')
 
