@@ -1311,9 +1311,13 @@ def install_claude_native_windows(version: str | None = None) -> bool:
             temp_path,
         ]
 
-        # Add version parameter if specified
-        if version:
-            cmd.append(version)  # PowerShell uses positional parameter
+        # CRITICAL: Always pass version argument to bypass Anthropic installer bug
+        # See: https://github.com/anthropics/claude-code/issues/14942
+        # Bug: installer skips copying when running version == target version,
+        # even if target file doesn't exist (fresh installations)
+        # Fix: pass "latest" when no specific version requested
+        version_arg = version or 'latest'
+        cmd.append(version_arg)
 
         version_msg = f' version {version}' if version else ''
         info(f'Installing Claude Code{version_msg} via native installer...')
