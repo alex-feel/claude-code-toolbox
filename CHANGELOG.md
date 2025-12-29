@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.10.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.10.0...v4.10.1) (2025-12-29)
+
+
+### Bug Fixes
+
+* pass version arg to bypass installer fresh install bug ([44f7f23](https://github.com/alex-feel/claude-code-toolbox/commit/44f7f23e6ecccbb375766e78d1fe8cb370c73afd))
+
 ## [4.10.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.9.0...v4.10.0) (2025-12-27)
 
 
