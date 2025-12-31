@@ -3248,6 +3248,7 @@ def create_additional_settings(
     env: dict[str, str] | None = None,
     include_co_authored_by: bool | None = None,
     always_thinking_enabled: bool | None = None,
+    company_announcements: list[str] | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -3263,6 +3264,7 @@ def create_additional_settings(
         env: Optional environment variables dict
         include_co_authored_by: Optional flag to include co-authored-by in commits
         always_thinking_enabled: Optional flag to enable always-on thinking mode
+        company_announcements: Optional list of company announcement strings
 
     Returns:
         bool: True if successful, False otherwise.
@@ -3305,6 +3307,11 @@ def create_additional_settings(
     if always_thinking_enabled is not None:
         settings['alwaysThinkingEnabled'] = always_thinking_enabled
         info(f'Setting alwaysThinkingEnabled: {always_thinking_enabled}')
+
+    # Add companyAnnouncements if explicitly set (None means not configured, leave as default)
+    if company_announcements is not None:
+        settings['companyAnnouncements'] = company_announcements
+        info(f'Setting companyAnnouncements: {len(company_announcements)} announcement(s)')
 
     # Handle hooks if present
     hook_events: list[dict[str, Any]] = []
@@ -4116,6 +4123,9 @@ def main() -> None:
         # Extract always_thinking_enabled configuration
         always_thinking_enabled = config.get('always-thinking-enabled')
 
+        # Extract company_announcements configuration
+        company_announcements = config.get('company-announcements')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -4294,6 +4304,7 @@ def main() -> None:
                 env_variables,
                 include_co_authored_by,
                 always_thinking_enabled,
+                company_announcements,
             )
 
             # Step 14: Create launcher script
@@ -4355,6 +4366,8 @@ def main() -> None:
                 print(f"   * Permissions: {', '.join(perm_items)}")
         if env_variables:
             print(f'   * Environment variables: {len(env_variables)} configured')
+        if company_announcements:
+            print(f'   * Company announcements: {len(company_announcements)} configured')
         if os_env_variables:
             set_vars = sum(1 for v in os_env_variables.values() if v is not None)
             del_vars = sum(1 for v in os_env_variables.values() if v is None)

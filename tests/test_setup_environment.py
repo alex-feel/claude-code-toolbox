@@ -1053,6 +1053,88 @@ class TestCreateAdditionalSettings:
 
             assert 'alwaysThinkingEnabled' not in settings
 
+    def test_create_additional_settings_company_announcements(self):
+        """Test companyAnnouncements set with multiple items."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            announcements = [
+                'Welcome to Acme Corp!',
+                'Code reviews required for all PRs',
+            ]
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=announcements,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == announcements
+            assert len(settings['companyAnnouncements']) == 2
+
+    def test_create_additional_settings_company_announcements_single(self):
+        """Test companyAnnouncements with single announcement."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            announcements = ['Single announcement']
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=announcements,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == announcements
+
+    def test_create_additional_settings_company_announcements_empty_list(self):
+        """Test companyAnnouncements with empty list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=[],
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Empty list should still be included (explicit configuration)
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == []
+
+    def test_create_additional_settings_company_announcements_none_not_included(self):
+        """Test companyAnnouncements not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' not in settings
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
