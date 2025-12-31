@@ -1259,6 +1259,108 @@ class TestCreateAdditionalSettings:
 
             assert 'attribution' not in settings
 
+    def test_create_additional_settings_status_line_python(self):
+        """Test statusLine with Python script."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            # Create hooks directory
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.py',
+                'padding': 0,
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert settings['statusLine']['padding'] == 0
+
+    def test_create_additional_settings_status_line_shell(self):
+        """Test statusLine with shell script."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.sh',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' not in settings['statusLine']['command']
+            assert 'statusline.sh' in settings['statusLine']['command']
+            assert 'padding' not in settings['statusLine']
+
+    def test_create_additional_settings_status_line_none_not_included(self):
+        """Test statusLine not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' not in settings
+
+    def test_create_additional_settings_status_line_with_query_params(self):
+        """Test statusLine file with query parameters stripped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.py?ref_type=heads',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert '?' not in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
