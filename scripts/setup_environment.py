@@ -3249,6 +3249,7 @@ def create_additional_settings(
     include_co_authored_by: bool | None = None,
     always_thinking_enabled: bool | None = None,
     company_announcements: list[str] | None = None,
+    attribution: dict[str, str] | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -3262,9 +3263,12 @@ def create_additional_settings(
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
-        include_co_authored_by: Optional flag to include co-authored-by in commits
+        include_co_authored_by: DEPRECATED - Optional flag to include co-authored-by in commits.
+            Use 'attribution' parameter instead.
         always_thinking_enabled: Optional flag to enable always-on thinking mode
         company_announcements: Optional list of company announcement strings
+        attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
+            Empty strings hide attribution. Takes precedence over include_co_authored_by.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -3298,10 +3302,24 @@ def create_additional_settings(
         for key in env:
             info(f'  - {key}')
 
-    # Add includeCoAuthoredBy if explicitly set (None means not configured, leave as default)
-    if include_co_authored_by is not None:
-        settings['includeCoAuthoredBy'] = include_co_authored_by
-        info(f'Setting includeCoAuthoredBy: {include_co_authored_by}')
+    # Handle attribution settings (new format takes precedence)
+    if attribution is not None:
+        settings['attribution'] = attribution
+        commit_preview = repr(attribution.get('commit', ''))[:30]
+        pr_preview = repr(attribution.get('pr', ''))[:30]
+        info(f'Setting attribution: commit={commit_preview}, pr={pr_preview}')
+        if include_co_authored_by is not None:
+            warning('Both "attribution" and deprecated "include-co-authored-by" specified. Using "attribution".')
+    elif include_co_authored_by is not None:
+        # DEPRECATED: Convert to new format
+        warning('Config key "include-co-authored-by" is deprecated. Use "attribution" instead.')
+        if include_co_authored_by is False:
+            # false -> hide attribution
+            settings['attribution'] = {'commit': '', 'pr': ''}
+            info('Setting attribution: hiding all (converted from include-co-authored-by: false)')
+        # Note: true -> don't set anything, let Claude Code use defaults
+        else:
+            info('include-co-authored-by: true -> using Claude Code defaults (no attribution override)')
 
     # Add alwaysThinkingEnabled if explicitly set (None means not configured, leave as default)
     if always_thinking_enabled is not None:
@@ -4126,6 +4144,9 @@ def main() -> None:
         # Extract company_announcements configuration
         company_announcements = config.get('company-announcements')
 
+        # Extract attribution configuration (new format, takes precedence over include-co-authored-by)
+        attribution = config.get('attribution')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -4305,6 +4326,7 @@ def main() -> None:
                 include_co_authored_by,
                 always_thinking_enabled,
                 company_announcements,
+                attribution,
             )
 
             # Step 14: Create launcher script

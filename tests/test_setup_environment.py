@@ -1135,6 +1135,130 @@ class TestCreateAdditionalSettings:
 
             assert 'companyAnnouncements' not in settings
 
+    def test_create_additional_settings_attribution_full(self):
+        """Test attribution with both commit and pr values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {
+                'commit': 'Custom commit attribution',
+                'pr': 'Custom PR attribution',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' in settings
+            assert settings['attribution']['commit'] == 'Custom commit attribution'
+            assert settings['attribution']['pr'] == 'Custom PR attribution'
+
+    def test_create_additional_settings_attribution_hide_all(self):
+        """Test attribution with empty strings to hide all."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {'commit': '', 'pr': ''}
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert settings['attribution'] == {'commit': '', 'pr': ''}
+
+    def test_create_additional_settings_attribution_precedence_over_deprecated(self):
+        """Test attribution takes precedence over deprecated include_co_authored_by."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {'commit': 'New format', 'pr': 'New format'}
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=False,  # This should be ignored
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' in settings
+            assert settings['attribution'] == attribution
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_deprecated_include_co_authored_by_false(self):
+        """Test deprecated include_co_authored_by=False converts to attribution."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=False,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Should be converted to new format
+            assert 'attribution' in settings
+            assert settings['attribution'] == {'commit': '', 'pr': ''}
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_deprecated_include_co_authored_by_true(self):
+        """Test deprecated include_co_authored_by=True does not override defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=True,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # true -> use defaults, so neither key should be set
+            assert 'attribution' not in settings
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_attribution_none_not_included(self):
+        """Test attribution not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' not in settings
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
