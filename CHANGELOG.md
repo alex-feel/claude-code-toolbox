@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.10.1...v4.11.0) (2025-12-31)
+
+
+### Features
+
+* add attribution config support, deprecate includeCoAuthoredBy ([a3c6b53](https://github.com/alex-feel/claude-code-toolbox/commit/a3c6b53239b32ec48ee1211bed7ec48b5390ee61))
+* add companyAnnouncements config support for custom announcements ([9469877](https://github.com/alex-feel/claude-code-toolbox/commit/94698773e57477ad33a0f28c9baef2cf2e8d149d))
+* add status-line configuration support ([897b893](https://github.com/alex-feel/claude-code-toolbox/commit/897b893190295fbdc4a4a768ebaa23aca3075078))
+
 ## [4.10.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.10.0...v4.10.1) (2025-12-29)
 
 
