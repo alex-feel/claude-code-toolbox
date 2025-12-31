@@ -3248,6 +3248,9 @@ def create_additional_settings(
     env: dict[str, str] | None = None,
     include_co_authored_by: bool | None = None,
     always_thinking_enabled: bool | None = None,
+    company_announcements: list[str] | None = None,
+    attribution: dict[str, str] | None = None,
+    status_line: dict[str, Any] | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -3261,8 +3264,14 @@ def create_additional_settings(
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
-        include_co_authored_by: Optional flag to include co-authored-by in commits
+        include_co_authored_by: DEPRECATED - Optional flag to include co-authored-by in commits.
+            Use 'attribution' parameter instead.
         always_thinking_enabled: Optional flag to enable always-on thinking mode
+        company_announcements: Optional list of company announcement strings
+        attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
+            Empty strings hide attribution. Takes precedence over include_co_authored_by.
+        status_line: Optional dict with 'file' key for status line script path and optional
+            'padding' key. The file is downloaded to ~/.claude/hooks/ and configured in settings.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -3296,15 +3305,66 @@ def create_additional_settings(
         for key in env:
             info(f'  - {key}')
 
-    # Add includeCoAuthoredBy if explicitly set (None means not configured, leave as default)
-    if include_co_authored_by is not None:
-        settings['includeCoAuthoredBy'] = include_co_authored_by
-        info(f'Setting includeCoAuthoredBy: {include_co_authored_by}')
+    # Handle attribution settings (new format takes precedence)
+    if attribution is not None:
+        settings['attribution'] = attribution
+        commit_preview = repr(attribution.get('commit', ''))[:30]
+        pr_preview = repr(attribution.get('pr', ''))[:30]
+        info(f'Setting attribution: commit={commit_preview}, pr={pr_preview}')
+        if include_co_authored_by is not None:
+            warning('Both "attribution" and deprecated "include-co-authored-by" specified. Using "attribution".')
+    elif include_co_authored_by is not None:
+        # DEPRECATED: Convert to new format
+        warning('Config key "include-co-authored-by" is deprecated. Use "attribution" instead.')
+        if include_co_authored_by is False:
+            # false -> hide attribution
+            settings['attribution'] = {'commit': '', 'pr': ''}
+            info('Setting attribution: hiding all (converted from include-co-authored-by: false)')
+        # Note: true -> don't set anything, let Claude Code use defaults
+        else:
+            info('include-co-authored-by: true -> using Claude Code defaults (no attribution override)')
 
     # Add alwaysThinkingEnabled if explicitly set (None means not configured, leave as default)
     if always_thinking_enabled is not None:
         settings['alwaysThinkingEnabled'] = always_thinking_enabled
         info(f'Setting alwaysThinkingEnabled: {always_thinking_enabled}')
+
+    # Add companyAnnouncements if explicitly set (None means not configured, leave as default)
+    if company_announcements is not None:
+        settings['companyAnnouncements'] = company_announcements
+        info(f'Setting companyAnnouncements: {len(company_announcements)} announcement(s)')
+
+    # Add statusLine if explicitly set (None means not configured, leave as default)
+    if status_line is not None:
+        status_line_file = status_line.get('file')
+        if status_line_file:
+            # Build absolute path to the hook file in .claude/hooks/
+            # Strip query parameters from filename
+            clean_filename = status_line_file.split('?')[0] if '?' in status_line_file else status_line_file
+            filename = Path(clean_filename).name
+            hook_path = claude_user_dir / 'hooks' / filename
+            hook_path_str = hook_path.as_posix()
+
+            # Determine command based on file extension
+            if filename.lower().endswith(('.py', '.pyw')):
+                # Python script - use uv run
+                status_line_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+            else:
+                # Other file - use path directly
+                status_line_command = hook_path_str
+
+            status_line_config: dict[str, Any] = {
+                'type': 'command',
+                'command': status_line_command,
+            }
+
+            # Add optional padding
+            padding = status_line.get('padding')
+            if padding is not None:
+                status_line_config['padding'] = padding
+
+            settings['statusLine'] = status_line_config
+            info(f'Setting statusLine: {filename}')
 
     # Handle hooks if present
     hook_events: list[dict[str, Any]] = []
@@ -4116,6 +4176,15 @@ def main() -> None:
         # Extract always_thinking_enabled configuration
         always_thinking_enabled = config.get('always-thinking-enabled')
 
+        # Extract company_announcements configuration
+        company_announcements = config.get('company-announcements')
+
+        # Extract attribution configuration (new format, takes precedence over include-co-authored-by)
+        attribution = config.get('attribution')
+
+        # Extract status_line configuration
+        status_line = config.get('status-line')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -4285,6 +4354,11 @@ def main() -> None:
             # Step 13: Configure settings
             print()
             print(f'{Colors.CYAN}Step 13: Configuring settings...{Colors.NC}')
+            # Cast status_line for type safety
+            status_line_arg: dict[str, Any] | None = None
+            if status_line is not None and isinstance(status_line, dict):
+                status_line_arg = cast(dict[str, Any], status_line)
+
             create_additional_settings(
                 hooks,
                 claude_user_dir,
@@ -4294,6 +4368,9 @@ def main() -> None:
                 env_variables,
                 include_co_authored_by,
                 always_thinking_enabled,
+                company_announcements,
+                attribution,
+                status_line_arg,
             )
 
             # Step 14: Create launcher script
@@ -4355,6 +4432,17 @@ def main() -> None:
                 print(f"   * Permissions: {', '.join(perm_items)}")
         if env_variables:
             print(f'   * Environment variables: {len(env_variables)} configured')
+        if company_announcements:
+            print(f'   * Company announcements: {len(company_announcements)} configured')
+        if status_line and isinstance(status_line, dict):
+            status_line_dict = cast(dict[str, Any], status_line)
+            status_line_file_val = status_line_dict.get('file', '')
+            if status_line_file_val and isinstance(status_line_file_val, str):
+                if '?' in status_line_file_val:
+                    clean_name = Path(status_line_file_val.split('?')[0]).name
+                else:
+                    clean_name = Path(status_line_file_val).name
+                print(f'   * Status line: {clean_name}')
         if os_env_variables:
             set_vars = sum(1 for v in os_env_variables.values() if v is not None)
             del_vars = sum(1 for v in os_env_variables.values() if v is None)

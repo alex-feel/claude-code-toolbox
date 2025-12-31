@@ -1053,6 +1053,314 @@ class TestCreateAdditionalSettings:
 
             assert 'alwaysThinkingEnabled' not in settings
 
+    def test_create_additional_settings_company_announcements(self):
+        """Test companyAnnouncements set with multiple items."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            announcements = [
+                'Welcome to Acme Corp!',
+                'Code reviews required for all PRs',
+            ]
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=announcements,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == announcements
+            assert len(settings['companyAnnouncements']) == 2
+
+    def test_create_additional_settings_company_announcements_single(self):
+        """Test companyAnnouncements with single announcement."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            announcements = ['Single announcement']
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=announcements,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == announcements
+
+    def test_create_additional_settings_company_announcements_empty_list(self):
+        """Test companyAnnouncements with empty list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=[],
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Empty list should still be included (explicit configuration)
+            assert 'companyAnnouncements' in settings
+            assert settings['companyAnnouncements'] == []
+
+    def test_create_additional_settings_company_announcements_none_not_included(self):
+        """Test companyAnnouncements not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                company_announcements=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'companyAnnouncements' not in settings
+
+    def test_create_additional_settings_attribution_full(self):
+        """Test attribution with both commit and pr values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {
+                'commit': 'Custom commit attribution',
+                'pr': 'Custom PR attribution',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' in settings
+            assert settings['attribution']['commit'] == 'Custom commit attribution'
+            assert settings['attribution']['pr'] == 'Custom PR attribution'
+
+    def test_create_additional_settings_attribution_hide_all(self):
+        """Test attribution with empty strings to hide all."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {'commit': '', 'pr': ''}
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert settings['attribution'] == {'commit': '', 'pr': ''}
+
+    def test_create_additional_settings_attribution_precedence_over_deprecated(self):
+        """Test attribution takes precedence over deprecated include_co_authored_by."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            attribution = {'commit': 'New format', 'pr': 'New format'}
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=False,  # This should be ignored
+                attribution=attribution,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' in settings
+            assert settings['attribution'] == attribution
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_deprecated_include_co_authored_by_false(self):
+        """Test deprecated include_co_authored_by=False converts to attribution."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=False,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Should be converted to new format
+            assert 'attribution' in settings
+            assert settings['attribution'] == {'commit': '', 'pr': ''}
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_deprecated_include_co_authored_by_true(self):
+        """Test deprecated include_co_authored_by=True does not override defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                include_co_authored_by=True,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # true -> use defaults, so neither key should be set
+            assert 'attribution' not in settings
+            assert 'includeCoAuthoredBy' not in settings
+
+    def test_create_additional_settings_attribution_none_not_included(self):
+        """Test attribution not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                attribution=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'attribution' not in settings
+
+    def test_create_additional_settings_status_line_python(self):
+        """Test statusLine with Python script."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            # Create hooks directory
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.py',
+                'padding': 0,
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert settings['statusLine']['padding'] == 0
+
+    def test_create_additional_settings_status_line_shell(self):
+        """Test statusLine with shell script."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.sh',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' not in settings['statusLine']['command']
+            assert 'statusline.sh' in settings['statusLine']['command']
+            assert 'padding' not in settings['statusLine']
+
+    def test_create_additional_settings_status_line_none_not_included(self):
+        """Test statusLine not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' not in settings
+
+    def test_create_additional_settings_status_line_with_query_params(self):
+        """Test statusLine file with query parameters stripped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            status_line = {
+                'file': 'statusline.py?ref_type=heads',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert '?' not in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
