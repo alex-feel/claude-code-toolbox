@@ -2259,3 +2259,364 @@ agents:
             assert resolved['agents'] == ['my-agent.md']  # From child
             assert resolved['dependencies'] == {'common': ['pip install base']}  # From grandparent
             assert 'inherit' not in resolved
+
+
+class TestCommandNames:
+    """Test command-names configuration (new format) and backward compatibility."""
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_command_names_single(
+        self,
+        mock_mkdir,
+        mock_is_admin,
+        mock_register,
+        mock_launcher,
+        mock_settings,
+        mock_mcp,
+        mock_download,
+        mock_deps,
+        mock_install,
+        mock_validate,
+        mock_load,
+    ):
+        """Test command-names with single name works correctly."""
+        # Verify mock configuration is available
+        assert mock_mkdir is not None
+        assert mock_is_admin.return_value is True
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['aegis'],  # New format with single name
+                'dependencies': {},
+                'agents': [],
+                'slash-commands': [],
+                'mcp-servers': [],
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        mock_download.return_value = True
+        mock_mcp.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify register_global_command was called with primary name and no additional names
+        mock_register.assert_called_once()
+        call_args = mock_register.call_args
+        assert call_args[0][1] == 'aegis'  # Primary command name
+        assert call_args[0][2] is None  # No additional names
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_command_names_multiple(
+        self,
+        mock_mkdir,
+        mock_is_admin,
+        mock_register,
+        mock_launcher,
+        mock_settings,
+        mock_mcp,
+        mock_download,
+        mock_deps,
+        mock_install,
+        mock_validate,
+        mock_load,
+    ):
+        """Test command-names with multiple names creates all commands."""
+        # Verify mock configuration is available
+        assert mock_mkdir is not None
+        assert mock_is_admin.return_value is True
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['aegis', 'claude-dev', 'myenv'],  # Multiple names
+                'dependencies': {},
+                'agents': [],
+                'slash-commands': [],
+                'mcp-servers': [],
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        mock_download.return_value = True
+        mock_mcp.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify register_global_command was called with primary name and additional names
+        mock_register.assert_called_once()
+        call_args = mock_register.call_args
+        assert call_args[0][1] == 'aegis'  # Primary command name
+        assert call_args[0][2] == ['claude-dev', 'myenv']  # Additional names
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_command_name_deprecated_shows_warning(
+        self,
+        mock_mkdir,
+        mock_is_admin,
+        mock_register,
+        mock_launcher,
+        mock_settings,
+        mock_mcp,
+        mock_download,
+        mock_deps,
+        mock_install,
+        mock_validate,
+        mock_load,
+        capsys,
+    ):
+        """Test deprecated command-name shows deprecation warning."""
+        # Verify mocks are properly configured
+        assert mock_mkdir is not None
+        assert mock_is_admin.return_value is True
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-name': 'old-style',  # Deprecated format
+                'dependencies': {},
+                'agents': [],
+                'slash-commands': [],
+                'mcp-servers': [],
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        mock_download.return_value = True
+        mock_mcp.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify deprecation warning was shown
+        captured = capsys.readouterr()
+        assert 'deprecated' in captured.out.lower()
+        assert 'command-names' in captured.out
+
+        # Verify register_global_command was still called with the name
+        mock_register.assert_called_once()
+        call_args = mock_register.call_args
+        assert call_args[0][1] == 'old-style'  # Primary command name
+        assert call_args[0][2] is None  # No additional names
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_command_names_takes_precedence_over_deprecated(
+        self,
+        mock_mkdir,
+        mock_is_admin,
+        mock_register,
+        mock_launcher,
+        mock_settings,
+        mock_mcp,
+        mock_download,
+        mock_deps,
+        mock_install,
+        mock_validate,
+        mock_load,
+        capsys,
+    ):
+        """Test command-names takes precedence when both are specified."""
+        # Verify mocks are properly configured
+        assert mock_mkdir is not None
+        assert mock_is_admin.return_value is True
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['new-style'],  # New format
+                'command-name': 'old-style',  # Deprecated format (should be ignored)
+                'dependencies': {},
+                'agents': [],
+                'slash-commands': [],
+                'mcp-servers': [],
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        mock_download.return_value = True
+        mock_mcp.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify warning about both being specified
+        captured = capsys.readouterr()
+        assert 'both' in captured.out.lower() or 'Both' in captured.out
+
+        # Verify register_global_command was called with new format
+        mock_register.assert_called_once()
+        call_args = mock_register.call_args
+        assert call_args[0][1] == 'new-style'  # New format takes precedence
+
+    @patch('setup_environment.load_config_from_source')
+    def test_command_names_validation_empty_name(self, mock_load):
+        """Test validation fails for empty command names."""
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['valid', ''],  # Empty name is invalid
+            },
+            'test.yaml',
+        )
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+    @patch('setup_environment.load_config_from_source')
+    def test_command_names_validation_spaces(self, mock_load):
+        """Test validation fails for command names with spaces."""
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['valid', 'invalid name'],  # Space is invalid
+            },
+            'test.yaml',
+        )
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+
+class TestRegisterGlobalCommandWithAliases:
+    """Test register_global_command with additional command names (aliases)."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.add_directory_to_windows_path')
+    def test_register_global_command_windows_with_aliases(self, mock_add_path, mock_system):
+        """Test registering global command with aliases on Windows."""
+        # Verify mock is properly configured for Windows platform
+        assert mock_system.return_value == 'Windows'
+        mock_add_path.return_value = (True, 'Added to PATH')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            launcher = Path(tmpdir) / 'start-primary.ps1'
+            launcher.write_text('# Launcher')
+
+            # Mock home directory
+            with patch('pathlib.Path.home', return_value=Path(tmpdir)):
+                local_bin = Path(tmpdir) / '.local' / 'bin'
+                local_bin.mkdir(parents=True, exist_ok=True)
+
+                result = setup_environment.register_global_command(
+                    launcher, 'primary', ['alias1', 'alias2'],
+                )
+                assert result is True
+
+                # Verify primary command files were created
+                assert (local_bin / 'primary.cmd').exists()
+                assert (local_bin / 'primary.ps1').exists()
+                assert (local_bin / 'primary').exists()
+
+                # Verify alias command files were created
+                assert (local_bin / 'alias1.cmd').exists()
+                assert (local_bin / 'alias1.ps1').exists()
+                assert (local_bin / 'alias1').exists()
+                assert (local_bin / 'alias2.cmd').exists()
+                assert (local_bin / 'alias2.ps1').exists()
+                assert (local_bin / 'alias2').exists()
+
+                # Verify alias CMD wrapper references primary launch script
+                alias1_cmd_content = (local_bin / 'alias1.cmd').read_text()
+                assert 'launch-primary.sh' in alias1_cmd_content
+                assert 'alias for primary' in alias1_cmd_content
+
+    @patch('platform.system', return_value='Linux')
+    def test_register_global_command_linux_with_aliases(self, mock_system):
+        """Test registering global command with aliases on Linux."""
+        # Verify mock is properly configured for Linux platform
+        assert mock_system.return_value == 'Linux'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            launcher = Path(tmpdir) / 'start-primary.sh'
+            launcher.write_text('#!/bin/bash\necho test')
+            launcher.chmod(0o755)
+
+            # Mock home directory and symlink creation
+            with patch('pathlib.Path.home', return_value=Path(tmpdir)):
+                local_bin = Path(tmpdir) / '.local' / 'bin'
+                local_bin.mkdir(parents=True, exist_ok=True)
+
+                # Track symlinks created
+                symlinks_created = []
+
+                def mock_symlink_to(self, target):
+                    symlinks_created.append((self, target))
+                    # Create a regular file instead of symlink for testing
+                    self.write_text(f'# Symlink to {target}')
+
+                with patch.object(Path, 'symlink_to', mock_symlink_to):
+                    result = setup_environment.register_global_command(
+                        launcher, 'primary', ['alias1', 'alias2'],
+                    )
+                    assert result is True
+
+                # Verify symlinks were created for primary and all aliases
+                symlink_names = [s[0].name for s in symlinks_created]
+                assert 'primary' in symlink_names
+                assert 'alias1' in symlink_names
+                assert 'alias2' in symlink_names
+                assert len(symlinks_created) == 3

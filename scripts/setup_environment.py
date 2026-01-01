@@ -3877,8 +3877,21 @@ claude "$@" --settings "$SETTINGS_PATH"
         return None
 
 
-def register_global_command(launcher_path: Path, command_name: str) -> bool:
-    """Register global command."""
+def register_global_command(
+    launcher_path: Path,
+    command_name: str,
+    additional_names: list[str] | None = None,
+) -> bool:
+    """Register global command(s).
+
+    Args:
+        launcher_path: Path to the launcher script.
+        command_name: Primary command name (used for file naming).
+        additional_names: Optional list of additional command names (aliases).
+
+    Returns:
+        True if registration succeeded, False otherwise.
+    """
     info(f'Registering global {command_name} command...')
 
     system = platform.system()
@@ -3926,6 +3939,42 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
             info('Created wrappers for all Windows shells (PowerShell, CMD, Git Bash)')
 
+            # Create additional command wrappers for aliases (Windows)
+            if additional_names:
+                for alias_name in additional_names:
+                    # CMD wrapper for alias
+                    alias_batch_path = local_bin / f'{alias_name}.cmd'
+                    alias_batch_content = f'''@echo off
+REM Global {alias_name} command for CMD (alias for {command_name})
+set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
+if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
+set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
+if "%~1"=="" (
+    "%BASH_EXE%" --login "%SCRIPT_WIN%"
+) else (
+    "%BASH_EXE%" --login "%SCRIPT_WIN%" %*
+)
+'''
+                    alias_batch_path.write_text(alias_batch_content)
+
+                    # PowerShell wrapper for alias
+                    alias_ps1_path = local_bin / f'{alias_name}.ps1'
+                    alias_ps1_content = f'''# Global {alias_name} command for PowerShell (alias for {command_name})
+& "{launcher_path}" @args
+'''
+                    alias_ps1_path.write_text(alias_ps1_content)
+
+                    # Git Bash wrapper for alias
+                    alias_bash_path = local_bin / alias_name
+                    alias_bash_content = f'''#!/bin/bash
+# Bash wrapper for {alias_name} (alias for {command_name})
+exec "$HOME/.claude/launch-{command_name}.sh" "$@"
+'''
+                    alias_bash_path.write_text(alias_bash_content, newline='\n')
+                    alias_bash_path.chmod(0o755)
+
+                info(f'Created {len(additional_names)} alias command(s): {", ".join(additional_names)}')
+
             # Add .local/bin to PATH using the robust registry-based function
             local_bin_str = str(local_bin)
             path_success, path_message = add_directory_to_windows_path(local_bin_str)
@@ -3955,16 +4004,34 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
                 symlink_path.unlink()
             symlink_path.symlink_to(launcher_path)
 
+            # Create additional symlinks for aliases (Linux/macOS)
+            if additional_names:
+                for alias_name in additional_names:
+                    alias_symlink_path = local_bin / alias_name
+                    if alias_symlink_path.exists():
+                        alias_symlink_path.unlink()
+                    alias_symlink_path.symlink_to(launcher_path)
+
+                info(f'Created {len(additional_names)} alias symlink(s): {", ".join(additional_names)}')
+
             # Ensure ~/.local/bin is in PATH
             info('Make sure ~/.local/bin is in your PATH')
             info('Add this to your ~/.bashrc or ~/.zshrc if needed:')
             info('  export PATH="$HOME/.local/bin:$PATH"')
 
         if system == 'Windows':
-            success(f'Created global command: {command_name} (works in PowerShell, CMD, and Git Bash)')
+            if additional_names:
+                all_names = [command_name, *additional_names]
+                success(f'Created global commands: {", ".join(all_names)} (works in PowerShell, CMD, and Git Bash)')
+            else:
+                success(f'Created global command: {command_name} (works in PowerShell, CMD, and Git Bash)')
             info('The command now works in all Windows shells!')
         else:
-            success(f'Created global command: {command_name}')
+            if additional_names:
+                all_names = [command_name, *additional_names]
+                success(f'Created global commands: {", ".join(all_names)}')
+            else:
+                success(f'Created global command: {command_name}')
         return True
 
     except Exception as e:
@@ -4145,7 +4212,46 @@ def main() -> None:
             sys.exit(1)
 
         environment_name = config.get('name', 'Development')
-        command_name = config.get('command-name')  # No default - returns None if not present
+
+        # Extract command-names (new format, array)
+        command_names_raw = config.get('command-names')
+
+        # Handle deprecated command-name (singular)
+        command_name_deprecated = config.get('command-name')
+
+        # Normalize to list and handle deprecation
+        command_names: list[str] | None = None
+        if command_names_raw is not None:
+            # New format: ensure it's a list
+            if isinstance(command_names_raw, str):
+                command_names = [command_names_raw]
+            elif isinstance(command_names_raw, list):
+                # Convert all items to strings (handles mixed types from YAML)
+                command_names = [str(item) for item in cast(list[object], command_names_raw)]
+            else:
+                error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
+                sys.exit(1)
+            if command_name_deprecated is not None:
+                warning('Both "command-names" and deprecated "command-name" specified. Using "command-names".')
+        elif command_name_deprecated is not None:
+            # DEPRECATED: Convert singular to list
+            warning('Config key "command-name" is deprecated. Use "command-names" (array) instead.')
+            command_names = [str(command_name_deprecated)]
+
+        # Validate command names
+        if command_names:
+            for cmd_name in command_names:
+                if not cmd_name.strip():
+                    error('Invalid command name: empty or whitespace-only name')
+                    sys.exit(1)
+                if ' ' in cmd_name:
+                    error(f'Invalid command name: "{cmd_name}" contains spaces')
+                    sys.exit(1)
+
+        # Get primary command name (first in list) for file naming
+        primary_command_name = command_names[0] if command_names else None
+        additional_command_names = command_names[1:] if command_names and len(command_names) > 1 else None
+
         base_url = config.get('base-url')  # Optional base URL override from config
 
         # Extract command defaults
@@ -4344,7 +4450,7 @@ def main() -> None:
         configure_all_mcp_servers(mcp_servers)
 
         # Check if command creation is needed
-        if command_name:
+        if primary_command_name:
             # Step 12: Download hooks
             print()
             print(f'{Colors.CYAN}Step 12: Downloading hooks...{Colors.NC}')
@@ -4362,7 +4468,7 @@ def main() -> None:
             create_additional_settings(
                 hooks,
                 claude_user_dir,
-                command_name,
+                primary_command_name,
                 model,
                 permissions,
                 env_variables,
@@ -4381,21 +4487,25 @@ def main() -> None:
             if system_prompt:
                 clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
                 prompt_filename = Path(clean_prompt).name
-            launcher_path = create_launcher_script(claude_user_dir, command_name, prompt_filename, mode)
+            launcher_path = create_launcher_script(claude_user_dir, primary_command_name, prompt_filename, mode)
 
-            # Step 15: Register global command
+            # Step 15: Register global command(s)
             if launcher_path:
                 print()
-                print(f'{Colors.CYAN}Step 15: Registering global {command_name} command...{Colors.NC}')
-                register_global_command(launcher_path, command_name)
+                if additional_command_names:
+                    all_names = ', '.join(command_names) if command_names else primary_command_name
+                    print(f'{Colors.CYAN}Step 15: Registering global commands: {all_names}...{Colors.NC}')
+                else:
+                    print(f'{Colors.CYAN}Step 15: Registering global {primary_command_name} command...{Colors.NC}')
+                register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 12-15: Skipping command creation (no command-name specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 12-15: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
-            info('To create a custom command, add "command-name: your-command-name" to your config')
+            info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
         # Final message
         print()
@@ -4450,18 +4560,24 @@ def main() -> None:
                 print(f'   * OS environment variables: {set_vars} configured')
             if del_vars > 0:
                 print(f'   * OS environment variables: {del_vars} deleted')
-        # Only show hooks count if command_name was specified (hooks was defined)
-        if command_name:
+        # Only show hooks count if command was specified (hooks was defined)
+        if command_names:
             hooks = config.get('hooks', {})
             print(f"   * Hooks: {len(hooks.get('events', [])) if hooks else 0} configured")
-            print(f'   * Global command: {command_name} registered')
+            if len(command_names) > 1:
+                print(f'   * Global commands: {", ".join(command_names)} registered')
+            else:
+                print(f'   * Global command: {primary_command_name} registered')
         else:
-            print('   * Custom command: Not created (no command-name specified)')
+            print('   * Custom command: Not created (no command-names specified)')
 
         print()
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
-        if command_name:
-            print(f'   * Global command: {command_name}')
+        if command_names:
+            if len(command_names) > 1:
+                print(f'   * Global commands: {", ".join(command_names)}')
+            else:
+                print(f'   * Global command: {primary_command_name}')
         else:
             print('   * Use "claude" to start Claude Code with configured environment')
 
@@ -4475,7 +4591,7 @@ def main() -> None:
 
         print()
         print(f'{Colors.YELLOW}Examples:{Colors.NC}')
-        print(f'   {command_name}')
+        print(f'   {primary_command_name or "claude"}')
         print(f'   > Start working with {environment_name} environment')
 
         print()
