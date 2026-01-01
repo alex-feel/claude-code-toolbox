@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.11.0...v4.12.0) (2026-01-01)
+
+
+### Features
+
+* add command-names array config with multi-name alias support ([bde67c3](https://github.com/alex-feel/claude-code-toolbox/commit/bde67c306c0a8578820fd7928c06237bf695cb9a))
+
 ## [4.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.10.1...v4.11.0) (2025-12-31)
 
 
