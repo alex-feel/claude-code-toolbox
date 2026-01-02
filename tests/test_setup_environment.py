@@ -530,6 +530,45 @@ class TestGetAllShellConfigFiles:
         assert '.zshrc' not in filenames
         assert '.zshenv' not in filenames
 
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_includes_fish_config_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test includes fish config file on macOS."""
+        monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+        config_files = setup_environment.get_all_shell_config_files()
+        file_names = [str(f) for f in config_files]
+        # Should include fish config on macOS (fish is common on macOS)
+        assert any('fish' in name and 'config.fish' in name for name in file_names)
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_includes_fish_config_when_fish_installed_on_linux(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test includes fish config on Linux when fish is installed."""
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
+
+        def which_mock(cmd: str) -> str | None:
+            if cmd == 'fish':
+                return '/usr/bin/fish'
+            if cmd == 'zsh':
+                return '/usr/bin/zsh'
+            return None
+
+        monkeypatch.setattr(shutil, 'which', which_mock)
+        config_files = setup_environment.get_all_shell_config_files()
+        file_names = [str(f) for f in config_files]
+        assert any('fish' in name and 'config.fish' in name for name in file_names)
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_excludes_fish_config_when_not_installed_on_linux(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Test excludes fish config on Linux when fish is not installed."""
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
+        monkeypatch.setattr(shutil, 'which', lambda _: None)
+        config_files = setup_environment.get_all_shell_config_files()
+        file_names = [str(f) for f in config_files]
+        assert not any('fish' in name for name in file_names)
+
 
 class TestAddExportToFile:
     """Tests for add_export_to_file() function."""
@@ -595,6 +634,115 @@ class TestRemoveExportFromFile:
         config_file = tmp_path / '.nonexistent'
         result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
         assert result is True
+
+    def test_removes_variable_outside_managed_block(self, tmp_path: Path) -> None:
+        """Test removes variable that was added outside the managed block."""
+        config_file = tmp_path / '.bashrc'
+        # Manually create content with variable OUTSIDE managed block
+        config_file.write_text('export MY_VAR="legacy_value"\n# Other content\n')
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+        assert '# Other content' in content
+
+    def test_removes_variable_when_no_managed_block_exists(self, tmp_path: Path) -> None:
+        """Test removes variable when no managed block exists."""
+        config_file = tmp_path / '.bashrc'
+        # Create content without managed block
+        config_file.write_text(
+            '# My bashrc\nexport PATH="/usr/bin"\nexport MY_VAR="value"\nexport OTHER="keep"\n',
+        )
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+        assert 'export PATH="/usr/bin"' in content
+        assert 'export OTHER="keep"' in content
+
+    def test_removes_variable_from_both_inside_and_outside_block(self, tmp_path: Path) -> None:
+        """Test removes variable that exists both inside and outside managed block."""
+        config_file = tmp_path / '.bashrc'
+        # First add variable outside block
+        config_file.write_text('export MY_VAR="legacy_value"\n')
+        # Then add the same variable via managed block
+        setup_environment.add_export_to_file(config_file, 'MY_VAR', 'managed_value')
+        # Now remove it - should remove from both places
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+
+    def test_removes_variable_without_export_keyword(self, tmp_path: Path) -> None:
+        """Test removes variable defined without export keyword."""
+        config_file = tmp_path / '.bashrc'
+        config_file.write_text('MY_VAR="value"\n# Other content\n')
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+        assert '# Other content' in content
+
+    def test_preserves_comments_containing_variable_name(self, tmp_path: Path) -> None:
+        """Test preserves comments that contain the variable name."""
+        config_file = tmp_path / '.bashrc'
+        config_file.write_text(
+            '# Set MY_VAR for development\nexport MY_VAR="value"\n'
+            '# MY_VAR should be set\n',
+        )
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        # Export line should be removed
+        assert 'export MY_VAR="value"' not in content
+        # Comments should be preserved
+        assert '# Set MY_VAR for development' in content
+        assert '# MY_VAR should be set' in content
+
+
+class TestFishShellSupport:
+    """Tests for Fish shell syntax support."""
+
+    def test_add_export_uses_fish_syntax(self, tmp_path: Path) -> None:
+        """Test add_export_to_file uses fish set syntax for fish config."""
+        config_file = tmp_path / '.config' / 'fish' / 'config.fish'
+        result = setup_environment.add_export_to_file(config_file, 'MY_VAR', 'my_value')
+        assert result is True
+        content = config_file.read_text()
+        assert 'set -gx MY_VAR "my_value"' in content
+        assert 'export' not in content
+
+    def test_remove_export_handles_fish_syntax(self, tmp_path: Path) -> None:
+        """Test remove_export_from_file handles fish set syntax."""
+        config_file = tmp_path / '.config' / 'fish' / 'config.fish'
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text('set -gx MY_VAR "value"\n# Keep this\n')
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+        assert '# Keep this' in content
+
+    def test_remove_export_handles_fish_universal_variable(self, tmp_path: Path) -> None:
+        """Test remove_export_from_file handles fish -Ux (universal) variable."""
+        config_file = tmp_path / '.config' / 'fish' / 'config.fish'
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text('set -Ux MY_VAR "value"\n')
+        result = setup_environment.remove_export_from_file(config_file, 'MY_VAR')
+        assert result is True
+        content = config_file.read_text()
+        assert 'MY_VAR' not in content
+
+    def test_update_existing_fish_variable(self, tmp_path: Path) -> None:
+        """Test updating an existing variable in fish config."""
+        config_file = tmp_path / '.config' / 'fish' / 'config.fish'
+        setup_environment.add_export_to_file(config_file, 'MY_VAR', 'old_value')
+        setup_environment.add_export_to_file(config_file, 'MY_VAR', 'new_value')
+        content = config_file.read_text()
+        assert 'set -gx MY_VAR "new_value"' in content
+        assert 'old_value' not in content
+        # Should only have one occurrence
+        assert content.count('MY_VAR') == 1
 
 
 class TestSetOsEnvVariableWindows:
