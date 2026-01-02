@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.12.0...v4.13.0) (2026-01-02)
+
+
+### Features
+
+* add config file support for hooks ([04f596e](https://github.com/alex-feel/claude-code-toolbox/commit/04f596e8df2b8af380884f304647c6bd072c2770))
+
 ## [4.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.11.0...v4.12.0) (2026-01-01)
 
 
