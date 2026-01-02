@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.13.0...v4.14.0) (2026-01-02)
+
+
+### Features
+
+* add Fish shell support for environment variable management ([7e59976](https://github.com/alex-feel/claude-code-toolbox/commit/7e599766559be66715b9641ae19d4fa020f9bf89))
+
 ## [4.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.12.0...v4.13.0) (2026-01-02)
 
 
