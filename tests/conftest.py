@@ -55,13 +55,17 @@ def sample_environment_config() -> dict[str, Any]:
         ],
         'slash-commands': ['commands/test-command.md'],
         'hooks': {
-            'files': ['hooks/test-hook.py'],
+            'files': [
+                'hooks/test-hook.py',
+                'configs/test-hook-config.yaml',
+            ],
             'events': [
                 {
                     'event': 'PostToolUse',
                     'matcher': 'Edit|Write',
                     'type': 'command',
                     'command': 'test-hook.py',
+                    'config': 'test-hook-config.yaml',
                 },
             ],
         },

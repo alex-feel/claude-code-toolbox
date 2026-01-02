@@ -2345,3 +2345,174 @@ class TestRefreshPathFromRegistry:
         with patch('setup_environment.winreg.OpenKey', side_effect=FileNotFoundError()):
             result = setup_environment.refresh_path_from_registry()
             assert result is False  # Should return False when no PATH found
+
+
+class TestHookConfigFileSupport:
+    """Test hook configuration file support in create_additional_settings."""
+
+    def test_create_additional_settings_hook_with_config(self) -> None:
+        """Test hook configuration with config file reference."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create dummy hook and config files
+            hook_file = hooks_dir / 'protect_critical_files.py'
+            hook_file.write_text('#!/usr/bin/env python3\nprint("hook")')
+            config_file = hooks_dir / 'protect_config.yaml'
+            config_file.write_text('protected_files: []')
+
+            hooks = {
+                'files': [
+                    'hooks/library/protect_critical_files.py',
+                    'configs/protect_config.yaml',
+                ],
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Edit|Write',
+                        'type': 'command',
+                        'command': 'protect_critical_files.py',
+                        'config': 'protect_config.yaml',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Verify command includes config path
+            hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
+            assert 'protect_critical_files.py' in hook_cmd
+            assert 'protect_config.yaml' in hook_cmd
+            assert hook_cmd.endswith('protect_config.yaml')
+
+    def test_create_additional_settings_hook_without_config_backward_compat(self) -> None:
+        """Test that hooks without config field still work (backward compatibility)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hook_file = hooks_dir / 'test.py'
+            hook_file.write_text('print("test")')
+
+            hooks = {
+                'files': ['hooks/test.py'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit',
+                        'type': 'command',
+                        'command': 'test.py',
+                        # No 'config' field - backward compatibility
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Verify command does NOT include config path
+            hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert 'test.py' in hook_cmd
+            # Command should end with the Python file, not a config
+            assert hook_cmd.endswith('test.py')
+
+    def test_create_additional_settings_hook_config_with_query_params(self) -> None:
+        """Test hook config with query parameters in filename."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hook_file = hooks_dir / 'hook.py'
+            hook_file.write_text('print("hook")')
+            config_file = hooks_dir / 'config.yaml'
+            config_file.write_text('key: value')
+
+            hooks = {
+                'files': [
+                    'hooks/hook.py?token=abc123',
+                    'configs/config.yaml?token=abc123',
+                ],
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': '',
+                        'type': 'command',
+                        'command': 'hook.py',
+                        'config': 'config.yaml?token=abc123',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Verify query params are stripped from config path
+            hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
+            assert 'config.yaml' in hook_cmd
+            assert '?token=' not in hook_cmd
+
+    def test_create_additional_settings_non_python_hook_with_config(self) -> None:
+        """Test non-Python hook with config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hook_file = hooks_dir / 'hook.sh'
+            hook_file.write_text('#!/bin/bash\necho "hook"')
+            config_file = hooks_dir / 'config.yaml'
+            config_file.write_text('key: value')
+
+            hooks = {
+                'files': ['hooks/hook.sh', 'configs/config.yaml'],
+                'events': [
+                    {
+                        'event': 'SessionStart',
+                        'matcher': '',
+                        'type': 'command',
+                        'command': 'hook.sh',
+                        'config': 'config.yaml',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Non-Python scripts should also get config appended
+            hook_cmd = settings['hooks']['SessionStart'][0]['hooks'][0]['command']
+            assert 'hook.sh' in hook_cmd
+            assert 'config.yaml' in hook_cmd

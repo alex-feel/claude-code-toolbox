@@ -3380,6 +3380,7 @@ def create_additional_settings(
         matcher = hook.get('matcher', '')
         hook_type = hook.get('type', 'command')
         command = hook.get('command')
+        config = hook.get('config')  # Optional config file reference
 
         if not event or not command:
             warning('Invalid hook configuration, skipping')
@@ -3435,12 +3436,28 @@ def create_additional_settings(
                 # For .pyw files on Windows, uv automatically uses pythonw
                 # Use --no-project flag to prevent uv from detecting and applying project Python requirements
                 full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+
+                # Append config file path if specified
+                if config:
+                    # Strip query parameters from config filename
+                    clean_config = config.split('?')[0] if '?' in config else config
+                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path_str = config_path.as_posix()
+                    full_command = f'{full_command} {config_path_str}'
             else:
                 # Other file - build absolute path and use as-is
                 # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
                 hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
                 hook_path_str = hook_path.as_posix()
                 full_command = hook_path_str
+
+                # Append config file path if specified
+                if config:
+                    # Strip query parameters from config filename
+                    clean_config = config.split('?')[0] if '?' in config else config
+                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path_str = config_path.as_posix()
+                    full_command = f'{full_command} {config_path_str}'
         else:
             # Direct command with spaces - use as-is
             full_command = command
