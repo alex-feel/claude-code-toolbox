@@ -551,8 +551,10 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
                 winreg.CloseKey(reg_key)
                 return (
                     False,
-                    f'PATH too long ({len(new_path)} chars, limit 1024). '
-                    f'Please manually add: {normalized_dir}',
+                    (
+                        f'PATH too long ({len(new_path)} chars, limit 1024). '
+                        f'Please manually add: {normalized_dir}'
+                    ),
                 )
 
             # Write new PATH to registry
@@ -1841,6 +1843,8 @@ def get_all_shell_config_files() -> list[Path]:
             home / '.zshenv',       # All zsh instances (recommended for env vars)
             home / '.zprofile',     # Zsh login shells (macOS default since Catalina)
             home / '.zshrc',        # Interactive zsh shells
+            # Fish files
+            home / '.config' / 'fish' / 'config.fish',  # Fish shell config
         ]
 
         # On Linux, only include zsh files if zsh is installed
@@ -1850,7 +1854,47 @@ def get_all_shell_config_files() -> list[Path]:
                 # Filter out zsh-specific files if zsh is not installed
                 config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
+            # Only include fish config if fish is installed
+            fish_path = shutil.which('fish')
+            if not fish_path:
+                config_files = [f for f in config_files if 'fish' not in str(f)]
+
     return config_files
+
+
+def _get_export_line(config_file: Path, name: str, value: str) -> str:
+    """Generate the appropriate export line for the shell type.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name.
+        value: Environment variable value.
+
+    Returns:
+        str: The export line in the appropriate syntax for the shell.
+    """
+    # Fish shell uses different syntax
+    if 'fish' in str(config_file):
+        return f'set -gx {name} "{value}"'
+    # Bash/Zsh use export
+    return f'export {name}="{value}"'
+
+
+def _get_export_prefix(config_file: Path, name: str) -> str:
+    """Get the line prefix to match for an existing export.
+
+    Args:
+        config_file: Path to the shell config file.
+        name: Environment variable name.
+
+    Returns:
+        str: The prefix to match (e.g., 'export NAME=' or 'set -gx NAME ').
+    """
+    # Fish shell uses different syntax
+    if 'fish' in str(config_file):
+        return f'set -gx {name} '
+    # Bash/Zsh use export
+    return f'export {name}='
 
 
 def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
@@ -1858,6 +1902,7 @@ def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
 
     Uses markers to manage a block of exports set by claude-code-toolbox.
     Updates existing variables within the block, or adds new ones.
+    Automatically uses the correct syntax for the shell type (bash/zsh vs fish).
 
     Args:
         config_file: Path to the shell config file.
@@ -1867,7 +1912,8 @@ def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
     Returns:
         bool: True if successful, False otherwise.
     """
-    export_line = f'export {name}="{value}"'
+    export_line = _get_export_line(config_file, name, value)
+    export_prefix = _get_export_prefix(config_file, name)
 
     try:
         # Read existing content
@@ -1902,7 +1948,7 @@ def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
             for line in block_lines:
                 if line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
                     continue
-                if line.strip().startswith(f'export {name}='):
+                if line.strip().startswith(export_prefix):
                     # Update existing variable
                     new_block_lines.append(export_line)
                     found = True
@@ -1941,11 +1987,99 @@ def add_export_to_file(config_file: Path, name: str, value: str) -> bool:
         return False
 
 
+def _is_bash_zsh_export_line(line: str, name: str) -> bool:
+    """Check if a line is a bash/zsh export for the given variable name.
+
+    Matches patterns:
+    - export NAME="value"
+    - export NAME='value'
+    - export NAME=value
+    - NAME="value" (without export keyword)
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line exports the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Match "export NAME=" or "NAME=" patterns
+    # Must be at start of line (after stripping) to avoid partial matches
+    return stripped.startswith((f'export {name}=', f'{name}='))
+
+
+def _is_fish_set_line(line: str, name: str) -> bool:
+    """Check if a line is a fish shell set command for the given variable name.
+
+    Matches patterns:
+    - set -gx NAME "value"
+    - set -gx NAME 'value'
+    - set -Ux NAME "value"
+    - set NAME "value"
+    - And variations with different flag orders
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Fish shell set pattern: set [-flags] NAME value
+    # Pattern matches: set (with optional flags like -gx, -Ux, etc.) followed by NAME and value
+    fish_pattern = rf'^set\s+(?:-[gGxXUu]+\s+)*{re.escape(name)}\s+'
+    return bool(re.match(fish_pattern, stripped))
+
+
+def _is_env_var_line(config_file: Path, line: str, name: str) -> bool:
+    """Check if a line sets the given environment variable (any shell syntax).
+
+    Detects the shell type from the config file path and checks accordingly.
+
+    Args:
+        config_file: Path to the shell config file.
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    # Check if this is a fish config file
+    is_fish = 'fish' in str(config_file)
+
+    if is_fish:
+        return _is_fish_set_line(line, name)
+    return _is_bash_zsh_export_line(line, name)
+
+
 def remove_export_from_file(config_file: Path, name: str) -> bool:
     """Remove an environment variable export from a shell config file.
 
-    Removes the variable from the claude-code-toolbox marker block.
-    If the block becomes empty, removes the entire block.
+    Removes the variable from:
+    1. The claude-code-toolbox marker block (if exists)
+    2. ALSO from anywhere else in the file (legacy/manual additions)
+
+    If the marker block becomes empty after removal, removes the entire block.
 
     Args:
         config_file: Path to the shell config file.
@@ -1959,45 +2093,49 @@ def remove_export_from_file(config_file: Path, name: str) -> bool:
 
     try:
         content = config_file.read_text(encoding='utf-8')
+        original_content = content
+        lines = content.split('\n')
+        new_lines: list[str] = []
 
-        if ENV_VAR_MARKER_START not in content:
-            # No marker block, nothing to remove
-            return True
-
-        start_idx = content.find(ENV_VAR_MARKER_START)
-        end_idx = content.find(ENV_VAR_MARKER_END)
-
-        if end_idx == -1:
-            end_idx = len(content)
-
-        before = content[:start_idx]
-        block = content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
-        after = content[end_idx + len(ENV_VAR_MARKER_END) :]
-
-        # Parse and filter the block
-        block_lines = block.split('\n')
-        new_block_lines: list[str] = []
-
-        for line in block_lines:
-            if line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
-                continue
-            if line.strip().startswith(f'export {name}='):
+        # First pass: Remove the variable from ANYWHERE in the file
+        for line in lines:
+            if _is_env_var_line(config_file, line, name):
                 # Skip this line (remove the variable)
                 continue
-            if line.strip():
-                new_block_lines.append(line)
+            new_lines.append(line)
 
-        # Reconstruct
-        if new_block_lines:
-            # Block still has content
-            new_block = ENV_VAR_MARKER_START + '\n' + '\n'.join(new_block_lines) + '\n' + ENV_VAR_MARKER_END
-            new_content = before + new_block + after
-        else:
-            # Block is empty, remove it entirely
-            # Clean up extra newlines
-            new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
+        new_content = '\n'.join(new_lines)
 
-        config_file.write_text(new_content, encoding='utf-8')
+        # Clean up empty marker blocks
+        if ENV_VAR_MARKER_START in new_content:
+            start_idx = new_content.find(ENV_VAR_MARKER_START)
+            end_idx = new_content.find(ENV_VAR_MARKER_END)
+
+            if end_idx != -1:
+                before = new_content[:start_idx]
+                block = new_content[start_idx : end_idx + len(ENV_VAR_MARKER_END)]
+                after = new_content[end_idx + len(ENV_VAR_MARKER_END) :]
+
+                # Check if block is empty (only markers and whitespace)
+                block_lines = block.split('\n')
+                has_content = False
+                for block_line in block_lines:
+                    if block_line in (ENV_VAR_MARKER_START, ENV_VAR_MARKER_END):
+                        continue
+                    if block_line.strip():
+                        has_content = True
+                        break
+
+                if not has_content:
+                    # Block is empty, remove it entirely
+                    new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
+                    # Handle edge case where file becomes only newlines
+                    if new_content.strip() == '':
+                        new_content = ''
+
+        # Only write if content changed
+        if new_content != original_content:
+            config_file.write_text(new_content, encoding='utf-8')
         return True
 
     except OSError as e:
