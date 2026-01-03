@@ -3794,7 +3794,12 @@ for arg in "$@"; do
   fi
 done
 
-if [ "$HAS_CONTINUE" = true ]; then
+# For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
+if version_ge "$CLAUDE_VERSION" "2.0.64"; then
+  # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
+  exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+elif [ "$HAS_CONTINUE" = true ]; then
+  # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
     exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
@@ -3954,8 +3959,18 @@ for arg in "$@"; do
   fi
 done
 
-if [ "$HAS_CONTINUE" = true ]; then
+# For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
+if version_ge "$CLAUDE_VERSION" "2.0.64"; then
+  if [ "$HAS_CONTINUE" = true ]; then
+    echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
+  else
+    echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+  fi
+  # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
+  claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
+  # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
     claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
