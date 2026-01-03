@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.15.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.14.0...v4.15.0) (2026-01-03)
+
+
+### Features
+
+* add version-conditional system prompt handling for v2.0.64+ ([78ce18d](https://github.com/alex-feel/claude-code-toolbox/commit/78ce18d7826e0731a9b7e27232daab8073ecfadc))
+
 ## [4.14.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.13.0...v4.14.0) (2026-01-02)
 
 
