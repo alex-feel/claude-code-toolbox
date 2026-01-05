@@ -2971,6 +2971,7 @@ class TestVerifyNodejsAvailable:
         assert 'Node.js not found in PATH' in captured.err
 
 
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
 class TestFindCommandRobustNodePaths:
     """Test find_command_robust with various Node.js installation paths."""
 
