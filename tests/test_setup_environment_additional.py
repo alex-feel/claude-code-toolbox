@@ -568,7 +568,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value=None)
+    @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_find_in_npm_path(self, mock_find, mock_system):
         """Test finding claude in npm path on Windows."""
         del mock_find  # Unused but required for patch
@@ -588,7 +588,7 @@ class TestMCPServerConfigurationEdgeCases:
             assert mock_run.call_count == 4
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command', return_value=None)
+    @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_find_in_unix_paths(self, mock_find, _mock_system):
         """Test finding claude in Unix paths."""
         del mock_find  # Unused but required for patch

@@ -1509,6 +1509,134 @@ class TestCreateAdditionalSettings:
             assert '?' not in settings['statusLine']['command']
             assert 'statusline.py' in settings['statusLine']['command']
 
+    def test_create_additional_settings_status_line_with_config(self):
+        """Test statusLine with Python script and config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create dummy files
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.py',
+                'config': 'config.yaml',
+                'padding': 0,
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+            assert settings['statusLine']['command'].endswith('config.yaml')
+            assert settings['statusLine']['padding'] == 0
+
+    def test_create_additional_settings_status_line_config_with_query_params(self):
+        """Test statusLine config with query parameters stripped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.py?ref_type=heads',
+                'config': 'config.yaml?token=abc123',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert '?' not in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+
+    def test_create_additional_settings_status_line_shell_with_config(self):
+        """Test statusLine with shell script and config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.sh').write_text('#!/bin/bash\necho "status"')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.sh',
+                'config': 'config.yaml',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert 'uv run' not in settings['statusLine']['command']
+            assert 'statusline.sh' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+
+    def test_create_additional_settings_status_line_without_config_backward_compat(self):
+        """Test that status-line without config field still works (backward compatibility)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+
+            status_line = {
+                'file': 'statusline.py',
+                'padding': 0,
+                # No 'config' field - backward compatibility
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            # Command should end with the Python file, not a config
+            assert settings['statusLine']['command'].endswith('statusline.py')
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
@@ -2768,3 +2896,210 @@ class TestRegisterGlobalCommandWithAliases:
                 assert 'alias1' in symlink_names
                 assert 'alias2' in symlink_names
                 assert len(symlinks_created) == 3
+
+
+class TestVerifyNodejsAvailable:
+    """Test verify_nodejs_available function with various Node.js installation methods."""
+
+    @patch('platform.system', return_value='Linux')
+    def test_non_windows_returns_true(self, mock_system):
+        """Test that non-Windows platforms always return True."""
+        # Verify mock is properly configured for Linux platform
+        assert mock_system.return_value == 'Linux'
+        result = setup_environment.verify_nodejs_available()
+        assert result is True
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_windows_node_in_path(self, mock_run, mock_which, mock_system, capsys):
+        """Test finding Node.js via shutil.which on Windows."""
+        # Verify mock is properly configured for Windows platform
+        assert mock_system.return_value == 'Windows'
+        mock_which.return_value = r'C:\Program Files\nodejs\node.exe'
+        mock_run.return_value = subprocess.CompletedProcess(
+            ['node', '--version'], 0, 'v20.10.0', '',
+        )
+
+        result = setup_environment.verify_nodejs_available()
+
+        assert result is True
+        mock_which.assert_called_with('node')
+        captured = capsys.readouterr()
+        assert 'Node.js verified' in captured.out
+        assert 'v20.10.0' in captured.out
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which')
+    @patch('setup_environment.find_command_robust')
+    @patch('subprocess.run')
+    def test_windows_node_via_find_command_robust(
+        self, mock_run, mock_find_robust, mock_which, mock_system, capsys,
+    ):
+        """Test finding Node.js via find_command_robust fallback on Windows."""
+        # Verify mock is properly configured for Windows platform
+        assert mock_system.return_value == 'Windows'
+        # shutil.which returns None (not in PATH)
+        mock_which.return_value = None
+        # find_command_robust finds it in a version manager location
+        mock_find_robust.return_value = r'C:\Users\test\AppData\Roaming\nvm\v20.10.0\node.exe'
+        mock_run.return_value = subprocess.CompletedProcess(
+            ['node', '--version'], 0, 'v20.10.0', '',
+        )
+
+        with patch.dict('os.environ', {'PATH': r'C:\Windows\System32'}):
+            result = setup_environment.verify_nodejs_available()
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert 'Node.js verified' in captured.out
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which')
+    @patch('setup_environment.find_command_robust')
+    def test_windows_node_not_found(self, mock_find_robust, mock_which, mock_system, capsys):
+        """Test when Node.js is not found on Windows."""
+        # Verify mock is properly configured for Windows platform
+        assert mock_system.return_value == 'Windows'
+        mock_which.return_value = None
+        mock_find_robust.return_value = None
+
+        result = setup_environment.verify_nodejs_available()
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert 'Node.js not found in PATH' in captured.err
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+class TestFindCommandRobustNodePaths:
+    """Test find_command_robust with various Node.js installation paths."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which', return_value=None)  # Primary search fails
+    @patch('time.sleep')  # Skip retry delay
+    def test_finds_node_in_volta_location(self, mock_sleep, mock_which, mock_system):
+        """Test finding Node.js in Volta installation location."""
+        # Verify mocks are properly configured
+        assert mock_system.return_value == 'Windows'
+        assert mock_which.return_value is None
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create volta directory structure
+            volta_bin = Path(tmpdir) / '.volta' / 'bin'
+            volta_bin.mkdir(parents=True)
+            node_exe = volta_bin / 'node.exe'
+            node_exe.write_text('fake node')
+
+            with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
+                result = setup_environment.find_command_robust('node')
+
+            assert result is not None
+            assert 'node.exe' in result
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which', return_value=None)  # Primary search fails
+    @patch('time.sleep')  # Skip retry delay
+    def test_finds_node_in_scoop_location(self, mock_sleep, mock_which, mock_system):
+        """Test finding Node.js in Scoop installation location."""
+        # Verify mocks are properly configured
+        assert mock_system.return_value == 'Windows'
+        assert mock_which.return_value is None
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create scoop directory structure
+            scoop_node = Path(tmpdir) / 'scoop' / 'apps' / 'nodejs' / 'current'
+            scoop_node.mkdir(parents=True)
+            node_exe = scoop_node / 'node.exe'
+            node_exe.write_text('fake node')
+
+            with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
+                result = setup_environment.find_command_robust('node')
+
+            assert result is not None
+            assert 'node.exe' in result
+
+    @patch('platform.system', return_value='Windows')
+    @patch('shutil.which', return_value=None)  # Primary search fails
+    @patch('time.sleep')  # Skip retry delay
+    def test_finds_node_in_nvm_subdirectory(self, mock_sleep, mock_which, mock_system):
+        """Test finding Node.js in nvm-windows version subdirectory."""
+        # Verify mocks are properly configured
+        assert mock_system.return_value == 'Windows'
+        assert mock_which.return_value is None
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create nvm directory structure with version subdirectory
+            nvm_dir = Path(tmpdir) / 'nvm'
+            nvm_dir.mkdir(parents=True)
+            version_dir = nvm_dir / 'v20.10.0'
+            version_dir.mkdir()
+            node_exe = version_dir / 'node.exe'
+            node_exe.write_text('fake node')
+
+            with patch.dict('os.environ', {'APPDATA': tmpdir}):
+                result = setup_environment.find_command_robust('node')
+
+            assert result is not None
+            assert 'node.exe' in result
+
+
+class TestMCPServerNeedsNodejsDetection:
+    """Test smart detection of npx-based MCP servers that need Node.js."""
+
+    def test_detects_npx_in_command(self):
+        """Test that npx-based servers are correctly detected."""
+        mcp_servers = [
+            {'name': 'http-server', 'transport': 'http', 'url': 'http://localhost:8080'},
+            {'name': 'npx-server', 'command': 'npx -y @modelcontextprotocol/server-filesystem'},
+        ]
+
+        needs_nodejs = any(
+            'npx' in str(server.get('command', ''))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is True
+
+    def test_http_transport_does_not_need_nodejs(self):
+        """Test that HTTP transport servers don't trigger Node.js requirement."""
+        mcp_servers = [
+            {'name': 'http-server', 'transport': 'http', 'url': 'http://localhost:8080'},
+            {'name': 'sse-server', 'transport': 'sse', 'url': 'http://localhost:9090'},
+        ]
+
+        needs_nodejs = any(
+            'npx' in str(server.get('command', ''))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is False
+
+    def test_empty_server_list(self):
+        """Test empty server list returns False."""
+        mcp_servers: list[dict[str, str]] = []
+
+        needs_nodejs = any(
+            'npx' in str(server.get('command', ''))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is False
+
+    def test_non_npx_command(self):
+        """Test non-npx commands don't trigger Node.js requirement."""
+        mcp_servers = [
+            {'name': 'python-server', 'command': 'python server.py'},
+            {'name': 'binary-server', 'command': '/usr/local/bin/mcp-server'},
+        ]
+
+        needs_nodejs = any(
+            'npx' in str(server.get('command', ''))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is False
