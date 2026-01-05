@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.16.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.15.0...v4.16.0) (2026-01-05)
+
+
+### Features
+
+* add config file support for status-line hooks ([d39dc61](https://github.com/alex-feel/claude-code-toolbox/commit/d39dc613ebfbf12b6e49e9b51dada50001c48ead))
+* improve Node.js detection for MCP server configuration ([778f3a1](https://github.com/alex-feel/claude-code-toolbox/commit/778f3a17c86ad2907371d9c3e4755c83d917da59))
+
+
+### Bug Fixes
+
+* add files downloaded count to summary output ([a05bf75](https://github.com/alex-feel/claude-code-toolbox/commit/a05bf75472e4bb0fdfcc43b7a967ae011090e5f5))
+
 ## [4.15.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.14.0...v4.15.0) (2026-01-03)
 
 
