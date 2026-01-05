@@ -3408,8 +3408,10 @@ def create_additional_settings(
         company_announcements: Optional list of company announcement strings
         attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
             Empty strings hide attribution. Takes precedence over include_co_authored_by.
-        status_line: Optional dict with 'file' key for status line script path and optional
-            'padding' key. The file is downloaded to ~/.claude/hooks/ and configured in settings.
+        status_line: Optional dict with 'file' key for status line script path, optional
+            'padding' key, and optional 'config' key for config file reference.
+            Both the script and config file are downloaded to ~/.claude/hooks/ and
+            the config path is appended as a command line argument.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -3483,13 +3485,32 @@ def create_additional_settings(
             hook_path = claude_user_dir / 'hooks' / filename
             hook_path_str = hook_path.as_posix()
 
+            # Extract optional config file reference
+            config = status_line.get('config')
+
             # Determine command based on file extension
             if filename.lower().endswith(('.py', '.pyw')):
                 # Python script - use uv run
                 status_line_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+
+                # Append config file path if specified
+                if config:
+                    # Strip query parameters from config filename
+                    clean_config = config.split('?')[0] if '?' in config else config
+                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path_str = config_path.as_posix()
+                    status_line_command = f'{status_line_command} {config_path_str}'
             else:
                 # Other file - use path directly
                 status_line_command = hook_path_str
+
+                # Append config file path if specified
+                if config:
+                    # Strip query parameters from config filename
+                    clean_config = config.split('?')[0] if '?' in config else config
+                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path_str = config_path.as_posix()
+                    status_line_command = f'{status_line_command} {config_path_str}'
 
             status_line_config: dict[str, Any] = {
                 'type': 'command',

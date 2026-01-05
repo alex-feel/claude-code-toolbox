@@ -1509,6 +1509,134 @@ class TestCreateAdditionalSettings:
             assert '?' not in settings['statusLine']['command']
             assert 'statusline.py' in settings['statusLine']['command']
 
+    def test_create_additional_settings_status_line_with_config(self):
+        """Test statusLine with Python script and config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            # Create dummy files
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.py',
+                'config': 'config.yaml',
+                'padding': 0,
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert settings['statusLine']['type'] == 'command'
+            assert 'uv run' in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+            assert settings['statusLine']['command'].endswith('config.yaml')
+            assert settings['statusLine']['padding'] == 0
+
+    def test_create_additional_settings_status_line_config_with_query_params(self):
+        """Test statusLine config with query parameters stripped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.py?ref_type=heads',
+                'config': 'config.yaml?token=abc123',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert '?' not in settings['statusLine']['command']
+            assert 'statusline.py' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+
+    def test_create_additional_settings_status_line_shell_with_config(self):
+        """Test statusLine with shell script and config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.sh').write_text('#!/bin/bash\necho "status"')
+            (hooks_dir / 'config.yaml').write_text('key: value')
+
+            status_line = {
+                'file': 'statusline.sh',
+                'config': 'config.yaml',
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            assert 'uv run' not in settings['statusLine']['command']
+            assert 'statusline.sh' in settings['statusLine']['command']
+            assert 'config.yaml' in settings['statusLine']['command']
+
+    def test_create_additional_settings_status_line_without_config_backward_compat(self):
+        """Test that status-line without config field still works (backward compatibility)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            (hooks_dir / 'statusline.py').write_text('print("status")')
+
+            status_line = {
+                'file': 'statusline.py',
+                'padding': 0,
+                # No 'config' field - backward compatibility
+            }
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line=status_line,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'statusLine' in settings
+            # Command should end with the Python file, not a config
+            assert settings['statusLine']['command'].endswith('statusline.py')
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""
