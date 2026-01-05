@@ -1012,7 +1012,6 @@ def validate_all_config_files(
         for skill_item in skills_list:
             if isinstance(skill_item, dict):
                 skill_dict = cast(dict[str, Any], skill_item)
-                skill_name = skill_dict.get('name', 'unknown')
                 skill_base = skill_dict.get('base', '')
                 skill_files = skill_dict.get('files', [])
 
@@ -1025,11 +1024,11 @@ def validate_all_config_files(
                                 # Convert tree/blob URLs to raw URLs for validation
                                 raw_base = convert_to_raw_url(skill_base)
                                 full_url = f"{raw_base.rstrip('/')}/{skill_file_item}"
-                                files_to_check.append(('skill', f'{skill_name}/{skill_file_item}', full_url, True))
+                                files_to_check.append(('skill', full_url, full_url, True))
                             else:
                                 resolved_base, _ = resolve_resource_path(skill_base, config_source, None)
                                 full_path = str(Path(resolved_base) / skill_file_item)
-                                files_to_check.append(('skill', f'{skill_name}/{skill_file_item}', full_path, False))
+                                files_to_check.append(('skill', full_path, full_path, False))
 
     # Validate each file
     info(f'Validating {len(files_to_check)} files...')

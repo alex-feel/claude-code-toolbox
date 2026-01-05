@@ -636,8 +636,8 @@ class TestSkillsValidationIntegration:
         # Should have 2 skill files validated
         skill_results = [r for r in results if r[0] == 'skill']
         assert len(skill_results) == 2
-        assert skill_results[0][1] == 'test-skill/SKILL.md'
-        assert skill_results[1][1] == 'test-skill/helper.py'
+        assert skill_results[0][1] == 'https://example.com/skills/test-skill/SKILL.md'
+        assert skill_results[1][1] == 'https://example.com/skills/test-skill/helper.py'
 
     @patch('setup_environment.info')
     @patch('setup_environment.get_auth_headers')
@@ -716,7 +716,7 @@ class TestSkillsValidationIntegration:
         assert len(skill_results) == 1
         assert skill_results[0][2] is False  # is_valid
         mock_error.assert_any_call(
-            '  [FAIL] skill: bad-skill/SKILL.md (remote, not accessible)',
+            '  [FAIL] skill: https://example.com/skills/bad-skill/SKILL.md (remote, not accessible)',
         )
 
 
