@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.16.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.0...v4.16.1) (2026-01-05)
+
+
+### Bug Fixes
+
+* display full URLs for skill files in validation output ([33ddfb0](https://github.com/alex-feel/claude-code-toolbox/commit/33ddfb048fa93e6413801a4a0defb3d2d1d932fb))
+* handle binary file downloads in setup_environment.py ([bd348fe](https://github.com/alex-feel/claude-code-toolbox/commit/bd348fe7cd39d343017e11ccba1feb7b80839287))
+
 ## [4.16.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.15.0...v4.16.0) (2026-01-05)
 
 
