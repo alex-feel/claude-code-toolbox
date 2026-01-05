@@ -11,6 +11,7 @@ Downloads and configures development tools for Claude Code based on YAML configu
 
 import argparse
 import contextlib
+import glob as glob_module
 import json
 import os
 import platform
@@ -363,8 +364,21 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
         elif cmd == 'node':
             common_paths = [
+                # Official installer paths
                 r'C:\Program Files\nodejs\node.exe',
                 r'C:\Program Files (x86)\nodejs\node.exe',
+                # nvm-windows: %APPDATA%\nvm\<version>\node.exe
+                os.path.expandvars(r'%APPDATA%\nvm'),
+                # fnm: %LOCALAPPDATA%\fnm_multishells\<id>\node.exe
+                os.path.expandvars(r'%LOCALAPPDATA%\fnm_multishells'),
+                # volta: %USERPROFILE%\.volta\bin\node.exe
+                os.path.expandvars(r'%USERPROFILE%\.volta\bin\node.exe'),
+                # scoop: %USERPROFILE%\scoop\apps\nodejs\current\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\apps\nodejs\current\node.exe'),
+                # scoop (alternative): %USERPROFILE%\scoop\shims\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\shims\node.exe'),
+                # chocolatey: C:\ProgramData\chocolatey\bin\node.exe
+                r'C:\ProgramData\chocolatey\bin\node.exe',
             ]
         elif cmd == 'npm':
             common_paths = [
@@ -391,10 +405,25 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
 
     # Check common locations
+
     for path in common_paths:
         expanded = os.path.expandvars(path)
-        if Path(expanded).exists():
-            return str(Path(expanded).resolve())
+        expanded_path = Path(expanded)
+
+        # Direct file check
+        if expanded_path.exists() and expanded_path.is_file():
+            return str(expanded_path.resolve())
+
+        # Directory-based search for version managers (nvm, fnm)
+        # These store node.exe in subdirectories like: nvm/<version>/node.exe
+        if expanded_path.exists() and expanded_path.is_dir() and cmd == 'node':
+            # Search for node.exe in subdirectories (one level deep)
+            pattern = str(expanded_path / '*' / 'node.exe')
+            matches = glob_module.glob(pattern)
+            if matches:
+                # Return the most recently modified (likely active version)
+                matches.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                return str(Path(matches[0]).resolve())
 
     # Tertiary: Custom fallback paths
     if fallback_paths:
@@ -3045,10 +3074,8 @@ def install_claude(version: str | None = None) -> bool:
 def verify_nodejs_available() -> bool:
     """Verify Node.js is available before MCP configuration.
 
-    This function addresses the Windows 10+ PATH propagation bug where MSI
-    installations update the registry but the changes don't propagate to
-    running processes immediately. We explicitly check for Node.js and
-    update the current process PATH if needed.
+    Uses shutil.which() to find Node.js in PATH, supporting all installation methods
+    (official installer, nvm, fnm, volta, scoop, chocolatey, etc.).
 
     Returns:
         True if Node.js is available, False otherwise.
@@ -3056,52 +3083,47 @@ def verify_nodejs_available() -> bool:
     if platform.system() != 'Windows':
         return True  # Assume available on Unix
 
-    nodejs_path = r'C:\Program Files\nodejs'
-    node_exe = Path(nodejs_path) / 'node.exe'
-
-    # Check binary exists
-    if not node_exe.exists():
-        error(f'Node.js binary not found at {node_exe}')
-        return False
-
-    # Check if node command works (3 attempts with 2s delay)
-    for attempt in range(3):
+    # Primary: Use shutil.which for proper PATH-based detection
+    node_path = shutil.which('node')
+    if node_path:
+        # Verify node actually works
         try:
-            # Try with 'node' command
             result = subprocess.run(
-                ['node', '--version'],
+                [node_path, '--version'],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
             if result.returncode == 0:
-                success(f'Node.js verified: {result.stdout.strip()}')
+                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
                 return True
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            # Try with full path
-            try:
-                result = subprocess.run(
-                    [str(node_exe), '--version'],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    # Works with full path, add to PATH
-                    current_path = os.environ.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
-                        info(f'Added {nodejs_path} to PATH')
-                    success(f'Node.js verified: {result.stdout.strip()}')
-                    return True
-            except Exception:
-                pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
-        if attempt < 2:
-            info(f'Node.js not ready, waiting 2s... (attempt {attempt + 1}/3)')
-            time.sleep(2)
+    # Secondary: Try find_command_robust with common installation paths
+    node_path = find_command_robust('node')
+    if node_path:
+        # Verify node actually works
+        try:
+            result = subprocess.run(
+                [node_path, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                # Add to PATH if not already there
+                node_dir = str(Path(node_path).parent)
+                current_path = os.environ.get('PATH', '')
+                if node_dir.lower() not in current_path.lower():
+                    os.environ['PATH'] = f'{node_dir};{current_path}'
+                    info(f'Added {node_dir} to PATH')
+                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
+                return True
+        except (subprocess.TimeoutExpired, OSError):
+            pass
 
-    error('Node.js is not available')
+    error('Node.js not found in PATH')
     return False
 
 
@@ -4629,12 +4651,28 @@ def main() -> None:
         # Step 11: Configure MCP servers
         print()
         print(f'{Colors.CYAN}Step 11: Configuring MCP servers...{Colors.NC}')
-        mcp_servers = config.get('mcp-servers', [])
+        mcp_servers_raw = config.get('mcp-servers', [])
+        # Convert to properly typed list for type safety
+        mcp_servers: list[dict[str, Any]] = (
+            [cast(dict[str, Any], s) for s in cast(list[object], mcp_servers_raw) if isinstance(s, dict)]
+            if isinstance(mcp_servers_raw, list)
+            else []
+        )
 
-        # Verify Node.js is available before configuring MCP servers
-        # This ensures Node.js PATH is properly set after MSI installation
-        if mcp_servers and platform.system() == 'Windows' and not verify_nodejs_available():
-            warning('Node.js not available - MCP server configuration may fail')
+        # Refresh PATH from registry to pick up any installation changes
+        if platform.system() == 'Windows':
+            refresh_path_from_registry()
+
+        # Check if any MCP server needs Node.js (npx-based stdio transport)
+        # HTTP/SSE transport servers do NOT require Node.js
+        needs_nodejs = any(
+            'npx' in str(server.get('command', ''))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        if needs_nodejs and platform.system() == 'Windows' and not verify_nodejs_available():
+            warning('Node.js not available - npx-based MCP servers may fail')
             warning('Please ensure Node.js is installed and in PATH')
             # Don't fail hard, let user see the issue
 
