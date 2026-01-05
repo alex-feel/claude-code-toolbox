@@ -4690,6 +4690,8 @@ def main() -> None:
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         print(f'   * Skills: {len(skills)} installed')
+        if files_to_download:
+            print(f'   * Files downloaded: {len(files_to_download)} processed')
         if system_prompt:
             if mode == 'append':
                 print('   * System prompt: appending to default')
