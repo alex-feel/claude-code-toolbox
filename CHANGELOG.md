@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.16.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.1...v4.16.2) (2026-01-06)
+
+
+### Bug Fixes
+
+* consolidate file validation into FileValidator class ([81fbf0e](https://github.com/alex-feel/claude-code-toolbox/commit/81fbf0e01837e9c3b8d1c5064d41fff011ac2a53))
+
 ## [4.16.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.0...v4.16.1) (2026-01-05)
 
 
