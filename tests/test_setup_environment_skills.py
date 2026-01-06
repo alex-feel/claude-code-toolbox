@@ -134,131 +134,6 @@ class TestConvertToRawUrl:
         assert setup_environment.convert_to_raw_url(url) == url
 
 
-class TestValidateSkillFiles:
-    """Test skill file validation."""
-
-    @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.validate_file_availability')
-    def test_validate_skill_files_remote_success(
-        self,
-        mock_validate: MagicMock,
-        mock_auth: MagicMock,
-    ) -> None:
-        """Test validating remote skill files successfully."""
-        mock_auth.return_value = {}
-        mock_validate.return_value = (True, 'HEAD')
-
-        skill_config: dict[str, Any] = {
-            'name': 'test-skill',
-            'base': 'https://example.com/skills/test-skill',
-            'files': ['SKILL.md', 'helper.py'],
-        }
-
-        all_valid, results = setup_environment.validate_skill_files(
-            skill_config,
-            'https://example.com/config.yaml',
-        )
-
-        assert all_valid is True
-        assert len(results) == 2
-        assert results[0] == ('SKILL.md', True, 'HEAD')
-        assert results[1] == ('helper.py', True, 'HEAD')
-        assert mock_validate.call_count == 2
-
-    @patch('setup_environment.resolve_resource_path')
-    def test_validate_skill_files_local_success(
-        self,
-        mock_resolve: MagicMock,
-    ) -> None:
-        """Test validating local skill files successfully."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            skill_base = tmpdir_path / 'test-skill'
-            skill_base.mkdir()
-
-            # Create test files
-            (skill_base / 'SKILL.md').write_text('# Test Skill')
-            (skill_base / 'helper.py').write_text('# Helper')
-
-            mock_resolve.return_value = (str(skill_base), False)
-
-            skill_config: dict[str, Any] = {
-                'name': 'test-skill',
-                'base': str(skill_base),
-                'files': ['SKILL.md', 'helper.py'],
-            }
-
-            all_valid, results = setup_environment.validate_skill_files(
-                skill_config,
-                str(tmpdir_path / 'config.yaml'),
-            )
-
-            assert all_valid is True
-            assert len(results) == 2
-            assert results[0] == ('SKILL.md', True, 'Local')
-            assert results[1] == ('helper.py', True, 'Local')
-
-    @patch('setup_environment.error')
-    def test_validate_skill_files_missing_skill_md(
-        self,
-        mock_error: MagicMock,
-    ) -> None:
-        """Test validation fails when SKILL.md is missing from files list."""
-        skill_config: dict[str, Any] = {
-            'name': 'test-skill',
-            'base': './skills/test-skill',
-            'files': ['helper.py', 'utils.py'],  # Missing SKILL.md
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            skill_base = tmpdir_path / 'skills' / 'test-skill'
-            skill_base.mkdir(parents=True)
-            (skill_base / 'helper.py').write_text('# Helper')
-            (skill_base / 'utils.py').write_text('# Utils')
-
-            config_file = tmpdir_path / 'config.yaml'
-            config_file.write_text('dummy')
-
-            all_valid, _results = setup_environment.validate_skill_files(
-                skill_config,
-                str(config_file),
-            )
-
-            assert all_valid is False
-            mock_error.assert_called_once_with(
-                "Skill 'test-skill': SKILL.md is required but not in files list",
-            )
-
-    @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.validate_file_availability')
-    def test_validate_skill_files_inaccessible_file(
-        self,
-        mock_validate: MagicMock,
-        mock_auth: MagicMock,
-    ) -> None:
-        """Test validation detects inaccessible files."""
-        mock_auth.return_value = {}
-        # First file accessible, second not
-        mock_validate.side_effect = [(True, 'HEAD'), (False, 'None')]
-
-        skill_config: dict[str, Any] = {
-            'name': 'test-skill',
-            'base': 'https://example.com/skills/test-skill',
-            'files': ['SKILL.md', 'missing.py'],
-        }
-
-        all_valid, results = setup_environment.validate_skill_files(
-            skill_config,
-            'https://example.com/config.yaml',
-        )
-
-        assert all_valid is False
-        assert len(results) == 2
-        assert results[0] == ('SKILL.md', True, 'HEAD')
-        assert results[1] == ('missing.py', False, 'None')
-
-
 class TestProcessSkill:
     """Test single skill processing."""
 
@@ -602,19 +477,14 @@ class TestSkillsValidationIntegration:
     """Test skills validation in validate_all_config_files."""
 
     @patch('setup_environment.info')
-    @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.resolve_resource_path')
-    @patch('setup_environment.validate_file_availability')
+    @patch.object(setup_environment.FileValidator, 'validate')
     def test_validate_all_config_files_with_skills(
         self,
         mock_validate: MagicMock,
-        mock_resolve: MagicMock,
-        mock_auth: MagicMock,
         mock_info: MagicMock,
     ) -> None:
         """Test that skills are included in comprehensive validation."""
-        del mock_info, mock_resolve  # Unused but needed for patching
-        mock_auth.return_value = None
+        del mock_info  # Unused but needed for patching
         mock_validate.return_value = (True, 'HEAD')
 
         config: dict[str, Any] = {
@@ -640,19 +510,16 @@ class TestSkillsValidationIntegration:
         assert skill_results[1][1] == 'https://example.com/skills/test-skill/helper.py'
 
     @patch('setup_environment.info')
-    @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
-    @patch('setup_environment.validate_file_availability')
+    @patch.object(setup_environment.FileValidator, 'validate')
     def test_validate_all_config_files_skills_and_agents(
         self,
         mock_validate: MagicMock,
         mock_resolve: MagicMock,
-        mock_auth: MagicMock,
         mock_info: MagicMock,
     ) -> None:
         """Test validation with both skills and agents."""
         del mock_info  # Unused but needed for patching
-        mock_auth.return_value = None
         mock_resolve.return_value = ('https://example.com/agents/agent.md', True)
         mock_validate.return_value = (True, 'HEAD')
 
@@ -682,18 +549,15 @@ class TestSkillsValidationIntegration:
 
     @patch('setup_environment.info')
     @patch('setup_environment.error')
-    @patch('setup_environment.get_auth_headers')
-    @patch('setup_environment.validate_file_availability')
+    @patch.object(setup_environment.FileValidator, 'validate')
     def test_validate_all_config_files_skill_validation_failure(
         self,
         mock_validate: MagicMock,
-        mock_auth: MagicMock,
         mock_error: MagicMock,
         mock_info: MagicMock,
     ) -> None:
         """Test that skill validation failures are properly reported."""
         del mock_info  # Unused but needed for patching
-        mock_auth.return_value = None
         mock_validate.return_value = (False, 'None')
 
         config: dict[str, Any] = {

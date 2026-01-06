@@ -831,99 +831,172 @@ def refresh_path_from_registry() -> bool:
         return True
 
 
-def check_file_with_head(url: str, auth_headers: dict[str, str] | None = None) -> bool:
-    """Check if file exists using HEAD request.
+class FileValidator:
+    """Validates file availability for both remote URLs and local paths.
 
-    Args:
-        url: URL to check
-        auth_headers: Optional authentication headers
+    Handles authentication automatically based on the URL being validated,
+    supporting GitHub and GitLab private repositories. For remote files,
+    attempts HEAD request first, then falls back to Range request.
 
-    Returns:
-        True if file is accessible, False otherwise
+    Attributes:
+        auth_param: Optional authentication parameter. Accepts token value
+            (auto-detects header based on URL) or explicit header:value format.
     """
-    try:
-        request = Request(url, method='HEAD')
-        if auth_headers:
-            for header, value in auth_headers.items():
-                request.add_header(header, value)
 
+    def __init__(self, auth_param: str | None = None) -> None:
+        """Initialize FileValidator.
+
+        Args:
+            auth_param: Optional auth parameter in format "header:value" or "header=value"
+                       or just a token (will auto-detect header based on URL)
+        """
+        self.auth_param = auth_param
+        self._validation_results: list[tuple[str, str, bool, str]] = []
+
+    def validate_remote_url(self, url: str) -> tuple[bool, str]:
+        """Validate a remote URL with per-URL authentication.
+
+        Generates authentication headers specific to this URL (GitHub vs GitLab)
+        and attempts validation using HEAD request, then Range request as fallback.
+
+        Args:
+            url: Remote URL to validate
+
+        Returns:
+            Tuple of (is_valid, method_used)
+            method_used is 'HEAD', 'Range', or 'None'
+        """
+        # Convert GitLab web URLs to API format
+        original_url = url
+        if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
+            url = convert_gitlab_url_to_api(url)
+            if url != original_url:
+                info(f'Using API URL for validation: {url}')
+
+        # Generate auth headers for THIS specific URL
+        auth_headers = get_auth_headers(url, self.auth_param)
+
+        # Try HEAD request first
+        if self._check_with_head(url, auth_headers):
+            return (True, 'HEAD')
+
+        # Fallback to Range request
+        if self._check_with_range(url, auth_headers):
+            return (True, 'Range')
+
+        return (False, 'None')
+
+    def validate_local_path(self, path: str) -> tuple[bool, str]:
+        """Validate a local file path.
+
+        Args:
+            path: Local file path to validate
+
+        Returns:
+            Tuple of (is_valid, 'Local')
+        """
+        local_path = Path(path)
+        if local_path.exists() and local_path.is_file():
+            return (True, 'Local')
+        return (False, 'Local')
+
+    def validate(self, url_or_path: str, is_remote: bool) -> tuple[bool, str]:
+        """Validate a file, automatically choosing remote or local validation.
+
+        Args:
+            url_or_path: URL or local path to validate
+            is_remote: True if this is a remote URL, False if local path
+
+        Returns:
+            Tuple of (is_valid, method_used)
+        """
+        if is_remote:
+            return self.validate_remote_url(url_or_path)
+        return self.validate_local_path(url_or_path)
+
+    def _check_with_head(self, url: str, auth_headers: dict[str, str] | None) -> bool:
+        """Check URL availability using HEAD request.
+
+        Args:
+            url: URL to check
+            auth_headers: Optional authentication headers
+
+        Returns:
+            True if file is accessible, False otherwise
+        """
         try:
-            response = urlopen(request)
-            return bool(response.status == 200)
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                # Try with unverified SSL context
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(request, context=ctx)
+            request = Request(url, method='HEAD')
+            if auth_headers:
+                for header, value in auth_headers.items():
+                    request.add_header(header, value)
+
+            try:
+                response = urlopen(request)
                 return bool(response.status == 200)
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    # Try with unverified SSL context
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(request, context=ctx)
+                    return bool(response.status == 200)
+                return False
+        except (urllib.error.HTTPError, Exception):
             return False
-    except (urllib.error.HTTPError, Exception):
-        return False
 
+    def _check_with_range(self, url: str, auth_headers: dict[str, str] | None) -> bool:
+        """Check URL availability using Range request.
 
-def check_file_with_range(url: str, auth_headers: dict[str, str] | None = None) -> bool:
-    """Check if file exists using Range request (first byte only).
+        Args:
+            url: URL to check
+            auth_headers: Optional authentication headers
 
-    Args:
-        url: URL to check
-        auth_headers: Optional authentication headers
-
-    Returns:
-        True if file is accessible, False otherwise
-    """
-    try:
-        request = Request(url)
-        request.add_header('Range', 'bytes=0-0')
-        if auth_headers:
-            for header, value in auth_headers.items():
-                request.add_header(header, value)
-
+        Returns:
+            True if file is accessible, False otherwise
+        """
         try:
-            response = urlopen(request)
-            # Accept both 200 (full content) and 206 (partial content)
-            return response.status in (200, 206)
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                # Try with unverified SSL context
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                response = urlopen(request, context=ctx)
+            request = Request(url)
+            request.add_header('Range', 'bytes=0-0')
+            if auth_headers:
+                for header, value in auth_headers.items():
+                    request.add_header(header, value)
+
+            try:
+                response = urlopen(request)
+                # Accept both 200 (full content) and 206 (partial content)
                 return response.status in (200, 206)
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    # Try with unverified SSL context
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    response = urlopen(request, context=ctx)
+                    return response.status in (200, 206)
+                return False
+        except (urllib.error.HTTPError, Exception):
             return False
-    except (urllib.error.HTTPError, Exception):
-        return False
 
+    @property
+    def results(self) -> list[tuple[str, str, bool, str]]:
+        """Get accumulated validation results."""
+        return self._validation_results
 
-def validate_file_availability(url: str, auth_headers: dict[str, str] | None = None) -> tuple[bool, str]:
-    """Validate file availability using HEAD first, then Range as fallback.
+    def add_result(self, file_type: str, original_path: str, is_valid: bool, method: str) -> None:
+        """Record a validation result.
 
-    Args:
-        url: URL to check
-        auth_headers: Optional authentication headers
+        Args:
+            file_type: Type of file (agent, skill, hook, etc.)
+            original_path: Original path from config
+            is_valid: Whether validation passed
+            method: Validation method used
+        """
+        self._validation_results.append((file_type, original_path, is_valid, method))
 
-    Returns:
-        Tuple of (is_available, method_used)
-    """
-    # Convert GitLab web URLs to API URLs for accurate validation
-    # (same as done in fetch_url_with_auth during download)
-    original_url = url
-    if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
-        url = convert_gitlab_url_to_api(url)
-        if url != original_url:
-            info(f'Using API URL for validation: {url}')
-
-    # Try HEAD request first
-    if check_file_with_head(url, auth_headers):
-        return (True, 'HEAD')
-
-    # Fallback to Range request
-    if check_file_with_range(url, auth_headers):
-        return (True, 'Range')
-
-    return (False, 'None')
+    def clear_results(self) -> None:
+        """Clear accumulated validation results."""
+        self._validation_results.clear()
 
 
 def validate_all_config_files(
@@ -945,10 +1018,9 @@ def validate_all_config_files(
     files_to_check: list[tuple[str, str, str, bool]] = []
     results: list[tuple[str, str, bool, str]] = []
 
-    # Get authentication headers if needed
-    auth_headers = None
-    if config_source.startswith('http'):
-        auth_headers = get_auth_headers(config_source, auth_param)
+    # Create file validator - generates authentication per-URL for proper
+    # handling of mixed repositories (e.g., GitHub + GitLab files)
+    validator = FileValidator(auth_param)
 
     # Collect all files that need to be validated
     base_url = config.get('base-url')
@@ -1035,26 +1107,21 @@ def validate_all_config_files(
     all_valid = True
 
     for file_type, original_path, resolved_path, is_remote in files_to_check:
-        if is_remote:
-            # Validate remote URL
-            is_valid, method = validate_file_availability(resolved_path, auth_headers)
-            results.append((file_type, original_path, is_valid, method))
+        # Use FileValidator for unified validation with per-URL authentication
+        is_valid, method = validator.validate(resolved_path, is_remote)
+        results.append((file_type, original_path, is_valid, method))
 
-            if is_valid:
+        if is_valid:
+            if is_remote:
                 info(f'  [OK] {file_type}: {original_path} (remote, validated via {method})')
             else:
-                error(f'  [FAIL] {file_type}: {original_path} (remote, not accessible)')
-                all_valid = False
-        else:
-            # Validate local file
-            local_path = Path(resolved_path)
-            if local_path.exists() and local_path.is_file():
-                results.append((file_type, original_path, True, 'Local'))
                 info(f'  [OK] {file_type}: {original_path} (local file exists)')
+        else:
+            if is_remote:
+                error(f'  [FAIL] {file_type}: {original_path} (remote, not accessible)')
             else:
-                results.append((file_type, original_path, False, 'Local'))
                 error(f'  [FAIL] {file_type}: {original_path} (local file not found at {resolved_path})')
-                all_valid = False
+            all_valid = False
 
     return all_valid, results
 
@@ -2887,64 +2954,6 @@ def process_file_downloads(
 
     success(f'All {success_count} files downloaded/copied successfully')
     return True
-
-
-def validate_skill_files(
-    skill_config: dict[str, Any],
-    config_source: str,
-    auth_param: str | None = None,
-) -> tuple[bool, list[tuple[str, bool, str]]]:
-    """Validate all files in a skill configuration before download.
-
-    Checks that all files specified in the skill configuration are accessible.
-    For remote skills, this uses HEAD/Range requests to verify URL accessibility.
-    For local skills, this checks that the files exist on disk.
-
-    Args:
-        skill_config: Skill configuration dict with 'name', 'base', and 'files' keys
-        config_source: Where the config was loaded from (URL or local path)
-        auth_param: Optional authentication parameter for private repos
-
-    Returns:
-        Tuple of (all_valid, validation_results)
-        validation_results is a list of (file_path, is_valid, method) tuples
-    """
-    skill_name = skill_config.get('name', 'unknown')
-    base = skill_config.get('base', '')
-    files = skill_config.get('files', [])
-
-    results: list[tuple[str, bool, str]] = []
-    all_valid = True
-
-    # Check if SKILL.md is in files list (required per Claude documentation)
-    if 'SKILL.md' not in files:
-        error(f"Skill '{skill_name}': SKILL.md is required but not in files list")
-        all_valid = False
-
-    # Validate each file
-    for file_path in files:
-        if not isinstance(file_path, str):
-            continue
-
-        # Build full path: base + file_path
-        if base.startswith(('http://', 'https://')):
-            # Remote base - convert tree/blob URLs to raw URLs
-            raw_base = convert_to_raw_url(base)
-            full_url = f"{raw_base.rstrip('/')}/{file_path}"
-            auth_headers = get_auth_headers(full_url, auth_param)
-            is_valid, method = validate_file_availability(full_url, auth_headers)
-        else:
-            # Local base - resolve path
-            resolved_base, _ = resolve_resource_path(base, config_source, None)
-            full_path = Path(resolved_base) / file_path
-            is_valid = full_path.exists() and full_path.is_file()
-            method = 'Local'
-
-        results.append((file_path, is_valid, method))
-        if not is_valid:
-            all_valid = False
-
-    return all_valid, results
 
 
 def process_skill(
