@@ -618,20 +618,31 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
+    @patch('sys.platform', 'win32')
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('time.sleep')
+    @patch('subprocess.run')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_windows_retry(self, mock_run, mock_find, _mock_system):
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    def test_configure_mcp_server_windows_retry(
+        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_sleep, _mock_system,
+    ):
         """Test MCP configuration retry on Windows."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
-        # 3 removes (one per scope), first add attempt fails, retry add succeeds
-        mock_run.side_effect = [
+        del mock_sleep  # Unused but required for patch
+        # run_command: 3 removes (fail) + 1 PowerShell add (fails)
+        mock_run_cmd.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
-            subprocess.CompletedProcess([], 0, '', ''),  # retry add succeeds
+            subprocess.CompletedProcess([], 1, '', 'PowerShell failed'),  # PowerShell add fails
+        ]
+
+        # subprocess.run (shell=True): direct fallback fails, retry succeeds
+        mock_subprocess_run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'Direct failed'),  # direct fallback fails
+            subprocess.CompletedProcess([], 0, '', ''),  # retry succeeds
         ]
 
         server = {
@@ -641,11 +652,11 @@ class TestMCPServerConfigurationEdgeCases:
             'header': 'Auth: token',
         }
 
-        with patch('time.sleep'):  # Skip actual sleep
-            result = setup_environment.configure_mcp_server(server)
+        result = setup_environment.configure_mcp_server(server)
 
         assert result is True
-        assert mock_run.call_count == 5
+        assert mock_run_cmd.call_count == 4  # 3 removes + 1 PowerShell
+        assert mock_subprocess_run.call_count == 2  # direct fallback + retry
 
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')

@@ -164,52 +164,6 @@ class TestUtilityFunctions:
         assert setup_environment.find_command('git') == '/usr/bin/git'
 
 
-class TestEscapeForCmd:
-    """Test CMD special character escaping function."""
-
-    def test_escape_ampersand(self):
-        """Test escaping ampersand character."""
-        url = 'https://example.com?param1=value1&param2=value2'
-        escaped = setup_environment.escape_for_cmd(url)
-        assert escaped == 'https://example.com?param1=value1^&param2=value2'
-
-    def test_escape_multiple_special_chars(self):
-        """Test escaping multiple special characters."""
-        arg = 'test&value|with<special>chars^and%percent'
-        escaped = setup_environment.escape_for_cmd(arg)
-        assert escaped == 'test^&value^|with^<special^>chars^^and^%percent'
-
-    def test_escape_empty_string(self):
-        """Test escaping empty string returns empty string."""
-        assert setup_environment.escape_for_cmd('') == ''
-
-    def test_escape_no_special_chars(self):
-        """Test escaping string without special chars returns unchanged."""
-        url = 'https://example.com/path/to/resource'
-        assert setup_environment.escape_for_cmd(url) == url
-
-    def test_escape_supabase_url(self):
-        """Test escaping real-world Supabase MCP URL with & query parameter."""
-        url = 'https://mcp.supabase.com/mcp?project_ref=xkeujjyicwuxwxelliae&read_only=true'
-        escaped = setup_environment.escape_for_cmd(url)
-        assert escaped == 'https://mcp.supabase.com/mcp?project_ref=xkeujjyicwuxwxelliae^&read_only=true'
-
-    def test_escape_url_with_multiple_query_params(self):
-        """Test escaping URL with multiple ampersands in query string."""
-        url = 'https://api.example.com?key=abc&token=xyz&mode=read&format=json'
-        escaped = setup_environment.escape_for_cmd(url)
-        expected = 'https://api.example.com?key=abc^&token=xyz^&mode=read^&format=json'
-        assert escaped == expected
-
-    def test_escape_already_escaped(self):
-        """Test that already escaped characters get double-escaped."""
-        # This is correct behavior - if someone passes already escaped string,
-        # we escape the caret too
-        arg = 'test^&value'
-        escaped = setup_environment.escape_for_cmd(arg)
-        assert escaped == 'test^^^&value'
-
-
 class TestTildeExpansion:
     """Test tilde expansion in commands."""
 
@@ -1154,6 +1108,105 @@ class TestConfigureMCPServer:
         assert '--header' in add_cmd_str
         assert 'client_id=123' in add_cmd_str
         assert 'scope=read' in add_cmd_str
+
+    @patch('platform.system')
+    @patch('subprocess.run')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_windows_fallback_uses_shell_true(
+        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_system,
+    ):
+        """Test Windows fallback uses shell=True with double-quoted URL.
+
+        When PowerShell path fails on Windows, the fallback should use subprocess.run
+        with shell=True and the URL wrapped in double quotes to prevent & from being
+        interpreted as a command separator.
+        """
+        mock_system.return_value = 'Windows'
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+
+        # First 3 calls are for removing from scopes (success)
+        # 4th call is PowerShell which fails
+        mock_run_cmd.side_effect = [
+            subprocess.CompletedProcess([], 0, '', ''),  # remove user
+            subprocess.CompletedProcess([], 0, '', ''),  # remove local
+            subprocess.CompletedProcess([], 0, '', ''),  # remove project
+            subprocess.CompletedProcess([], 1, '', 'PowerShell failed'),  # PowerShell fails
+        ]
+
+        # subprocess.run (shell=True) succeeds
+        mock_subprocess_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'supabase',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Verify subprocess.run was called with shell=True
+        assert mock_subprocess_run.called
+        call_args = mock_subprocess_run.call_args
+
+        # Check shell=True was passed
+        assert call_args.kwargs.get('shell') is True
+
+        # Check the command string contains the double-quoted URL
+        cmd_str = call_args.args[0]
+        assert '"https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true"' in cmd_str
+        assert 'mcp add' in cmd_str
+        assert 'supabase' in cmd_str
+
+    @patch('sys.platform', 'win32')
+    @patch('time.sleep')
+    @patch('subprocess.run')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_windows_retry_uses_shell_true(
+        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_sleep,
+    ):
+        """Test Windows retry path uses shell=True with double-quoted URL.
+
+        When both PowerShell and direct execution fail, the retry path should
+        also use subprocess.run with shell=True and double-quoted URL.
+        """
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+
+        # All run_command calls fail
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 1, '', 'Failed')
+
+        # First subprocess.run (direct execution) fails, second (retry) succeeds
+        mock_subprocess_run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'Direct failed'),
+            subprocess.CompletedProcess([], 0, '', ''),  # Retry succeeds
+        ]
+
+        server = {
+            'name': 'supabase',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
+            'header': 'X-Custom: value',
+        }
+
+        with patch('platform.system', return_value='Windows'):
+            result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+
+        # Verify subprocess.run was called twice (direct + retry)
+        assert mock_subprocess_run.call_count == 2
+
+        # Check both calls used shell=True and had double-quoted URL
+        for call in mock_subprocess_run.call_args_list:
+            assert call.kwargs.get('shell') is True
+            cmd_str = call.args[0]
+            assert '"https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true"' in cmd_str
+            assert '--header' in cmd_str
 
 
 class TestCreateAdditionalSettings:

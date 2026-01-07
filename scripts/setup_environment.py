@@ -3260,29 +3260,6 @@ def verify_nodejs_available() -> bool:
     return False
 
 
-def escape_for_cmd(arg: str) -> str:
-    """Escape special characters for Windows CMD execution.
-
-    When subprocess.run() is called with a .CMD file on Windows, CMD interprets
-    special characters like & as command separators. This function escapes such
-    characters with the ^ prefix to ensure they are treated as literal characters.
-
-    Args:
-        arg: The argument string to escape.
-
-    Returns:
-        The escaped string safe for CMD execution.
-    """
-    # CMD special characters that need escaping with ^
-    # IMPORTANT: ^ must be escaped FIRST to avoid double-escaping the ^ characters
-    # that are inserted when escaping other special characters
-    special_chars = ['^', '&', '|', '<', '>', '%']
-    result = arg
-    for char in special_chars:
-        result = result.replace(char, f'^{char}')
-    return result
-
-
 def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
@@ -3402,15 +3379,18 @@ exit $LASTEXITCODE
                     capture_output=True,
                 )
 
-                # Also try with direct execution
+                # Also try with direct execution using shell=True
                 if result.returncode != 0:
                     info('Trying direct execution...')
-                    # Escape URL for CMD execution to handle special characters like &
-                    cmd_escaped = base_cmd.copy()
-                    if url in cmd_escaped:
-                        url_index = cmd_escaped.index(url)
-                        cmd_escaped[url_index] = escape_for_cmd(url)
-                    result = run_command(cmd_escaped, capture_output=True)
+                    # Use shell=True with double-quoted URL for Windows CMD compatibility
+                    # This ensures & in URLs is not interpreted as a command separator
+                    url_quoted = f'"{url}"'
+                    header_part = f' --header "{header}"' if header else ''
+                    cmd_str = (
+                        f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                        f'--transport {transport}{header_part} {url_quoted}'
+                    )
+                    result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
             else:
                 # On Unix, spawn new bash with updated PATH
                 parent_dir = Path(claude_cmd).parent
@@ -3474,13 +3454,20 @@ exit $LASTEXITCODE
         time.sleep(2)
 
         # Direct execution with full path
-        # On Windows, escape URL for CMD execution to handle special characters like &
-        if sys.platform == 'win32' and url and url in base_cmd:
-            cmd_escaped = base_cmd.copy()
-            url_index = cmd_escaped.index(url)
-            cmd_escaped[url_index] = escape_for_cmd(url)
-            info(f"Retrying with direct command: {' '.join(str(arg) for arg in cmd_escaped)}")
-            result = run_command(cmd_escaped, capture_output=False)  # Show output for debugging
+        # On Windows with HTTP transport, use shell=True with double-quoted URL
+        if sys.platform == 'win32' and transport and url:
+            # Use shell=True with double-quoted URL for Windows CMD compatibility
+            # This ensures & in URLs is not interpreted as a command separator
+            url_quoted = f'"{url}"'
+            env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
+            env_part_retry = f' {env_flags}' if env_flags else ''
+            header_part = f' --header "{header}"' if header else ''
+            cmd_str = (
+                f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
+                f'--transport {transport}{header_part} {url_quoted}'
+            )
+            info(f'Retrying with direct command: {cmd_str}')
+            result = subprocess.run(cmd_str, shell=True, capture_output=False, text=True)
         else:
             info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
             result = run_command(base_cmd, capture_output=False)  # Show output for debugging
