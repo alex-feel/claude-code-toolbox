@@ -436,6 +436,81 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     return None
 
 
+def find_bash_windows() -> str | None:
+    """Find Git Bash on Windows.
+
+    Git Bash is required for Claude Code on Windows and provides consistent
+    cross-platform bash behavior for CLI command execution.
+
+    Returns:
+        Full path to bash.exe if found, None otherwise.
+    """
+    # Check CLAUDE_CODE_GIT_BASH_PATH env var
+    env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    if env_path and Path(env_path).exists():
+        return str(Path(env_path).resolve())
+
+    # Check if bash is in PATH
+    bash_path = find_command('bash.exe')
+    if bash_path:
+        return bash_path
+
+    # Check common locations
+    common_paths = [
+        r'C:\Program Files\Git\bin\bash.exe',
+        r'C:\Program Files\Git\usr\bin\bash.exe',
+        r'C:\Program Files (x86)\Git\bin\bash.exe',
+        r'C:\Program Files (x86)\Git\usr\bin\bash.exe',
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\Git\bin\bash.exe'),
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\Git\usr\bin\bash.exe'),
+    ]
+
+    for path in common_paths:
+        expanded = os.path.expandvars(path)
+        if Path(expanded).exists():
+            return str(Path(expanded).resolve())
+
+    return None
+
+
+def run_bash_command(
+    command: str,
+    capture_output: bool = True,
+    login_shell: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Execute command via bash (Git Bash on Windows, native bash on Unix).
+
+    Provides consistent cross-platform behavior for CLI command execution.
+    Uses Git Bash on Windows and native bash on Unix systems.
+
+    Args:
+        command: The bash command string to execute
+        capture_output: Whether to capture stdout/stderr
+        login_shell: Whether to use login shell (-l flag)
+
+    Returns:
+        subprocess.CompletedProcess with the result
+    """
+    if sys.platform == 'win32':
+        bash_path = find_bash_windows()
+    else:
+        bash_path = shutil.which('bash')
+
+    if not bash_path:
+        error('Bash not found!')
+        return subprocess.CompletedProcess([], 1, '', 'bash not found')
+
+    args = [bash_path]
+    if login_shell:
+        args.append('-l')
+    args.extend(['-c', command])
+
+    try:
+        return subprocess.run(args, capture_output=capture_output, text=True)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(args, 1, '', f'bash not found: {bash_path}')
+
+
 def expand_tildes_in_command(command: str) -> str:
     """Expand tilde paths in a shell command.
 
@@ -2544,7 +2619,8 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 parts_with_force = parts[:3] + ['--force'] + parts[3:]
                 result = run_command(parts_with_force, capture_output=False)
             else:
-                result = run_command(['powershell', '-Command', dep], capture_output=False)
+                # Use bash for consistent cross-platform behavior
+                result = run_bash_command(dep, capture_output=False)
         else:
             if parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
@@ -3338,72 +3414,35 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             if header:
                 base_cmd.extend(['--header', header])
 
-            # Try with PowerShell environment reload on Windows
+            # Windows HTTP transport - use bash for consistent cross-platform behavior
+            # This eliminates PowerShell's exit code quirks and CMD escaping issues
             if system == 'Windows':
                 # Build explicit PATH including Node.js location
-                # This fixes Windows 10+ PATH propagation bug where MSI registry updates
-                # don't propagate to running processes via WM_SETTINGCHANGE
                 nodejs_path = r'C:\Program Files\nodejs'
                 current_path = os.environ.get('PATH', '')
 
-                # Ensure Node.js is in PATH
+                # Use POSIX path separator (:) since we're running in bash
                 if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    explicit_path = f'{nodejs_path};{current_path}'
+                    explicit_path = f'{nodejs_path}:{current_path}'
                 else:
                     explicit_path = current_path
 
-                # On Windows, we need to spawn a completely new shell process
-                # Use explicit PATH instead of reading from registry
-                # Build env flags for PowerShell command
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
+                header_part = f' --header "{header}"' if header else ''
 
-                ps_script = f'''
-$env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} "{url}"
-exit $LASTEXITCODE
-'''
-                if header:
-                    ps_script = f'''
-$env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} --header "{header}" "{url}"
-exit $LASTEXITCODE
-'''
-                result = run_command(
-                    [
-                        'powershell',
-                        '-NoProfile',
-                        '-Command',
-                        ps_script,
-                    ],
-                    capture_output=True,
+                bash_cmd = (
+                    f'export PATH="{explicit_path}:$PATH" && '
+                    f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                    f'--transport {transport}{header_part} "{url}"'
                 )
 
-                # Also try with direct execution using shell=True
-                if result.returncode != 0:
-                    info('Trying direct execution...')
-                    # Use shell=True with double-quoted URL for Windows CMD compatibility
-                    # This ensures & in URLs is not interpreted as a command separator
-                    url_quoted = f'"{url}"'
-                    header_part = f' --header "{header}"' if header else ''
-                    cmd_str = (
-                        f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part} '
-                        f'--transport {transport}{header_part} {url_quoted}'
-                    )
-                    result = subprocess.run(cmd_str, shell=True, capture_output=True, text=True)
+                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
             else:
-                # On Unix, spawn new bash with updated PATH
+                # On Unix, use bash with updated PATH (consistent with Windows)
                 parent_dir = Path(claude_cmd).parent
                 bash_cmd = f'export PATH="{parent_dir}:$PATH" && ' + ' '.join(shlex.quote(str(arg)) for arg in base_cmd)
-                result = run_command(
-                    [
-                        'bash',
-                        '-l',
-                        '-c',
-                        bash_cmd,
-                    ],
-                    capture_output=True,
-                )
+                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
         elif command:
             # Stdio transport (command)
 
@@ -3454,20 +3493,18 @@ exit $LASTEXITCODE
         time.sleep(2)
 
         # Direct execution with full path
-        # On Windows with HTTP transport, use shell=True with double-quoted URL
+        # On Windows with HTTP transport, use bash for consistent behavior
         if sys.platform == 'win32' and transport and url:
-            # Use shell=True with double-quoted URL for Windows CMD compatibility
-            # This ensures & in URLs is not interpreted as a command separator
-            url_quoted = f'"{url}"'
             env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
             env_part_retry = f' {env_flags}' if env_flags else ''
             header_part = f' --header "{header}"' if header else ''
-            cmd_str = (
+
+            bash_cmd = (
                 f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
-                f'--transport {transport}{header_part} {url_quoted}'
+                f'--transport {transport}{header_part} "{url}"'
             )
-            info(f'Retrying with direct command: {cmd_str}')
-            result = subprocess.run(cmd_str, shell=True, capture_output=False, text=True)
+            info(f'Retrying with bash command: {bash_cmd}')
+            result = run_bash_command(bash_cmd, capture_output=False)
         else:
             info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
             result = run_command(base_cmd, capture_output=False)  # Show output for debugging

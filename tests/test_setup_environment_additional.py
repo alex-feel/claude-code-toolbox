@@ -577,15 +577,18 @@ class TestMCPServerConfigurationEdgeCases:
             patch.dict('os.environ', {'APPDATA': 'C:\\Users\\Test\\AppData\\Roaming'}),
             patch('pathlib.Path.exists', return_value=True),
             patch('setup_environment.run_command') as mock_run,
+            patch('setup_environment.run_bash_command') as mock_bash,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+            mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
             server = {'name': 'test', 'transport': 'http', 'url': 'http://localhost'}
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
-            # Should call run_command 4 times: 3 for removing from all scopes, once for add
-            assert mock_run.call_count == 4
+            # run_command: 3 removes; run_bash_command: 1 add (Windows HTTP uses bash)
+            assert mock_run.call_count == 3
+            assert mock_bash.call_count == 1
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
@@ -621,27 +624,26 @@ class TestMCPServerConfigurationEdgeCases:
     @patch('sys.platform', 'win32')
     @patch('platform.system', return_value='Windows')
     @patch('time.sleep')
-    @patch('subprocess.run')
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_windows_retry(
-        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_sleep, _mock_system,
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_sleep, _mock_system,
     ):
-        """Test MCP configuration retry on Windows."""
+        """Test MCP configuration retry on Windows uses bash."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
         del mock_sleep  # Unused but required for patch
-        # run_command: 3 removes (fail) + 1 PowerShell add (fails)
+        # run_command: 3 removes (fail)
         mock_run_cmd.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
-            subprocess.CompletedProcess([], 1, '', 'PowerShell failed'),  # PowerShell add fails
         ]
 
-        # subprocess.run (shell=True): direct fallback fails, retry succeeds
-        mock_subprocess_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Direct failed'),  # direct fallback fails
+        # run_bash_command: first bash attempt fails, retry succeeds
+        mock_bash_cmd.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'bash failed'),  # first bash attempt fails
             subprocess.CompletedProcess([], 0, '', ''),  # retry succeeds
         ]
 
@@ -655,8 +657,8 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
 
         assert result is True
-        assert mock_run_cmd.call_count == 4  # 3 removes + 1 PowerShell
-        assert mock_subprocess_run.call_count == 2  # direct fallback + retry
+        assert mock_run_cmd.call_count == 3  # 3 removes only
+        assert mock_bash_cmd.call_count == 2  # first bash + retry
 
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
@@ -845,12 +847,14 @@ class TestMCPServerConfigurationEdgeCases:
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_env_list(self, mock_run, mock_find, _mock_system):
+    def test_configure_mcp_server_http_with_env_list(self, mock_run, mock_bash, mock_find, _mock_system):
         """Test HTTP transport MCP configuration with multiple env vars."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'test-http-server',
@@ -865,16 +869,14 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # The first call after removes is the PowerShell command
-        # Check the base_cmd which is used in fallback
-        add_call = mock_run.call_args_list[3]  # 4th call
-        cmd = add_call[0][0]
+        # run_command: 3 removes; run_bash_command: 1 add (Windows HTTP uses bash)
+        assert mock_run.call_count == 3
+        assert mock_bash.call_count == 1
 
-        # PowerShell execution - check the script contains env flags
-        if 'powershell' in cmd:
-            ps_script = cmd[3]  # The -Command argument
-            assert '--env "AUTH_TOKEN=token123"' in ps_script
-            assert '--env "REGION=us-west"' in ps_script
+        # Check bash command contains env flags
+        bash_cmd = mock_bash.call_args[0][0]
+        assert '--env "AUTH_TOKEN=token123"' in bash_cmd
+        assert '--env "REGION=us-west"' in bash_cmd
 
 
 class TestCreateAdditionalSettingsComplex:
@@ -1553,17 +1555,17 @@ class TestInstallDependenciesEdgeCases:
     """Test dependency installation edge cases."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.run_command')
-    def test_install_dependencies_windows_powershell_fallback(self, mock_run, _mock_system):
-        """Test PowerShell fallback for unknown commands on Windows."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+    @patch('setup_environment.run_bash_command')
+    def test_install_dependencies_windows_bash_execution(self, mock_bash, _mock_system):
+        """Test bash execution for unknown commands on Windows."""
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'windows': ['custom-command install package']})
         assert result is True
 
-        # Should use PowerShell for unknown command
-        call_args = mock_run.call_args[0][0]
-        assert 'powershell' in call_args
+        # Should use bash for command execution
+        call_args = mock_bash.call_args[0][0]
+        assert 'custom-command install package' in call_args
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.run_command')
@@ -1579,17 +1581,17 @@ class TestInstallDependenciesEdgeCases:
         assert 'uv tool install --force pytest' in ' '.join(call_args)
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.run_command')
-    def test_install_dependencies_failure_continues(self, mock_run, _mock_system):
+    @patch('setup_environment.run_bash_command')
+    def test_install_dependencies_failure_continues(self, mock_bash, _mock_system):
         """Test that dependency installation continues after failure."""
-        mock_run.side_effect = [
+        mock_bash.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Error'),  # First fails
             subprocess.CompletedProcess([], 0, '', ''),  # Second succeeds
         ]
 
         result = setup_environment.install_dependencies({'windows': ['failing-dep', 'working-dep']})
         assert result is True
-        assert mock_run.call_count == 2
+        assert mock_bash.call_count == 2
 
 
 class TestDeriveBaseURLEdgeCases:
