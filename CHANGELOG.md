@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.17.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.5...v4.17.0) (2026-01-07)
+
+
+### Features
+
+* use bash for CLI command execution on all platforms ([80949db](https://github.com/alex-feel/claude-code-toolbox/commit/80949db3160af866dd800d52816ca499ca212bd9))
+
 ## [4.16.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.4...v4.16.5) (2026-01-07)
 
 
