@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.16.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.3...v4.16.4) (2026-01-07)
+
+
+### Bug Fixes
+
+* escape HTTP MCP server URLs in Windows CMD execution ([dac75b1](https://github.com/alex-feel/claude-code-toolbox/commit/dac75b12d8521b75fe10f2f4f033a07b4cf13861))
+
 ## [4.16.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.2...v4.16.3) (2026-01-07)
 
 
