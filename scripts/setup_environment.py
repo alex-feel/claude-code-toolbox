@@ -3848,8 +3848,16 @@ def create_additional_settings(
         command = hook.get('command')
         config = hook.get('config')  # Optional config file reference
 
-        if not event or not command:
-            warning('Invalid hook configuration, skipping')
+        if not event:
+            warning('Invalid hook configuration: missing event, skipping')
+            continue
+
+        # For command hooks, command is required; for prompt hooks, prompt is required
+        if hook_type == 'command' and not command:
+            warning('Invalid command hook: missing command, skipping')
+            continue
+        if hook_type == 'prompt' and not hook.get('prompt'):
+            warning('Invalid prompt hook: missing prompt, skipping')
             continue
 
         # Add to settings
@@ -3876,63 +3884,81 @@ def create_additional_settings(
                 hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
                 hooks_event_list.append(matcher_group)
 
-        # Build the proper command based on file type
-        # Strip query parameters from command if present
-        clean_command = command.split('?')[0] if '?' in command else command
+        # Build hook configuration based on hook type
+        hook_config: dict[str, Any]
 
-        # Check if this looks like a file reference or a direct command
-        # File references typically don't contain spaces (just the filename)
-        # Direct commands like 'echo "test"' contain spaces
-        is_file_reference = ' ' not in clean_command
+        if hook_type == 'command':
+            # Command hooks require file path processing
+            # command is guaranteed to be non-None here due to validation above
+            assert command is not None
 
-        if is_file_reference:
-            # Determine if this is a Python script (case-insensitive check)
-            # Supports both .py and .pyw extensions
-            is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
+            # Build the proper command based on file type
+            # Strip query parameters from command if present
+            clean_command = command.split('?')[0] if '?' in command else command
 
-            if is_python_script:
-                # Python script - use uv run for cross-platform execution
-                # Build absolute path to the hook file in .claude/hooks/
-                hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
-                # Use POSIX-style path (forward slashes) for cross-platform compatibility
-                # This works on Windows, macOS, and Linux, and avoids JSON escaping issues
-                hook_path_str = hook_path.as_posix()
-                # Use uv run with Python 3.12 - works cross-platform without PATH dependency
-                # uv automatically downloads Python 3.12 if not installed
-                # For .pyw files on Windows, uv automatically uses pythonw
-                # Use --no-project flag to prevent uv from detecting and applying project Python requirements
-                full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+            # Check if this looks like a file reference or a direct command
+            # File references typically don't contain spaces (just the filename)
+            # Direct commands like 'echo "test"' contain spaces
+            is_file_reference = ' ' not in clean_command
 
-                # Append config file path if specified
-                if config:
-                    # Strip query parameters from config filename
-                    clean_config = config.split('?')[0] if '?' in config else config
-                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
-                    config_path_str = config_path.as_posix()
-                    full_command = f'{full_command} {config_path_str}'
+            if is_file_reference:
+                # Determine if this is a Python script (case-insensitive check)
+                # Supports both .py and .pyw extensions
+                is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
+
+                if is_python_script:
+                    # Python script - use uv run for cross-platform execution
+                    # Build absolute path to the hook file in .claude/hooks/
+                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    # Use POSIX-style path (forward slashes) for cross-platform compatibility
+                    # This works on Windows, macOS, and Linux, and avoids JSON escaping issues
+                    hook_path_str = hook_path.as_posix()
+                    # Use uv run with Python 3.12 - works cross-platform without PATH dependency
+                    # uv automatically downloads Python 3.12 if not installed
+                    # For .pyw files on Windows, uv automatically uses pythonw
+                    # Use --no-project flag to prevent uv from detecting and applying project Python requirements
+                    full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+
+                    # Append config file path if specified
+                    if config:
+                        # Strip query parameters from config filename
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
+                else:
+                    # Other file - build absolute path and use as-is
+                    # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
+                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    hook_path_str = hook_path.as_posix()
+                    full_command = hook_path_str
+
+                    # Append config file path if specified
+                    if config:
+                        # Strip query parameters from config filename
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
             else:
-                # Other file - build absolute path and use as-is
-                # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
-                hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
-                hook_path_str = hook_path.as_posix()
-                full_command = hook_path_str
+                # Direct command with spaces - use as-is
+                full_command = command
 
-                # Append config file path if specified
-                if config:
-                    # Strip query parameters from config filename
-                    clean_config = config.split('?')[0] if '?' in config else config
-                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
-                    config_path_str = config_path.as_posix()
-                    full_command = f'{full_command} {config_path_str}'
+            # Add hook configuration for command hook
+            hook_config = {
+                'type': hook_type,
+                'command': full_command,
+            }
         else:
-            # Direct command with spaces - use as-is
-            full_command = command
+            # Prompt hook - no file processing needed, use inline prompt
+            hook_config = {
+                'type': hook_type,
+                'prompt': hook.get('prompt', ''),
+            }
+            # Include timeout if specified
+            if hook.get('timeout'):
+                hook_config['timeout'] = hook.get('timeout')
 
-        # Add hook configuration
-        hook_config: dict[str, str] = {
-            'type': hook_type,
-            'command': full_command,
-        }
         if matcher_group and 'hooks' in matcher_group:
             matcher_hooks_raw = matcher_group['hooks']
             if isinstance(matcher_hooks_raw, list):
