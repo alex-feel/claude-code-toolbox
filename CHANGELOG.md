@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.17.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.0...v4.17.1) (2026-01-07)
+
+
+### Bug Fixes
+
+* convert Windows paths to Unix format for Git Bash execution ([e1d8856](https://github.com/alex-feel/claude-code-toolbox/commit/e1d88561e0f8ba75788a469f1f55c611225f29ee))
+
 ## [4.17.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.5...v4.17.0) (2026-01-07)
 
 
