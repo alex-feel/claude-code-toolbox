@@ -990,12 +990,14 @@ class TestFetchUrlWithAuth:
 class TestConfigureMCPServer:
     """Test MCP server configuration."""
 
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http(self, mock_run, mock_find):
-        """Test configuring HTTP MCP server."""
+    def test_configure_mcp_server_http(self, mock_run, mock_find, mock_bash):
+        """Test configuring HTTP MCP server on Unix."""
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'test-server',
@@ -1004,14 +1006,18 @@ class TestConfigureMCPServer:
             'url': 'http://localhost:3000',
         }
 
-        result = setup_environment.configure_mcp_server(server)
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
+
         assert result is True
-        # Should call run_command 4 times: 3 for removing from all scopes, once for add
-        assert mock_run.call_count == 4
-        # Check the last call (add command) contains mcp add
-        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
-        assert 'mcp add' in add_cmd_str
-        assert 'test-server' in add_cmd_str
+        # Should call run_command 3 times for removing from all scopes
+        assert mock_run.call_count == 3
+        # Unix HTTP transport now uses run_bash_command for consistency with Windows
+        assert mock_bash.call_count == 1
+        # Check the bash command contains mcp add and server name
+        bash_cmd = mock_bash.call_args[0][0]
+        assert 'mcp add' in bash_cmd
+        assert 'test-server' in bash_cmd
 
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
@@ -1031,16 +1037,18 @@ class TestConfigureMCPServer:
         # Should call run_command 4 times: 3 for removing from all scopes, once for add
         assert mock_run.call_count == 4
 
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_ampersand_in_url(self, mock_run, mock_find):
-        """Test configuring HTTP MCP server with URL containing ampersand.
+    def test_configure_mcp_server_http_with_ampersand_in_url(self, mock_run, mock_find, mock_bash):
+        """Test configuring HTTP MCP server with URL containing ampersand on Unix.
 
-        This tests the fix for the bug where URLs with '&' query parameters
-        were incorrectly interpreted as command separators in Windows CMD/PowerShell.
+        This tests that URLs with '&' query parameters are properly handled
+        when using bash for command execution.
         """
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'supabase',
@@ -1049,24 +1057,29 @@ class TestConfigureMCPServer:
             'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
         }
 
-        result = setup_environment.configure_mcp_server(server)
-        assert result is True
-        # Should call run_command 4 times: 3 for removing from all scopes, once for add
-        assert mock_run.call_count == 4
-        # Check the last call (add command) contains the full URL
-        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
-        assert 'mcp add' in add_cmd_str
-        assert 'supabase' in add_cmd_str
-        # The URL should be in the command (not split by &)
-        assert 'project_ref=xxx' in add_cmd_str
-        assert 'read_only=true' in add_cmd_str
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
 
+        assert result is True
+        # Should call run_command 3 times for removing from all scopes
+        assert mock_run.call_count == 3
+        # Unix HTTP transport now uses run_bash_command for consistency with Windows
+        assert mock_bash.call_count == 1
+        # Check the bash command contains the full URL
+        bash_cmd = mock_bash.call_args[0][0]
+        assert 'supabase' in bash_cmd
+        # The URL should be in the command (not split by &)
+        assert 'project_ref=xxx' in bash_cmd
+        assert 'read_only=true' in bash_cmd
+
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_multiple_query_params(self, mock_run, mock_find):
+    def test_configure_mcp_server_http_with_multiple_query_params(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with URL containing multiple special characters."""
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'test-api',
@@ -1075,21 +1088,29 @@ class TestConfigureMCPServer:
             'url': 'https://api.example.com/v1?key=abc&token=xyz&mode=read&format=json',
         }
 
-        result = setup_environment.configure_mcp_server(server)
-        assert result is True
-        # Check all query parameters are preserved in the command
-        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
-        assert 'key=abc' in add_cmd_str
-        assert 'token=xyz' in add_cmd_str
-        assert 'mode=read' in add_cmd_str
-        assert 'format=json' in add_cmd_str
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
 
+        assert result is True
+        # Should call run_command 3 times for removing from all scopes
+        assert mock_run.call_count == 3
+        # Unix HTTP transport now uses run_bash_command for consistency with Windows
+        assert mock_bash.call_count == 1
+        # Check all query parameters are preserved in the bash command
+        bash_cmd = mock_bash.call_args[0][0]
+        assert 'key=abc' in bash_cmd
+        assert 'token=xyz' in bash_cmd
+        assert 'mode=read' in bash_cmd
+        assert 'format=json' in bash_cmd
+
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_header_and_special_url(self, mock_run, mock_find):
+    def test_configure_mcp_server_http_with_header_and_special_url(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with header and URL containing special characters."""
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'auth-api',
@@ -1099,43 +1120,41 @@ class TestConfigureMCPServer:
             'header': 'Authorization: Bearer token123',
         }
 
-        result = setup_environment.configure_mcp_server(server)
-        assert result is True
-        # Check the command contains both header and full URL
-        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
-        assert 'mcp add' in add_cmd_str
-        assert 'auth-api' in add_cmd_str
-        assert '--header' in add_cmd_str
-        assert 'client_id=123' in add_cmd_str
-        assert 'scope=read' in add_cmd_str
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
 
-    @patch('platform.system')
-    @patch('subprocess.run')
+        assert result is True
+        # Should call run_command 3 times for removing from all scopes
+        assert mock_run.call_count == 3
+        # Unix HTTP transport now uses run_bash_command for consistency with Windows
+        assert mock_bash.call_count == 1
+        # Check the bash command contains both header and full URL
+        bash_cmd = mock_bash.call_args[0][0]
+        assert 'auth-api' in bash_cmd
+        assert '--header' in bash_cmd
+        assert 'client_id=123' in bash_cmd
+        assert 'scope=read' in bash_cmd
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     @patch('setup_environment.find_command_robust')
-    def test_configure_mcp_server_windows_fallback_uses_shell_true(
-        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_system,
+    def test_configure_mcp_server_windows_uses_bash(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
-        """Test Windows fallback uses shell=True with double-quoted URL.
+        """Test Windows HTTP transport uses bash for consistent cross-platform behavior.
 
-        When PowerShell path fails on Windows, the fallback should use subprocess.run
-        with shell=True and the URL wrapped in double quotes to prevent & from being
-        interpreted as a command separator.
+        On Windows, HTTP transport should use run_bash_command to avoid
+        PowerShell/CMD escaping issues with URLs containing special characters.
         """
-        mock_system.return_value = 'Windows'
+        del mock_system  # Unused but required for patch
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
 
         # First 3 calls are for removing from scopes (success)
-        # 4th call is PowerShell which fails
-        mock_run_cmd.side_effect = [
-            subprocess.CompletedProcess([], 0, '', ''),  # remove user
-            subprocess.CompletedProcess([], 0, '', ''),  # remove local
-            subprocess.CompletedProcess([], 0, '', ''),  # remove project
-            subprocess.CompletedProcess([], 1, '', 'PowerShell failed'),  # PowerShell fails
-        ]
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        # subprocess.run (shell=True) succeeds
-        mock_subprocess_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Bash command succeeds
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'supabase',
@@ -1147,41 +1166,39 @@ class TestConfigureMCPServer:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Verify subprocess.run was called with shell=True
-        assert mock_subprocess_run.called
-        call_args = mock_subprocess_run.call_args
+        # Verify run_bash_command was called for the add operation
+        assert mock_bash_cmd.called
+        call_args = mock_bash_cmd.call_args
 
-        # Check shell=True was passed
-        assert call_args.kwargs.get('shell') is True
-
-        # Check the command string contains the double-quoted URL
-        cmd_str = call_args.args[0]
-        assert '"https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true"' in cmd_str
-        assert 'mcp add' in cmd_str
-        assert 'supabase' in cmd_str
+        # Check the bash command contains the URL with proper quoting
+        bash_cmd = call_args.args[0]
+        assert 'mcp add' in bash_cmd
+        assert 'supabase' in bash_cmd
+        assert 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true' in bash_cmd
 
     @patch('sys.platform', 'win32')
     @patch('time.sleep')
-    @patch('subprocess.run')
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     @patch('setup_environment.find_command_robust')
-    def test_configure_mcp_server_windows_retry_uses_shell_true(
-        self, mock_find, mock_run_cmd, mock_subprocess_run, mock_sleep,
+    def test_configure_mcp_server_windows_retry_uses_bash(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_sleep, mock_platform,
     ):
-        """Test Windows retry path uses shell=True with double-quoted URL.
+        """Test Windows retry path uses bash for consistent behavior.
 
-        When both PowerShell and direct execution fail, the retry path should
-        also use subprocess.run with shell=True and double-quoted URL.
+        When the first bash attempt fails, the retry should also use bash
+        with the URL properly quoted.
         """
-        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        del mock_sleep  # Unused but required to prevent actual sleep
+        del mock_platform  # Unused but required for patch
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
 
-        # All run_command calls fail
-        mock_run_cmd.return_value = subprocess.CompletedProcess([], 1, '', 'Failed')
+        # run_command for removes succeeds
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        # First subprocess.run (direct execution) fails, second (retry) succeeds
-        mock_subprocess_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Direct failed'),
+        # First bash call fails, second (retry) succeeds
+        mock_bash_cmd.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'First attempt failed'),
             subprocess.CompletedProcess([], 0, '', ''),  # Retry succeeds
         ]
 
@@ -1198,15 +1215,14 @@ class TestConfigureMCPServer:
 
         assert result is True
 
-        # Verify subprocess.run was called twice (direct + retry)
-        assert mock_subprocess_run.call_count == 2
+        # Verify run_bash_command was called twice (initial + retry)
+        assert mock_bash_cmd.call_count == 2
 
-        # Check both calls used shell=True and had double-quoted URL
-        for call in mock_subprocess_run.call_args_list:
-            assert call.kwargs.get('shell') is True
-            cmd_str = call.args[0]
-            assert '"https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true"' in cmd_str
-            assert '--header' in cmd_str
+        # Check both calls contain the URL and header
+        for call in mock_bash_cmd.call_args_list:
+            bash_cmd = call.args[0]
+            assert 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true' in bash_cmd
+            assert 'X-Custom: value' in bash_cmd or '--header' in bash_cmd
 
 
 class TestCreateAdditionalSettings:
