@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.2...v4.18.0) (2026-01-07)
+
+
+### Features
+
+* add prompt hooks support to environment configuration ([48769e4](https://github.com/alex-feel/claude-code-toolbox/commit/48769e4c37c81196941fb77d503e399a481b9c53))
+
 ## [4.17.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.1...v4.17.2) (2026-01-07)
 
 
