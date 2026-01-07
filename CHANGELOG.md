@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.16.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.2...v4.16.3) (2026-01-07)
+
+
+### Bug Fixes
+
+* quote HTTP MCP server URLs in shell commands ([4f475ca](https://github.com/alex-feel/claude-code-toolbox/commit/4f475ca4313007a72dddcf2bd3c4ff718fb3a188))
+
 ## [4.16.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.1...v4.16.2) (2026-01-06)
 
 
