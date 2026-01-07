@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.16.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.4...v4.16.5) (2026-01-07)
+
+
+### Bug Fixes
+
+* use shell=True for Windows CMD URL escaping ([c02acab](https://github.com/alex-feel/claude-code-toolbox/commit/c02acab9411f2cc5ea11dd3d771c036ada4aed33))
+
 ## [4.16.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.16.3...v4.16.4) (2026-01-07)
 
 
