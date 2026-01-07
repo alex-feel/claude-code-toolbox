@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.17.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.1...v4.17.2) (2026-01-07)
+
+
+### Bug Fixes
+
+* normalize extension case and prioritize Git Bash over WSL ([76974c6](https://github.com/alex-feel/claude-code-toolbox/commit/76974c628b72da8866d8464189e087cb7fdf2626))
+
 ## [4.17.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.0...v4.17.1) (2026-01-07)
 
 
