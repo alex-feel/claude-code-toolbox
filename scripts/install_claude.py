@@ -169,6 +169,14 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     for attempt in range(2):
         cmd_path = shutil.which(cmd)
         if cmd_path:
+            # Normalize extension case on Windows for Git Bash compatibility
+            # shutil.which() uses Windows PATHEXT which has uppercase extensions (.EXE)
+            # but Git Bash is case-sensitive and needs lowercase (.exe)
+            if sys.platform == 'win32':
+                path_obj = Path(cmd_path)
+                ext = path_obj.suffix
+                if ext.upper() in ['.EXE', '.CMD', '.BAT', '.COM'] and ext != ext.lower():
+                    cmd_path = str(path_obj.with_suffix(ext.lower()))
             return cmd_path
 
         # Brief delay for PATH synchronization (especially on Windows)
@@ -325,18 +333,25 @@ def compare_versions(current: str, required: str) -> bool:
 
 # Windows-specific functions
 def find_bash_windows() -> str | None:
-    """Find Git Bash on Windows."""
-    # Check CLAUDE_CODE_GIT_BASH_PATH env var
+    """Find Git Bash on Windows.
+
+    Git Bash is required for Claude Code on Windows and provides consistent
+    cross-platform bash behavior for CLI command execution.
+
+    Returns:
+        Full path to bash.exe if found, None otherwise.
+
+    Note:
+        Prioritizes Git Bash locations over PATH search to avoid
+        accidentally finding WSL's bash.exe at C:\\Windows\\System32.
+    """
+    # Check CLAUDE_CODE_GIT_BASH_PATH env var first
     env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
     if env_path and Path(env_path).exists():
         return str(Path(env_path).resolve())
 
-    # Check if bash is in PATH
-    bash_path = find_command('bash.exe')
-    if bash_path:
-        return bash_path
-
-    # Check common locations
+    # Check Git Bash common locations FIRST (before PATH search)
+    # This prevents accidentally finding WSL's bash.exe in System32
     common_paths = [
         r'C:\Program Files\Git\bin\bash.exe',
         r'C:\Program Files\Git\usr\bin\bash.exe',
@@ -350,6 +365,15 @@ def find_bash_windows() -> str | None:
         expanded = os.path.expandvars(path)
         if Path(expanded).exists():
             return str(Path(expanded).resolve())
+
+    # Fall back to PATH search (may find Git Bash if installed elsewhere)
+    bash_path = find_command('bash.exe')
+    if bash_path:
+        # Skip WSL bash in System32/SysWOW64
+        bash_lower = bash_path.lower()
+        if 'system32' not in bash_lower and 'syswow64' not in bash_lower:
+            return bash_path
+        # WSL bash found - don't use it, return None instead
 
     return None
 
