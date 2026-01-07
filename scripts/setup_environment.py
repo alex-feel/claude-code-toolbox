@@ -3260,6 +3260,29 @@ def verify_nodejs_available() -> bool:
     return False
 
 
+def escape_for_cmd(arg: str) -> str:
+    """Escape special characters for Windows CMD execution.
+
+    When subprocess.run() is called with a .CMD file on Windows, CMD interprets
+    special characters like & as command separators. This function escapes such
+    characters with the ^ prefix to ensure they are treated as literal characters.
+
+    Args:
+        arg: The argument string to escape.
+
+    Returns:
+        The escaped string safe for CMD execution.
+    """
+    # CMD special characters that need escaping with ^
+    # IMPORTANT: ^ must be escaped FIRST to avoid double-escaping the ^ characters
+    # that are inserted when escaping other special characters
+    special_chars = ['^', '&', '|', '<', '>', '%']
+    result = arg
+    for char in special_chars:
+        result = result.replace(char, f'^{char}')
+    return result
+
+
 def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
@@ -3382,7 +3405,12 @@ exit $LASTEXITCODE
                 # Also try with direct execution
                 if result.returncode != 0:
                     info('Trying direct execution...')
-                    result = run_command(base_cmd, capture_output=True)
+                    # Escape URL for CMD execution to handle special characters like &
+                    cmd_escaped = base_cmd.copy()
+                    if url in cmd_escaped:
+                        url_index = cmd_escaped.index(url)
+                        cmd_escaped[url_index] = escape_for_cmd(url)
+                    result = run_command(cmd_escaped, capture_output=True)
             else:
                 # On Unix, spawn new bash with updated PATH
                 parent_dir = Path(claude_cmd).parent
@@ -3446,8 +3474,16 @@ exit $LASTEXITCODE
         time.sleep(2)
 
         # Direct execution with full path
-        info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
-        result = run_command(base_cmd, capture_output=False)  # Show output for debugging
+        # On Windows, escape URL for CMD execution to handle special characters like &
+        if sys.platform == 'win32' and url and url in base_cmd:
+            cmd_escaped = base_cmd.copy()
+            url_index = cmd_escaped.index(url)
+            cmd_escaped[url_index] = escape_for_cmd(url)
+            info(f"Retrying with direct command: {' '.join(str(arg) for arg in cmd_escaped)}")
+            result = run_command(cmd_escaped, capture_output=False)  # Show output for debugging
+        else:
+            info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
+            result = run_command(base_cmd, capture_output=False)  # Show output for debugging
 
         if result.returncode == 0:
             success(f'MCP server {name} configured successfully!')

@@ -164,6 +164,52 @@ class TestUtilityFunctions:
         assert setup_environment.find_command('git') == '/usr/bin/git'
 
 
+class TestEscapeForCmd:
+    """Test CMD special character escaping function."""
+
+    def test_escape_ampersand(self):
+        """Test escaping ampersand character."""
+        url = 'https://example.com?param1=value1&param2=value2'
+        escaped = setup_environment.escape_for_cmd(url)
+        assert escaped == 'https://example.com?param1=value1^&param2=value2'
+
+    def test_escape_multiple_special_chars(self):
+        """Test escaping multiple special characters."""
+        arg = 'test&value|with<special>chars^and%percent'
+        escaped = setup_environment.escape_for_cmd(arg)
+        assert escaped == 'test^&value^|with^<special^>chars^^and^%percent'
+
+    def test_escape_empty_string(self):
+        """Test escaping empty string returns empty string."""
+        assert setup_environment.escape_for_cmd('') == ''
+
+    def test_escape_no_special_chars(self):
+        """Test escaping string without special chars returns unchanged."""
+        url = 'https://example.com/path/to/resource'
+        assert setup_environment.escape_for_cmd(url) == url
+
+    def test_escape_supabase_url(self):
+        """Test escaping real-world Supabase MCP URL with & query parameter."""
+        url = 'https://mcp.supabase.com/mcp?project_ref=xkeujjyicwuxwxelliae&read_only=true'
+        escaped = setup_environment.escape_for_cmd(url)
+        assert escaped == 'https://mcp.supabase.com/mcp?project_ref=xkeujjyicwuxwxelliae^&read_only=true'
+
+    def test_escape_url_with_multiple_query_params(self):
+        """Test escaping URL with multiple ampersands in query string."""
+        url = 'https://api.example.com?key=abc&token=xyz&mode=read&format=json'
+        escaped = setup_environment.escape_for_cmd(url)
+        expected = 'https://api.example.com?key=abc^&token=xyz^&mode=read^&format=json'
+        assert escaped == expected
+
+    def test_escape_already_escaped(self):
+        """Test that already escaped characters get double-escaped."""
+        # This is correct behavior - if someone passes already escaped string,
+        # we escape the caret too
+        arg = 'test^&value'
+        escaped = setup_environment.escape_for_cmd(arg)
+        assert escaped == 'test^^^&value'
+
+
 class TestTildeExpansion:
     """Test tilde expansion in commands."""
 
