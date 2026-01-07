@@ -511,6 +511,74 @@ def run_bash_command(
         return subprocess.CompletedProcess(args, 1, '', f'bash not found: {bash_path}')
 
 
+def convert_to_unix_path(windows_path: str) -> str:
+    """Convert a Windows path to Git Bash (MSYS2/Cygwin) Unix-style path.
+
+    Git Bash uses Unix-style paths where drive letters are represented as
+    /driveletter (lowercase). This function converts Windows paths like
+    'C:\\Users\\name\\file.exe' to '/c/Users/name/file.exe'.
+
+    Args:
+        windows_path: A Windows-style path (may contain backslashes and drive letters)
+
+    Returns:
+        Unix-style path suitable for Git Bash execution
+
+    Examples:
+        >>> convert_to_unix_path(r'C:\\Users\\Name\\.local\\bin\\claude.EXE')
+        '/c/Users/Name/.local/bin/claude.EXE'
+        >>> convert_to_unix_path(r'C:\\Program Files\\nodejs')
+        '/c/Program Files/nodejs'
+        >>> convert_to_unix_path('/already/unix/path')
+        '/already/unix/path'
+    """
+    if not windows_path:
+        return windows_path
+
+    # If already a Unix path (starts with / and no drive letter), return as-is
+    if windows_path.startswith('/') and len(windows_path) > 1 and windows_path[1] != ':':
+        return windows_path
+
+    # Normalize backslashes to forward slashes
+    path = windows_path.replace('\\', '/')
+
+    # Handle drive letter (e.g., C: -> /c)
+    if len(path) >= 2 and path[1] == ':':
+        drive_letter = path[0].lower()
+        path = f'/{drive_letter}{path[2:]}'
+
+    return path
+
+
+def convert_path_env_to_unix(windows_path_env: str) -> str:
+    """Convert Windows PATH environment variable to Git Bash Unix-style format.
+
+    Windows PATH uses semicolon (;) as separator and Windows-style paths.
+    Git Bash PATH uses colon (:) as separator and Unix-style paths.
+
+    Args:
+        windows_path_env: Windows PATH string (semicolon-separated)
+
+    Returns:
+        Unix-style PATH string (colon-separated) suitable for Git Bash
+
+    Examples:
+        >>> convert_path_env_to_unix(r'C:\\Windows;C:\\Program Files\\nodejs')
+        '/c/Windows:/c/Program Files/nodejs'
+    """
+    if not windows_path_env:
+        return windows_path_env
+
+    # Split by semicolon (Windows PATH separator)
+    paths = windows_path_env.split(';')
+
+    # Convert each path to Unix format
+    unix_paths = [convert_to_unix_path(p.strip()) for p in paths if p.strip()]
+
+    # Join with colon (Unix PATH separator)
+    return ':'.join(unix_paths)
+
+
 def expand_tildes_in_command(command: str) -> str:
     """Expand tilde paths in a shell command.
 
@@ -3421,19 +3489,23 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 nodejs_path = r'C:\Program Files\nodejs'
                 current_path = os.environ.get('PATH', '')
 
-                # Use POSIX path separator (:) since we're running in bash
+                # Build Windows PATH first, then convert to Unix format
                 if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    explicit_path = f'{nodejs_path}:{current_path}'
+                    windows_explicit_path = f'{nodejs_path};{current_path}'
                 else:
-                    explicit_path = current_path
+                    windows_explicit_path = current_path
+
+                # Convert Windows paths to Git Bash Unix-style paths
+                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+                unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
 
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
                 header_part = f' --header "{header}"' if header else ''
 
                 bash_cmd = (
-                    f'export PATH="{explicit_path}:$PATH" && '
-                    f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                    f'export PATH="{unix_explicit_path}:$PATH" && '
+                    f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
                     f'--transport {transport}{header_part} "{url}"'
                 )
 
@@ -3499,8 +3571,11 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             env_part_retry = f' {env_flags}' if env_flags else ''
             header_part = f' --header "{header}"' if header else ''
 
+            # Convert Windows path to Git Bash Unix-style path
+            unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
+
             bash_cmd = (
-                f'"{claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
+                f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
                 f'--transport {transport}{header_part} "{url}"'
             )
             info(f'Retrying with bash command: {bash_cmd}')

@@ -164,6 +164,84 @@ class TestUtilityFunctions:
         assert setup_environment.find_command('git') == '/usr/bin/git'
 
 
+class TestConvertToUnixPath:
+    """Tests for convert_to_unix_path function."""
+
+    def test_windows_absolute_path(self):
+        """Test conversion of Windows absolute path."""
+        result = setup_environment.convert_to_unix_path(r'C:\Users\Aleksandr\.local\bin\claude.EXE')
+        assert result == '/c/Users/Aleksandr/.local/bin/claude.EXE'
+
+    def test_windows_path_with_spaces(self):
+        """Test conversion of Windows path with spaces."""
+        result = setup_environment.convert_to_unix_path(r'C:\Program Files\nodejs\node.exe')
+        assert result == '/c/Program Files/nodejs/node.exe'
+
+    def test_different_drive_letter(self):
+        """Test conversion with different drive letters."""
+        result = setup_environment.convert_to_unix_path(r'D:\projects\app\bin\tool.exe')
+        assert result == '/d/projects/app/bin/tool.exe'
+
+    def test_lowercase_drive_letter(self):
+        """Test conversion with lowercase drive letter input."""
+        result = setup_environment.convert_to_unix_path(r'c:\Windows\System32\cmd.exe')
+        assert result == '/c/Windows/System32/cmd.exe'
+
+    def test_already_unix_path(self):
+        """Test that Unix paths are returned unchanged."""
+        result = setup_environment.convert_to_unix_path('/usr/local/bin/tool')
+        assert result == '/usr/local/bin/tool'
+
+    def test_empty_path(self):
+        """Test empty path handling."""
+        result = setup_environment.convert_to_unix_path('')
+        assert result == ''
+
+    def test_forward_slash_windows_path(self):
+        """Test Windows path already using forward slashes."""
+        result = setup_environment.convert_to_unix_path('C:/Users/Name/file.txt')
+        assert result == '/c/Users/Name/file.txt'
+
+    def test_mixed_slashes(self):
+        """Test Windows path with mixed slashes."""
+        result = setup_environment.convert_to_unix_path(r'C:\Users/Name\Documents/file.txt')
+        assert result == '/c/Users/Name/Documents/file.txt'
+
+
+class TestConvertPathEnvToUnix:
+    """Tests for convert_path_env_to_unix function."""
+
+    def test_single_path(self):
+        """Test conversion of single path."""
+        result = setup_environment.convert_path_env_to_unix(r'C:\Windows')
+        assert result == '/c/Windows'
+
+    def test_multiple_paths(self):
+        """Test conversion of multiple paths."""
+        result = setup_environment.convert_path_env_to_unix(r'C:\Windows;C:\Program Files\nodejs;D:\tools')
+        assert result == '/c/Windows:/c/Program Files/nodejs:/d/tools'
+
+    def test_empty_path(self):
+        """Test empty path handling."""
+        result = setup_environment.convert_path_env_to_unix('')
+        assert result == ''
+
+    def test_path_with_empty_entries(self):
+        """Test path with empty entries (consecutive semicolons)."""
+        result = setup_environment.convert_path_env_to_unix(r'C:\Windows;;C:\tools')
+        assert result == '/c/Windows:/c/tools'
+
+    def test_path_with_whitespace(self):
+        """Test path entries with whitespace are trimmed."""
+        result = setup_environment.convert_path_env_to_unix(r'C:\Windows ; C:\tools')
+        assert result == '/c/Windows:/c/tools'
+
+    def test_single_empty_entry(self):
+        """Test that single semicolon (empty entries only) produces empty result."""
+        result = setup_environment.convert_path_env_to_unix(';')
+        assert result == ''
+
+
 class TestTildeExpansion:
     """Test tilde expansion in commands."""
 
