@@ -1031,6 +1031,84 @@ class TestConfigureMCPServer:
         # Should call run_command 4 times: 3 for removing from all scopes, once for add
         assert mock_run.call_count == 4
 
+    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_with_ampersand_in_url(self, mock_run, mock_find):
+        """Test configuring HTTP MCP server with URL containing ampersand.
+
+        This tests the fix for the bug where URLs with '&' query parameters
+        were incorrectly interpreted as command separators in Windows CMD/PowerShell.
+        """
+        mock_find.return_value = 'claude'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'supabase',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+        # Should call run_command 4 times: 3 for removing from all scopes, once for add
+        assert mock_run.call_count == 4
+        # Check the last call (add command) contains the full URL
+        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
+        assert 'mcp add' in add_cmd_str
+        assert 'supabase' in add_cmd_str
+        # The URL should be in the command (not split by &)
+        assert 'project_ref=xxx' in add_cmd_str
+        assert 'read_only=true' in add_cmd_str
+
+    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_with_multiple_query_params(self, mock_run, mock_find):
+        """Test configuring HTTP MCP server with URL containing multiple special characters."""
+        mock_find.return_value = 'claude'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-api',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/v1?key=abc&token=xyz&mode=read&format=json',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+        # Check all query parameters are preserved in the command
+        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
+        assert 'key=abc' in add_cmd_str
+        assert 'token=xyz' in add_cmd_str
+        assert 'mode=read' in add_cmd_str
+        assert 'format=json' in add_cmd_str
+
+    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_with_header_and_special_url(self, mock_run, mock_find):
+        """Test configuring HTTP MCP server with header and URL containing special characters."""
+        mock_find.return_value = 'claude'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'auth-api',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com?client_id=123&scope=read&redirect_uri=http://localhost',
+            'header': 'Authorization: Bearer token123',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+        # Check the command contains both header and full URL
+        add_cmd_str = ' '.join(str(arg) for arg in mock_run.call_args_list[3][0][0])
+        assert 'mcp add' in add_cmd_str
+        assert 'auth-api' in add_cmd_str
+        assert '--header' in add_cmd_str
+        assert 'client_id=123' in add_cmd_str
+        assert 'scope=read' in add_cmd_str
+
 
 class TestCreateAdditionalSettings:
     """Test additional settings creation."""

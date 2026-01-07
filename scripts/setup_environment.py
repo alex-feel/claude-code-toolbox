@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -3359,13 +3360,13 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} {url}
+& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} "{url}"
 exit $LASTEXITCODE
 '''
                 if header:
                     ps_script = f'''
 $env:Path = "{explicit_path}"
-& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} --header "{header}" {url}
+& "{claude_cmd}" mcp add --scope {scope} {name}{env_part} --transport {transport} --header "{header}" "{url}"
 exit $LASTEXITCODE
 '''
                 result = run_command(
@@ -3385,7 +3386,7 @@ exit $LASTEXITCODE
             else:
                 # On Unix, spawn new bash with updated PATH
                 parent_dir = Path(claude_cmd).parent
-                bash_cmd = f'export PATH="{parent_dir}:$PATH" && {" ".join(base_cmd)}'
+                bash_cmd = f'export PATH="{parent_dir}:$PATH" && ' + ' '.join(shlex.quote(str(arg)) for arg in base_cmd)
                 result = run_command(
                     [
                         'bash',

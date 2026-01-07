@@ -1,6 +1,7 @@
 ### IDE
 .idea
 .claude
+.serena
 
 ### Python template
 # Byte-compiled / optimized / DLL files
