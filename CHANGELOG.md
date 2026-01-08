@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.1...v4.18.2) (2026-01-08)
+
+
+### Bug Fixes
+
+* unify MCP server STDIO execution to use bash and remove retry logic ([4c00bbc](https://github.com/alex-feel/claude-code-toolbox/commit/4c00bbc0d6830893d06e0c0336af0b0051a28e26))
+
 ## [4.18.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.0...v4.18.1) (2026-01-08)
 
 
