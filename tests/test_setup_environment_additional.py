@@ -621,50 +621,13 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
-    @patch('sys.platform', 'win32')
-    @patch('platform.system', return_value='Windows')
-    @patch('time.sleep')
-    @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust', return_value='claude')
-    def test_configure_mcp_server_windows_retry(
-        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_sleep, _mock_system,
-    ):
-        """Test MCP configuration retry on Windows uses bash."""
-        del mock_find  # Unused but required for patch
-        del _mock_system  # Unused but required for patch
-        del mock_sleep  # Unused but required for patch
-        # run_command: 3 removes (fail)
-        mock_run_cmd.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
-            subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
-        ]
-
-        # run_bash_command: first bash attempt fails, retry succeeds
-        mock_bash_cmd.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'bash failed'),  # first bash attempt fails
-            subprocess.CompletedProcess([], 0, '', ''),  # retry succeeds
-        ]
-
-        server = {
-            'name': 'test',
-            'transport': 'http',
-            'url': 'http://localhost',
-            'header': 'Auth: token',
-        }
-
-        result = setup_environment.configure_mcp_server(server)
-
-        assert result is True
-        assert mock_run_cmd.call_count == 3  # 3 removes only
-        assert mock_bash_cmd.call_count == 2  # first bash + retry
-
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_already_exists(self, mock_run, mock_find):
+    def test_configure_mcp_server_already_exists(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration removes existing server before adding."""
         del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
         # 3 removes (one per scope) can fail - server might not exist
         # Then add should succeed
         mock_run.side_effect = [
@@ -681,39 +644,38 @@ class TestMCPServerConfigurationEdgeCases:
         # Verify 3 remove commands and 1 add command were called
         assert mock_run.call_count == 4
 
-    @patch('platform.system', return_value='Windows')
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_final_failure(self, mock_run, mock_find, mock_system):
-        """Test MCP configuration final failure after retry."""
+        """Test MCP configuration failure on first attempt (no retry)."""
         del mock_find  # Unused but required for patch
         del mock_system  # Unused but required for patch
-        # 3 removes (one per scope), first add fails, retry add fails
+        # 3 removes (one per scope), add fails
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove user fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove local fails
             subprocess.CompletedProcess([], 1, '', 'Server not found'),  # remove project fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # first add fails
-            subprocess.CompletedProcess([], 1, '', 'Error'),  # retry add fails
+            subprocess.CompletedProcess([], 1, '', 'Error'),  # add fails
         ]
 
         server = {'name': 'test', 'command': 'test-server'}
-
-        with patch('time.sleep'):
-            result = setup_environment.configure_mcp_server(server)
+        result = setup_environment.configure_mcp_server(server)
 
         assert result is False
-        # Expects 5 calls: 3 removes + first add + retry add
-        assert mock_run.call_count == 5
+        # Expects 4 calls: 3 removes + first add (no retry)
+        assert mock_run.call_count == 4
 
     @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_windows_npx_command(self, mock_run, mock_find, _mock_system):
-        """Test MCP configuration with npx command on Windows."""
+    def test_configure_mcp_server_windows_npx_command(self, mock_run, mock_find, mock_bash, _mock_system):
+        """Test MCP configuration with npx command on Windows uses bash."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
             'name': 'test',
@@ -724,13 +686,14 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Should call run_command 4 times: 3 for removing from all scopes, once for add
-        assert mock_run.call_count == 4
-        # Check that cmd /c was used for npx in the last call (add)
-        call_args = mock_run.call_args_list[3][0][0]
-        assert 'cmd' in call_args
-        assert '/c' in call_args
-        assert 'npx @modelcontextprotocol/server-memory' in call_args
+        # Should call run_command 3 times for removing from all scopes
+        assert mock_run.call_count == 3
+        # Should call run_bash_command once for add (Windows STDIO uses bash)
+        assert mock_bash.call_count == 1
+        # Check that cmd /c was used for npx in the bash command
+        bash_cmd = mock_bash.call_args[0][0]
+        assert 'cmd /c npx @modelcontextprotocol/server-memory' in bash_cmd
+        assert 'export PATH=' in bash_cmd
 
     @patch('setup_environment.find_command_robust', return_value='claude')
     def test_configure_mcp_server_exception(self, mock_find):
@@ -750,11 +713,13 @@ class TestMCPServerConfigurationEdgeCases:
 
         assert result is False
 
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_env_single_string(self, mock_run, mock_find):
+    def test_configure_mcp_server_env_single_string(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with single env string (backward compatibility)."""
         del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
@@ -775,11 +740,13 @@ class TestMCPServerConfigurationEdgeCases:
         env_idx = cmd.index('--env')
         assert cmd[env_idx + 1] == 'API_KEY=secret123'
 
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_env_multiple_list(self, mock_run, mock_find):
+    def test_configure_mcp_server_env_multiple_list(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with multiple env vars as list."""
         del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
@@ -808,11 +775,13 @@ class TestMCPServerConfigurationEdgeCases:
         assert 'DEBUG=true' in cmd
         assert 'LOG_LEVEL=info' in cmd
 
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_env_empty_list(self, mock_run, mock_find):
+    def test_configure_mcp_server_env_empty_list(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with empty env list."""
         del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {

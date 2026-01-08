@@ -1138,7 +1138,7 @@ class TestConfigureMCPServer:
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_stdio(self, mock_run, mock_find):
-        """Test configuring stdio MCP server."""
+        """Test configuring stdio MCP server on Unix."""
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
@@ -1148,7 +1148,8 @@ class TestConfigureMCPServer:
             'command': 'npx test-server',
         }
 
-        result = setup_environment.configure_mcp_server(server)
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
         assert result is True
         # Should call run_command 4 times: 3 for removing from all scopes, once for add
         assert mock_run.call_count == 4
@@ -1292,53 +1293,48 @@ class TestConfigureMCPServer:
         assert 'supabase' in bash_cmd
         assert 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true' in bash_cmd
 
-    @patch('sys.platform', 'win32')
-    @patch('time.sleep')
+    @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     @patch('setup_environment.find_command_robust')
-    def test_configure_mcp_server_windows_retry_uses_bash(
-        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_sleep, mock_platform,
+    def test_configure_mcp_server_stdio_windows_uses_bash(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
-        """Test Windows retry path uses bash for consistent behavior.
+        """Test Windows STDIO transport uses bash for consistent cross-platform behavior.
 
-        When the first bash attempt fails, the retry should also use bash
-        with the URL properly quoted.
+        On Windows, STDIO transport should use run_bash_command (same as HTTP)
+        to provide unified execution behavior across all transport types.
         """
-        del mock_sleep  # Unused but required to prevent actual sleep
-        del mock_platform  # Unused but required for patch
+        del mock_system  # Unused but required for patch
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
 
         # run_command for removes succeeds
         mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        # First bash call fails, second (retry) succeeds
-        mock_bash_cmd.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'First attempt failed'),
-            subprocess.CompletedProcess([], 0, '', ''),  # Retry succeeds
-        ]
+        # Bash command succeeds
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         server = {
-            'name': 'supabase',
+            'name': 'test-stdio-server',
             'scope': 'user',
-            'transport': 'http',
-            'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
-            'header': 'X-Custom: value',
+            'command': 'npx @test/server',
         }
 
-        with patch('platform.system', return_value='Windows'):
-            result = setup_environment.configure_mcp_server(server)
-
+        result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Verify run_bash_command was called twice (initial + retry)
-        assert mock_bash_cmd.call_count == 2
+        # Verify run_bash_command was called for the add operation
+        assert mock_bash_cmd.called
+        call_args = mock_bash_cmd.call_args
 
-        # Check both calls contain the URL and header
-        for call in mock_bash_cmd.call_args_list:
-            bash_cmd = call.args[0]
-            assert 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true' in bash_cmd
-            assert 'X-Custom: value' in bash_cmd or '--header' in bash_cmd
+        # Check the bash command contains proper STDIO configuration
+        bash_cmd = call_args.args[0]
+        assert 'mcp add' in bash_cmd
+        assert 'test-stdio-server' in bash_cmd
+        # npx commands should use cmd /c wrapper
+        assert 'cmd /c npx @test/server' in bash_cmd
+        # PATH export should be present
+        assert 'export PATH=' in bash_cmd
 
 
 class TestCreateAdditionalSettings:

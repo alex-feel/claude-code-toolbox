@@ -192,6 +192,13 @@ When configuring MCP servers, permissions are automatically added to `additional
 }
 ```
 
+### Environment Variables for Debugging
+
+The setup scripts support these environment variables for debugging and customization:
+
+- `CLAUDE_CODE_TOOLBOX_DEBUG`: Set to `1`, `true`, or `yes` to enable verbose debug logging during MCP server configuration and other operations
+- `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
+
 ### Hooks Configuration Structure
 
 Hooks use this structure in environment YAML:

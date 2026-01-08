@@ -3612,22 +3612,51 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             else:
                 base_cmd.extend(command.split())
 
-            # On Windows, use custom environment with Node.js PATH
+            # Windows STDIO transport - use bash for consistent cross-platform behavior
+            # This unifies STDIO with HTTP transport (both use run_bash_command)
             if system == 'Windows':
-                # Build explicit PATH including Node.js location
-                # This fixes Windows 10+ PATH propagation bug where MSI registry updates
-                # don't propagate to running processes via WM_SETTINGCHANGE
-                nodejs_path = r'C:\Program Files\nodejs'
-                my_env = os.environ.copy()
+                debug_log(f'=== MCP Server Configuration (STDIO): {name} ===')
+                debug_log(f'claude_cmd: {claude_cmd}')
 
-                # Ensure Node.js is in PATH
-                if Path(nodejs_path).exists():
-                    current_path = my_env.get('PATH', '')
-                    if nodejs_path not in current_path:
-                        my_env['PATH'] = f'{nodejs_path};{current_path}'
+                # Build explicit PATH including Node.js location
+                nodejs_path = r'C:\Program Files\nodejs'
+                current_path = os.environ.get('PATH', '')
+
+                # Build Windows PATH first, then convert to Unix format
+                if Path(nodejs_path).exists() and nodejs_path not in current_path:
+                    windows_explicit_path = f'{nodejs_path};{current_path}'
+                else:
+                    windows_explicit_path = current_path
+
+                # Convert Windows paths to Git Bash Unix-style paths
+                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+                unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
+
+                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
+                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                debug_log(f'unix_explicit_path: {path_preview}')
+
+                env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
+                env_part = f' {env_flags}' if env_flags else ''
+
+                # Build command string for STDIO
+                # npx needs cmd /c wrapper on Windows even in bash
+                command_str = f'cmd /c {command}' if 'npx' in command else command
+
+                bash_cmd = (
+                    f'export PATH="{unix_explicit_path}:$PATH" && '
+                    f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                    f'-- {command_str}'
+                )
+
+                bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
+                debug_log(f'STDIO bash_cmd: {bash_cmd_preview}')
 
                 info(f'Configuring stdio MCP server {name}...')
-                result = run_command(base_cmd, capture_output=True, env=my_env)
+                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                debug_log(f'STDIO result: returncode={result.returncode}')
+                if result.returncode != 0:
+                    debug_log(f'STDIO failed! stdout={result.stdout}, stderr={result.stderr}')
             else:
                 # Unix-like systems - direct execution
                 info(f'Configuring stdio MCP server {name}...')
@@ -3641,49 +3670,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             success(f'MCP server {name} configured successfully!')
             return True
 
-        # If it still fails, try one more time with a delay
-        info('First attempt failed, waiting 2 seconds and retrying...')
-        time.sleep(2)
-
-        # Direct execution with full path
-        # On Windows with HTTP transport, use bash for consistent behavior
-        if sys.platform == 'win32' and transport and url:
-            env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
-            env_part_retry = f' {env_flags}' if env_flags else ''
-            header_part = f' --header "{header}"' if header else ''
-
-            # Convert Windows path to Git Bash Unix-style path
-            unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
-
-            # Build explicit PATH including Node.js location (same as first attempt)
-            nodejs_path = r'C:\Program Files\nodejs'
-            current_path = os.environ.get('PATH', '')
-            if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                windows_explicit_path = f'{nodejs_path};{current_path}'
-            else:
-                windows_explicit_path = current_path
-            unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-
-            # Include PATH export in retry (same as first attempt)
-            bash_cmd = (
-                f'export PATH="{unix_explicit_path}:$PATH" && '
-                f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
-                f'--transport {transport}{header_part} "{url}"'
-            )
-            bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
-            debug_log(f'Retry bash_cmd: {bash_cmd_preview}')
-            info(f'Retrying with bash command: {bash_cmd}')
-            result = run_bash_command(bash_cmd, capture_output=False)
-        else:
-            info(f"Retrying with direct command: {' '.join(str(arg) for arg in base_cmd)}")
-            result = run_command(base_cmd, capture_output=False)  # Show output for debugging
-
-        if result.returncode == 0:
-            success(f'MCP server {name} configured successfully!')
-            return True
-
-        # Enhanced error detection for common issues
-        error(f'MCP configuration failed with exit code: {result.returncode}')
+        # Configuration failed - log detailed error information
+        error(f'MCP configuration failed: exit code {result.returncode}')
+        if result.stderr:
+            error(f'Error details: {result.stderr}')
+        if result.stdout:
+            info(f'Output: {result.stdout}')
 
         # Check for Node.js v25 incompatibility signature
         stderr_text = str(result.stderr) if result.stderr else ''
@@ -3692,10 +3684,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             error('Claude Code is not yet compatible with Node.js v25+')
             info('Node.js v25 removed the SlowBuffer API that Claude Code depends on')
             info('Please downgrade to Node.js v22 or v20 (LTS)')
-            return False
 
-        if result.stderr:
-            error(f'Error: {result.stderr}')
         return False
 
     except Exception as e:
