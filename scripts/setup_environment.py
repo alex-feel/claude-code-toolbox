@@ -66,6 +66,27 @@ def is_running_in_pytest() -> bool:
     return 'pytest' in sys.modules or 'py.test' in sys.argv[0]
 
 
+def is_debug_enabled() -> bool:
+    """Check if debug logging is enabled via environment variable.
+
+    Returns:
+        True if CLAUDE_CODE_TOOLBOX_DEBUG is set to '1', 'true', or 'yes' (case-insensitive)
+    """
+    debug_value = os.environ.get('CLAUDE_CODE_TOOLBOX_DEBUG', '').lower()
+    return debug_value in ('1', 'true', 'yes')
+
+
+def debug_log(message: str) -> None:
+    """Log debug message if debug mode is enabled.
+
+    Args:
+        message: Debug message to log
+    """
+    if is_debug_enabled():
+        # Use distinct prefix for easy filtering
+        print(f'  [DEBUG] {message}', file=sys.stderr)
+
+
 # Windows UAC elevation helper functions
 def is_admin() -> bool:
     """Check if running with admin privileges on Windows.
@@ -457,9 +478,13 @@ def find_bash_windows() -> str | None:
         Prioritizes Git Bash locations over PATH search to avoid
         accidentally finding WSL's bash.exe at C:\\Windows\\System32.
     """
+    debug_log('find_bash_windows() called')
+
     # Check CLAUDE_CODE_GIT_BASH_PATH env var first
     env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    debug_log(f'CLAUDE_CODE_GIT_BASH_PATH={env_path}')
     if env_path and Path(env_path).exists():
+        debug_log(f'Found via env var: {env_path}')
         return str(Path(env_path).resolve())
 
     # Check Git Bash common locations FIRST (before PATH search)
@@ -473,20 +498,28 @@ def find_bash_windows() -> str | None:
         os.path.expandvars(r'%LOCALAPPDATA%\Programs\Git\usr\bin\bash.exe'),
     ]
 
-    for path in common_paths:
+    for i, path in enumerate(common_paths):
         expanded = os.path.expandvars(path)
-        if Path(expanded).exists():
+        exists = Path(expanded).exists()
+        debug_log(f'Common path [{i}]: {expanded} - exists={exists}')
+        if exists:
+            debug_log(f'Found via common path: {expanded}')
             return str(Path(expanded).resolve())
 
     # Fall back to PATH search (may find Git Bash if installed elsewhere)
     bash_path = find_command('bash.exe')
+    debug_log(f'PATH search result: {bash_path}')
     if bash_path:
         # Skip WSL bash in System32/SysWOW64
         bash_lower = bash_path.lower()
-        if 'system32' not in bash_lower and 'syswow64' not in bash_lower:
+        is_wsl = 'system32' in bash_lower or 'syswow64' in bash_lower
+        debug_log(f'Is WSL bash: {is_wsl}')
+        if not is_wsl:
+            debug_log(f'Returning PATH bash: {bash_path}')
             return bash_path
-        # WSL bash found - don't use it, return None instead
+        debug_log('Skipping WSL bash')
 
+    debug_log('No suitable bash found, returning None')
     return None
 
 
@@ -508,13 +541,22 @@ def run_bash_command(
     Returns:
         subprocess.CompletedProcess with the result
     """
+    debug_log('run_bash_command() called')
+    cmd_preview = command[:200] + '...' if len(command) > 200 else command
+    debug_log(f'  command: {cmd_preview}')
+    debug_log(f'  capture_output: {capture_output}')
+    debug_log(f'  login_shell: {login_shell}')
+
     if sys.platform == 'win32':
         bash_path = find_bash_windows()
     else:
         bash_path = shutil.which('bash')
 
+    debug_log(f'bash_path resolved to: {bash_path}')
+
     if not bash_path:
         error('Bash not found!')
+        debug_log('ERROR: Returning early - bash not found')
         return subprocess.CompletedProcess([], 1, '', 'bash not found')
 
     args = [bash_path]
@@ -522,9 +564,19 @@ def run_bash_command(
         args.append('-l')
     args.extend(['-c', command])
 
+    debug_log(f'Executing: {args}')
+
     try:
-        return subprocess.run(args, capture_output=capture_output, text=True)
-    except FileNotFoundError:
+        result = subprocess.run(args, capture_output=capture_output, text=True)
+        debug_log(f'Exit code: {result.returncode}')
+        if capture_output:
+            stdout_preview = result.stdout[:500] if result.stdout else '(empty)'
+            stderr_preview = result.stderr[:500] if result.stderr else '(empty)'
+            debug_log(f'stdout: {stdout_preview}')
+            debug_log(f'stderr: {stderr_preview}')
+        return result
+    except FileNotFoundError as e:
+        debug_log(f'FileNotFoundError: {e}')
         return subprocess.CompletedProcess(args, 1, '', f'bash not found: {bash_path}')
 
 
@@ -3502,6 +3554,9 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             # Windows HTTP transport - use bash for consistent cross-platform behavior
             # This eliminates PowerShell's exit code quirks and CMD escaping issues
             if system == 'Windows':
+                debug_log(f'=== MCP Server Configuration: {name} ===')
+                debug_log(f'claude_cmd: {claude_cmd}')
+
                 # Build explicit PATH including Node.js location
                 nodejs_path = r'C:\Program Files\nodejs'
                 current_path = os.environ.get('PATH', '')
@@ -3516,6 +3571,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
                 unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
 
+                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
+                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                debug_log(f'unix_explicit_path: {path_preview}')
+
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
                 header_part = f' --header "{header}"' if header else ''
@@ -3526,7 +3585,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                     f'--transport {transport}{header_part} "{url}"'
                 )
 
+                bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
+                debug_log(f'First attempt bash_cmd: {bash_cmd_preview}')
                 result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                debug_log(f'First attempt result: returncode={result.returncode}')
+                if result.returncode != 0:
+                    debug_log(f'First attempt failed! stdout={result.stdout}, stderr={result.stderr}')
             else:
                 # On Unix, use bash with updated PATH (consistent with Windows)
                 parent_dir = Path(claude_cmd).parent
@@ -3591,10 +3655,23 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             # Convert Windows path to Git Bash Unix-style path
             unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
 
+            # Build explicit PATH including Node.js location (same as first attempt)
+            nodejs_path = r'C:\Program Files\nodejs'
+            current_path = os.environ.get('PATH', '')
+            if Path(nodejs_path).exists() and nodejs_path not in current_path:
+                windows_explicit_path = f'{nodejs_path};{current_path}'
+            else:
+                windows_explicit_path = current_path
+            unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+
+            # Include PATH export in retry (same as first attempt)
             bash_cmd = (
+                f'export PATH="{unix_explicit_path}:$PATH" && '
                 f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part_retry} '
                 f'--transport {transport}{header_part} "{url}"'
             )
+            bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
+            debug_log(f'Retry bash_cmd: {bash_cmd_preview}')
             info(f'Retrying with bash command: {bash_cmd}')
             result = run_bash_command(bash_cmd, capture_output=False)
         else:
