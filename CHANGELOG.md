@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.0...v4.18.1) (2026-01-08)
+
+
+### Bug Fixes
+
+* resolve MCP server configuration retry missing PATH export ([64b3cde](https://github.com/alex-feel/claude-code-toolbox/commit/64b3cdef66c6357d4aa8a23360fd3d9e06b87bbc))
+
 ## [4.18.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.17.2...v4.18.0) (2026-01-07)
 
 
