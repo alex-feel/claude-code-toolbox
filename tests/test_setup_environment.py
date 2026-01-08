@@ -81,6 +81,44 @@ class TestLoggingFunctions:
         assert 'Claude Code Python Environment Setup' in captured.out
 
 
+class TestDebugFunctions:
+    """Test debug logging functions."""
+
+    @pytest.mark.parametrize('env_value', ['1', 'true', 'yes', 'TRUE', 'Yes', 'TrUe'])
+    def test_is_debug_enabled_true(self, env_value):
+        """Test that '1', 'true', 'yes' (case-insensitive) all return True."""
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_DEBUG': env_value}):
+            assert setup_environment.is_debug_enabled() is True
+
+    @pytest.mark.parametrize('env_value', ['', '0', 'false', 'no', 'FALSE', 'No', 'anything'])
+    def test_is_debug_enabled_false(self, env_value):
+        """Test that '', '0', 'false', 'no', and other values return False."""
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_DEBUG': env_value}):
+            assert setup_environment.is_debug_enabled() is False
+
+    def test_is_debug_enabled_unset(self):
+        """Test that unset environment variable returns False."""
+        with patch.dict('os.environ', {}, clear=True):
+            # Remove the key if it exists
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_DEBUG', None)
+            assert setup_environment.is_debug_enabled() is False
+
+    def test_debug_log_outputs_when_enabled(self, capsys):
+        """Test that debug_log outputs to stderr when debug is enabled."""
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_DEBUG': '1'}):
+            setup_environment.debug_log('Test debug message')
+            captured = capsys.readouterr()
+            assert '  [DEBUG] Test debug message' in captured.err
+
+    def test_debug_log_silent_when_disabled(self, capsys):
+        """Test that debug_log produces no output when debug is disabled."""
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_DEBUG': '0'}):
+            setup_environment.debug_log('Test debug message')
+            captured = capsys.readouterr()
+            assert captured.err == ''
+            assert captured.out == ''
+
+
 class TestUtilityFunctions:
     """Test utility functions."""
 
