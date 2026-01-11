@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.2...v4.18.3) (2026-01-11)
+
+
+### Bug Fixes
+
+* prefer shell scripts over .cmd files for Git Bash MCP configuration ([5455f3f](https://github.com/alex-feel/claude-code-toolbox/commit/5455f3f6d2241b1c77a1e7e170b9c7616bc6f8e2))
+
 ## [4.18.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.1...v4.18.2) (2026-01-08)
 
 
