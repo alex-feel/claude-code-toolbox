@@ -280,6 +280,87 @@ class TestConvertPathEnvToUnix:
         assert result == ''
 
 
+class TestGetBashPreferredCommand:
+    """Tests for get_bash_preferred_command function."""
+
+    def test_cmd_file_with_extensionless_alternative(self, tmp_path):
+        """Test that .cmd file is replaced with extensionless alternative when it exists."""
+        # Create both .cmd and extensionless files
+        cmd_file = tmp_path / 'claude.cmd'
+        extensionless_file = tmp_path / 'claude'
+        cmd_file.write_text('@echo off\nnode %~dp0\\claude-code %*')
+        extensionless_file.write_text('#!/bin/sh\nexec node "$basedir/claude-code" "$@"')
+
+        result = setup_environment.get_bash_preferred_command(str(cmd_file))
+        assert result == str(extensionless_file)
+
+    def test_cmd_file_without_extensionless_alternative(self, tmp_path):
+        """Test that .cmd file is returned unchanged when no extensionless alternative exists."""
+        # Create only .cmd file
+        cmd_file = tmp_path / 'claude.cmd'
+        cmd_file.write_text('@echo off\nnode %~dp0\\claude-code %*')
+
+        result = setup_environment.get_bash_preferred_command(str(cmd_file))
+        assert result == str(cmd_file)
+
+    def test_bat_file_with_extensionless_alternative(self, tmp_path):
+        """Test that .bat file is also replaced with extensionless alternative."""
+        # Create both .bat and extensionless files
+        bat_file = tmp_path / 'tool.bat'
+        extensionless_file = tmp_path / 'tool'
+        bat_file.write_text('@echo off')
+        extensionless_file.write_text('#!/bin/sh\necho "shell script"')
+
+        result = setup_environment.get_bash_preferred_command(str(bat_file))
+        assert result == str(extensionless_file)
+
+    def test_uppercase_cmd_extension(self, tmp_path):
+        """Test that uppercase .CMD extension is also handled."""
+        # Create both .CMD and extensionless files
+        cmd_file = tmp_path / 'claude.CMD'
+        extensionless_file = tmp_path / 'claude'
+        cmd_file.write_text('@echo off')
+        extensionless_file.write_text('#!/bin/sh')
+
+        result = setup_environment.get_bash_preferred_command(str(cmd_file))
+        assert result == str(extensionless_file)
+
+    def test_exe_file_unchanged(self, tmp_path):
+        """Test that .exe files are returned unchanged (not processed)."""
+        exe_file = tmp_path / 'claude.exe'
+        extensionless_file = tmp_path / 'claude'
+        exe_file.write_text('fake exe')
+        extensionless_file.write_text('#!/bin/sh')
+
+        result = setup_environment.get_bash_preferred_command(str(exe_file))
+        assert result == str(exe_file)
+
+    def test_extensionless_file_unchanged(self, tmp_path):
+        """Test that extensionless files are returned unchanged."""
+        extensionless_file = tmp_path / 'claude'
+        extensionless_file.write_text('#!/bin/sh')
+
+        result = setup_environment.get_bash_preferred_command(str(extensionless_file))
+        assert result == str(extensionless_file)
+
+    def test_empty_path(self):
+        """Test empty path handling."""
+        result = setup_environment.get_bash_preferred_command('')
+        assert result == ''
+
+    def test_none_path(self):
+        """Test None-like path handling (empty string)."""
+        result = setup_environment.get_bash_preferred_command('')
+        assert result == ''
+
+    def test_nonexistent_file(self, tmp_path):
+        """Test handling of nonexistent .cmd file returns original path."""
+        nonexistent = tmp_path / 'nonexistent.cmd'
+        result = setup_environment.get_bash_preferred_command(str(nonexistent))
+        # Should return original path even if file doesn't exist
+        assert result == str(nonexistent)
+
+
 class TestTildeExpansion:
     """Test tilde expansion in commands."""
 
@@ -1335,6 +1416,54 @@ class TestConfigureMCPServer:
         assert 'cmd /c npx @test/server' in bash_cmd
         # PATH export should be present
         assert 'export PATH=' in bash_cmd
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_windows_prefers_shell_script_over_cmd(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system, tmp_path,
+    ):
+        """Test Windows uses shell script instead of .cmd to avoid & parsing issues.
+
+        When both .cmd and extensionless shell script exist, the extensionless
+        version should be preferred to avoid CMD.exe interpreting & in URLs
+        as command separators.
+        """
+        del mock_system  # Unused but required for patch
+
+        # Create both .cmd and extensionless files
+        cmd_file = tmp_path / 'claude.cmd'
+        extensionless_file = tmp_path / 'claude'
+        cmd_file.write_text('@echo off\nnode %~dp0\\claude-code %*')
+        extensionless_file.write_text('#!/bin/sh\nexec node "$basedir/claude-code" "$@"')
+
+        # find_command_robust returns the .cmd file (as Windows would typically find)
+        mock_find.return_value = str(cmd_file)
+
+        # Commands succeed
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'supabase',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://mcp.supabase.com/mcp?project_ref=xxx&read_only=true',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Verify run_bash_command was called
+        assert mock_bash_cmd.called
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+
+        # The bash command should use the extensionless file, not .cmd
+        # Convert to unix path format for the check
+        assert 'claude.cmd' not in bash_cmd.lower()
+        # The extensionless 'claude' should be in the path (converted to unix format)
+        assert '/claude"' in bash_cmd or "/claude'" in bash_cmd or 'claude" mcp' in bash_cmd
 
 
 class TestCreateAdditionalSettings:
