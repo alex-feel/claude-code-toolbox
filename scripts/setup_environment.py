@@ -648,6 +648,52 @@ def convert_path_env_to_unix(windows_path_env: str) -> str:
     return ':'.join(unix_paths)
 
 
+def get_bash_preferred_command(cmd_path: str) -> str:
+    """Get the preferred command path for Git Bash execution on Windows.
+
+    When running commands through Git Bash on Windows, .cmd/.bat files can cause
+    issues with special characters in arguments (like & in URLs) because CMD.exe
+    parses these characters as command separators before the batch script receives them.
+
+    npm typically creates both a .cmd file and an extensionless shell script in the
+    global bin directory. This function checks if an extensionless version exists
+    and returns it instead of the .cmd version for Git Bash compatibility.
+
+    Args:
+        cmd_path: Path to a command (may be .cmd/.bat or extensionless)
+
+    Returns:
+        Path to the preferred command for Git Bash execution:
+        - If input is .cmd/.bat and extensionless version exists, return extensionless
+        - Otherwise return original path unchanged
+
+    Examples:
+        >>> get_bash_preferred_command(r'C:\\Users\\name\\AppData\\Roaming\\npm\\claude.cmd')
+        'C:\\\\Users\\\\name\\\\AppData\\\\Roaming\\\\npm\\\\claude'  # if 'claude' exists
+        >>> get_bash_preferred_command(r'C:\\Users\\name\\.local\\bin\\claude.exe')
+        'C:\\\\Users\\\\name\\.local\\\\bin\\\\claude.exe'  # unchanged (not .cmd)
+    """
+    if not cmd_path:
+        return cmd_path
+
+    path_obj = Path(cmd_path)
+    suffix_lower = path_obj.suffix.lower()
+
+    # Only process .cmd and .bat files (Windows batch files)
+    if suffix_lower not in ['.cmd', '.bat']:
+        return cmd_path
+
+    # Check if extensionless version exists in the same directory
+    extensionless_path = path_obj.with_suffix('')
+
+    if extensionless_path.exists() and extensionless_path.is_file():
+        debug_log(f'Preferring extensionless script over {suffix_lower}: {extensionless_path}')
+        return str(extensionless_path)
+
+    # No extensionless alternative found, return original
+    return cmd_path
+
+
 def expand_tildes_in_command(command: str) -> str:
     """Expand tilde paths in a shell command.
 
@@ -3569,7 +3615,9 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 # Convert Windows paths to Git Bash Unix-style paths
                 unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
+                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
+                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
+                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
 
                 debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
                 path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
@@ -3630,7 +3678,9 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 # Convert Windows paths to Git Bash Unix-style paths
                 unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                unix_claude_cmd = convert_to_unix_path(str(claude_cmd))
+                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
+                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
+                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
 
                 debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
                 path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
