@@ -532,7 +532,7 @@ class TestAuthHeaders:
         headers = setup_environment.get_auth_headers('https://github.com/repo', None)
         assert headers == {'Authorization': 'Bearer gh_token'}
 
-    @patch.dict('os.environ', {'REPO_TOKEN': 'generic_token'})
+    @patch.dict('os.environ', {'REPO_TOKEN': 'generic_token'}, clear=True)
     def test_get_auth_headers_from_env_generic(self):
         """Test getting generic token from environment."""
         headers = setup_environment.get_auth_headers('https://gitlab.com/repo', None)
