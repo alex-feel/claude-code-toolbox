@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.3...v4.18.4) (2026-01-13)
+
+
+### Bug Fixes
+
+* use PowerShell for Windows dependencies instead of bash ([9312145](https://github.com/alex-feel/claude-code-toolbox/commit/9312145a40c46315981ce44c002d6671658f4ca4))
+
 ## [4.18.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.2...v4.18.3) (2026-01-11)
 
 
