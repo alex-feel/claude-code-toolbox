@@ -2802,8 +2802,9 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 parts_with_force = parts[:3] + ['--force'] + parts[3:]
                 result = run_command(parts_with_force, capture_output=False)
             else:
-                # Use bash for consistent cross-platform behavior
-                result = run_bash_command(dep, capture_output=False)
+                # Windows dependencies are PowerShell commands (user-provided in YAML)
+                # This is different from MCP server config which uses bash for generated commands
+                result = run_command(['powershell', '-NoProfile', '-Command', dep], capture_output=False)
         else:
             if parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')

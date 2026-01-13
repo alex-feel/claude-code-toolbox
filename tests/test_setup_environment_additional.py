@@ -1524,17 +1524,17 @@ class TestInstallDependenciesEdgeCases:
     """Test dependency installation edge cases."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.run_bash_command')
-    def test_install_dependencies_windows_bash_execution(self, mock_bash, _mock_system):
-        """Test bash execution for unknown commands on Windows."""
-        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+    @patch('setup_environment.run_command')
+    def test_install_dependencies_windows_powershell_execution(self, mock_run, _mock_system):
+        """Test PowerShell execution for unknown commands on Windows."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'windows': ['custom-command install package']})
         assert result is True
 
-        # Should use bash for command execution
-        call_args = mock_bash.call_args[0][0]
-        assert 'custom-command install package' in call_args
+        # Should use PowerShell with -NoProfile flag for command execution
+        call_args = mock_run.call_args[0][0]
+        assert call_args == ['powershell', '-NoProfile', '-Command', 'custom-command install package']
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.run_command')
@@ -1550,17 +1550,17 @@ class TestInstallDependenciesEdgeCases:
         assert 'uv tool install --force pytest' in ' '.join(call_args)
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.run_bash_command')
-    def test_install_dependencies_failure_continues(self, mock_bash, _mock_system):
+    @patch('setup_environment.run_command')
+    def test_install_dependencies_failure_continues(self, mock_run, _mock_system):
         """Test that dependency installation continues after failure."""
-        mock_bash.side_effect = [
+        mock_run.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Error'),  # First fails
             subprocess.CompletedProcess([], 0, '', ''),  # Second succeeds
         ]
 
         result = setup_environment.install_dependencies({'windows': ['failing-dep', 'working-dep']})
         assert result is True
-        assert mock_bash.call_count == 2
+        assert mock_run.call_count == 2
 
 
 class TestDeriveBaseURLEdgeCases:
