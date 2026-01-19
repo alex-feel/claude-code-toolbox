@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.19.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.19.0...v4.19.1) (2026-01-19)
+
+
+### Bug Fixes
+
+* remove token message spam and parallelize skills processing ([49b3ad7](https://github.com/alex-feel/claude-code-toolbox/commit/49b3ad7c518ab129bb4009122bf431f67f6c5136))
+
 ## [4.19.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.6...v4.19.0) (2026-01-19)
 
 
