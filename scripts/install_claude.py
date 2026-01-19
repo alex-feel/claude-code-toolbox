@@ -412,20 +412,60 @@ def install_git_windows_winget(scope: str = 'user') -> bool:
     return False
 
 
+def check_github_rate_limit() -> dict[str, int] | None:
+    """Check current GitHub API rate limit status.
+
+    Uses GITHUB_TOKEN environment variable for authentication if available.
+    Provides diagnostic information about remaining API quota.
+
+    Returns:
+        Dict with 'limit', 'remaining', 'reset' (Unix timestamp) keys,
+        or None on error.
+    """
+    try:
+        github_token = os.environ.get('GITHUB_TOKEN')
+        request = urllib.request.Request('https://api.github.com/rate_limit')
+        request.add_header('User-Agent', 'claude-code-toolbox-installer')
+        if github_token:
+            request.add_header('Authorization', f'Bearer {github_token}')
+
+        with urlopen(request) as response:
+            data = json.loads(response.read())
+            core = data.get('resources', {}).get('core', {})
+            return {
+                'limit': core.get('limit', 0),
+                'remaining': core.get('remaining', 0),
+                'reset': core.get('reset', 0),
+            }
+    except Exception:
+        return None
+
+
 def get_git_installer_url_from_github() -> str | None:
     """Get Git for Windows installer URL from GitHub releases API.
 
     Uses the official git-for-windows GitHub repository to find the latest
-    64-bit Windows installer. This is more reliable than web scraping.
+    64-bit Windows installer. Uses GITHUB_TOKEN environment variable for
+    authentication if available, increasing rate limit from 60/hour to 5000/hour.
 
     Returns:
         Direct download URL for Git-{version}-64-bit.exe, or None if unavailable.
         Returns None on any error for graceful fallback to other download methods.
     """
     try:
+        # Build request with optional authentication
+        request = urllib.request.Request(GIT_GITHUB_API)
+        request.add_header('User-Agent', 'claude-code-toolbox-installer')
+
+        # Use GITHUB_TOKEN if available for higher rate limits
+        github_token = os.environ.get('GITHUB_TOKEN')
+        if github_token:
+            request.add_header('Authorization', f'Bearer {github_token}')
+            request.add_header('X-GitHub-Api-Version', '2022-11-28')
+
         # Fetch GitHub releases API (with SSL fallback pattern)
         try:
-            with urlopen(GIT_GITHUB_API) as response:
+            with urlopen(request) as response:
                 data = json.loads(response.read())
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
@@ -433,7 +473,7 @@ def get_git_installer_url_from_github() -> str | None:
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-                with urlopen(GIT_GITHUB_API, context=ctx) as response:
+                with urlopen(request, context=ctx) as response:
                     data = json.loads(response.read())
             else:
                 # Non-SSL error, return None for fallback
@@ -456,12 +496,103 @@ def get_git_installer_url_from_github() -> str | None:
         return None
 
 
+def get_git_installer_with_retry(max_retries: int = 3) -> str | None:
+    """Get Git installer URL with retry logic for rate limiting.
+
+    Implements exponential backoff as recommended by GitHub API documentation.
+    Checks rate limit headers and Retry-After for optimal retry timing.
+
+    Args:
+        max_retries: Maximum number of retry attempts (default: 3).
+
+    Returns:
+        Git installer URL or None if all attempts fail.
+    """
+    for attempt in range(max_retries):
+        try:
+            # Build request with optional authentication
+            request = urllib.request.Request(GIT_GITHUB_API)
+            request.add_header('User-Agent', 'claude-code-toolbox-installer')
+
+            # Use GITHUB_TOKEN if available for higher rate limits
+            github_token = os.environ.get('GITHUB_TOKEN')
+            if github_token:
+                request.add_header('Authorization', f'Bearer {github_token}')
+                request.add_header('X-GitHub-Api-Version', '2022-11-28')
+
+            with urlopen(request) as response:
+                data = json.loads(response.read())
+
+            # Find 64-bit installer in assets
+            for asset in data.get('assets', []):
+                name = asset.get('name', '')
+                if name.endswith('-64-bit.exe') and 'Git-' in name:
+                    download_url = asset.get('browser_download_url')
+                    if download_url and isinstance(download_url, str):
+                        return str(download_url)
+
+            warning('No 64-bit installer found in GitHub release assets')
+            return None
+
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                # Check if it's rate limiting
+                retry_after = e.headers.get('retry-after')
+                reset_time = e.headers.get('x-ratelimit-reset')
+
+                if retry_after:
+                    wait_time = int(retry_after)
+                elif reset_time:
+                    wait_time = max(0, int(reset_time) - int(time.time()))
+                else:
+                    # Exponential backoff: 1, 2, 4 seconds
+                    wait_time = 2**attempt
+
+                if attempt < max_retries - 1:
+                    # Cap wait time at 60 seconds
+                    wait_time = min(wait_time, 60)
+                    info(f'Rate limited, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})')
+                    time.sleep(wait_time)
+                    continue
+
+                # Final attempt failed
+                warning(f'GitHub API rate limit exceeded after {max_retries} attempts')
+                return None
+
+            # Non-rate-limit HTTP error
+            warning(f'HTTP error {e.code}: {e.reason}')
+            return None
+
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                # SSL errors - try fallback without retry
+                warning('SSL certificate verification failed')
+                return get_git_installer_url_from_github()
+
+            warning(f'Network error: {e}')
+            if attempt < max_retries - 1:
+                wait_time = 2**attempt
+                info(f'Retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})')
+                time.sleep(wait_time)
+                continue
+            return None
+
+        except Exception as e:
+            warning(f'Error fetching Git installer: {e}')
+            return None
+
+    return None
+
+
 def install_git_windows_download() -> bool:
     """Install Git for Windows by direct download.
 
     Tries multiple download sources in order:
-    1. GitHub API (most reliable)
+    1. GitHub API with retry and GITHUB_TOKEN authentication (primary method)
     2. git-scm.com scraping (legacy fallback)
+
+    Uses GITHUB_TOKEN environment variable for authentication if available,
+    which increases rate limit from 60/hour to 5000/hour.
 
     Returns:
         True if installation succeeded, False otherwise.
@@ -477,9 +608,12 @@ def install_git_windows_download() -> bool:
     try:
         installer_url = None
 
-        # Method 1: GitHub API (NEW - primary method)
+        # Method 1: GitHub API with retry logic and authentication
         info('Attempting to download Git via GitHub API...')
-        installer_url = get_git_installer_url_from_github()
+        github_token = os.environ.get('GITHUB_TOKEN')
+        if github_token:
+            info('Using GITHUB_TOKEN for authenticated GitHub API access')
+        installer_url = get_git_installer_with_retry()
 
         if not installer_url:
             # Method 2: Legacy scraping (existing code as fallback)
@@ -554,6 +688,20 @@ def install_git_windows_download() -> bool:
 
     except Exception as e:
         error(f'Failed to install Git by download: {e}')
+
+        # Check if this might be a rate limit issue and provide helpful info
+        if 'rate limit' in str(e).lower() or '403' in str(e):
+            rate_limit = check_github_rate_limit()
+            if rate_limit:
+                if rate_limit['remaining'] == 0:
+                    reset_time = time.strftime('%H:%M:%S', time.localtime(rate_limit['reset']))
+                    error(f'GitHub API rate limit exhausted (resets at {reset_time})')
+                else:
+                    info(f'GitHub API rate limit: {rate_limit["remaining"]}/{rate_limit["limit"]} remaining')
+
+            if not os.environ.get('GITHUB_TOKEN'):
+                info('Tip: Set GITHUB_TOKEN environment variable for higher rate limits (5000/hour vs 60/hour)')
+
         error('This may be a network issue or service unavailability')
         info('Manual installation options:')
         info('  1. Install winget: https://learn.microsoft.com/windows/package-manager/winget/')

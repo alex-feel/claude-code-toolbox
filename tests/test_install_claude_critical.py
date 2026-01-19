@@ -18,10 +18,10 @@ import scripts.install_claude as install_claude
 class TestSSLErrorHandling:
     """Test SSL certificate error handling in various functions."""
 
-    @patch('scripts.install_claude.get_git_installer_url_from_github', return_value=None)
+    @patch('scripts.install_claude.get_git_installer_with_retry', return_value=None)
     @patch('scripts.install_claude.ssl.create_default_context')
     @patch('scripts.install_claude.urlopen')
-    def test_install_git_windows_download_ssl_error(self, mock_urlopen, mock_ssl_context, mock_github):
+    def test_install_git_windows_download_ssl_error(self, mock_urlopen, mock_ssl_context, mock_retry):
         """Test Git for Windows download with SSL certificate error."""
         # First urlopen raises SSL error, second succeeds
         ssl_error = urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED')
@@ -54,8 +54,8 @@ class TestSSLErrorHandling:
             result = install_claude.install_git_windows_download()
 
             assert result is True
-            # Verify GitHub API was tried first
-            mock_github.assert_called_once()
+            # Verify GitHub API with retry was tried first
+            mock_retry.assert_called_once()
             assert mock_ssl_context.called
             assert mock_ctx.check_hostname is False
             assert mock_ctx.verify_mode == 0  # ssl.CERT_NONE

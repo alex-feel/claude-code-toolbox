@@ -6,7 +6,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -405,15 +407,15 @@ class TestGitHubAPIDownload:
         assert result is not None
         assert 'Git-2.51.1-64-bit.exe' in result
 
-    @patch('install_claude.get_git_installer_url_from_github')
+    @patch('install_claude.get_git_installer_with_retry')
     @patch('install_claude.urlretrieve')
     @patch('install_claude.run_command')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.unlink')
-    def test_install_git_via_github_api(self, mock_unlink, mock_temp, mock_run, mock_retrieve, mock_github):
-        """Test successful Git installation via GitHub API."""
-        # Mock GitHub API returning URL
-        mock_github.return_value = 'https://github.com/git-for-windows/git/releases/download/v2.51.1.windows.1/Git-2.51.1-64-bit.exe'
+    def test_install_git_via_github_api(self, mock_unlink, mock_temp, mock_run, mock_retrieve, mock_retry):
+        """Test successful Git installation via GitHub API with retry logic."""
+        # Mock GitHub API returning URL via retry function
+        mock_retry.return_value = 'https://github.com/git-for-windows/git/releases/download/v2.51.1.windows.1/Git-2.51.1-64-bit.exe'
 
         # Mock temp file
         temp_file = MagicMock()
@@ -425,17 +427,17 @@ class TestGitHubAPIDownload:
 
         result = install_claude.install_git_windows_download()
         assert result is True
-        mock_github.assert_called_once()
+        mock_retry.assert_called_once()
         mock_retrieve.assert_called_once()
         mock_run.assert_called_once()
         mock_unlink.assert_called_once()
 
-    @patch('install_claude.get_git_installer_url_from_github', return_value=None)
+    @patch('install_claude.get_git_installer_with_retry', return_value=None)
     @patch('install_claude.urlopen')
     @patch('install_claude.urlretrieve')
     @patch('install_claude.run_command')
     @patch('tempfile.NamedTemporaryFile')
-    def test_install_git_fallback_to_scraping(self, mock_temp, mock_run, mock_retrieve, mock_urlopen, mock_github):
+    def test_install_git_fallback_to_scraping(self, mock_temp, mock_run, mock_retrieve, mock_urlopen, mock_retry):
         """Test fallback to git-scm.com scraping when GitHub API fails."""
         # Mock the download page response for fallback
         mock_response = MagicMock()
@@ -454,8 +456,8 @@ class TestGitHubAPIDownload:
 
         result = install_claude.install_git_windows_download()
         assert result is True
-        # Verify GitHub API was tried first
-        mock_github.assert_called_once()
+        # Verify GitHub API with retry was tried first
+        mock_retry.assert_called_once()
         # Verify fallback to scraping occurred
         mock_urlopen.assert_called()
         mock_retrieve.assert_called_once()
@@ -929,6 +931,307 @@ class TestUpdatePath:
         original_path = os.environ.get('PATH', '')
         install_claude.update_path()
         assert os.environ.get('PATH', '') == original_path
+
+
+class TestGitHubApiAuthentication:
+    """Test GitHub API authentication and rate limiting in Git installer."""
+
+    @patch.dict(os.environ, {'GITHUB_TOKEN': 'test-token-12345'})
+    @patch('install_claude.urlopen')
+    def test_uses_github_token_when_available(self, mock_urlopen):
+        """Test that GITHUB_TOKEN is used for authentication in API request."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'assets': [
+                {
+                    'name': 'Git-2.43.0-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.43.0-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.get_git_installer_url_from_github()
+
+        # Verify URL was called with a Request object
+        assert mock_urlopen.called
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+
+        # Check that Authorization header was set
+        assert hasattr(request, 'get_header')
+        assert request.get_header('Authorization') == 'Bearer test-token-12345'
+        assert result is not None
+        assert 'Git-2.43.0-64-bit.exe' in result
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch('install_claude.urlopen')
+    def test_works_without_github_token(self, mock_urlopen):
+        """Test that function works without GITHUB_TOKEN (unauthenticated)."""
+        # Clear GITHUB_TOKEN from environment
+        if 'GITHUB_TOKEN' in os.environ:
+            del os.environ['GITHUB_TOKEN']
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'assets': [
+                {
+                    'name': 'Git-2.43.0-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.43.0-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.get_git_installer_url_from_github()
+
+        assert result is not None
+        assert 'Git-2.43.0-64-bit.exe' in result
+
+        # Verify request was made (but without auth header)
+        assert mock_urlopen.called
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        # Authorization header should be None when token is not set
+        assert request.get_header('Authorization') is None
+
+    @patch.dict(os.environ, {'GITHUB_TOKEN': 'test-token'})
+    @patch('install_claude.urlopen')
+    def test_check_github_rate_limit_authenticated(self, mock_urlopen):
+        """Test rate limit check with authentication."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'resources': {
+                'core': {
+                    'limit': 5000,
+                    'remaining': 4999,
+                    'reset': 1700000000,
+                },
+            },
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.check_github_rate_limit()
+
+        assert result is not None
+        assert result['limit'] == 5000
+        assert result['remaining'] == 4999
+        assert result['reset'] == 1700000000
+
+        # Verify auth header was used
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.get_header('Authorization') == 'Bearer test-token'
+
+    @patch.dict(os.environ, {}, clear=True)
+    @patch('install_claude.urlopen')
+    def test_check_github_rate_limit_unauthenticated(self, mock_urlopen):
+        """Test rate limit check without authentication (60/hour limit)."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'resources': {
+                'core': {
+                    'limit': 60,
+                    'remaining': 0,
+                    'reset': 1700000000,
+                },
+            },
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        mock_urlopen.return_value = mock_response
+
+        result = install_claude.check_github_rate_limit()
+
+        assert result is not None
+        assert result['limit'] == 60
+        assert result['remaining'] == 0
+
+    @patch('install_claude.urlopen')
+    def test_check_github_rate_limit_network_error(self, mock_urlopen):
+        """Test rate limit check returns None on network error."""
+        mock_urlopen.side_effect = urllib.error.URLError('Network unreachable')
+
+        result = install_claude.check_github_rate_limit()
+
+        assert result is None
+
+
+def _create_mock_http_error(
+    code: int,
+    msg: str = 'Error',
+    headers_get_return: str | None = None,
+    headers_get_side_effect: Callable[[str], str | None] | None = None,
+) -> urllib.error.HTTPError:
+    """Create an HTTPError with mocked headers for testing.
+
+    This helper properly creates an HTTPError with a Message object for headers
+    to satisfy type checkers, then replaces headers with a MagicMock.
+
+    Args:
+        code: HTTP error code (e.g., 403, 404).
+        msg: Error message.
+        headers_get_return: Value for headers.get() to return for any key.
+        headers_get_side_effect: Callable for headers.get() side_effect.
+
+    Returns:
+        HTTPError with mocked headers attribute.
+    """
+    from email.message import Message
+    headers = Message()
+    error = urllib.error.HTTPError(
+        'https://api.github.com/repos/git-for-windows/git/releases/latest',
+        code,
+        msg,
+        headers,
+        None,
+    )
+    # Replace headers with MagicMock for easier testing
+    mock_headers = MagicMock()
+    if headers_get_side_effect is not None:
+        mock_headers.get = MagicMock(side_effect=headers_get_side_effect)
+    else:
+        mock_headers.get = MagicMock(return_value=headers_get_return)
+    object.__setattr__(error, 'headers', mock_headers)
+    return error
+
+
+class TestGitInstallerRetryLogic:
+    """Test retry logic for Git installer download."""
+
+    @patch('time.sleep')
+    @patch('install_claude.urlopen')
+    def test_retry_on_rate_limit_403(self, mock_urlopen, mock_sleep):
+        """Test that function retries on 403 rate limit error."""
+        # Create HTTPError with mock headers using side_effect for x-ratelimit-reset
+        reset_time = str(int(time.time()) + 60)
+        rate_limit_error = _create_mock_http_error(
+            403,
+            'rate limit exceeded',
+            headers_get_side_effect=lambda k: reset_time if k == 'x-ratelimit-reset' else None,
+        )
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'assets': [
+                {
+                    'name': 'Git-2.43.0-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.43.0-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+
+        mock_urlopen.side_effect = [rate_limit_error, mock_response]
+
+        result = install_claude.get_git_installer_with_retry(max_retries=2)
+
+        assert result is not None
+        assert 'Git-2.43.0-64-bit.exe' in result
+        # Verify sleep was called for backoff
+        mock_sleep.assert_called()
+
+    @patch('time.sleep')
+    @patch('install_claude.urlopen')
+    def test_retry_respects_retry_after_header(self, mock_urlopen, mock_sleep):
+        """Test that function respects Retry-After header."""
+        rate_limit_error = _create_mock_http_error(
+            403,
+            'rate limit exceeded',
+            headers_get_side_effect=lambda k: '30' if k == 'retry-after' else None,
+        )
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'assets': [
+                {
+                    'name': 'Git-2.43.0-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.43.0-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+
+        mock_urlopen.side_effect = [rate_limit_error, mock_response]
+
+        result = install_claude.get_git_installer_with_retry(max_retries=2)
+
+        assert result is not None
+        # Verify sleep was called with capped value (max 60 seconds)
+        mock_sleep.assert_called_with(30)
+
+    @patch('time.sleep')
+    @patch('install_claude.urlopen')
+    def test_returns_none_after_max_retries(self, mock_urlopen, mock_sleep):
+        """Test that function returns None after exhausting retries."""
+        rate_limit_error = _create_mock_http_error(403, 'rate limit exceeded')
+
+        mock_urlopen.side_effect = rate_limit_error
+
+        result = install_claude.get_git_installer_with_retry(max_retries=3)
+
+        assert result is None
+        # Should have slept twice (before retry 2 and retry 3)
+        assert mock_sleep.call_count == 2
+
+    @patch('time.sleep')
+    @patch('install_claude.urlopen')
+    def test_retry_on_network_error(self, mock_urlopen, mock_sleep):
+        """Test that function retries on network errors."""
+        network_error = urllib.error.URLError('Connection refused')
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            'assets': [
+                {
+                    'name': 'Git-2.43.0-64-bit.exe',
+                    'browser_download_url': 'https://github.com/.../Git-2.43.0-64-bit.exe',
+                },
+            ],
+        }).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+
+        mock_urlopen.side_effect = [network_error, mock_response]
+
+        result = install_claude.get_git_installer_with_retry(max_retries=2)
+
+        assert result is not None
+        mock_sleep.assert_called()
+
+    @patch('install_claude.urlopen')
+    def test_non_403_http_error_no_retry(self, mock_urlopen):
+        """Test that non-403 HTTP errors don't trigger retry."""
+        http_error = _create_mock_http_error(404, 'Not Found')
+
+        mock_urlopen.side_effect = http_error
+
+        result = install_claude.get_git_installer_with_retry(max_retries=3)
+
+        assert result is None
+        # Should only be called once (no retries for 404)
+        assert mock_urlopen.call_count == 1
+
+    @patch('install_claude.get_git_installer_url_from_github')
+    @patch('install_claude.urlopen')
+    def test_ssl_error_fallback(self, mock_urlopen, mock_fallback):
+        """Test that SSL errors fall back to non-retry method."""
+        ssl_error = urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED')
+        mock_urlopen.side_effect = ssl_error
+        mock_fallback.return_value = 'https://github.com/.../Git-2.43.0-64-bit.exe'
+
+        result = install_claude.get_git_installer_with_retry(max_retries=2)
+
+        assert result is not None
+        mock_fallback.assert_called_once()
 
 
 class TestVerifyClaudeInstallation:
