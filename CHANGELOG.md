@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.21.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.1...v4.21.2) (2026-01-19)
+
+
+### Bug Fixes
+
+* handle Windows file locking when Claude Code is running during installation ([ad12d19](https://github.com/alex-feel/claude-code-toolbox/commit/ad12d19fc1a0978c9cebcc68e8f79cc4a971588a))
+* resolve MyPy unreachable code errors in Windows-specific functions ([893105b](https://github.com/alex-feel/claude-code-toolbox/commit/893105b6f8e3213bea0976dc9512e30bac872903))
+
 ## [4.21.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.0...v4.21.1) (2026-01-19)
 
 
