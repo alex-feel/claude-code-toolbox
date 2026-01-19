@@ -95,8 +95,9 @@ def debug_log(message: str) -> None:
 T = TypeVar('T')
 R = TypeVar('R')
 
-# Default number of parallel workers (optimal for GitHub API rate limiting)
-DEFAULT_PARALLEL_WORKERS = 5
+# Default number of parallel workers - can be overridden via CLAUDE_PARALLEL_WORKERS env var
+# Reduced from 5 to 3 to decrease likelihood of hitting GitHub secondary rate limits
+DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
 
 
 def is_parallel_mode_enabled() -> bool:
@@ -3052,8 +3053,86 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     return True
 
 
+def fetch_with_retry[T](
+    request_func: Callable[[], T],
+    url: str,
+    max_retries: int = 3,
+    initial_backoff: float = 1.0,
+) -> T:
+    """Execute a fetch operation with retry logic for rate limiting.
+
+    Implements exponential backoff with jitter as recommended by GitHub API documentation.
+    Respects Retry-After and x-ratelimit-reset headers when available.
+
+    Args:
+        request_func: Function that performs the actual request and returns result
+        url: URL being fetched (for logging purposes)
+        max_retries: Maximum number of retry attempts (default: 3)
+        initial_backoff: Initial backoff time in seconds (default: 1.0)
+
+    Returns:
+        Result from request_func
+
+    Raises:
+        HTTPError: If all retry attempts fail
+        RuntimeError: If an unexpected state is reached (should never occur)
+    """
+    import random
+
+    last_exception: urllib.error.HTTPError | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return request_func()
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 403):
+                # Check if it's a rate limit error
+                retry_after = e.headers.get('retry-after') if e.headers else None
+                reset_time = e.headers.get('x-ratelimit-reset') if e.headers else None
+                remaining = e.headers.get('x-ratelimit-remaining') if e.headers else None
+
+                # Only retry if it looks like rate limiting
+                if e.code == 403 and remaining != '0' and not retry_after:
+                    # 403 but not rate limiting - re-raise
+                    raise
+
+                if attempt < max_retries:
+                    # Calculate wait time
+                    if retry_after:
+                        wait_time = float(retry_after)
+                    elif reset_time:
+                        wait_time = max(0, int(reset_time) - int(time.time()))
+                    else:
+                        # Exponential backoff with jitter
+                        wait_time = initial_backoff * (2**attempt)
+                        # Add jitter (0-25% of wait time)
+                        wait_time += random.uniform(0, wait_time * 0.25)
+
+                    # Cap wait time at 60 seconds
+                    wait_time = min(wait_time, 60)
+
+                    filename = url.split('/')[-1].split('?')[0]
+                    info(f'Rate limited, retrying {filename} in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})')
+                    time.sleep(wait_time)
+                    continue
+
+                last_exception = e
+            else:
+                raise
+
+    if last_exception:
+        raise last_exception
+    # Satisfy type checker - this should never be reached
+    msg = 'Unexpected state in fetch_with_retry'
+    raise RuntimeError(msg)
+
+
 def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, auth_param: str | None = None) -> str:
     """Fetch URL content, trying without auth first, then with auth if needed.
+
+    Includes retry logic with exponential backoff for rate limiting (HTTP 429).
+    May raise HTTPError if the request fails after authentication and retry attempts,
+    or URLError if there's a network error (including SSL issues).
 
     Args:
         url: URL to fetch
@@ -3062,10 +3141,6 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
 
     Returns:
         str: Content of the URL
-
-    Raises:
-        HTTPError: If the HTTP request fails after authentication attempts
-        URLError: If there's a URL/network error (including SSL issues)
     """
     # Convert GitLab web URLs to API URLs for authentication
     original_url = url
@@ -3080,62 +3155,70 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         if url != original_url:
             info(f'Using API URL: {url}')
 
-    # First try without auth (for public repos)
-    try:
-        request = Request(url)
-        response = urlopen(request)
-        content: str = response.read().decode('utf-8')
-        return content
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403, 404):
-            # Authentication might be needed
-            if not auth_headers:
-                # Get auth headers if not already provided
-                auth_headers = get_auth_headers(url, auth_param)
+    # Use mutable container to allow inner function to modify auth_headers
+    auth_state: dict[str, dict[str, str] | None] = {'headers': auth_headers}
 
-            if auth_headers:
-                # Retry with authentication
-                info('Retrying with authentication...')
-                request = Request(url)
-                for header, value in auth_headers.items():
-                    request.add_header(header, value)
-                try:
-                    response = urlopen(request)
-                    result: str = response.read().decode('utf-8')
-                    return result
-                except urllib.error.HTTPError as auth_e:
-                    if auth_e.code == 401:
-                        error('Authentication failed. Check your token.')
-                    elif auth_e.code == 403:
-                        error('Access forbidden. Token may lack permissions.')
-                    elif auth_e.code == 404:
-                        error('Resource not found. Check URL and permissions.')
-                    raise
-            elif e.code == 404:
-                # 404 without auth headers available - likely just not found
-                raise
-            else:
-                # 401/403 but no auth headers available
-                warning('Authentication may be required for this URL')
-                raise
-        else:
-            raise
-    except urllib.error.URLError as e:
-        if 'SSL' in str(e) or 'certificate' in str(e).lower():
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
+    def _do_fetch() -> str:
+        """Internal fetch logic wrapped for retry."""
+        # First try without auth (for public repos)
+        try:
             request = Request(url)
-            if auth_headers:
-                for header, value in auth_headers.items():
-                    request.add_header(header, value)
+            response = urlopen(request)
+            content: str = response.read().decode('utf-8')
+            return content
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 404):
+                # Authentication might be needed
+                if not auth_state['headers']:
+                    # Get auth headers if not already provided
+                    auth_state['headers'] = get_auth_headers(url, auth_param)
 
-            response = urlopen(request, context=ctx)
-            ctx_result: str = response.read().decode('utf-8')
-            return ctx_result
-        raise
+                if auth_state['headers']:
+                    # Retry with authentication
+                    info('Retrying with authentication...')
+                    request = Request(url)
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+                    try:
+                        response = urlopen(request)
+                        result: str = response.read().decode('utf-8')
+                        return result
+                    except urllib.error.HTTPError as auth_e:
+                        if auth_e.code == 401:
+                            error('Authentication failed. Check your token.')
+                        elif auth_e.code == 403:
+                            error('Access forbidden. Token may lack permissions.')
+                        elif auth_e.code == 404:
+                            error('Resource not found. Check URL and permissions.')
+                        raise
+                elif e.code == 404:
+                    # 404 without auth headers available - likely just not found
+                    raise
+                else:
+                    # 401/403 but no auth headers available
+                    warning('Authentication may be required for this URL')
+                    raise
+            else:
+                raise
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                request = Request(url)
+                if auth_state['headers']:
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+
+                response = urlopen(request, context=ctx)
+                ctx_result: str = response.read().decode('utf-8')
+                return ctx_result
+            raise
+
+    # Wrap with retry logic for rate limiting
+    return fetch_with_retry(_do_fetch, url)
 
 
 def fetch_url_bytes_with_auth(
@@ -3147,6 +3230,9 @@ def fetch_url_bytes_with_auth(
 
     Similar to fetch_url_with_auth but returns raw bytes without decoding.
     Use this for binary files like .tar.gz, .zip, images, etc.
+    Includes retry logic with exponential backoff for rate limiting (HTTP 429).
+    May raise HTTPError if the request fails after authentication and retry attempts,
+    or URLError if there's a network error (including SSL issues).
 
     Args:
         url: URL to fetch
@@ -3155,10 +3241,6 @@ def fetch_url_bytes_with_auth(
 
     Returns:
         bytes: Raw content of the URL
-
-    Raises:
-        HTTPError: If the HTTP request fails after authentication attempts
-        URLError: If there's a URL/network error (including SSL issues)
     """
     # Convert GitLab web URLs to API URLs for authentication
     original_url = url
@@ -3173,58 +3255,66 @@ def fetch_url_bytes_with_auth(
         if url != original_url:
             info(f'Using API URL: {url}')
 
-    # First try without auth (for public repos)
-    try:
-        request = Request(url)
-        response = urlopen(request)
-        content: bytes = response.read()
-        return content
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403, 404):
-            # Authentication might be needed
-            if not auth_headers:
-                auth_headers = get_auth_headers(url, auth_param)
+    # Use mutable container to allow inner function to modify auth_headers
+    auth_state: dict[str, dict[str, str] | None] = {'headers': auth_headers}
 
-            if auth_headers:
-                info('Retrying with authentication...')
-                request = Request(url)
-                for header, value in auth_headers.items():
-                    request.add_header(header, value)
-                try:
-                    response = urlopen(request)
-                    result: bytes = response.read()
-                    return result
-                except urllib.error.HTTPError as auth_e:
-                    if auth_e.code == 401:
-                        error('Authentication failed. Check your token.')
-                    elif auth_e.code == 403:
-                        error('Access forbidden. Token may lack permissions.')
-                    elif auth_e.code == 404:
-                        error('Resource not found. Check URL and permissions.')
-                    raise
-            elif e.code == 404:
-                raise
-            else:
-                warning('Authentication may be required for this URL')
-                raise
-        else:
-            raise
-    except urllib.error.URLError as e:
-        if 'SSL' in str(e) or 'certificate' in str(e).lower():
-            warning('SSL certificate verification failed, trying with unverified context')
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
+    def _do_fetch() -> bytes:
+        """Internal fetch logic wrapped for retry."""
+        # First try without auth (for public repos)
+        try:
             request = Request(url)
-            if auth_headers:
-                for header, value in auth_headers.items():
-                    request.add_header(header, value)
+            response = urlopen(request)
+            content: bytes = response.read()
+            return content
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 404):
+                # Authentication might be needed
+                if not auth_state['headers']:
+                    auth_state['headers'] = get_auth_headers(url, auth_param)
 
-            response = urlopen(request, context=ctx)
-            ctx_result: bytes = response.read()
-            return ctx_result
-        raise
+                if auth_state['headers']:
+                    info('Retrying with authentication...')
+                    request = Request(url)
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+                    try:
+                        response = urlopen(request)
+                        result: bytes = response.read()
+                        return result
+                    except urllib.error.HTTPError as auth_e:
+                        if auth_e.code == 401:
+                            error('Authentication failed. Check your token.')
+                        elif auth_e.code == 403:
+                            error('Access forbidden. Token may lack permissions.')
+                        elif auth_e.code == 404:
+                            error('Resource not found. Check URL and permissions.')
+                        raise
+                elif e.code == 404:
+                    raise
+                else:
+                    warning('Authentication may be required for this URL')
+                    raise
+            else:
+                raise
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+
+                request = Request(url)
+                if auth_state['headers']:
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+
+                response = urlopen(request, context=ctx)
+                ctx_result: bytes = response.read()
+                return ctx_result
+            raise
+
+    # Wrap with retry logic for rate limiting
+    return fetch_with_retry(_do_fetch, url)
 
 
 def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
