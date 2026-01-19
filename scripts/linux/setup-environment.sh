@@ -70,20 +70,16 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
-# Build auth arguments if tokens are present
+# Build auth arguments
+# GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
+# Only pass --auth for explicit override (CLAUDE_ENV_AUTH) or generic token (REPO_TOKEN)
 AUTH_ARGS=""
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} GitLab token found, will use for authentication"
-    AUTH_ARGS="--auth PRIVATE-TOKEN:$GITLAB_TOKEN"
-elif [ -n "${GITHUB_TOKEN:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} GitHub token found, will use for authentication"
-    AUTH_ARGS="--auth Authorization:Bearer\ $GITHUB_TOKEN"
+if [ -n "${CLAUDE_ENV_AUTH:-}" ]; then
+    echo -e "${CYAN}[INFO]${NC} Using provided authentication"
+    AUTH_ARGS="--auth $CLAUDE_ENV_AUTH"
 elif [ -n "${REPO_TOKEN:-}" ]; then
     echo -e "${CYAN}[INFO]${NC} Generic repo token found, will use for authentication"
     AUTH_ARGS="--auth $REPO_TOKEN"
-elif [ -n "${CLAUDE_ENV_AUTH:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} Using provided authentication"
-    AUTH_ARGS="--auth $CLAUDE_ENV_AUTH"
 fi
 
 # Download and run the Python script with uv
