@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.21.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.0...v4.21.1) (2026-01-19)
+
+
+### Bug Fixes
+
+* implement direct GCS download to bypass Anthropic installer version bug ([183b9ee](https://github.com/alex-feel/claude-code-toolbox/commit/183b9eed006a4b947977dd2e6cca02b554a67a8c))
+
 ## [4.21.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.20.0...v4.21.0) (2026-01-19)
 
 
