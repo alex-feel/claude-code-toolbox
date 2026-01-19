@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.21.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.20.0...v4.21.0) (2026-01-19)
+
+
+### Features
+
+* add HTTP 429 rate limiting with exponential backoff for parallel downloads ([1e3e08b](https://github.com/alex-feel/claude-code-toolbox/commit/1e3e08bfbd43af6c431b37fe4928fd430d8c838c))
+
 ## [4.20.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.19.1...v4.20.0) (2026-01-19)
 
 
