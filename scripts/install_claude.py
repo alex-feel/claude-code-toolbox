@@ -2074,55 +2074,55 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         Linux only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Windows CI
-    if sys.platform == 'linux':
-        # Hybrid approach: Use native installer for "latest", direct download for specific versions
-        if version is None or version.lower() == 'latest':
-            # Native installer is safe when using "latest"
-            info('Installing latest version via native installer...')
-            return _install_claude_native_linux_installer(version='latest')
+    # Use platform.system() for cross-platform MyPy compatibility
+    # (MyPy cannot statically evaluate function call results)
+    if platform.system() != 'Linux':
+        return False
 
-        # Specific version requested - use direct GCS download to bypass buggy installer
-        info(f'Specific version {version} requested - using direct GCS download...')
-
-        native_path = Path.home() / '.local' / 'bin' / 'claude'
-
-        # Try direct download from GCS
-        if _download_claude_direct_from_gcs(version, native_path):
-            # Make binary executable
-            native_path.chmod(0o755)
-
-            # Run 'claude install' for PATH setup (without version to avoid bug)
-            if _run_claude_install_setup():
-                _ensure_local_bin_in_path_unix()
-
-                time.sleep(1)
-
-                # Verify installation
-                is_installed, claude_path, source = verify_claude_installation()
-                if is_installed and source == 'native':
-                    success(f'Native installation verified at: {claude_path}')
-                    return True
-                if is_installed:
-                    warning(f'Claude found but from {source} source at: {claude_path}')
-                    warning('Direct download did not create expected file at ~/.local/bin/claude')
-                    error('Installation failed - file not created at expected location')
-                    return False
-                warning('Installation failed - no Claude executable found')
-                error('Claude not accessible after direct download')
-                return False
-            # Install setup failed, but binary exists - try to continue
-            warning('PATH setup failed, but binary was downloaded')
-            _ensure_local_bin_in_path_unix()
-            return native_path.exists()
-
-        # GCS download failed - fall back to native installer with "latest"
-        warning(f'Direct download failed for version {version}, falling back to native installer')
-        info('Note: Falling back to latest version due to installer limitations')
+    # Hybrid approach: Use native installer for "latest", direct download for specific versions
+    if version is None or version.lower() == 'latest':
+        # Native installer is safe when using "latest"
+        info('Installing latest version via native installer...')
         return _install_claude_native_linux_installer(version='latest')
 
-    # Non-Linux platform
-    return False
+    # Specific version requested - use direct GCS download to bypass buggy installer
+    info(f'Specific version {version} requested - using direct GCS download...')
+
+    native_path = Path.home() / '.local' / 'bin' / 'claude'
+
+    # Try direct download from GCS
+    if _download_claude_direct_from_gcs(version, native_path):
+        # Make binary executable
+        native_path.chmod(0o755)
+
+        # Run 'claude install' for PATH setup (without version to avoid bug)
+        if _run_claude_install_setup():
+            _ensure_local_bin_in_path_unix()
+
+            time.sleep(1)
+
+            # Verify installation
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed and source == 'native':
+                success(f'Native installation verified at: {claude_path}')
+                return True
+            if is_installed:
+                warning(f'Claude found but from {source} source at: {claude_path}')
+                warning('Direct download did not create expected file at ~/.local/bin/claude')
+                error('Installation failed - file not created at expected location')
+                return False
+            warning('Installation failed - no Claude executable found')
+            error('Claude not accessible after direct download')
+            return False
+        # Install setup failed, but binary exists - try to continue
+        warning('PATH setup failed, but binary was downloaded')
+        _ensure_local_bin_in_path_unix()
+        return native_path.exists()
+
+    # GCS download failed - fall back to native installer with "latest"
+    warning(f'Direct download failed for version {version}, falling back to native installer')
+    info('Note: Falling back to latest version due to installer limitations')
+    return _install_claude_native_linux_installer(version='latest')
 
 
 def install_claude_native_cross_platform(version: str | None = None) -> bool:

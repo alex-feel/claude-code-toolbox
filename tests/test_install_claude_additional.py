@@ -194,11 +194,11 @@ class TestNodeJsInstallationAdditional:
 class TestClaudeInstallationAdditional:
     """Additional tests for Claude installation."""
 
-    @patch('sys.platform', 'linux')
+    @patch('install_claude.platform.system', return_value='Linux')
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
-    def test_install_claude_native_linux(self, mock_verify, mock_run, mock_urlopen):
+    def test_install_claude_native_linux(self, mock_verify, mock_run, mock_urlopen, mock_platform):
         """Test native Claude installation on Linux with mocked dependencies."""
         # Mock urlopen to return installer script
         mock_response = MagicMock()
@@ -220,6 +220,7 @@ class TestClaudeInstallationAdditional:
         mock_urlopen.assert_called()
         mock_run.assert_called()
         mock_verify.assert_called()
+        mock_platform.assert_called()
 
     @patch('sys.platform', 'darwin')
     @patch('install_claude.urlopen')
@@ -556,6 +557,7 @@ class TestInstallGitWinget:
 class TestGCSDirectDownload:
     """Test direct download from GCS bucket for specific versions."""
 
+    @patch('install_claude._get_gcs_platform_path', return_value=('win32-x64', 'claude.exe'))
     @patch('install_claude.urlretrieve')
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.stat')
@@ -568,6 +570,7 @@ class TestGCSDirectDownload:
         mock_stat,
         mock_exists,
         mock_urlretrieve,
+        mock_platform_path,
     ):
         """Test successful direct download from GCS."""
         # Mock file exists after download
@@ -578,6 +581,7 @@ class TestGCSDirectDownload:
         result = install_claude._download_claude_direct_from_gcs('2.0.76', target_path)
 
         assert result is True
+        mock_platform_path.assert_called_once()  # Platform path was determined
         mock_urlretrieve.assert_called_once()
         mock_mkdir.assert_called()  # Directory creation
         mock_replace.assert_called()  # Atomic file move
@@ -1098,11 +1102,12 @@ class TestHybridInstallMacOS:
 class TestHybridInstallLinux:
     """Test the hybrid installation approach for Linux."""
 
-    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude._install_claude_native_linux_installer')
     def test_install_claude_native_linux_no_version_uses_installer(
         self,
         mock_installer,
+        mock_platform,
     ):
         """Test that no version uses native installer with 'latest'."""
         mock_installer.return_value = True
@@ -1111,12 +1116,14 @@ class TestHybridInstallLinux:
 
         assert result is True
         mock_installer.assert_called_once_with(version='latest')
+        mock_platform.assert_called()
 
-    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude._install_claude_native_linux_installer')
     def test_install_claude_native_linux_latest_uses_installer(
         self,
         mock_installer,
+        mock_platform,
     ):
         """Test that 'latest' version uses native installer."""
         mock_installer.return_value = True
@@ -1125,8 +1132,9 @@ class TestHybridInstallLinux:
 
         assert result is True
         mock_installer.assert_called_once_with(version='latest')
+        mock_platform.assert_called()
 
-    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude._download_claude_direct_from_gcs')
     @patch('install_claude._run_claude_install_setup')
     @patch('install_claude._ensure_local_bin_in_path_unix')
@@ -1141,6 +1149,7 @@ class TestHybridInstallLinux:
         mock_ensure_path,
         mock_setup,
         mock_gcs_download,
+        mock_platform,
     ):
         """Test that specific version uses GCS direct download on Linux."""
         mock_gcs_download.return_value = True
@@ -1157,14 +1166,16 @@ class TestHybridInstallLinux:
         call_args = mock_gcs_download.call_args[0]
         assert call_args[0] == '2.0.76'
         mock_ensure_path.assert_called()
+        mock_platform.assert_called()
 
-    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude._download_claude_direct_from_gcs')
     @patch('install_claude._install_claude_native_linux_installer')
     def test_install_claude_native_linux_gcs_fails_fallback_to_installer(
         self,
         mock_installer,
         mock_gcs_download,
+        mock_platform,
     ):
         """Test fallback to native installer when GCS download fails on Linux."""
         mock_gcs_download.return_value = False
@@ -1175,10 +1186,13 @@ class TestHybridInstallLinux:
         assert result is True
         mock_gcs_download.assert_called_once()
         mock_installer.assert_called_once_with(version='latest')
+        mock_platform.assert_called()
 
-    @patch('sys.platform', 'win32')
-    def test_install_claude_native_linux_returns_false_on_windows(self):
+    @patch('platform.system', return_value='Windows')
+    def test_install_claude_native_linux_returns_false_on_windows(self, mock_system):
         """Test that Linux installer returns False on Windows."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
         result = install_claude.install_claude_native_linux(version='2.0.76')
 
         assert result is False
@@ -1298,7 +1312,7 @@ class TestEnsureLocalBinInPathUnix:
 
         assert result is True
 
-    @patch('sys.platform', 'linux')
+    @patch('install_claude.sys.platform', 'linux')
     @patch('pathlib.Path.home')
     @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
@@ -1340,7 +1354,7 @@ class TestEnsureLocalBinInPathUnix:
             # Restore PATH
             os.environ['PATH'] = original_path
 
-    @patch('sys.platform', 'linux')
+    @patch('install_claude.sys.platform', 'linux')
     @patch('pathlib.Path.home')
     @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
