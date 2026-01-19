@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.19.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.6...v4.19.0) (2026-01-19)
+
+
+### Features
+
+* add parallel execution for remote file operations ([bad8fe7](https://github.com/alex-feel/claude-code-toolbox/commit/bad8fe735667dba7550a4659089c0645b43b61f4))
+
+
+### Bug Fixes
+
+* improve summary with skills command ([2f9a18b](https://github.com/alex-feel/claude-code-toolbox/commit/2f9a18b48520c698014dbcfdc4776e74b6b4a219))
+
 ## [4.18.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.5...v4.18.6) (2026-01-19)
 
 
