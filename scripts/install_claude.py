@@ -1442,23 +1442,24 @@ def _cleanup_old_file_before_rename(old_path: Path) -> bool:
     Note:
         Windows only. On non-Windows platforms, returns True immediately.
     """
-    if sys.platform != 'win32':
-        return True
+    if sys.platform == 'win32':
+        if not old_path.exists():
+            return True
 
-    if not old_path.exists():
+        try:
+            old_path.unlink()
+            info('Removed previous backup file')
+            return True
+        except PermissionError:
+            # .old file is ALSO running (rare edge case: user running both versions)
+            warning(f'{old_path.name} is also in use, will use alternative backup name')
+            return False
+        except Exception as e:
+            warning(f'Could not remove {old_path.name}: {e}')
+            return False
+    else:
+        # Non-Windows platforms
         return True
-
-    try:
-        old_path.unlink()
-        info('Removed previous backup file')
-        return True
-    except PermissionError:
-        # .old file is ALSO running (rare edge case: user running both versions)
-        warning(f'{old_path.name} is also in use, will use alternative backup name')
-        return False
-    except Exception as e:
-        warning(f'Could not remove {old_path.name}: {e}')
-        return False
 
 
 def _get_unique_old_path(target_path: Path) -> Path:
@@ -1577,38 +1578,36 @@ def _cleanup_old_claude_files() -> None:
         Windows only. No-op on other platforms.
         Silently ignores locked files (will try again next time).
     """
-    if sys.platform != 'win32':
-        return
+    if sys.platform == 'win32':
+        local_bin = Path.home() / '.local' / 'bin'
 
-    local_bin = Path.home() / '.local' / 'bin'
+        if not local_bin.exists():
+            return
 
-    if not local_bin.exists():
-        return
+        # Clean up standard .old file
+        old_file = local_bin / 'claude.exe.old'
+        if old_file.exists():
+            try:
+                old_file.unlink()
+                info('Cleaned up old Claude Code backup')
+            except PermissionError:
+                # Still in use, will try again next time
+                pass
+            except Exception:
+                # Unexpected error, ignore
+                pass
 
-    # Clean up standard .old file
-    old_file = local_bin / 'claude.exe.old'
-    if old_file.exists():
-        try:
-            old_file.unlink()
-            info('Cleaned up old Claude Code backup')
-        except PermissionError:
-            # Still in use, will try again next time
-            pass
-        except Exception:
-            # Unexpected error, ignore
-            pass
-
-    # Clean up numbered .old files (claude.exe.old.1, claude.exe.old.2, etc.)
-    for old_numbered in local_bin.glob('claude.exe.old.*'):
-        try:
-            old_numbered.unlink()
-            info(f'Cleaned up {old_numbered.name}')
-        except PermissionError:
-            # Still in use
-            pass
-        except Exception:
-            # Unexpected error, ignore
-            pass
+        # Clean up numbered .old files (claude.exe.old.1, claude.exe.old.2, etc.)
+        for old_numbered in local_bin.glob('claude.exe.old.*'):
+            try:
+                old_numbered.unlink()
+                info(f'Cleaned up {old_numbered.name}')
+            except PermissionError:
+                # Still in use
+                pass
+            except Exception:
+                # Unexpected error, ignore
+                pass
 
 
 def _get_gcs_platform_path() -> tuple[str, str]:
