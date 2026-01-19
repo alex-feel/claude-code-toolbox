@@ -10,6 +10,7 @@ Downloads and configures development tools for Claude Code based on YAML configu
 # ///
 
 import argparse
+import concurrent.futures
 import contextlib
 import glob as glob_module
 import json
@@ -25,9 +26,11 @@ import tempfile
 import time
 import urllib.error
 import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import TypeVar
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
@@ -85,6 +88,131 @@ def debug_log(message: str) -> None:
     if is_debug_enabled():
         # Use distinct prefix for easy filtering
         print(f'  [DEBUG] {message}', file=sys.stderr)
+
+
+# Parallel execution helpers
+# Type variable for generic parallel execution
+T = TypeVar('T')
+R = TypeVar('R')
+
+# Default number of parallel workers (optimal for GitHub API rate limiting)
+DEFAULT_PARALLEL_WORKERS = 5
+
+
+def is_parallel_mode_enabled() -> bool:
+    """Check if parallel execution is enabled.
+
+    Returns:
+        True if parallel mode is enabled (default), False if CLAUDE_SEQUENTIAL_MODE=1
+    """
+    sequential_mode = os.environ.get('CLAUDE_SEQUENTIAL_MODE', '').lower()
+    return sequential_mode not in ('1', 'true', 'yes')
+
+
+def execute_parallel(
+    items: list[T],
+    func: Callable[[T], R],
+    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+) -> list[R]:
+    """Execute a function on items in parallel with error isolation.
+
+    Processes items using ThreadPoolExecutor when parallel mode is enabled,
+    or sequentially when CLAUDE_SEQUENTIAL_MODE=1.
+
+    Args:
+        items: List of items to process
+        func: Function to apply to each item
+        max_workers: Maximum number of parallel workers (default: 5)
+
+    Returns:
+        List of results in the same order as input items.
+        If an item raises an exception, that exception is stored in the result list
+        and re-raised after all items are processed.
+    """
+    import operator
+
+    if not items:
+        return []
+
+    # Sequential mode fallback
+    if not is_parallel_mode_enabled():
+        debug_log('Sequential mode enabled, processing items sequentially')
+        return [func(item) for item in items]
+
+    # Parallel execution
+    debug_log(f'Parallel mode enabled, processing {len(items)} items with {max_workers} workers')
+    results_with_index: list[tuple[int, R | BaseException]] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks with their index for ordering
+        future_to_index: dict[concurrent.futures.Future[R], int] = {
+            executor.submit(func, item): idx for idx, item in enumerate(items)
+        }
+
+        # Collect results as they complete
+        for future in concurrent.futures.as_completed(future_to_index):
+            idx = future_to_index[future]
+            try:
+                result = future.result()
+                results_with_index.append((idx, result))
+            except Exception as task_exc:
+                # Store exception to maintain order and allow partial results
+                results_with_index.append((idx, task_exc))
+
+    # Sort by original index to maintain order
+    results_with_index.sort(key=operator.itemgetter(0))
+
+    # Extract results, re-raising any exceptions
+    final_results: list[R] = []
+    exceptions: list[tuple[int, BaseException]] = []
+    for idx, result_or_exc in results_with_index:
+        if isinstance(result_or_exc, BaseException):
+            exceptions.append((idx, result_or_exc))
+        else:
+            final_results.append(result_or_exc)
+
+    # If there were exceptions, raise the first one after logging all
+    if exceptions:
+        for exc_idx, stored_exc in exceptions:
+            debug_log(f'Item {exc_idx} raised exception: {stored_exc}')
+        # Re-raise the first exception
+        raise exceptions[0][1]
+
+    return final_results
+
+
+def execute_parallel_safe(
+    items: list[T],
+    func: Callable[[T], R],
+    default_on_error: R,
+    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+) -> list[R]:
+    """Execute a function on items in parallel with error handling.
+
+    Unlike execute_parallel, this function catches exceptions and returns
+    a default value for failed items, allowing partial success.
+
+    Args:
+        items: List of items to process
+        func: Function to apply to each item
+        default_on_error: Value to return for items that raise exceptions
+        max_workers: Maximum number of parallel workers (default: 5)
+
+    Returns:
+        List of results in the same order as input items.
+        Failed items return default_on_error instead of their result.
+    """
+    if not items:
+        return []
+
+    def safe_func(item: T) -> R:
+        try:
+            return func(item)
+        except Exception as exc:
+            debug_log(f'Item processing failed: {exc}')
+            return default_on_error
+
+    return execute_parallel(items, safe_func, max_workers)
 
 
 # Windows UAC elevation helper functions
@@ -1361,21 +1489,38 @@ def validate_all_config_files(
                                 full_path = str(Path(resolved_base) / skill_file_item)
                                 files_to_check.append(('skill', full_path, full_path, False))
 
-    # Validate each file
+    # Validate each file using parallel execution
     info(f'Validating {len(files_to_check)} files...')
-    all_valid = True
 
-    for file_type, original_path, resolved_path, is_remote in files_to_check:
-        # Use FileValidator for unified validation with per-URL authentication
+    def validate_single_file(
+        file_info: tuple[str, str, str, bool],
+    ) -> tuple[str, str, bool, str]:
+        """Validate a single file and return result tuple."""
+        file_type, original_path, resolved_path, is_remote = file_info
         is_valid, method = validator.validate(resolved_path, is_remote)
-        results.append((file_type, original_path, is_valid, method))
+        return (file_type, original_path, is_valid, method)
 
+    # Execute validation in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    results = execute_parallel(files_to_check, validate_single_file)
+
+    # Process results and print status messages
+    all_valid = True
+    for file_type, original_path, is_valid, method in results:
         if is_valid:
+            # Find the resolved_path for this item (for error messages)
+            is_remote = method != 'Local'
             if is_remote:
                 info(f'  [OK] {file_type}: {original_path} (remote, validated via {method})')
             else:
                 info(f'  [OK] {file_type}: {original_path} (local file exists)')
         else:
+            # Find resolved_path for error message
+            resolved_path = original_path
+            for ft, op, rp, _ir in files_to_check:
+                if ft == file_type and op == original_path:
+                    resolved_path = rp
+                    break
+            is_remote = method != 'Local'
             if is_remote:
                 error(f'  [FAIL] {file_type}: {original_path} (remote, not accessible)')
             else:
@@ -3191,6 +3336,8 @@ def process_resources(
 ) -> bool:
     """Process resources (download from URL or copy from local) based on configuration.
 
+    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+
     Args:
         resources: List of resource paths from config
         destination_dir: Directory to save resources
@@ -3208,14 +3355,23 @@ def process_resources(
 
     info(f'Processing {resource_type}...')
 
+    # Prepare download tasks
+    download_tasks: list[tuple[str, Path]] = []
     for resource in resources:
         # Strip query parameters from URL to get clean filename
         clean_resource = resource.split('?')[0] if '?' in resource else resource
         filename = Path(clean_resource).name
         destination = destination_dir / filename
-        handle_resource(resource, destination, config_source, base_url, auth_param)
+        download_tasks.append((resource, destination))
 
-    return True
+    def download_single_resource(task: tuple[str, Path]) -> bool:
+        """Download a single resource and return success status."""
+        resource, destination = task
+        return handle_resource(resource, destination, config_source, base_url, auth_param)
+
+    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    results = execute_parallel_safe(download_tasks, download_single_resource, False)
+    return all(results)
 
 
 def process_file_downloads(
@@ -3228,6 +3384,7 @@ def process_file_downloads(
 
     Downloads files from URLs or copies from local paths to specified destinations.
     Supports cross-platform path expansion using ~ and environment variables.
+    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
 
     Args:
         file_specs: List of file specifications with 'source' and 'dest' keys.
@@ -3251,8 +3408,10 @@ def process_file_downloads(
         return True
 
     info(f'Processing {len(file_specs)} file downloads...')
-    success_count = 0
-    failed_count = 0
+
+    # Pre-validate file specs and prepare download tasks
+    valid_downloads: list[tuple[str, Path]] = []
+    invalid_count = 0
 
     for file_spec in file_specs:
         source = file_spec.get('source')
@@ -3266,7 +3425,7 @@ def process_file_downloads(
                 warning(f'Invalid file specification: missing dest ({file_spec})')
             else:
                 warning(f'Invalid file specification: {file_spec} (missing source or dest)')
-            failed_count += 1
+            invalid_count += 1
             continue
 
         # Expand destination path (~ and environment variables)
@@ -3284,12 +3443,21 @@ def process_file_downloads(
             filename = Path(clean_source).name
             dest_path = dest_path / filename
 
-        # Use existing handle_resource function for download/copy
-        # This handles: URL downloads, local file copying, overwriting, directory creation
-        if handle_resource(str(source), dest_path, config_source, base_url, auth_param):
-            success_count += 1
-        else:
-            failed_count += 1
+        valid_downloads.append((str(source), dest_path))
+
+    def download_single_file(download_info: tuple[str, Path]) -> bool:
+        """Download a single file and return success status."""
+        source, dest_path = download_info
+        return handle_resource(source, dest_path, config_source, base_url, auth_param)
+
+    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    if valid_downloads:
+        download_results = execute_parallel_safe(valid_downloads, download_single_file, False)
+        success_count = sum(1 for result in download_results if result)
+        failed_count = len(download_results) - success_count + invalid_count
+    else:
+        success_count = 0
+        failed_count = invalid_count
 
     # Print summary
     print()  # Blank line for readability
@@ -3850,6 +4018,8 @@ def download_hook_files(
 ) -> bool:
     """Download hook files from configuration.
 
+    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+
     Args:
         hooks: Hooks configuration dictionary with 'files' key
         claude_user_dir: Path to Claude user directory
@@ -3866,23 +4036,30 @@ def download_hook_files(
         info('No hook files to download')
         return True
 
+    if not config_source:
+        error('No config source provided for hook files')
+        return False
+
     hooks_dir = claude_user_dir / 'hooks'
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
+    # Prepare download tasks
+    download_tasks: list[tuple[str, Path]] = []
     for file in hook_files:
         # Strip query parameters from URL to get clean filename
         clean_file = file.split('?')[0] if '?' in file else file
         filename = Path(clean_file).name
         destination = hooks_dir / filename
-        # Handle hook files (download or copy)
-        if config_source:
-            handle_resource(file, destination, config_source, base_url, auth_param)
-        else:
-            # This shouldn't happen, but handle gracefully
-            error(f'No config source provided for hook file: {file}')
-            return False
+        download_tasks.append((file, destination))
 
-    return True
+    def download_single_hook(task: tuple[str, Path]) -> bool:
+        """Download a single hook file and return success status."""
+        file, destination = task
+        return handle_resource(file, destination, config_source, base_url, auth_param)
+
+    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    results = execute_parallel_safe(download_tasks, download_single_hook, False)
+    return all(results)
 
 
 def create_additional_settings(
