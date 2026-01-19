@@ -1425,6 +1425,192 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     return False
 
 
+def _cleanup_old_file_before_rename(old_path: Path) -> bool:
+    """Remove existing .old file to make room for new rename.
+
+    Handles the multiple installer runs scenario where .old file may already
+    exist from a previous installation. If the .old file is not in use, it
+    is deleted to allow the rename operation to proceed.
+
+    Args:
+        old_path: Path to the .old file to remove (e.g., claude.exe.old).
+
+    Returns:
+        True if .old file is gone (deleted or did not exist).
+        False if .old file exists and is locked (cannot delete).
+
+    Note:
+        Windows only. On non-Windows platforms, returns True immediately.
+    """
+    if sys.platform != 'win32':
+        return True
+
+    if not old_path.exists():
+        return True
+
+    try:
+        old_path.unlink()
+        info('Removed previous backup file')
+        return True
+    except PermissionError:
+        # .old file is ALSO running (rare edge case: user running both versions)
+        warning(f'{old_path.name} is also in use, will use alternative backup name')
+        return False
+    except Exception as e:
+        warning(f'Could not remove {old_path.name}: {e}')
+        return False
+
+
+def _get_unique_old_path(target_path: Path) -> Path:
+    """Generate unique .old path when standard .old is locked.
+
+    When the standard .old file cannot be used (because it is also locked
+    by a running process), generates unique suffixes: .old.1, .old.2, etc.
+
+    For each candidate path, attempts to delete if it exists (in case it
+    is an orphaned file from a previous failed installation).
+
+    Args:
+        target_path: Path to the target executable (e.g., claude.exe).
+
+    Returns:
+        Path object for the next available .old suffix.
+        Example: claude.exe.old.2 if .old and .old.1 are locked.
+
+    Note:
+        Limits to 10 iterations to prevent runaway in pathological cases.
+        Windows only - relies on PermissionError for lock detection.
+    """
+    base = target_path.with_suffix('.exe.old')
+    counter = 1
+
+    while counter <= 10:
+        candidate = Path(f'{base}.{counter}')
+        if not candidate.exists():
+            return candidate
+
+        # Try to delete existing candidate (may be orphaned from previous run)
+        try:
+            candidate.unlink()
+            return candidate
+        except PermissionError:
+            # This one is also locked - try next
+            counter += 1
+
+    # Excessive .old files - something is wrong, but return anyway
+    warning('Too many locked backup files exist. Consider restarting your system.')
+    return Path(f'{base}.{counter}')
+
+
+def _handle_windows_file_lock(
+    temp_path: Path, target_path: Path, version: str, file_size: int,
+) -> bool:
+    """Handle Windows file locking when replacing claude.exe.
+
+    Windows locks running executables, preventing direct replacement.
+    However, renaming is allowed while the process is running. This function
+    implements the rename-before-replace strategy:
+    1. Attempts to remove existing .old file (if not locked)
+    2. Falls back to unique suffix (.old.1, .old.2) if .old is locked
+    3. Renames running claude.exe to .old
+    4. Renames temp file to claude.exe
+
+    Args:
+        temp_path: Path to the downloaded temp file (claude.tmp).
+        target_path: Path to the target executable (claude.exe).
+        version: Version string for success message.
+        file_size: Downloaded file size in bytes for success message.
+
+    Returns:
+        True if rename strategy succeeded, False otherwise.
+
+    Note:
+        Windows only. Should only be called after PermissionError on
+        Path.replace() when claude.exe is locked.
+    """
+    warning('Claude Code appears to be running, attempting rename strategy...')
+
+    old_path = target_path.with_suffix('.exe.old')
+
+    # Handle existing .old file BEFORE attempting rename
+    # This addresses the "multiple runs" scenario from user feedback
+    old_file_handled = _cleanup_old_file_before_rename(old_path)
+
+    if not old_file_handled:
+        # .old file is ALSO locked (both versions running?)
+        # Use unique suffix: claude.exe.old.1, claude.exe.old.2, etc.
+        old_path = _get_unique_old_path(target_path)
+        info(f'Using unique backup path: {old_path.name}')
+
+    try:
+        # Rename running executable (ALLOWED on Windows)
+        target_path.rename(old_path)
+
+        # Rename new file to target name
+        temp_path.rename(target_path)
+
+        info('Successfully installed using rename strategy')
+        info(f'Old version renamed to {old_path.name}')
+
+        success(f'Downloaded Claude Code v{version} ({file_size:,} bytes)')
+        return True
+
+    except PermissionError as rename_err:
+        error(f'Rename strategy failed: {rename_err}')
+        error('Please close ALL Claude Code processes and try again')
+
+        # Clean up temp file
+        with contextlib.suppress(Exception):
+            temp_path.unlink()
+
+        return False
+
+
+def _cleanup_old_claude_files() -> None:
+    """Remove any leftover .old files from previous installations.
+
+    Should be called at the start of install_claude_native_windows() to
+    clean up orphaned backup files from previous installation attempts.
+    Cleans up: claude.exe.old, claude.exe.old.1, claude.exe.old.2, etc.
+
+    Note:
+        Windows only. No-op on other platforms.
+        Silently ignores locked files (will try again next time).
+    """
+    if sys.platform != 'win32':
+        return
+
+    local_bin = Path.home() / '.local' / 'bin'
+
+    if not local_bin.exists():
+        return
+
+    # Clean up standard .old file
+    old_file = local_bin / 'claude.exe.old'
+    if old_file.exists():
+        try:
+            old_file.unlink()
+            info('Cleaned up old Claude Code backup')
+        except PermissionError:
+            # Still in use, will try again next time
+            pass
+        except Exception:
+            # Unexpected error, ignore
+            pass
+
+    # Clean up numbered .old files (claude.exe.old.1, claude.exe.old.2, etc.)
+    for old_numbered in local_bin.glob('claude.exe.old.*'):
+        try:
+            old_numbered.unlink()
+            info(f'Cleaned up {old_numbered.name}')
+        except PermissionError:
+            # Still in use
+            pass
+        except Exception:
+            # Unexpected error, ignore
+            pass
+
+
 def _get_gcs_platform_path() -> tuple[str, str]:
     """Get the GCS platform path and binary name for the current platform.
 
@@ -1455,6 +1641,10 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
     Bypasses the native installer to avoid the Anthropic version-check bug.
     See: https://github.com/anthropics/claude-code/issues/14942
 
+    Handles Windows file locking when Claude Code is running by using a
+    rename-before-replace strategy (rename running .exe to .old, then
+    rename new file to .exe).
+
     Args:
         version: Specific version to download (e.g., "2.0.76").
         target_path: Full path where the binary should be saved.
@@ -1462,9 +1652,14 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
     Returns:
         True if download succeeded and file is valid, False otherwise.
 
+    Raises:
+        PermissionError: Re-raised on non-Windows platforms or when error is not
+            related to file locking (not "Access is denied").
+
     Note:
         All network errors are caught internally and result in False return.
         Automatically detects platform and architecture for correct binary.
+        On Windows, handles locked files via rename strategy.
     """
     gcs_base_url = (
         'https://storage.googleapis.com/claude-code-dist-'
@@ -1522,9 +1717,16 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
             return False
 
         # Move temp file to target (atomic on same filesystem)
-        temp_path.replace(target_path)
-        success(f'Downloaded Claude Code v{version} ({file_size:,} bytes)')
-        return True
+        try:
+            temp_path.replace(target_path)
+            success(f'Downloaded Claude Code v{version} ({file_size:,} bytes)')
+            return True
+        except PermissionError as e:
+            # Windows file locking: running executable cannot be replaced directly
+            if sys.platform == 'win32' and 'Access is denied' in str(e):
+                return _handle_windows_file_lock(temp_path, target_path, version, file_size)
+            # Non-Windows or different PermissionError - re-raise for outer handler
+            raise
 
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -1536,6 +1738,10 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
     except urllib.error.URLError as e:
         error(f'Network error downloading from GCS: {e}')
         return False
+
+    except PermissionError:
+        # Re-raise PermissionError from inner try block (non-Windows or non-locking case)
+        raise
 
     except Exception as e:
         error(f'Failed to download from GCS: {e}')
@@ -1670,6 +1876,9 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     """
     if platform.system() != 'Windows':
         return False
+
+    # Clean up any leftover .old files from previous installations
+    _cleanup_old_claude_files()
 
     native_target = Path.home() / '.local' / 'bin' / 'claude.exe'
 
