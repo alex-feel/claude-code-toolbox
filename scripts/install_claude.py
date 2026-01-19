@@ -1425,12 +1425,236 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     return False
 
 
+def _get_gcs_platform_path() -> tuple[str, str]:
+    """Get the GCS platform path and binary name for the current platform.
+
+    Returns:
+        Tuple of (platform_path, binary_name) for GCS URL construction.
+        Examples: ('win32-x64', 'claude.exe'), ('darwin-arm64', 'claude')
+
+    Note:
+        Maps current platform to GCS bucket directory structure.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+
+    if system == 'Windows':
+        return ('win32-x64', 'claude.exe')
+    if system == 'Darwin':
+        # macOS: arm64 for Apple Silicon, x64 for Intel
+        arch = 'arm64' if machine == 'arm64' else 'x64'
+        return (f'darwin-{arch}', 'claude')
+    # Linux: x64 for most systems
+    arch = 'x64' if machine in ['amd64', 'x86_64'] else 'arm64'
+    return (f'linux-{arch}', 'claude')
+
+
+def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
+    """Download Claude Code binary directly from Google Cloud Storage.
+
+    Bypasses the native installer to avoid the Anthropic version-check bug.
+    See: https://github.com/anthropics/claude-code/issues/14942
+
+    Args:
+        version: Specific version to download (e.g., "2.0.76").
+        target_path: Full path where the binary should be saved.
+
+    Returns:
+        True if download succeeded and file is valid, False otherwise.
+
+    Note:
+        All network errors are caught internally and result in False return.
+        Automatically detects platform and architecture for correct binary.
+    """
+    gcs_base_url = (
+        'https://storage.googleapis.com/claude-code-dist-'
+        '86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
+    )
+    platform_path, binary_name = _get_gcs_platform_path()
+    gcs_url = f'{gcs_base_url}/{version}/{platform_path}/{binary_name}'
+
+    info(f'Downloading Claude Code v{version} directly from GCS...')
+    info(f'URL: {gcs_url}')
+
+    # Ensure target directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Download to temp file first, then move atomically
+    temp_path = target_path.with_suffix('.tmp')
+
+    try:
+        # Attempt download with SSL fallback for corporate environments
+        ssl_retry_needed = False
+        try:
+            urlretrieve(gcs_url, str(temp_path))
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                ssl_retry_needed = True
+            else:
+                error(f'Network error downloading from GCS: {e}')
+                return False
+
+        if ssl_retry_needed:
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            urllib.request.install_opener(opener)
+            try:
+                urlretrieve(gcs_url, str(temp_path))
+            except Exception as ssl_download_error:
+                error(f'Download with SSL fallback failed: {ssl_download_error}')
+                return False
+
+        # Validate downloaded file (minimum size check)
+        if not temp_path.exists():
+            error('Download failed - temp file not created')
+            return False
+
+        file_size = temp_path.stat().st_size
+        min_size = 1000  # 1KB minimum to ensure file is not empty/corrupted
+
+        if file_size < min_size:
+            error(f'Downloaded file too small ({file_size} bytes), likely invalid')
+            with contextlib.suppress(Exception):
+                temp_path.unlink()
+            return False
+
+        # Move temp file to target (atomic on same filesystem)
+        temp_path.replace(target_path)
+        success(f'Downloaded Claude Code v{version} ({file_size:,} bytes)')
+        return True
+
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            error(f'Version {version} not found in GCS bucket (HTTP 404)')
+        else:
+            error(f'HTTP error downloading from GCS: {e.code} {e.reason}')
+        return False
+
+    except urllib.error.URLError as e:
+        error(f'Network error downloading from GCS: {e}')
+        return False
+
+    except Exception as e:
+        error(f'Failed to download from GCS: {e}')
+        return False
+
+    finally:
+        # Clean up temp file if still exists
+        with contextlib.suppress(Exception):
+            if temp_path.exists():
+                temp_path.unlink()
+
+
+def _run_claude_install_setup() -> bool:
+    """Run claude install to configure PATH and shell integration.
+
+    Executes the install subcommand WITHOUT version argument to avoid
+    triggering the version-check bug. This only performs PATH setup.
+
+    Returns:
+        True if setup succeeded, False otherwise.
+
+    Note:
+        Windows uses ~/.local/bin/claude.exe, Unix uses ~/.local/bin/claude.
+    """
+    if sys.platform == 'win32':
+        native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+    else:
+        native_path = Path.home() / '.local' / 'bin' / 'claude'
+
+    if not native_path.exists():
+        error(f'Cannot run install setup - {native_path.name} not found')
+        return False
+
+    info(f'Running {native_path.name} install for PATH setup...')
+
+    # Run install subcommand without version to avoid triggering the bug
+    # The install subcommand configures PATH and shell integration
+    result = run_command([str(native_path), 'install'], capture_output=True)
+
+    if result.returncode == 0:
+        success('PATH setup completed successfully')
+        return True
+
+    # Non-zero return may still be okay if PATH is already configured
+    warning(f'Install subcommand returned code {result.returncode}')
+    if result.stderr:
+        info(f'Output: {result.stderr}')
+
+    # Verify the binary is executable
+    version_result = run_command([str(native_path), '--version'], capture_output=True)
+    if version_result.returncode == 0:
+        info(f'Claude binary is functional: {version_result.stdout.strip()}')
+        return True
+
+    error('Claude binary may not be functional')
+    return False
+
+
+def _ensure_local_bin_in_path_unix() -> bool:
+    """Ensure ~/.local/bin is in PATH on Unix-like systems.
+
+    Adds ~/.local/bin to shell profile files (.bashrc, .zshrc, .profile)
+    and updates the current process PATH for immediate availability.
+
+    Returns:
+        True if PATH was updated or already correct, False on error.
+
+    Note:
+        No-op on Windows (returns True immediately).
+    """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
+    if sys.platform != 'win32':
+        local_bin = Path.home() / '.local' / 'bin'
+        local_bin.mkdir(parents=True, exist_ok=True)
+        local_bin_str = str(local_bin)
+
+        # Update current process PATH
+        current_path = os.environ.get('PATH', '')
+        if local_bin_str not in current_path:
+            os.environ['PATH'] = f'{local_bin_str}:{current_path}'
+            info(f'Updated current session PATH with {local_bin_str}')
+
+        # Update shell profile files
+        home = Path.home()
+        profile_files = [
+            home / '.bashrc',
+            home / '.zshrc',
+            home / '.profile',
+        ]
+
+        export_line = '\nexport PATH="$HOME/.local/bin:$PATH"\n'
+        updated_files: list[Path] = []
+
+        for profile_file in profile_files:
+            if profile_file.exists():
+                try:
+                    content = profile_file.read_text()
+                    if '.local/bin' not in content:
+                        profile_file.write_text(content + export_line)
+                        updated_files.append(profile_file)
+                except Exception as e:
+                    warning(f'Could not update {profile_file}: {e}')
+
+        if updated_files:
+            info(f"Added ~/.local/bin to PATH in: {', '.join(str(f) for f in updated_files)}")
+
+    return True
+
+
 def install_claude_native_windows(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Windows.
 
-    Downloads and executes the official PowerShell installer script from claude.ai.
-    The native installer places the executable at %USERPROFILE%\\.local\bin\\claude.exe
-    and automatically updates the Windows PATH registry.
+    Uses a hybrid approach to handle the Anthropic installer bug:
+    - If version is None or "latest": Uses native installer with "latest"
+      (safe because string "latest" != numeric version bypasses the bug)
+    - If specific version requested: Downloads directly from GCS bucket
+      to completely bypass the buggy installer version-check logic
+
+    See: https://github.com/anthropics/claude-code/issues/14942
 
     Args:
         version: Specific version to install (e.g., "2.0.14", "latest", "stable").
@@ -1440,40 +1664,113 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     Returns:
         True if installation succeeded and was verified, False otherwise.
 
-    Raises:
-        urllib.error.URLError: Network errors (caught internally, returns False).
-
     Note:
         Windows only. Returns False on other platforms (should not be called).
+        All network errors are caught internally and result in False return.
     """
     if platform.system() != 'Windows':
         return False
 
+    native_target = Path.home() / '.local' / 'bin' / 'claude.exe'
+
+    # CASE 1: No specific version or "latest" requested
+    # Safe to use native installer - "latest" string bypasses version check bug
+    if not version or version.lower() == 'latest':
+        return _install_claude_native_windows_installer(version='latest')
+
+    # CASE 2: Specific version requested
+    # MUST use direct download - installer bug makes it impossible to
+    # reliably install specific versions through the native installer
+    info(f'Specific version {version} requested.')
+    info('Using direct download to bypass Anthropic installer bug.')
+
+    # Attempt direct download from GCS
+    if _download_claude_direct_from_gcs(version, native_target):
+        # Run install subcommand for PATH setup (without version argument)
+        _run_claude_install_setup()
+
+        # Ensure ~/.local/bin is in PATH
+        info('Updating PATH for native installation...')
+        ensure_local_bin_in_path_windows()
+
+        # Give Windows time to process PATH update
+        time.sleep(1)
+
+        # Verify installation
+        is_installed, claude_path, source = verify_claude_installation()
+        if is_installed and source == 'native':
+            success(f'Direct download installation verified at: {claude_path}')
+            return True
+        if is_installed:
+            warning(f'Claude found but from {source} source at: {claude_path}')
+            return True  # Still successful if found somewhere
+        error('Installation verification failed')
+        return False
+
+    # Direct download failed - fall back to native installer with "latest"
+    warning(f'Direct download of version {version} failed.')
+    warning('Falling back to native installer with "latest" version.')
+    info('Note: This will install the latest version instead of the requested version.')
+
+    return _install_claude_native_windows_installer(version='latest')
+
+
+def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
+    """Install Claude Code using the official PowerShell installer script.
+
+    Internal function that executes the native installer. Should be called
+    with version="latest" to bypass the Anthropic installer bug.
+
+    Args:
+        version: Version argument to pass to installer. Use "latest" to
+                 bypass the version-check bug on fresh installations.
+
+    Returns:
+        True if installation succeeded and was verified, False otherwise.
+
+    Note:
+        All network errors are caught internally and result in False return.
+    """
     try:
         info('Trying official native installer...')
 
         # Download installer script (with SSL fallback)
+        installer_script: str | None = None
+        ssl_retry_needed = False
+
         try:
             with urlopen(CLAUDE_INSTALLER_URL) as response:
                 installer_script = response.read().decode('utf-8')
         except urllib.error.URLError as e:
             if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                # Fallback: create unverified SSL context for corporate environments
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
+                ssl_retry_needed = True
+            else:
+                error(f'Network error downloading installer: {e}')
+                return False
+
+        if ssl_retry_needed:
+            # Fallback: create unverified SSL context for corporate environments
+            warning('SSL certificate verification failed, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            try:
                 with urlopen(CLAUDE_INSTALLER_URL, context=ctx) as response:
                     installer_script = response.read().decode('utf-8')
-            else:
-                raise
+            except Exception as ssl_error:
+                error(f'Download with SSL fallback failed: {ssl_error}')
+                return False
+
+        if installer_script is None:
+            error('Failed to download installer script')
+            return False
 
         # Save to temp file and execute
         with tempfile.NamedTemporaryFile(suffix='.ps1', delete=False, mode='w') as tmp:
             tmp.write(installer_script)
             temp_path = tmp.name
 
-        # Build command with optional version parameter
+        # Build command with version parameter
         cmd = [
             'powershell',
             '-NoProfile',
@@ -1481,17 +1778,10 @@ def install_claude_native_windows(version: str | None = None) -> bool:
             'Bypass',
             '-File',
             temp_path,
+            version,  # Always pass version to bypass bug
         ]
 
-        # CRITICAL: Always pass version argument to bypass Anthropic installer bug
-        # See: https://github.com/anthropics/claude-code/issues/14942
-        # Bug: installer skips copying when running version == target version,
-        # even if target file doesn't exist (fresh installations)
-        # Fix: pass "latest" when no specific version requested
-        version_arg = version or 'latest'
-        cmd.append(version_arg)
-
-        version_msg = f' version {version}' if version else ''
+        version_msg = f' version {version}' if version != 'latest' else ''
         info(f'Installing Claude Code{version_msg} via native installer...')
         result = run_command(cmd, capture_output=False)
 
@@ -1531,178 +1821,307 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     return False
 
 
+def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
+    """Execute the official macOS shell installer from claude.ai.
+
+    Downloads and runs the shell installer script, optionally with a version.
+
+    Args:
+        version: Version to install. Use 'latest' for the latest stable version.
+
+    Returns:
+        True if installation succeeded, False otherwise.
+
+    Note:
+        All network errors are caught internally and result in False return.
+    """
+    try:
+        info(f'Running official native installer for macOS (version: {version})...')
+
+        # Download installer script (with SSL fallback)
+        installer_url = 'https://claude.ai/install.sh'
+        installer_script: str | None = None
+        try:
+            with urlopen(installer_url) as response:
+                installer_script = response.read().decode('utf-8')
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(installer_url, context=ctx) as response:
+                    installer_script = response.read().decode('utf-8')
+            else:
+                error(f'Failed to download installer: {e}')
+                return False
+
+        if installer_script is None:
+            error('Failed to download installer script')
+            return False
+
+        # Save to temp file and execute
+        with tempfile.NamedTemporaryFile(suffix='.sh', delete=False, mode='w') as tmp:
+            tmp.write(installer_script)
+            temp_path = tmp.name
+
+        # Make executable
+        os.chmod(temp_path, 0o755)
+
+        # Execute installer with version argument
+        cmd = ['bash', temp_path]
+        if version != 'latest':
+            cmd.append(version)  # Shell script accepts version as $1
+
+        info('Running native installer (may require password)...')
+        result = run_command(cmd, capture_output=False)
+
+        # Clean up
+        with contextlib.suppress(Exception):
+            os.unlink(temp_path)
+
+        if result.returncode == 0:
+            success('Claude Code installed via native installer')
+            time.sleep(1)
+
+            # Verify installation
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed:
+                success(f'Native installation verified at: {claude_path} (source: {source})')
+                return True
+            warning('Native installation completed but Claude executable not found')
+            error('Installation verification failed')
+            info('You may need to restart your terminal or run in a new session')
+            return False
+
+        error(f'Native installer exited with code {result.returncode}')
+        return False
+
+    except Exception as e:
+        error(f'Native installer failed: {e}')
+        return False
+
+
 def install_claude_native_macos(version: str | None = None) -> bool:
     """Install Claude Code using native installer on macOS.
 
-    Downloads and executes the official shell installer script from claude.ai.
-    The native installer places the executable at /usr/local/bin/claude
-    and handles PATH configuration automatically.
+    Implements a hybrid approach to work around Anthropic's installer bug:
+    - For latest version (None or 'latest'): Use native installer with 'latest'
+    - For specific versions: Download directly from GCS bucket, then run
+      'claude install' for PATH setup (bypasses buggy version check)
 
     Args:
-        version: Specific version to install (e.g., "2.0.14"). If None,
-                 installs latest stable version. Supports semantic versions
-                 and pre-release tags.
+        version: Specific version to install (e.g., "2.0.76"). If None or
+                 "latest", installs latest stable version via native installer.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
 
-    Raises:
-        urllib.error.URLError: Network errors (caught internally, returns False).
-
     Note:
-        macOS only. Returns False on other platforms (should not be called).
+        macOS only. Returns False on other platforms.
+        See: https://github.com/anthropics/claude-code/issues/14942
     """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform == 'darwin':
-        try:
-            info('Trying official native installer for macOS...')
+        # Hybrid approach: Use native installer for "latest", direct download for specific versions
+        if version is None or version.lower() == 'latest':
+            # Native installer is safe when using "latest"
+            info('Installing latest version via native installer...')
+            return _install_claude_native_macos_installer(version='latest')
 
-            # Download installer script (with SSL fallback)
-            installer_url = 'https://claude.ai/install.sh'
-            try:
-                with urlopen(installer_url) as response:
-                    installer_script = response.read().decode('utf-8')
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    with urlopen(installer_url, context=ctx) as response:
-                        installer_script = response.read().decode('utf-8')
-                else:
-                    raise
+        # Specific version requested - use direct GCS download to bypass buggy installer
+        info(f'Specific version {version} requested - using direct GCS download...')
 
-            # Save to temp file and execute
-            with tempfile.NamedTemporaryFile(suffix='.sh', delete=False, mode='w') as tmp:
-                tmp.write(installer_script)
-                temp_path = tmp.name
+        native_path = Path.home() / '.local' / 'bin' / 'claude'
 
-            # Make executable
-            os.chmod(temp_path, 0o755)
+        # Try direct download from GCS
+        if _download_claude_direct_from_gcs(version, native_path):
+            # Make binary executable
+            native_path.chmod(0o755)
 
-            # Execute installer with optional version argument
-            cmd = ['bash', temp_path]
-            if version:
-                cmd.append(version)  # Shell script accepts version as $1
+            # Run 'claude install' for PATH setup (without version to avoid bug)
+            if _run_claude_install_setup():
+                _ensure_local_bin_in_path_unix()
 
-            version_msg = f' for version {version}' if version else ''
-            info(f'Running native installer{version_msg} (may require password)...')
-            result = run_command(cmd, capture_output=False)
-
-            # Clean up
-            with contextlib.suppress(Exception):
-                os.unlink(temp_path)
-
-            if result.returncode == 0:
-                success('Claude Code installed via native installer')
-
-                # Give system time to complete installation
                 time.sleep(1)
 
                 # Verify installation
                 is_installed, claude_path, source = verify_claude_installation()
-                if is_installed:
-                    success(f'Native installation verified at: {claude_path} (source: {source})')
+                if is_installed and source == 'native':
+                    success(f'Native installation verified at: {claude_path}')
                     return True
-                warning('Native installation completed but Claude executable not found')
-                error('Installation verification failed')
-                info('You may need to restart your terminal or run in a new session')
+                if is_installed:
+                    warning(f'Claude found but from {source} source at: {claude_path}')
+                    warning('Direct download did not create expected file at ~/.local/bin/claude')
+                    error('Installation failed - file not created at expected location')
+                    return False
+                warning('Installation failed - no Claude executable found')
+                error('Claude not accessible after direct download')
+                return False
+            # Install setup failed, but binary exists - try to continue
+            warning('PATH setup failed, but binary was downloaded')
+            _ensure_local_bin_in_path_unix()
+            return native_path.exists()
+
+        # GCS download failed - fall back to native installer with "latest"
+        warning(f'Direct download failed for version {version}, falling back to native installer')
+        info('Note: Falling back to latest version due to installer limitations')
+        return _install_claude_native_macos_installer(version='latest')
+
+    # Non-macOS platform
+    return False
+
+
+def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
+    """Execute the official Linux shell installer from claude.ai.
+
+    Downloads and runs the shell installer script, optionally with a version.
+
+    Args:
+        version: Version to install. Use 'latest' for the latest stable version.
+
+    Returns:
+        True if installation succeeded, False otherwise.
+
+    Note:
+        All network errors are caught internally and result in False return.
+    """
+    try:
+        info(f'Running official native installer for Linux (version: {version})...')
+
+        # Download installer script (with SSL fallback)
+        installer_url = 'https://claude.ai/install.sh'
+        installer_script: str | None = None
+        try:
+            with urlopen(installer_url) as response:
+                installer_script = response.read().decode('utf-8')
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(installer_url, context=ctx) as response:
+                    installer_script = response.read().decode('utf-8')
+            else:
+                error(f'Failed to download installer: {e}')
                 return False
 
-            error(f'Native installer exited with code {result.returncode}')
+        if installer_script is None:
+            error('Failed to download installer script')
             return False
 
-        except Exception as e:
-            error(f'Native installer failed: {e}')
+        # Save to temp file and execute
+        with tempfile.NamedTemporaryFile(suffix='.sh', delete=False, mode='w') as tmp:
+            tmp.write(installer_script)
+            temp_path = tmp.name
+
+        # Make executable
+        os.chmod(temp_path, 0o755)
+
+        # Execute installer with version argument
+        cmd = ['bash', temp_path]
+        if version != 'latest':
+            cmd.append(version)  # Shell script accepts version as $1
+
+        info('Running native installer (may require password)...')
+        result = run_command(cmd, capture_output=False)
+
+        # Clean up
+        with contextlib.suppress(Exception):
+            os.unlink(temp_path)
+
+        if result.returncode == 0:
+            success('Claude Code installed via native installer')
+            time.sleep(1)
+
+            # Verify installation
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed:
+                success(f'Native installation verified at: {claude_path} (source: {source})')
+                return True
+            warning('Native installation completed but Claude executable not found')
+            error('Installation verification failed')
+            info('You may need to restart your terminal or run in a new session')
             return False
-    return False
+
+        error(f'Native installer exited with code {result.returncode}')
+        return False
+
+    except Exception as e:
+        error(f'Native installer failed: {e}')
+        return False
 
 
 def install_claude_native_linux(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Linux.
 
-    Downloads and executes the official shell installer script from claude.ai.
-    The native installer places the executable at /usr/local/bin/claude
-    or ~/.local/bin/claude depending on permissions.
+    Implements a hybrid approach to work around Anthropic's installer bug:
+    - For latest version (None or 'latest'): Use native installer with 'latest'
+    - For specific versions: Download directly from GCS bucket, then run
+      'claude install' for PATH setup (bypasses buggy version check)
 
     Supports: Ubuntu 20.04+, Debian 10+, and other modern Linux distributions.
 
     Args:
-        version: Specific version to install (e.g., "2.0.14"). If None,
-                 installs latest stable version. Supports semantic versions.
+        version: Specific version to install (e.g., "2.0.76"). If None or
+                 "latest", installs latest stable version via native installer.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
 
-    Raises:
-        urllib.error.URLError: Network errors (caught internally, returns False).
-
     Note:
-        Linux only. Returns False on other platforms (should not be called).
+        Linux only. Returns False on other platforms.
+        See: https://github.com/anthropics/claude-code/issues/14942
     """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Windows CI
     if sys.platform == 'linux':
-        try:
-            info('Trying official native installer for Linux...')
+        # Hybrid approach: Use native installer for "latest", direct download for specific versions
+        if version is None or version.lower() == 'latest':
+            # Native installer is safe when using "latest"
+            info('Installing latest version via native installer...')
+            return _install_claude_native_linux_installer(version='latest')
 
-            # Download installer script (with SSL fallback)
-            installer_url = 'https://claude.ai/install.sh'
-            try:
-                with urlopen(installer_url) as response:
-                    installer_script = response.read().decode('utf-8')
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-                    with urlopen(installer_url, context=ctx) as response:
-                        installer_script = response.read().decode('utf-8')
-                else:
-                    raise
+        # Specific version requested - use direct GCS download to bypass buggy installer
+        info(f'Specific version {version} requested - using direct GCS download...')
 
-            # Save to temp file and execute
-            with tempfile.NamedTemporaryFile(suffix='.sh', delete=False, mode='w') as tmp:
-                tmp.write(installer_script)
-                temp_path = tmp.name
+        native_path = Path.home() / '.local' / 'bin' / 'claude'
 
-            # Make executable
-            os.chmod(temp_path, 0o755)
+        # Try direct download from GCS
+        if _download_claude_direct_from_gcs(version, native_path):
+            # Make binary executable
+            native_path.chmod(0o755)
 
-            # Execute installer with optional version argument
-            cmd = ['bash', temp_path]
-            if version:
-                cmd.append(version)  # Shell script accepts version as $1
+            # Run 'claude install' for PATH setup (without version to avoid bug)
+            if _run_claude_install_setup():
+                _ensure_local_bin_in_path_unix()
 
-            version_msg = f' for version {version}' if version else ''
-            info(f'Running native installer{version_msg} (may require password)...')
-            result = run_command(cmd, capture_output=False)
-
-            # Clean up
-            with contextlib.suppress(Exception):
-                os.unlink(temp_path)
-
-            if result.returncode == 0:
-                success('Claude Code installed via native installer')
-
-                # Give system time to complete installation
                 time.sleep(1)
 
                 # Verify installation
                 is_installed, claude_path, source = verify_claude_installation()
-                if is_installed:
-                    success(f'Native installation verified at: {claude_path} (source: {source})')
+                if is_installed and source == 'native':
+                    success(f'Native installation verified at: {claude_path}')
                     return True
-                warning('Native installation completed but Claude executable not found')
-                error('Installation verification failed')
-                info('You may need to restart your terminal or run in a new session')
+                if is_installed:
+                    warning(f'Claude found but from {source} source at: {claude_path}')
+                    warning('Direct download did not create expected file at ~/.local/bin/claude')
+                    error('Installation failed - file not created at expected location')
+                    return False
+                warning('Installation failed - no Claude executable found')
+                error('Claude not accessible after direct download')
                 return False
+            # Install setup failed, but binary exists - try to continue
+            warning('PATH setup failed, but binary was downloaded')
+            _ensure_local_bin_in_path_unix()
+            return native_path.exists()
 
-            error(f'Native installer exited with code {result.returncode}')
-            return False
+        # GCS download failed - fall back to native installer with "latest"
+        warning(f'Direct download failed for version {version}, falling back to native installer')
+        info('Note: Falling back to latest version due to installer limitations')
+        return _install_claude_native_linux_installer(version='latest')
 
-        except Exception as e:
-            error(f'Native installer failed: {e}')
-            # Fall through to final return
+    # Non-Linux platform
     return False
 
 

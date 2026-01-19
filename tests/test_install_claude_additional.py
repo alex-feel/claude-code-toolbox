@@ -551,3 +551,828 @@ class TestInstallGitWinget:
         mock_run.return_value = subprocess.CompletedProcess([], 1, '', 'error')
         result = install_claude.install_git_windows_winget()
         assert result is False
+
+
+class TestGCSDirectDownload:
+    """Test direct download from GCS bucket for specific versions."""
+
+    @patch('install_claude.urlretrieve')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.replace')
+    @patch('pathlib.Path.mkdir')
+    def test_download_claude_direct_from_gcs_success(
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_stat,
+        mock_exists,
+        mock_urlretrieve,
+    ):
+        """Test successful direct download from GCS."""
+        # Mock file exists after download
+        mock_exists.return_value = True
+        mock_stat.return_value.st_size = 5_000_000  # 5MB file
+
+        target_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        result = install_claude._download_claude_direct_from_gcs('2.0.76', target_path)
+
+        assert result is True
+        mock_urlretrieve.assert_called_once()
+        mock_mkdir.assert_called()  # Directory creation
+        mock_replace.assert_called()  # Atomic file move
+        # Verify GCS URL was used
+        call_url = mock_urlretrieve.call_args[0][0]
+        assert 'storage.googleapis.com' in call_url
+        assert '2.0.76' in call_url
+        assert 'win32-x64' in call_url
+
+    @patch('install_claude.urlretrieve')
+    @patch('pathlib.Path.mkdir')
+    def test_download_claude_direct_from_gcs_http_404(self, mock_mkdir, mock_urlretrieve):
+        """Test direct download when version not found (HTTP 404)."""
+        from email.message import Message
+
+        headers = Message()
+        mock_urlretrieve.side_effect = urllib.error.HTTPError(
+            'https://storage.googleapis.com/...',
+            404,
+            'Not Found',
+            headers,
+            None,
+        )
+
+        target_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        result = install_claude._download_claude_direct_from_gcs('99.99.99', target_path)
+
+        assert result is False
+        mock_mkdir.assert_called()  # Directory creation attempted
+
+    @patch('install_claude.urlretrieve')
+    @patch('pathlib.Path.mkdir')
+    def test_download_claude_direct_from_gcs_network_error(self, mock_mkdir, mock_urlretrieve):
+        """Test direct download with network error."""
+        mock_urlretrieve.side_effect = urllib.error.URLError('Connection refused')
+
+        target_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        result = install_claude._download_claude_direct_from_gcs('2.0.76', target_path)
+
+        assert result is False
+        mock_mkdir.assert_called()  # Directory creation attempted
+
+    @patch('install_claude.urlretrieve')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.unlink')
+    @patch('pathlib.Path.mkdir')
+    def test_download_claude_direct_from_gcs_file_too_small(
+        self,
+        mock_mkdir,
+        mock_unlink,
+        mock_stat,
+        mock_exists,
+        mock_urlretrieve,
+    ):
+        """Test direct download when downloaded file is too small (corrupted)."""
+        mock_exists.return_value = True
+        mock_stat.return_value.st_size = 500  # Only 500 bytes - too small
+        mock_urlretrieve.return_value = None  # Download "succeeds"
+
+        target_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        result = install_claude._download_claude_direct_from_gcs('2.0.76', target_path)
+
+        assert result is False
+        mock_mkdir.assert_called()  # Directory creation
+        mock_urlretrieve.assert_called()  # Download attempted
+        mock_unlink.assert_called()  # Corrupted file cleaned up
+
+    @patch('install_claude.urllib.request.build_opener')
+    @patch('install_claude.urllib.request.install_opener')
+    @patch('install_claude.urlretrieve')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.replace')
+    @patch('pathlib.Path.mkdir')
+    def test_download_claude_direct_from_gcs_ssl_fallback(
+        self,
+        mock_mkdir,
+        mock_replace,
+        mock_stat,
+        mock_exists,
+        mock_urlretrieve,
+        mock_install_opener,
+        mock_build_opener,
+    ):
+        """Test direct download with SSL error fallback."""
+        # First call fails with SSL error, second succeeds
+        mock_urlretrieve.side_effect = [
+            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            None,  # Second call succeeds
+        ]
+        mock_exists.return_value = True
+        mock_stat.return_value.st_size = 5_000_000
+
+        target_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        result = install_claude._download_claude_direct_from_gcs('2.0.76', target_path)
+
+        assert result is True
+        assert mock_urlretrieve.call_count == 2
+        mock_build_opener.assert_called_once()
+        mock_install_opener.assert_called_once()
+        mock_mkdir.assert_called()  # Directory creation
+        mock_replace.assert_called()  # Atomic file move
+
+
+class TestRunClaudeInstallSetup:
+    """Test claude.exe install subcommand for PATH setup."""
+
+    @patch('install_claude.run_command')
+    @patch('pathlib.Path.exists', return_value=True)
+    def test_run_claude_install_setup_success(self, mock_exists, mock_run):
+        """Test successful PATH setup via install subcommand."""
+        # Verify mock configuration
+        assert mock_exists.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = install_claude._run_claude_install_setup()
+
+        assert result is True
+        mock_run.assert_called_once()
+        # Verify install subcommand was called without version
+        call_args = mock_run.call_args[0][0]
+        assert 'install' in call_args
+        assert len(call_args) == 2  # Only [path, 'install'], no version
+
+    @patch('pathlib.Path.exists', return_value=False)
+    def test_run_claude_install_setup_binary_not_found(self, mock_exists):
+        """Test PATH setup when binary doesn't exist."""
+        # Verify mock configuration
+        assert mock_exists.return_value is False
+
+        result = install_claude._run_claude_install_setup()
+
+        assert result is False
+
+    @patch('install_claude.run_command')
+    @patch('pathlib.Path.exists', return_value=True)
+    def test_run_claude_install_setup_nonzero_but_functional(self, mock_exists, mock_run):
+        """Test PATH setup with non-zero return but binary is functional."""
+        # Verify mock configuration
+        assert mock_exists.return_value is True
+        # First call (install) returns non-zero
+        # Second call (--version) succeeds
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 1, '', 'Some warning'),
+            subprocess.CompletedProcess([], 0, 'claude 2.0.76', ''),
+        ]
+
+        result = install_claude._run_claude_install_setup()
+
+        assert result is True
+        assert mock_run.call_count == 2
+
+
+class TestHybridInstallApproach:
+    """Test the hybrid installation approach for Windows."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude._install_claude_native_windows_installer')
+    def test_install_claude_native_windows_no_version_uses_installer(
+        self,
+        mock_installer,
+        mock_system,
+    ):
+        """Test that no version uses native installer with 'latest'."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_windows(version=None)
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude._install_claude_native_windows_installer')
+    def test_install_claude_native_windows_latest_uses_installer(
+        self,
+        mock_installer,
+        mock_system,
+    ):
+        """Test that 'latest' version uses native installer."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_windows(version='latest')
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._run_claude_install_setup')
+    @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('install_claude.verify_claude_installation')
+    @patch('time.sleep')
+    def test_install_claude_native_windows_specific_version_uses_gcs(
+        self,
+        mock_sleep,
+        mock_verify,
+        mock_ensure_path,
+        mock_setup,
+        mock_gcs_download,
+        mock_system,
+    ):
+        """Test that specific version uses GCS direct download."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        mock_gcs_download.return_value = True
+        mock_setup.return_value = True
+        mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+
+        result = install_claude.install_claude_native_windows(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_sleep.assert_called()
+        mock_ensure_path.assert_called()
+        # Verify version was passed to GCS download
+        call_args = mock_gcs_download.call_args[0]
+        assert call_args[0] == '2.0.76'
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._install_claude_native_windows_installer')
+    def test_install_claude_native_windows_gcs_fails_fallback_to_installer(
+        self,
+        mock_installer,
+        mock_gcs_download,
+        mock_system,
+    ):
+        """Test fallback to native installer when GCS download fails."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        mock_gcs_download.return_value = False
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_windows(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('platform.system', return_value='Linux')
+    def test_install_claude_native_windows_returns_false_on_linux(self, mock_system):
+        """Test that Windows installer returns False on Linux."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Linux'
+        result = install_claude.install_claude_native_windows(version='2.0.76')
+
+        assert result is False
+
+
+class TestNativeWindowsInstallerFunction:
+    """Test the internal native Windows installer function."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.unlink')
+    @patch('time.sleep')
+    def test_install_claude_native_windows_installer_success(
+        self,
+        mock_sleep,
+        mock_unlink,
+        mock_temp,
+        mock_ensure_path,
+        mock_verify,
+        mock_run,
+        mock_urlopen,
+        mock_system,
+    ):
+        """Test successful native installer execution."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+
+        # Mock installer script download
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'# PowerShell installer script'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\temp\\install.ps1'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+
+        result = install_claude._install_claude_native_windows_installer(version='latest')
+
+        assert result is True
+        mock_run.assert_called_once()
+        mock_sleep.assert_called()
+        mock_unlink.assert_called()
+        mock_ensure_path.assert_called()
+        # Verify 'latest' was passed to the installer
+        call_args = mock_run.call_args[0][0]
+        assert 'latest' in call_args
+
+    @patch('install_claude.urlopen')
+    def test_install_claude_native_windows_installer_network_error(self, mock_urlopen):
+        """Test native installer with network error."""
+        mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
+
+        result = install_claude._install_claude_native_windows_installer(version='latest')
+
+        assert result is False
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.unlink')
+    @patch('time.sleep')
+    def test_install_claude_native_windows_installer_ssl_fallback(
+        self,
+        mock_sleep,
+        mock_unlink,
+        mock_temp,
+        mock_ensure_path,
+        mock_verify,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Test native installer with SSL error fallback."""
+        # First call fails with SSL, second succeeds
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'# PowerShell installer script'
+
+        mock_urlopen.side_effect = [
+            urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
+            MagicMock(__enter__=lambda _: mock_response, __exit__=lambda *_: None),
+        ]
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\temp\\install.ps1'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+
+        result = install_claude._install_claude_native_windows_installer(version='latest')
+
+        # Verify mocks were used
+        mock_sleep.assert_called()
+        mock_unlink.assert_called()
+        mock_ensure_path.assert_called()
+
+        assert result is True
+        assert mock_urlopen.call_count == 2
+
+
+class TestGetGcsPlatformPath:
+    """Test the _get_gcs_platform_path function for cross-platform support."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('platform.machine', return_value='AMD64')
+    def test_get_gcs_platform_path_windows(self, mock_machine, mock_system):
+        """Test GCS path for Windows."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        assert mock_machine.return_value == 'AMD64'
+
+        platform_path, binary_name = install_claude._get_gcs_platform_path()
+
+        assert platform_path == 'win32-x64'
+        assert binary_name == 'claude.exe'
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('platform.machine', return_value='arm64')
+    def test_get_gcs_platform_path_macos_arm(self, mock_machine, mock_system):
+        """Test GCS path for macOS ARM (Apple Silicon)."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Darwin'
+        assert mock_machine.return_value == 'arm64'
+
+        platform_path, binary_name = install_claude._get_gcs_platform_path()
+
+        assert platform_path == 'darwin-arm64'
+        assert binary_name == 'claude'
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('platform.machine', return_value='x86_64')
+    def test_get_gcs_platform_path_macos_intel(self, mock_machine, mock_system):
+        """Test GCS path for macOS Intel."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Darwin'
+        assert mock_machine.return_value == 'x86_64'
+
+        platform_path, binary_name = install_claude._get_gcs_platform_path()
+
+        assert platform_path == 'darwin-x64'
+        assert binary_name == 'claude'
+
+    @patch('platform.system', return_value='Linux')
+    @patch('platform.machine', return_value='x86_64')
+    def test_get_gcs_platform_path_linux_x64(self, mock_machine, mock_system):
+        """Test GCS path for Linux x64."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Linux'
+        assert mock_machine.return_value == 'x86_64'
+
+        platform_path, binary_name = install_claude._get_gcs_platform_path()
+
+        assert platform_path == 'linux-x64'
+        assert binary_name == 'claude'
+
+    @patch('platform.system', return_value='Linux')
+    @patch('platform.machine', return_value='aarch64')
+    def test_get_gcs_platform_path_linux_arm64(self, mock_machine, mock_system):
+        """Test GCS path for Linux ARM64."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Linux'
+        assert mock_machine.return_value == 'aarch64'
+
+        platform_path, binary_name = install_claude._get_gcs_platform_path()
+
+        assert platform_path == 'linux-arm64'
+        assert binary_name == 'claude'
+
+
+class TestHybridInstallMacOS:
+    """Test the hybrid installation approach for macOS."""
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude._install_claude_native_macos_installer')
+    def test_install_claude_native_macos_no_version_uses_installer(
+        self,
+        mock_installer,
+    ):
+        """Test that no version uses native installer with 'latest'."""
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_macos(version=None)
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude._install_claude_native_macos_installer')
+    def test_install_claude_native_macos_latest_uses_installer(
+        self,
+        mock_installer,
+    ):
+        """Test that 'latest' version uses native installer."""
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_macos(version='latest')
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._run_claude_install_setup')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('install_claude.verify_claude_installation')
+    @patch('pathlib.Path.chmod')
+    @patch('time.sleep')
+    def test_install_claude_native_macos_specific_version_uses_gcs(
+        self,
+        mock_sleep,
+        mock_chmod,
+        mock_verify,
+        mock_ensure_path,
+        mock_setup,
+        mock_gcs_download,
+    ):
+        """Test that specific version uses GCS direct download on macOS."""
+        mock_gcs_download.return_value = True
+        mock_setup.return_value = True
+        mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_macos(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_sleep.assert_called()
+        mock_chmod.assert_called()
+        # Verify version was passed to GCS download
+        call_args = mock_gcs_download.call_args[0]
+        assert call_args[0] == '2.0.76'
+        mock_ensure_path.assert_called()
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._install_claude_native_macos_installer')
+    def test_install_claude_native_macos_gcs_fails_fallback_to_installer(
+        self,
+        mock_installer,
+        mock_gcs_download,
+    ):
+        """Test fallback to native installer when GCS download fails on macOS."""
+        mock_gcs_download.return_value = False
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_macos(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'win32')
+    def test_install_claude_native_macos_returns_false_on_windows(self):
+        """Test that macOS installer returns False on Windows."""
+        result = install_claude.install_claude_native_macos(version='2.0.76')
+
+        assert result is False
+
+
+class TestHybridInstallLinux:
+    """Test the hybrid installation approach for Linux."""
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude._install_claude_native_linux_installer')
+    def test_install_claude_native_linux_no_version_uses_installer(
+        self,
+        mock_installer,
+    ):
+        """Test that no version uses native installer with 'latest'."""
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_linux(version=None)
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude._install_claude_native_linux_installer')
+    def test_install_claude_native_linux_latest_uses_installer(
+        self,
+        mock_installer,
+    ):
+        """Test that 'latest' version uses native installer."""
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_linux(version='latest')
+
+        assert result is True
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._run_claude_install_setup')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('install_claude.verify_claude_installation')
+    @patch('pathlib.Path.chmod')
+    @patch('time.sleep')
+    def test_install_claude_native_linux_specific_version_uses_gcs(
+        self,
+        mock_sleep,
+        mock_chmod,
+        mock_verify,
+        mock_ensure_path,
+        mock_setup,
+        mock_gcs_download,
+    ):
+        """Test that specific version uses GCS direct download on Linux."""
+        mock_gcs_download.return_value = True
+        mock_setup.return_value = True
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_linux(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_sleep.assert_called()
+        mock_chmod.assert_called()
+        # Verify version was passed to GCS download
+        call_args = mock_gcs_download.call_args[0]
+        assert call_args[0] == '2.0.76'
+        mock_ensure_path.assert_called()
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._install_claude_native_linux_installer')
+    def test_install_claude_native_linux_gcs_fails_fallback_to_installer(
+        self,
+        mock_installer,
+        mock_gcs_download,
+    ):
+        """Test fallback to native installer when GCS download fails on Linux."""
+        mock_gcs_download.return_value = False
+        mock_installer.return_value = True
+
+        result = install_claude.install_claude_native_linux(version='2.0.76')
+
+        assert result is True
+        mock_gcs_download.assert_called_once()
+        mock_installer.assert_called_once_with(version='latest')
+
+    @patch('sys.platform', 'win32')
+    def test_install_claude_native_linux_returns_false_on_windows(self):
+        """Test that Linux installer returns False on Windows."""
+        result = install_claude.install_claude_native_linux(version='2.0.76')
+
+        assert result is False
+
+
+class TestNativeMacOSInstallerFunction:
+    """Test the internal native macOS installer function."""
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    @patch('time.sleep')
+    def test_install_claude_native_macos_installer_success(
+        self,
+        mock_sleep,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_verify,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Test successful native macOS installer execution."""
+        # Mock installer script download
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\necho "Installing"'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
+
+        result = install_claude._install_claude_native_macos_installer(version='latest')
+
+        assert result is True
+        mock_run.assert_called_once()
+        mock_sleep.assert_called()
+        mock_unlink.assert_called()
+        mock_chmod.assert_called()
+
+    @patch('install_claude.urlopen')
+    def test_install_claude_native_macos_installer_network_error(self, mock_urlopen):
+        """Test native macOS installer with network error."""
+        mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
+
+        result = install_claude._install_claude_native_macos_installer(version='latest')
+
+        assert result is False
+
+
+class TestNativeLinuxInstallerFunction:
+    """Test the internal native Linux installer function."""
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    @patch('time.sleep')
+    def test_install_claude_native_linux_installer_success(
+        self,
+        mock_sleep,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_verify,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Test successful native Linux installer execution."""
+        # Mock installer script download
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\necho "Installing"'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        # Mock temp file
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+
+        result = install_claude._install_claude_native_linux_installer(version='latest')
+
+        assert result is True
+        mock_run.assert_called_once()
+        mock_sleep.assert_called()
+        mock_unlink.assert_called()
+        mock_chmod.assert_called()
+
+    @patch('install_claude.urlopen')
+    def test_install_claude_native_linux_installer_network_error(self, mock_urlopen):
+        """Test native Linux installer with network error."""
+        mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
+
+        result = install_claude._install_claude_native_linux_installer(version='latest')
+
+        assert result is False
+
+
+class TestEnsureLocalBinInPathUnix:
+    """Test the _ensure_local_bin_in_path_unix function."""
+
+    @patch('sys.platform', 'win32')
+    def test_ensure_local_bin_in_path_unix_noop_on_windows(self) -> None:
+        """Test that function is a no-op on Windows."""
+        result = install_claude._ensure_local_bin_in_path_unix()
+
+        assert result is True
+
+    @patch('sys.platform', 'linux')
+    @patch('pathlib.Path.home')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.read_text')
+    @patch('pathlib.Path.write_text')
+    def test_ensure_local_bin_in_path_unix_updates_path(
+        self,
+        mock_write: MagicMock,
+        mock_read: MagicMock,
+        mock_exists: MagicMock,
+        mock_mkdir: MagicMock,
+        mock_home: MagicMock,
+    ) -> None:
+        """Test that function updates PATH on Unix."""
+        # Mock home directory
+        mock_home.return_value = Path('/home/testuser')
+        # Profile files don't exist
+        mock_exists.return_value = False
+
+        # Save original PATH
+        original_path = os.environ.get('PATH', '')
+        os.environ['PATH'] = '/usr/bin:/bin'
+
+        try:
+            result = install_claude._ensure_local_bin_in_path_unix()
+
+            assert result is True
+            # PATH should be updated in current process (check for .local and bin in path)
+            assert '.local' in os.environ['PATH']
+            assert 'bin' in os.environ['PATH']
+            # Verify mocks were configured (profile files don't exist, so no writes)
+            assert mock_exists.return_value is False
+            # mock_write and mock_read are not called when files don't exist
+            assert not mock_write.called
+            assert not mock_read.called
+            # mkdir is called to create .local/bin
+            mock_mkdir.assert_called()
+        finally:
+            # Restore PATH
+            os.environ['PATH'] = original_path
+
+    @patch('sys.platform', 'linux')
+    @patch('pathlib.Path.home')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.read_text')
+    @patch('pathlib.Path.write_text')
+    def test_ensure_local_bin_in_path_unix_updates_profile(
+        self,
+        mock_write: MagicMock,
+        mock_read: MagicMock,
+        mock_exists: MagicMock,
+        mock_mkdir: MagicMock,
+        mock_home: MagicMock,
+    ) -> None:
+        """Test that function updates shell profile files."""
+        # Mock home directory
+        mock_home.return_value = Path('/home/testuser')
+        # .bashrc exists, doesn't have .local/bin
+        mock_exists.return_value = True
+        mock_read.return_value = '# .bashrc content'
+
+        # Save original PATH
+        original_path = os.environ.get('PATH', '')
+        os.environ['PATH'] = '/usr/bin:/bin'
+
+        try:
+            result = install_claude._ensure_local_bin_in_path_unix()
+
+            assert result is True
+            # Should write to profile files
+            assert mock_write.called
+            # mkdir is called to create .local/bin
+            mock_mkdir.assert_called()
+        finally:
+            # Restore PATH
+            os.environ['PATH'] = original_path
