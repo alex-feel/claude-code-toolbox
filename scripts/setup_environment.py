@@ -1461,8 +1461,8 @@ def detect_repo_type(url: str) -> str | None:
     if 'gitlab' in url_lower or '/api/v4/projects/' in url:
         return 'gitlab'
 
-    # GitHub detection
-    if 'github.com' in url_lower or 'api.github.com' in url_lower:
+    # GitHub detection - includes raw.githubusercontent.com
+    if 'github.com' in url_lower or 'api.github.com' in url_lower or 'raw.githubusercontent.com' in url_lower:
         return 'github'
 
     # Bitbucket detection (future expansion)
@@ -1621,6 +1621,67 @@ def convert_gitlab_url_to_api(url: str) -> str:
         return url  # Return original if conversion fails
 
 
+def convert_github_raw_to_api(url: str) -> str:
+    """Convert raw.githubusercontent.com URL to GitHub API URL for authentication.
+
+    GitHub raw.githubusercontent.com does not support Bearer token authentication
+    for private repositories. This function converts to the Contents API endpoint
+    which properly supports authentication.
+
+    Converts:
+        https://raw.githubusercontent.com/owner/repo/branch/path/to/file
+        -> https://api.github.com/repos/owner/repo/contents/path/to/file?ref=branch
+
+    Also handles refs/heads/ prefix format:
+        https://raw.githubusercontent.com/owner/repo/refs/heads/branch/path/to/file
+        -> https://api.github.com/repos/owner/repo/contents/path/to/file?ref=branch
+
+    Args:
+        url: GitHub raw URL
+
+    Returns:
+        GitHub API URL that accepts Bearer token authentication
+    """
+    # Check if already an API URL
+    if 'api.github.com' in url:
+        return url
+
+    # Only convert raw.githubusercontent.com URLs
+    if 'raw.githubusercontent.com' not in url:
+        return url
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        path_parts = parsed.path.strip('/').split('/')
+
+        if len(path_parts) < 4:
+            return url  # Not enough parts to parse
+
+        owner = path_parts[0]
+        repo = path_parts[1]
+
+        # Handle refs/heads/ prefix format
+        if len(path_parts) >= 5 and path_parts[2] == 'refs' and path_parts[3] == 'heads':
+            ref = path_parts[4]
+            file_path = '/'.join(path_parts[5:]) if len(path_parts) > 5 else ''
+        else:
+            # Standard format: branch is path_parts[2]
+            ref = path_parts[2]
+            file_path = '/'.join(path_parts[3:])
+
+        if not file_path:
+            return url  # No file path specified
+
+        api_url = f'https://api.github.com/repos/{owner}/{repo}/contents/{file_path}?ref={ref}'
+
+        info('Converted GitHub raw URL to API format for authentication')
+        return api_url
+
+    except (ValueError, IndexError) as e:
+        warning(f'Could not convert GitHub URL to API format: {e}')
+        return url
+
+
 def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     """Get authentication headers using multiple fallback methods.
 
@@ -1639,6 +1700,17 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     """
     repo_type = detect_repo_type(url)
 
+    # Helper function to build GitHub headers with Accept and API version
+    def build_github_headers(token: str) -> dict[str, str]:
+        # Handle Bearer prefix - avoid duplication if already present
+        auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
+        headers = {'Authorization': auth_value}
+        # Add headers required for GitHub API to return raw content
+        if 'api.github.com' in url:
+            headers['Accept'] = 'application/vnd.github.raw+json'
+            headers['X-GitHub-Api-Version'] = '2022-11-28'
+        return headers
+
     # Method 1: Command-line parameter (highest priority)
     if auth_param:
         # Support both : and = as separators
@@ -1652,8 +1724,8 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
             if repo_type == 'gitlab':
                 header_name = 'PRIVATE-TOKEN'
             elif repo_type == 'github':
-                header_name = 'Authorization'
-                token = f'Bearer {token}' if not token.startswith('Bearer ') else token
+                info('Using authentication from command-line parameter')
+                return build_github_headers(token)
             else:
                 error('Cannot determine auth header type. Use format: --auth "header:value"')
                 return {}
@@ -1676,7 +1748,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         tokens_checked.append('GITHUB_TOKEN')
         if env_token:
             info('Using GitHub token from GITHUB_TOKEN environment variable')
-            return {'Authorization': f'Bearer {env_token}'}
+            return build_github_headers(env_token)
 
     # Check generic REPO_TOKEN as fallback
     env_token = os.environ.get('REPO_TOKEN')
@@ -1686,7 +1758,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         if repo_type == 'gitlab':
             return {'PRIVATE-TOKEN': env_token}
         if repo_type == 'github':
-            return {'Authorization': f'Bearer {env_token}'}
+            return build_github_headers(env_token)
 
     # Method 3: Auth config file (future expansion)
     # auth_file = Path.home() / '.claude' / 'auth.yaml'
@@ -1713,7 +1785,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
                     if repo_type == 'gitlab':
                         return {'PRIVATE-TOKEN': input_token}
                     if repo_type == 'github':
-                        return {'Authorization': f'Bearer {input_token}'}
+                        return build_github_headers(input_token)
         except (KeyboardInterrupt, EOFError):
             print()  # New line after Ctrl+C
     elif repo_type:
@@ -2860,6 +2932,12 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         if url != original_url:
             info(f'Using API URL: {url}')
 
+    # Convert GitHub raw URLs to API URLs for authentication
+    if detect_repo_type(url) == 'github' and 'raw.githubusercontent.com' in original_url:
+        url = convert_github_raw_to_api(original_url)
+        if url != original_url:
+            info(f'Using API URL: {url}')
+
     # First try without auth (for public repos)
     try:
         request = Request(url)
@@ -2944,6 +3022,12 @@ def fetch_url_bytes_with_auth(
     original_url = url
     if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
         url = convert_gitlab_url_to_api(url)
+        if url != original_url:
+            info(f'Using API URL: {url}')
+
+    # Convert GitHub raw URLs to API URLs for authentication
+    if detect_repo_type(url) == 'github' and 'raw.githubusercontent.com' in original_url:
+        url = convert_github_raw_to_api(original_url)
         if url != original_url:
             info(f'Using API URL: {url}')
 

@@ -507,6 +507,140 @@ class TestGitLabUrlConversion:
         assert result == url
 
 
+class TestGitHubUrlConversion:
+    """Test GitHub raw URL conversion to API format."""
+
+    def test_convert_github_raw_to_api_standard(self):
+        """Test conversion of standard raw.githubusercontent.com URL."""
+        url = 'https://raw.githubusercontent.com/owner/repo/main/path/to/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == 'https://api.github.com/repos/owner/repo/contents/path/to/file.yaml?ref=main'
+
+    def test_convert_github_raw_to_api_refs_heads(self):
+        """Test conversion of URL with refs/heads/ prefix."""
+        url = 'https://raw.githubusercontent.com/owner/repo/refs/heads/main/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == 'https://api.github.com/repos/owner/repo/contents/file.yaml?ref=main'
+
+    def test_convert_github_raw_to_api_nested_path(self):
+        """Test conversion of deeply nested file paths."""
+        url = 'https://raw.githubusercontent.com/owner/repo/main/a/b/c/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == 'https://api.github.com/repos/owner/repo/contents/a/b/c/file.yaml?ref=main'
+
+    def test_convert_github_already_api_url(self):
+        """Test that API URLs are returned unchanged."""
+        url = 'https://api.github.com/repos/owner/repo/contents/file.yaml?ref=main'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url
+
+    def test_convert_github_non_raw_url(self):
+        """Test that non-raw GitHub URLs are returned unchanged."""
+        url = 'https://github.com/owner/repo/blob/main/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url
+
+    def test_convert_github_gitlab_url_unchanged(self):
+        """Test that GitLab URLs are returned unchanged."""
+        url = 'https://gitlab.com/owner/repo/-/raw/main/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url
+
+    def test_convert_github_insufficient_parts(self):
+        """Test handling of URLs with insufficient path parts."""
+        url = 'https://raw.githubusercontent.com/owner/repo'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url  # Returned unchanged
+
+    def test_convert_github_gist_url_unchanged(self):
+        """Test that gist.githubusercontent.com URLs are NOT converted."""
+        url = 'https://gist.githubusercontent.com/user/gist_id/raw/file.txt'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url  # Should not be converted
+
+    def test_convert_github_no_file_path(self):
+        """Test handling of URLs with no file path specified."""
+        url = 'https://raw.githubusercontent.com/owner/repo/main'
+        result = setup_environment.convert_github_raw_to_api(url)
+        assert result == url  # Returned unchanged
+
+    def test_convert_github_refs_heads_nested_path(self):
+        """Test conversion of refs/heads/ URL with nested path."""
+        url = 'https://raw.githubusercontent.com/owner/repo/refs/heads/feature/branch/path/to/file.yaml'
+        result = setup_environment.convert_github_raw_to_api(url)
+        # With refs/heads/, the branch is extracted from path_parts[4]
+        assert result == 'https://api.github.com/repos/owner/repo/contents/branch/path/to/file.yaml?ref=feature'
+
+
+class TestRepoTypeDetectionGitHubRaw:
+    """Test repository type detection for raw.githubusercontent.com URLs."""
+
+    def test_detect_raw_githubusercontent(self):
+        """Test that raw.githubusercontent.com is detected as GitHub."""
+        url = 'https://raw.githubusercontent.com/owner/repo/main/file.yaml'
+        assert setup_environment.detect_repo_type(url) == 'github'
+
+    def test_detect_raw_githubusercontent_refs_heads(self):
+        """Test detection with refs/heads/ prefix."""
+        url = 'https://raw.githubusercontent.com/owner/repo/refs/heads/main/file.yaml'
+        assert setup_environment.detect_repo_type(url) == 'github'
+
+    def test_detect_github_com(self):
+        """Test that github.com is still detected as GitHub."""
+        url = 'https://github.com/owner/repo/blob/main/file.yaml'
+        assert setup_environment.detect_repo_type(url) == 'github'
+
+    def test_detect_api_github_com(self):
+        """Test that api.github.com is detected as GitHub."""
+        url = 'https://api.github.com/repos/owner/repo/contents/file.yaml'
+        assert setup_environment.detect_repo_type(url) == 'github'
+
+    def test_detect_gist_githubusercontent_not_github(self):
+        """Test that gist.githubusercontent.com is NOT detected as GitHub.
+
+        gist.githubusercontent.com does not contain 'github.com' substring,
+        and is a different service that requires different handling.
+        """
+        url = 'https://gist.githubusercontent.com/user/gist_id/raw/file.txt'
+        # This should NOT be detected as GitHub because 'github.com' is not in the URL
+        # and we specifically check for 'raw.githubusercontent.com'
+        result = setup_environment.detect_repo_type(url)
+        assert result is None  # gist is a separate service
+
+    def test_detect_gitlab_unchanged(self):
+        """Test that GitLab detection is unchanged."""
+        url = 'https://gitlab.com/owner/repo/-/raw/main/file.yaml'
+        assert setup_environment.detect_repo_type(url) == 'gitlab'
+
+
+class TestGitHubAuthHeaders:
+    """Test GitHub authentication headers generation."""
+
+    def test_github_api_headers_include_accept(self, monkeypatch):
+        """Test that GitHub API URLs get Accept header."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
+        url = 'https://api.github.com/repos/owner/repo/contents/file.yaml'
+        headers = setup_environment.get_auth_headers(url)
+        assert headers.get('Accept') == 'application/vnd.github.raw+json'
+        assert headers.get('Authorization') == 'Bearer test_token'
+
+    def test_github_api_headers_include_version(self, monkeypatch):
+        """Test that GitHub API URLs get API version header."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
+        url = 'https://api.github.com/repos/owner/repo/contents/file.yaml'
+        headers = setup_environment.get_auth_headers(url)
+        assert headers.get('X-GitHub-Api-Version') == '2022-11-28'
+
+    def test_github_non_api_no_extra_headers(self, monkeypatch):
+        """Test that non-API GitHub URLs don't get extra headers."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
+        url = 'https://raw.githubusercontent.com/owner/repo/main/file.yaml'
+        headers = setup_environment.get_auth_headers(url)
+        # Raw URLs don't get Accept header - only API URLs do
+        assert 'Accept' not in headers
+        assert headers.get('Authorization') == 'Bearer test_token'
+
+
 class TestAuthHeaders:
     """Test authentication header generation."""
 
