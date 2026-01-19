@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.20.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.19.1...v4.20.0) (2026-01-19)
+
+
+### Features
+
+* add GitHub API rate limiting with authentication and retry logic ([4f28c76](https://github.com/alex-feel/claude-code-toolbox/commit/4f28c76ed9f47baeca0ffae816f3f9c8ee13c7a0))
+
 ## [4.19.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.19.0...v4.19.1) (2026-01-19)
 
 
