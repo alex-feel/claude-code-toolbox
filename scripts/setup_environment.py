@@ -5330,6 +5330,7 @@ def main() -> None:
         print('   * /agents - Manage subagents')
         print('   * /hooks - Manage hooks')
         print('   * /mcp - Manage MCP servers')
+        print('   * /skills - Manage skills')
         print('   * /<slash-command> - Run specific slash command')
 
         print()
