@@ -1479,3 +1479,326 @@ class TestVerifyClaudeInstallation:
         assert path is not None
         assert '.local\\bin' not in path.lower(), 'Should NOT report native path'
         assert 'npm' in path.lower(), 'Should report actual npm location'
+
+
+class TestWindowsFileLockHandling:
+    """Tests for Windows file locking workaround (WinError 5 Access Denied).
+
+    These tests verify the rename-before-replace strategy used when
+    claude.exe is running during installation.
+    """
+
+    def test_cleanup_old_file_before_rename_file_does_not_exist(self, tmp_path: Path) -> None:
+        """Test cleanup when .old file does not exist returns True."""
+        old_file = tmp_path / 'claude.exe.old'
+        assert not old_file.exists()
+
+        with patch('sys.platform', 'win32'):
+            result = install_claude._cleanup_old_file_before_rename(old_file)
+
+        assert result is True
+
+    def test_cleanup_old_file_before_rename_file_deleted(self, tmp_path: Path) -> None:
+        """Test cleanup successfully deletes existing .old file."""
+        old_file = tmp_path / 'claude.exe.old'
+        old_file.write_text('old content')
+        assert old_file.exists()
+
+        with patch('sys.platform', 'win32'):
+            result = install_claude._cleanup_old_file_before_rename(old_file)
+
+        assert result is True
+        assert not old_file.exists()
+
+    def test_cleanup_old_file_before_rename_file_locked(self, tmp_path: Path) -> None:
+        """Test cleanup returns False when .old file is locked."""
+        old_file = tmp_path / 'claude.exe.old'
+        old_file.write_text('locked content')
+
+        with patch('sys.platform', 'win32'), patch.object(Path, 'unlink', side_effect=PermissionError('Access is denied')):
+            result = install_claude._cleanup_old_file_before_rename(old_file)
+
+        assert result is False
+
+    def test_cleanup_old_file_before_rename_non_windows(self, tmp_path: Path) -> None:
+        """Test cleanup returns True immediately on non-Windows platforms."""
+        old_file = tmp_path / 'claude.old'
+        old_file.write_text('some content')
+
+        with patch('sys.platform', 'linux'):
+            result = install_claude._cleanup_old_file_before_rename(old_file)
+
+        # Returns True without attempting deletion on non-Windows
+        assert result is True
+        # File should still exist (no deletion on non-Windows)
+        assert old_file.exists()
+
+    def test_get_unique_old_path_first_available(self, tmp_path: Path) -> None:
+        """Test unique path returns .old.1 when no numbered files exist."""
+        target = tmp_path / 'claude.exe'
+
+        result = install_claude._get_unique_old_path(target)
+
+        assert result.name == 'claude.exe.old.1'
+
+    def test_get_unique_old_path_skips_existing_unlocked(self, tmp_path: Path) -> None:
+        """Test unique path deletes existing unlocked file and returns it."""
+        target = tmp_path / 'claude.exe'
+        old_1 = tmp_path / 'claude.exe.old.1'
+        old_1.write_text('orphaned file')
+
+        result = install_claude._get_unique_old_path(target)
+
+        # Should return .old.1 after deleting the orphaned file
+        assert result.name == 'claude.exe.old.1'
+        assert not old_1.exists()
+
+    def test_get_unique_old_path_skips_locked_files(self, tmp_path: Path) -> None:
+        """Test unique path skips locked files and finds next available."""
+        target = tmp_path / 'claude.exe'
+        old_1 = tmp_path / 'claude.exe.old.1'
+        old_1.write_text('locked')
+
+        # Mock unlink to fail for .old.1 but succeed for .old.2
+        original_unlink = Path.unlink
+        call_count = [0]
+
+        def mock_unlink(self: Path, missing_ok: bool = False) -> None:
+            call_count[0] += 1
+            if '.old.1' in str(self):
+                raise PermissionError('Access is denied')
+            original_unlink(self, missing_ok=missing_ok)
+
+        with patch.object(Path, 'unlink', mock_unlink):
+            result = install_claude._get_unique_old_path(target)
+
+        # Should skip .old.1 and return .old.2
+        assert result.name == 'claude.exe.old.2'
+
+    def test_handle_windows_file_lock_success(self, tmp_path: Path) -> None:
+        """Test successful rename strategy when claude.exe is running."""
+        target = tmp_path / 'claude.exe'
+        temp = tmp_path / 'claude.tmp'
+        target.write_bytes(b'old version')
+        temp.write_bytes(b'new version')
+
+        result = install_claude._handle_windows_file_lock(temp, target, '2.0.76', 1000)
+
+        assert result is True
+        # target should have new content
+        assert target.read_bytes() == b'new version'
+        # .old file should exist with old content
+        old_path = tmp_path / 'claude.exe.old'
+        assert old_path.exists()
+        assert old_path.read_bytes() == b'old version'
+        # temp file should not exist
+        assert not temp.exists()
+
+    def test_handle_windows_file_lock_with_existing_old_file(self, tmp_path: Path) -> None:
+        """Test rename strategy when .old file already exists (not locked)."""
+        target = tmp_path / 'claude.exe'
+        temp = tmp_path / 'claude.tmp'
+        old_existing = tmp_path / 'claude.exe.old'
+
+        target.write_bytes(b'old version')
+        temp.write_bytes(b'new version')
+        old_existing.write_bytes(b'very old version')
+
+        result = install_claude._handle_windows_file_lock(temp, target, '2.0.76', 1000)
+
+        assert result is True
+        # .old should now contain the old version (overwritten)
+        assert old_existing.read_bytes() == b'old version'
+        # target should have new content
+        assert target.read_bytes() == b'new version'
+
+    def test_handle_windows_file_lock_old_file_locked_uses_unique(self, tmp_path: Path) -> None:
+        """Test rename strategy uses unique suffix when .old is locked."""
+        target = tmp_path / 'claude.exe'
+        temp = tmp_path / 'claude.tmp'
+        old_existing = tmp_path / 'claude.exe.old'
+
+        target.write_bytes(b'old version')
+        temp.write_bytes(b'new version')
+        old_existing.write_bytes(b'locked old version')
+
+        # Make _cleanup_old_file_before_rename return False (simulating locked .old)
+        with patch.object(install_claude, '_cleanup_old_file_before_rename', return_value=False):
+            result = install_claude._handle_windows_file_lock(temp, target, '2.0.76', 1000)
+
+        assert result is True
+        # Original .old should still exist (was locked)
+        assert old_existing.exists()
+        # .old.1 should have the old version
+        old_1 = tmp_path / 'claude.exe.old.1'
+        assert old_1.exists()
+        assert old_1.read_bytes() == b'old version'
+        # target should have new content
+        assert target.read_bytes() == b'new version'
+
+    def test_handle_windows_file_lock_rename_fails(self, tmp_path: Path) -> None:
+        """Test rename strategy returns False when rename fails."""
+        target = tmp_path / 'claude.exe'
+        temp = tmp_path / 'claude.tmp'
+        target.write_bytes(b'old version')
+        temp.write_bytes(b'new version')
+
+        # Mock rename to fail
+        with patch.object(Path, 'rename', side_effect=PermissionError('Access is denied')):
+            result = install_claude._handle_windows_file_lock(temp, target, '2.0.76', 1000)
+
+        assert result is False
+        # temp file should be cleaned up
+        assert not temp.exists()
+
+    def test_cleanup_old_claude_files_removes_old_file(self, tmp_path: Path) -> None:
+        """Test cleanup removes standard .old file."""
+        local_bin = tmp_path / '.local' / 'bin'
+        local_bin.mkdir(parents=True)
+        old_file = local_bin / 'claude.exe.old'
+        old_file.write_text('old content')
+
+        with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
+            install_claude._cleanup_old_claude_files()
+
+        assert not old_file.exists()
+
+    def test_cleanup_old_claude_files_removes_numbered_old_files(self, tmp_path: Path) -> None:
+        """Test cleanup removes numbered .old files."""
+        local_bin = tmp_path / '.local' / 'bin'
+        local_bin.mkdir(parents=True)
+        old_1 = local_bin / 'claude.exe.old.1'
+        old_2 = local_bin / 'claude.exe.old.2'
+        old_1.write_text('old 1')
+        old_2.write_text('old 2')
+
+        with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
+            install_claude._cleanup_old_claude_files()
+
+        assert not old_1.exists()
+        assert not old_2.exists()
+
+    def test_cleanup_old_claude_files_ignores_locked_files(self, tmp_path: Path) -> None:
+        """Test cleanup ignores locked files without error."""
+        local_bin = tmp_path / '.local' / 'bin'
+        local_bin.mkdir(parents=True)
+        old_file = local_bin / 'claude.exe.old'
+        old_file.write_text('locked')
+
+        # Mock unlink to raise PermissionError
+        original_unlink = Path.unlink
+
+        def mock_unlink(self: Path, missing_ok: bool = False) -> None:
+            if 'claude.exe.old' in str(self):
+                raise PermissionError('Access is denied')
+            original_unlink(self, missing_ok=missing_ok)
+
+        with (
+            patch('sys.platform', 'win32'),
+            patch('pathlib.Path.home', return_value=tmp_path),
+            patch.object(Path, 'unlink', mock_unlink),
+        ):
+            # Should not raise
+            install_claude._cleanup_old_claude_files()
+
+        # File should still exist
+        assert old_file.exists()
+
+    def test_cleanup_old_claude_files_non_windows_noop(self, tmp_path: Path) -> None:
+        """Test cleanup is a no-op on non-Windows platforms."""
+        local_bin = tmp_path / '.local' / 'bin'
+        local_bin.mkdir(parents=True)
+        old_file = local_bin / 'claude.exe.old'
+        old_file.write_text('content')
+
+        with patch('sys.platform', 'linux'), patch('pathlib.Path.home', return_value=tmp_path):
+            install_claude._cleanup_old_claude_files()
+
+        # File should still exist (no cleanup on non-Windows)
+        assert old_file.exists()
+
+    def test_cleanup_old_claude_files_directory_not_exists(self, tmp_path: Path) -> None:
+        """Test cleanup handles missing .local/bin directory gracefully."""
+        # No .local/bin directory created
+
+        with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
+            # Should not raise
+            install_claude._cleanup_old_claude_files()
+
+    @patch('sys.platform', 'win32')
+    @patch('install_claude._handle_windows_file_lock')
+    def test_download_gcs_calls_file_lock_handler_on_permission_error(
+        self, mock_handler: MagicMock, tmp_path: Path,
+    ) -> None:
+        """Test that _download_claude_direct_from_gcs calls the handler on Windows PermissionError."""
+        target = tmp_path / 'claude.exe'
+        mock_handler.return_value = True
+
+        # Mock urlretrieve to create a temp file
+        def mock_urlretrieve(_url: str, filename: str) -> None:
+            Path(filename).write_bytes(b'x' * 2000)  # Above min_size
+
+        # Mock replace to raise PermissionError with "Access is denied"
+        original_replace = Path.replace
+
+        def mock_replace(self: Path, target: Path) -> Path:
+            if str(self).endswith('.tmp'):
+                raise PermissionError('[WinError 5] Access is denied')
+            return original_replace(self, target)
+
+        with (
+            patch('install_claude.urlretrieve', mock_urlretrieve),
+            patch.object(Path, 'replace', mock_replace),
+        ):
+            result = install_claude._download_claude_direct_from_gcs('2.0.76', target)
+
+        assert result is True
+        mock_handler.assert_called_once()
+        # Verify arguments passed to handler
+        call_args = mock_handler.call_args[0]
+        assert str(call_args[0]).endswith('.tmp')  # temp_path
+        assert call_args[1] == target  # target_path
+        assert call_args[2] == '2.0.76'  # version
+        assert call_args[3] > 1000  # file_size
+
+    @patch('sys.platform', 'linux')
+    def test_download_gcs_reraises_permission_error_on_non_windows(self, tmp_path: Path) -> None:
+        """Test that PermissionError is re-raised on non-Windows platforms."""
+        target = tmp_path / 'claude'
+
+        # Mock urlretrieve to create a temp file
+        def mock_urlretrieve(_url: str, filename: str) -> None:
+            Path(filename).write_bytes(b'x' * 2000)
+
+        # Mock replace to raise PermissionError
+        original_replace = Path.replace
+
+        def mock_replace(self: Path, target_arg: Path) -> Path:
+            if str(self).endswith('.tmp'):
+                raise PermissionError('Permission denied')
+            return original_replace(self, target_arg)
+
+        with (
+            patch('install_claude.urlretrieve', mock_urlretrieve),
+            patch.object(Path, 'replace', mock_replace),
+            pytest.raises(PermissionError, match='Permission denied'),
+        ):
+            install_claude._download_claude_direct_from_gcs('2.0.76', target)
+
+    def test_install_native_windows_calls_cleanup_at_start(self) -> None:
+        """Test that install_claude_native_windows calls cleanup at start."""
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch('install_claude._cleanup_old_claude_files') as mock_cleanup,
+            patch(
+                'install_claude._install_claude_native_windows_installer',
+            ) as mock_installer,
+        ):
+            mock_installer.return_value = True
+
+            install_claude.install_claude_native_windows(version='latest')
+
+            # Verify cleanup was called
+            mock_cleanup.assert_called_once()
+            # Verify installer was called after cleanup
+            mock_installer.assert_called_once_with(version='latest')
