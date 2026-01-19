@@ -153,7 +153,9 @@ uv run pre-commit run --all-files
 ```
 
 **Configured hooks:**
-- **Ruff**: Python linting and auto-formatting (Flake8, isort, quotes)
+- **Ruff**: Python linting with `--fix` for auto-correction
+- **MyPy**: Python type checking
+- **Pyright**: Additional Python type checking
 - **Markdownlint**: Markdown formatting and style checking
 - **PSScriptAnalyzer**: PowerShell script analysis (Windows only)
 - **Shellcheck**: Shell script linting
@@ -184,7 +186,7 @@ uv run pre-commit run --all-files
 ### Python Scripts
 
 1. **Compatibility**: Python 3.12 (managed by uv)
-2. **Style**: Must pass Ruff linting and formatting
+2. **Style**: Must pass all pre-commit hooks (Ruff, MyPy, Pyright)
 3. **Error Handling**: Comprehensive try-except blocks
 4. **Cross-platform**: Test on Windows, Linux, and macOS
 5. **Dependencies**: Use uv for package management
@@ -237,20 +239,19 @@ uv run pytest -v
 
 ### Code Quality & Linting
 
+**CRITICAL: Always use pre-commit for code quality checks. DO NOT use `ruff format` or `ruff check --fix` directly.**
+
 ```bash
-# Fix all linting issues (run after making code changes)
-uv run ruff check --fix
-
-# Format Python code
-uv run ruff format
-
-# Run all pre-commit hooks
+# Run all pre-commit hooks (this is the CORRECT way to validate code)
 uv run pre-commit run --all-files
 
 # Run specific pre-commit hooks
-uv run pre-commit run ruff-check
-uv run pre-commit run shellcheck
-uv run pre-commit run markdownlint
+uv run pre-commit run ruff-check       # Linting + autofix
+uv run pre-commit run mypy             # Type checking
+uv run pre-commit run pyright          # Additional type checking
+uv run pre-commit run shellcheck       # Shell script linting
+uv run pre-commit run markdownlint     # Markdown linting
+uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
 ```
 
 ### Before Submitting
@@ -284,7 +285,7 @@ Test your changes:
    - Check tool permissions and configurations
 
 5. **Documentation**
-   - Run markdownlint: `uv run markdownlint-cli2 "**/*.md"`
+   - Run markdownlint via pre-commit: `uv run pre-commit run markdownlint`
    - Check for broken links
    - Verify code examples work
    - Ensure formatting is correct
@@ -339,9 +340,8 @@ claude-code-toolbox/
 1. Make your code changes
 2. Run `uv run pytest` to check all tests pass
 3. Fix any failing tests immediately
-4. Run `uv run ruff check --fix` to fix linting issues
-5. Run `uv run pre-commit run --all-files` for final validation
-6. Only commit when ALL tests pass and linting is clean
+4. Run `uv run pre-commit run --all-files` for code quality validation
+5. Only commit when ALL tests pass and all pre-commit hooks pass
 
 **Never skip the test suite. Even small changes can have unexpected impacts.**
 
