@@ -92,20 +92,24 @@ uv run pytest -v
 uv run pre-commit run --all-files
 
 # Run specific pre-commit hooks
-uv run pre-commit run ruff-check    # Linting + autofix
-uv run pre-commit run mypy          # Type checking
-uv run pre-commit run pyright       # Additional type checking
-uv run pre-commit run shellcheck    # Shell script linting
-uv run pre-commit run markdownlint  # Markdown linting
+uv run pre-commit run ruff-check       # Linting + autofix
+uv run pre-commit run mypy             # Type checking
+uv run pre-commit run pyright          # Additional type checking
+uv run pre-commit run shellcheck       # Shell script linting
+uv run pre-commit run markdownlint     # Markdown linting
+uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
 ```
 
 **Pre-commit hooks automatically handle:**
 - Ruff linting with `--fix` for auto-correction
 - MyPy type checking
 - Pyright type checking
+- PSScriptAnalyzer for PowerShell scripts (Windows)
+- Shellcheck for shell scripts
 - JSON/YAML syntax validation
 - End-of-file and trailing whitespace fixes
-- Markdown and shell script linting
+- Markdown linting
+- Commitizen for commit message validation
 
 **DO NOT use these commands directly:**
 - ❌ `uv run ruff format` - Not part of pre-commit configuration
