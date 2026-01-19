@@ -1886,20 +1886,17 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         env_token = os.environ.get('GITLAB_TOKEN')
         tokens_checked.append('GITLAB_TOKEN')
         if env_token:
-            info('Using GitLab token from GITLAB_TOKEN environment variable')
             return {'PRIVATE-TOKEN': env_token}
     elif repo_type == 'github':
         env_token = os.environ.get('GITHUB_TOKEN')
         tokens_checked.append('GITHUB_TOKEN')
         if env_token:
-            info('Using GitHub token from GITHUB_TOKEN environment variable')
             return build_github_headers(env_token)
 
     # Check generic REPO_TOKEN as fallback
     env_token = os.environ.get('REPO_TOKEN')
     tokens_checked.append('REPO_TOKEN')
     if env_token:
-        info('Using token from REPO_TOKEN environment variable')
         if repo_type == 'gitlab':
             return {'PRIVATE-TOKEN': env_token}
         if repo_type == 'github':
@@ -3574,7 +3571,7 @@ def process_skills(
     """Process all skills from configuration.
 
     Iterates through all skill configurations and installs each one to the
-    skills directory.
+    skills directory. Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
 
     Args:
         skills_config: List of skill configuration dictionaries
@@ -3590,13 +3587,14 @@ def process_skills(
         return True
 
     info(f'Processing {len(skills_config)} skill(s)...')
-    all_success = True
 
-    for skill_config in skills_config:
-        if not process_skill(skill_config, skills_dir, config_source, auth_param):
-            all_success = False
+    def install_single_skill(skill_config: dict[str, Any]) -> bool:
+        """Install a single skill and return success status."""
+        return process_skill(skill_config, skills_dir, config_source, auth_param)
 
-    return all_success
+    # Execute skill installations in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    results = execute_parallel_safe(skills_config, install_single_skill, False)
+    return all(results)
 
 
 def install_claude(version: str | None = None) -> bool:
