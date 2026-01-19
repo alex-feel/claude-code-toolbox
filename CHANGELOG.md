@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.4...v4.18.5) (2026-01-19)
+
+
+### Bug Fixes
+
+* enable multi-token authentication in bootstrap scripts ([4bce8b3](https://github.com/alex-feel/claude-code-toolbox/commit/4bce8b3a83cd45c37d74e1125ef94da571f4abae))
+
 ## [4.18.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.3...v4.18.4) (2026-01-13)
 
 
