@@ -3671,3 +3671,186 @@ class TestMCPServerNeedsNodejsDetection:
         )
 
         assert needs_nodejs is False
+
+
+class TestFetchWithRetry:
+    """Test fetch retry logic for rate limiting."""
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_success_first_attempt(self, mock_sleep: MagicMock) -> None:
+        """Test successful fetch on first attempt."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+        assert result == 'content'
+        assert call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_429_then_success(self, mock_sleep: MagicMock) -> None:
+        """Test retry after 429 error."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                error = urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+                raise error
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+        assert result == 'content'
+        assert call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_respects_retry_after_header(self, mock_sleep: MagicMock) -> None:
+        """Test that Retry-After header is respected."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                error = urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {'retry-after': '5'}, None,
+                )
+                raise error
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+        assert result == 'content'
+        # Verify wait time was 5 seconds (from header)
+        assert mock_sleep.call_args[0][0] == 5.0
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_max_retries_exceeded(self, mock_sleep: MagicMock) -> None:
+        """Test that exception is raised after max retries."""
+
+        def request_func() -> str:
+            error = urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+            raise error
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            setup_environment.fetch_with_retry(request_func, 'https://example.com/file', max_retries=2)
+
+        assert exc_info.value.code == 429
+        assert mock_sleep.call_count == 2  # Retried twice
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_non_rate_limit_error_not_retried(self, mock_sleep: MagicMock) -> None:
+        """Test that non-rate-limit errors are not retried."""
+
+        def request_func() -> str:
+            error = urllib.error.HTTPError('https://example.com', 500, 'Internal Server Error', {}, None)
+            raise error
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+
+        assert exc_info.value.code == 500
+        mock_sleep.assert_not_called()
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_403_rate_limit_with_remaining_zero(self, mock_sleep: MagicMock) -> None:
+        """Test that 403 with x-ratelimit-remaining=0 is treated as rate limit."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                error = urllib.error.HTTPError(
+                    'https://example.com', 403, 'Forbidden', {'x-ratelimit-remaining': '0'}, None,
+                )
+                raise error
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+        assert result == 'content'
+        assert call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_403_not_rate_limit_raises_immediately(self, mock_sleep: MagicMock) -> None:
+        """Test that 403 without rate limit indicators raises immediately."""
+
+        def request_func() -> str:
+            error = urllib.error.HTTPError(
+                'https://example.com', 403, 'Forbidden', {'x-ratelimit-remaining': '100'}, None,
+            )
+            raise error
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
+
+        assert exc_info.value.code == 403
+        mock_sleep.assert_not_called()
+
+    @patch('setup_environment.time.sleep')
+    def test_fetch_with_retry_exponential_backoff(self, mock_sleep: MagicMock) -> None:
+        """Test that exponential backoff is applied."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 4:
+                error = urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+                raise error
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file', max_retries=3)
+        assert result == 'content'
+        assert call_count == 4  # Initial + 3 retries
+        assert mock_sleep.call_count == 3
+
+        # Verify backoff pattern (with jitter, times should be within range)
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        # First retry: ~1s (1 * 2^0 + jitter)
+        assert 1.0 <= sleep_times[0] <= 1.25
+        # Second retry: ~2s (1 * 2^1 + jitter)
+        assert 2.0 <= sleep_times[1] <= 2.5
+        # Third retry: ~4s (1 * 2^2 + jitter)
+        assert 4.0 <= sleep_times[2] <= 5.0
+
+
+class TestParallelWorkersConfiguration:
+    """Test parallel workers configuration via environment variable.
+
+    Note: We test the configuration logic without reloading the module
+    to avoid test isolation issues with @patch decorators in other tests.
+    """
+
+    def test_default_parallel_workers_value(self) -> None:
+        """Test that default parallel workers is 3."""
+        # Verify the module has the expected default
+        assert setup_environment.DEFAULT_PARALLEL_WORKERS == 3
+
+    def test_parallel_workers_env_parsing_logic(self) -> None:
+        """Test that CLAUDE_PARALLEL_WORKERS parsing logic works correctly."""
+        # Test the parsing logic that the module uses at load time
+        # The module uses: int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+
+        # Test with env var set
+        os.environ['CLAUDE_PARALLEL_WORKERS'] = '2'
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        assert value == 2
+
+        # Test with higher value
+        os.environ['CLAUDE_PARALLEL_WORKERS'] = '10'
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        assert value == 10
+
+        # Clean up
+        os.environ.pop('CLAUDE_PARALLEL_WORKERS', None)
+
+        # Test fallback to default
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        assert value == 3

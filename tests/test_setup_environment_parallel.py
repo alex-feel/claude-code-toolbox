@@ -116,8 +116,8 @@ class TestExecuteParallel:
         assert call_order == [1, 2, 3, 4, 5]  # Sequential order preserved
 
     def test_default_max_workers(self) -> None:
-        """Test that default max_workers is 5."""
-        assert DEFAULT_PARALLEL_WORKERS == 5
+        """Test that default max_workers is 3 (reduced from 5 to minimize rate limiting)."""
+        assert DEFAULT_PARALLEL_WORKERS == 3
 
     def test_custom_max_workers(self) -> None:
         """Test that custom max_workers is respected."""
