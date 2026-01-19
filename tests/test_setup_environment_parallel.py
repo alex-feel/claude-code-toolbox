@@ -426,3 +426,90 @@ class TestParallelExecutionPerformance:
             f'Parallel ({parallel_time:.3f}s) should be significantly faster '
             f'than sequential ({sequential_time:.3f}s)'
         )
+
+
+class TestSkillsWithParallelExecution:
+    """Test skills processing with parallel execution."""
+
+    @patch('setup_environment.process_skill')
+    def test_process_skills_parallel_all_success(
+        self,
+        mock_process_skill: MagicMock,
+    ) -> None:
+        """Test parallel skills processing with all successful."""
+        mock_process_skill.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / 'skills'
+            skills_dir.mkdir()
+
+            skills_config = [
+                {'name': 'skill-1', 'base': 'https://example.com/skill-1', 'files': ['SKILL.md']},
+                {'name': 'skill-2', 'base': 'https://example.com/skill-2', 'files': ['SKILL.md']},
+                {'name': 'skill-3', 'base': 'https://example.com/skill-3', 'files': ['SKILL.md']},
+            ]
+
+            result = setup_environment.process_skills(
+                skills_config,
+                skills_dir,
+                'https://example.com/config.yaml',
+                None,
+            )
+
+            assert result is True
+            assert mock_process_skill.call_count == 3
+
+    @patch('setup_environment.process_skill')
+    def test_process_skills_parallel_partial_failure(
+        self,
+        mock_process_skill: MagicMock,
+    ) -> None:
+        """Test parallel skills processing with partial failure."""
+        # First and third succeed, second fails
+        mock_process_skill.side_effect = [True, False, True]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / 'skills'
+            skills_dir.mkdir()
+
+            skills_config = [
+                {'name': 'skill-1', 'base': 'https://example.com/skill-1', 'files': ['SKILL.md']},
+                {'name': 'skill-2', 'base': 'https://example.com/skill-2', 'files': ['SKILL.md']},
+                {'name': 'skill-3', 'base': 'https://example.com/skill-3', 'files': ['SKILL.md']},
+            ]
+
+            result = setup_environment.process_skills(
+                skills_config,
+                skills_dir,
+                'https://example.com/config.yaml',
+                None,
+            )
+
+            assert result is False  # At least one failed
+            assert mock_process_skill.call_count == 3
+
+    @patch('setup_environment.process_skill')
+    def test_process_skills_sequential_mode(
+        self,
+        mock_process_skill: MagicMock,
+    ) -> None:
+        """Test skills processing respects sequential mode."""
+        mock_process_skill.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            skills_dir = Path(tmpdir) / 'skills'
+            skills_dir.mkdir()
+
+            skills_config = [
+                {'name': 'skill-1', 'base': 'https://example.com/skill-1', 'files': ['SKILL.md']},
+            ]
+
+            with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+                result = setup_environment.process_skills(
+                    skills_config,
+                    skills_dir,
+                    'https://example.com/config.yaml',
+                    None,
+                )
+
+            assert result is True
