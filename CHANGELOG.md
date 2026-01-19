@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.18.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.5...v4.18.6) (2026-01-19)
+
+
+### Bug Fixes
+
+* enable GitHub private repository access via API URL conversion ([f51fcdd](https://github.com/alex-feel/claude-code-toolbox/commit/f51fcddf5ac06b0a500973f6df934d6f7637ffc3))
+
 ## [4.18.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.18.4...v4.18.5) (2026-01-19)
 
 
