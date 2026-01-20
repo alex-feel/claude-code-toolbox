@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.21.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.3...v4.21.4) (2026-01-20)
+
+
+### Bug Fixes
+
+* detect native Claude installations in .local/bin on macOS/Linux ([70690a7](https://github.com/alex-feel/claude-code-toolbox/commit/70690a71e569fd97b30a25c94f855e7677b8f89e))
+* download both Python scripts in bootstrap for module imports ([3e333af](https://github.com/alex-feel/claude-code-toolbox/commit/3e333afe56c22df150dfe13382445791863c0c46))
+
 ## [4.21.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.2...v4.21.3) (2026-01-20)
 
 
