@@ -1753,52 +1753,6 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
                 temp_path.unlink()
 
 
-def _run_claude_install_setup() -> bool:
-    """Run claude install to configure PATH and shell integration.
-
-    Executes the install subcommand WITHOUT version argument to avoid
-    triggering the version-check bug. This only performs PATH setup.
-
-    Returns:
-        True if setup succeeded, False otherwise.
-
-    Note:
-        Windows uses ~/.local/bin/claude.exe, Unix uses ~/.local/bin/claude.
-    """
-    if sys.platform == 'win32':
-        native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
-    else:
-        native_path = Path.home() / '.local' / 'bin' / 'claude'
-
-    if not native_path.exists():
-        error(f'Cannot run install setup - {native_path.name} not found')
-        return False
-
-    info(f'Running {native_path.name} install for PATH setup...')
-
-    # Run install subcommand without version to avoid triggering the bug
-    # The install subcommand configures PATH and shell integration
-    result = run_command([str(native_path), 'install'], capture_output=True)
-
-    if result.returncode == 0:
-        success('PATH setup completed successfully')
-        return True
-
-    # Non-zero return may still be okay if PATH is already configured
-    warning(f'Install subcommand returned code {result.returncode}')
-    if result.stderr:
-        info(f'Output: {result.stderr}')
-
-    # Verify the binary is executable
-    version_result = run_command([str(native_path), '--version'], capture_output=True)
-    if version_result.returncode == 0:
-        info(f'Claude binary is functional: {version_result.stdout.strip()}')
-        return True
-
-    error('Claude binary may not be functional')
-    return False
-
-
 def _ensure_local_bin_in_path_unix() -> bool:
     """Ensure ~/.local/bin is in PATH on Unix-like systems.
 
@@ -1894,10 +1848,11 @@ def install_claude_native_windows(version: str | None = None) -> bool:
 
     # Attempt direct download from GCS
     if _download_claude_direct_from_gcs(version, native_target):
-        # Run install subcommand for PATH setup (without version argument)
-        _run_claude_install_setup()
-
-        # Ensure ~/.local/bin is in PATH
+        # Configure PATH directly without calling 'claude install'.
+        # The 'claude install' subcommand triggers auto-update behavior,
+        # which would replace the downloaded specific version with the latest.
+        # Using ensure_local_bin_in_path_windows() updates PATH via Windows
+        # registry and current session without any auto-update risk.
         info('Updating PATH for native installation...')
         ensure_local_bin_in_path_windows()
 
@@ -2115,8 +2070,8 @@ def install_claude_native_macos(version: str | None = None) -> bool:
 
     Implements a hybrid approach to work around Anthropic's installer bug:
     - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then run
-      'claude install' for PATH setup (bypasses buggy version check)
+    - For specific versions: Download directly from GCS bucket, then configure
+      PATH directly via shell profiles (avoids auto-update behavior)
 
     Args:
         version: Specific version to install (e.g., "2.0.76"). If None or
@@ -2147,29 +2102,28 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             # Make binary executable
             native_path.chmod(0o755)
 
-            # Run 'claude install' for PATH setup (without version to avoid bug)
-            if _run_claude_install_setup():
-                _ensure_local_bin_in_path_unix()
-
-                time.sleep(1)
-
-                # Verify installation
-                is_installed, claude_path, source = verify_claude_installation()
-                if is_installed and source == 'native':
-                    success(f'Native installation verified at: {claude_path}')
-                    return True
-                if is_installed:
-                    warning(f'Claude found but from {source} source at: {claude_path}')
-                    warning('Direct download did not create expected file at ~/.local/bin/claude')
-                    error('Installation failed - file not created at expected location')
-                    return False
-                warning('Installation failed - no Claude executable found')
-                error('Claude not accessible after direct download')
-                return False
-            # Install setup failed, but binary exists - try to continue
-            warning('PATH setup failed, but binary was downloaded')
+            # Configure PATH directly without calling 'claude install'.
+            # The 'claude install' subcommand triggers auto-update behavior,
+            # which would replace the downloaded specific version with the latest.
+            # Using _ensure_local_bin_in_path_unix() updates shell profiles
+            # and current session PATH without any auto-update risk.
             _ensure_local_bin_in_path_unix()
-            return native_path.exists()
+
+            time.sleep(1)
+
+            # Verify installation
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed and source == 'native':
+                success(f'Native installation verified at: {claude_path}')
+                return True
+            if is_installed:
+                warning(f'Claude found but from {source} source at: {claude_path}')
+                warning('Direct download did not create expected file at ~/.local/bin/claude')
+                error('Installation failed - file not created at expected location')
+                return False
+            warning('Installation failed - no Claude executable found')
+            error('Claude not accessible after direct download')
+            return False
 
         # GCS download failed - fall back to native installer with "latest"
         warning(f'Direct download failed for version {version}, falling back to native installer')
@@ -2266,8 +2220,8 @@ def install_claude_native_linux(version: str | None = None) -> bool:
 
     Implements a hybrid approach to work around Anthropic's installer bug:
     - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then run
-      'claude install' for PATH setup (bypasses buggy version check)
+    - For specific versions: Download directly from GCS bucket, then configure
+      PATH directly via shell profiles (avoids auto-update behavior)
 
     Supports: Ubuntu 20.04+, Debian 10+, and other modern Linux distributions.
 
@@ -2303,29 +2257,28 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         # Make binary executable
         native_path.chmod(0o755)
 
-        # Run 'claude install' for PATH setup (without version to avoid bug)
-        if _run_claude_install_setup():
-            _ensure_local_bin_in_path_unix()
-
-            time.sleep(1)
-
-            # Verify installation
-            is_installed, claude_path, source = verify_claude_installation()
-            if is_installed and source == 'native':
-                success(f'Native installation verified at: {claude_path}')
-                return True
-            if is_installed:
-                warning(f'Claude found but from {source} source at: {claude_path}')
-                warning('Direct download did not create expected file at ~/.local/bin/claude')
-                error('Installation failed - file not created at expected location')
-                return False
-            warning('Installation failed - no Claude executable found')
-            error('Claude not accessible after direct download')
-            return False
-        # Install setup failed, but binary exists - try to continue
-        warning('PATH setup failed, but binary was downloaded')
+        # Configure PATH directly without calling 'claude install'.
+        # The 'claude install' subcommand triggers auto-update behavior,
+        # which would replace the downloaded specific version with the latest.
+        # Using _ensure_local_bin_in_path_unix() updates shell profiles
+        # and current session PATH without any auto-update risk.
         _ensure_local_bin_in_path_unix()
-        return native_path.exists()
+
+        time.sleep(1)
+
+        # Verify installation
+        is_installed, claude_path, source = verify_claude_installation()
+        if is_installed and source == 'native':
+            success(f'Native installation verified at: {claude_path}')
+            return True
+        if is_installed:
+            warning(f'Claude found but from {source} source at: {claude_path}')
+            warning('Direct download did not create expected file at ~/.local/bin/claude')
+            error('Installation failed - file not created at expected location')
+            return False
+        warning('Installation failed - no Claude executable found')
+        error('Claude not accessible after direct download')
+        return False
 
     # GCS download failed - fall back to native installer with "latest"
     warning(f'Direct download failed for version {version}, falling back to native installer')
