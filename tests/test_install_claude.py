@@ -1826,3 +1826,97 @@ class TestWindowsFileLockHandling:
             mock_cleanup.assert_called_once()
             # Verify installer was called after cleanup
             mock_installer.assert_called_once_with(version='latest')
+
+
+class TestRemoveNpmClaude:
+    """Test remove_npm_claude() function for automatic npm removal."""
+
+    @patch('install_claude.find_command_robust', return_value=None)
+    def test_remove_npm_claude_no_npm_installed(self, mock_find: MagicMock) -> None:
+        """Test remove_npm_claude returns True when npm is not installed."""
+        result = install_claude.remove_npm_claude()
+
+        assert result is True
+        mock_find.assert_called_once_with('npm')
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_remove_npm_claude_npm_package_not_installed(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test remove_npm_claude returns True when npm exists but package not installed."""
+        mock_find.return_value = '/usr/local/bin/npm'
+        # npm list -g returns non-zero when package not found
+        mock_run.return_value = MagicMock(returncode=1)
+
+        result = install_claude.remove_npm_claude()
+
+        assert result is True
+        mock_find.assert_called_once_with('npm')
+        # Verify npm list was called to check package
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args == ['/usr/local/bin/npm', 'list', '-g', '@anthropic-ai/claude-code']
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_remove_npm_claude_uninstall_success(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test remove_npm_claude returns True when npm uninstall succeeds."""
+        mock_find.return_value = '/usr/local/bin/npm'
+        # First call: npm list -g returns 0 (package found)
+        # Second call: npm uninstall -g returns 0 (success)
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g
+            MagicMock(returncode=0),  # npm uninstall -g
+        ]
+
+        result = install_claude.remove_npm_claude()
+
+        assert result is True
+        assert mock_run.call_count == 2
+        # Verify uninstall command was called with capture_output=False
+        uninstall_call = mock_run.call_args_list[1]
+        assert uninstall_call[0][0] == [
+            '/usr/local/bin/npm', 'uninstall', '-g', '@anthropic-ai/claude-code',
+        ]
+        assert uninstall_call[1].get('capture_output') is False
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_remove_npm_claude_uninstall_failure(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test remove_npm_claude returns False when npm uninstall fails."""
+        mock_find.return_value = '/usr/local/bin/npm'
+        # First call: npm list -g returns 0 (package found)
+        # Second call: npm uninstall -g returns non-zero (failure)
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g
+            MagicMock(returncode=1),  # npm uninstall -g fails
+        ]
+
+        result = install_claude.remove_npm_claude()
+
+        assert result is False
+        assert mock_run.call_count == 2
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_remove_npm_claude_windows_npm_path(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test remove_npm_claude works with Windows npm path."""
+        mock_find.return_value = r'C:\Program Files\nodejs\npm.cmd'
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g
+            MagicMock(returncode=0),  # npm uninstall -g
+        ]
+
+        result = install_claude.remove_npm_claude()
+
+        assert result is True
+        # Verify Windows path was used correctly
+        args = mock_run.call_args_list[0][0][0]
+        assert args[0] == r'C:\Program Files\nodejs\npm.cmd'
