@@ -1457,6 +1457,30 @@ class TestVerifyClaudeInstallation:
         assert source == 'unknown'
         assert path == '/usr/local/bin/claude'
 
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_native(self, mock_find):
+        """Test verification on Linux with native installation at ~/.local/bin."""
+        mock_find.return_value = '/home/user/.local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert '.local/bin' in path
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_macos_native(self, mock_find):
+        """Test verification on macOS with native installation at ~/.local/bin."""
+        mock_find.return_value = '/Users/testuser/.local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert '.local/bin' in path
+
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
     @patch('install_claude.find_command_robust')
