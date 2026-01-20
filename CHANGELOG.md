@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.22.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.4...v4.22.0) (2026-01-20)
+
+
+### Features
+
+* add automatic npm Claude removal after native installation ([830e536](https://github.com/alex-feel/claude-code-toolbox/commit/830e536e20f46bf6157ae90fe15957a33afa0b8a))
+
 ## [4.21.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.3...v4.21.4) (2026-01-20)
 
 
