@@ -51,7 +51,8 @@ if (-not $uvPath) {
 Write-Host "[INFO] Running Python environment setup..." -ForegroundColor Cyan
 Write-Host ""
 
-$scriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
+$setupScriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
+$installScriptUrl = "https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 try {
     # Create stable directory for downloaded scripts
@@ -61,9 +62,13 @@ try {
         New-Item -ItemType Directory -Path $toolboxDir -Force | Out-Null
     }
 
-    # Download the Python script to stable location
-    $stableScript = Join-Path $toolboxDir 'setup_environment.py'
-    Invoke-WebRequest -Uri $scriptUrl -OutFile $stableScript -UseBasicParsing
+    # Download both Python scripts to stable location
+    Write-Host "[INFO] Downloading setup scripts..." -ForegroundColor Cyan
+    $setupScript = Join-Path $toolboxDir 'setup_environment.py'
+    $installScript = Join-Path $toolboxDir 'install_claude.py'
+
+    Invoke-WebRequest -Uri $setupScriptUrl -OutFile $setupScript -UseBasicParsing
+    Invoke-WebRequest -Uri $installScriptUrl -OutFile $installScript -UseBasicParsing
 
     # Check if configuration is specified
     $config = if ($env:CLAUDE_ENV_CONFIG) { $env:CLAUDE_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
@@ -94,15 +99,20 @@ try {
     }
 
     # Run with uv (it will handle Python 3.12 installation automatically)
-    # Script runs from stable location to prevent PATH pollution
-    if ($authArgs.Count -gt 0) {
-        & uv run --no-project --python 3.12 $stableScript $config @authArgs
-    } else {
-        & uv run --no-project --python 3.12 $stableScript $config
+    # Script runs from stable location so Python can resolve module imports
+    Push-Location $toolboxDir
+    try {
+        if ($authArgs.Count -gt 0) {
+            & uv run --no-project --python 3.12 setup_environment.py $config @authArgs
+        } else {
+            & uv run --no-project --python 3.12 setup_environment.py $config
+        }
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
     }
-    $exitCode = $LASTEXITCODE
 
-    # Keep the script in stable location for future use and debugging
+    # Keep scripts in stable location for future use and debugging
     # No cleanup needed - stable location is intentional
 
     exit $exitCode

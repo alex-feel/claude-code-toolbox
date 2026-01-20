@@ -58,7 +58,8 @@ export PATH="$HOME/.local/bin:$PATH"
 echo -e "${CYAN}[INFO]${NC} Running environment setup..."
 echo ""
 
-SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
+SETUP_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
+INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 # Check if configuration is specified
 CONFIG="${CLAUDE_ENV_CONFIG:-${1:-}}"
@@ -82,20 +83,24 @@ elif [ -n "${REPO_TOKEN:-}" ]; then
     AUTH_ARGS="--auth $REPO_TOKEN"
 fi
 
-# Download and run the Python script with uv
-# Use temporary file to avoid "Argument list too long" error with large scripts
-TEMP_SCRIPT=$(mktemp /tmp/claude_setup.XXXXXX.py)
-trap 'rm -f "$TEMP_SCRIPT"' EXIT
+# Download and run the Python scripts with uv
+# Create temp directory to hold both scripts (required for module imports)
+TEMP_DIR=$(mktemp -d /tmp/claude_setup.XXXXXX)
+trap 'rm -rf "$TEMP_DIR"' EXIT
 
-if curl -fsSL "$SCRIPT_URL" -o "$TEMP_SCRIPT"; then
+echo -e "${CYAN}[INFO]${NC} Downloading setup scripts..."
+if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
+   curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
+    # Change to temp directory so Python can resolve imports
+    cd "$TEMP_DIR"
     if [ -n "$AUTH_ARGS" ]; then
-        uv run --no-project --python 3.12 "$TEMP_SCRIPT" "$CONFIG" $AUTH_ARGS
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS
     else
-        uv run --no-project --python 3.12 "$TEMP_SCRIPT" "$CONFIG"
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG"
     fi
     EXIT_CODE=$?
 else
-    echo -e "${RED}[FAIL]${NC} Failed to download setup script"
+    echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"
     EXIT_CODE=1
 fi
 
