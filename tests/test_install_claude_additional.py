@@ -687,55 +687,6 @@ class TestGCSDirectDownload:
         mock_replace.assert_called()  # Atomic file move
 
 
-class TestRunClaudeInstallSetup:
-    """Test claude.exe install subcommand for PATH setup."""
-
-    @patch('install_claude.run_command')
-    @patch('pathlib.Path.exists', return_value=True)
-    def test_run_claude_install_setup_success(self, mock_exists, mock_run):
-        """Test successful PATH setup via install subcommand."""
-        # Verify mock configuration
-        assert mock_exists.return_value is True
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
-
-        result = install_claude._run_claude_install_setup()
-
-        assert result is True
-        mock_run.assert_called_once()
-        # Verify install subcommand was called without version
-        call_args = mock_run.call_args[0][0]
-        assert 'install' in call_args
-        assert len(call_args) == 2  # Only [path, 'install'], no version
-
-    @patch('pathlib.Path.exists', return_value=False)
-    def test_run_claude_install_setup_binary_not_found(self, mock_exists):
-        """Test PATH setup when binary doesn't exist."""
-        # Verify mock configuration
-        assert mock_exists.return_value is False
-
-        result = install_claude._run_claude_install_setup()
-
-        assert result is False
-
-    @patch('install_claude.run_command')
-    @patch('pathlib.Path.exists', return_value=True)
-    def test_run_claude_install_setup_nonzero_but_functional(self, mock_exists, mock_run):
-        """Test PATH setup with non-zero return but binary is functional."""
-        # Verify mock configuration
-        assert mock_exists.return_value is True
-        # First call (install) returns non-zero
-        # Second call (--version) succeeds
-        mock_run.side_effect = [
-            subprocess.CompletedProcess([], 1, '', 'Some warning'),
-            subprocess.CompletedProcess([], 0, 'claude 2.0.76', ''),
-        ]
-
-        result = install_claude._run_claude_install_setup()
-
-        assert result is True
-        assert mock_run.call_count == 2
-
-
 class TestHybridInstallApproach:
     """Test the hybrid installation approach for Windows."""
 
@@ -775,7 +726,6 @@ class TestHybridInstallApproach:
 
     @patch('platform.system', return_value='Windows')
     @patch('install_claude._download_claude_direct_from_gcs')
-    @patch('install_claude._run_claude_install_setup')
     @patch('install_claude.ensure_local_bin_in_path_windows')
     @patch('install_claude.verify_claude_installation')
     @patch('time.sleep')
@@ -784,15 +734,17 @@ class TestHybridInstallApproach:
         mock_sleep,
         mock_verify,
         mock_ensure_path,
-        mock_setup,
         mock_gcs_download,
         mock_system,
     ):
-        """Test that specific version uses GCS direct download."""
+        """Test that specific version uses GCS direct download.
+
+        The implementation configures PATH directly via ensure_local_bin_in_path_windows()
+        without calling 'claude install', which would trigger auto-update behavior.
+        """
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         mock_gcs_download.return_value = True
-        mock_setup.return_value = True
         mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
 
         result = install_claude.install_claude_native_windows(version='2.0.76')
@@ -1043,7 +995,6 @@ class TestHybridInstallMacOS:
 
     @patch('sys.platform', 'darwin')
     @patch('install_claude._download_claude_direct_from_gcs')
-    @patch('install_claude._run_claude_install_setup')
     @patch('install_claude._ensure_local_bin_in_path_unix')
     @patch('install_claude.verify_claude_installation')
     @patch('pathlib.Path.chmod')
@@ -1054,12 +1005,14 @@ class TestHybridInstallMacOS:
         mock_chmod,
         mock_verify,
         mock_ensure_path,
-        mock_setup,
         mock_gcs_download,
     ):
-        """Test that specific version uses GCS direct download on macOS."""
+        """Test that specific version uses GCS direct download on macOS.
+
+        The implementation configures PATH directly via _ensure_local_bin_in_path_unix()
+        without calling 'claude install', which would trigger auto-update behavior.
+        """
         mock_gcs_download.return_value = True
-        mock_setup.return_value = True
         mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
 
         result = install_claude.install_claude_native_macos(version='2.0.76')
@@ -1136,7 +1089,6 @@ class TestHybridInstallLinux:
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude._download_claude_direct_from_gcs')
-    @patch('install_claude._run_claude_install_setup')
     @patch('install_claude._ensure_local_bin_in_path_unix')
     @patch('install_claude.verify_claude_installation')
     @patch('pathlib.Path.chmod')
@@ -1147,13 +1099,15 @@ class TestHybridInstallLinux:
         mock_chmod,
         mock_verify,
         mock_ensure_path,
-        mock_setup,
         mock_gcs_download,
         mock_platform,
     ):
-        """Test that specific version uses GCS direct download on Linux."""
+        """Test that specific version uses GCS direct download on Linux.
+
+        The implementation configures PATH directly via _ensure_local_bin_in_path_unix()
+        without calling 'claude install', which would trigger auto-update behavior.
+        """
         mock_gcs_download.return_value = True
-        mock_setup.return_value = True
         mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
 
         result = install_claude.install_claude_native_linux(version='2.0.76')
