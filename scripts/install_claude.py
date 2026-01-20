@@ -302,6 +302,8 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
         if claude_path:
             if 'npm' in claude_path or '.npm-global' in claude_path:
                 result = (True, claude_path, 'npm')
+            elif '.local/bin' in claude_path:
+                result = (True, claude_path, 'native')
             else:
                 result = (True, claude_path, 'unknown')
         else:
