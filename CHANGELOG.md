@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.21.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.2...v4.21.3) (2026-01-20)
+
+
+### Bug Fixes
+
+* prevent auto-update when installing specific Claude Code versions ([beab951](https://github.com/alex-feel/claude-code-toolbox/commit/beab951e596225a3443da1c444be9ec9125606cb))
+
 ## [4.21.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.1...v4.21.2) (2026-01-19)
 
 
