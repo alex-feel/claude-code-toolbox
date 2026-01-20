@@ -796,6 +796,7 @@ class TestNativeWindowsInstallerFunction:
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('install_claude.remove_npm_claude')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.unlink')
     @patch('time.sleep')
@@ -804,6 +805,7 @@ class TestNativeWindowsInstallerFunction:
         mock_sleep,
         mock_unlink,
         mock_temp,
+        mock_remove_npm,
         mock_ensure_path,
         mock_verify,
         mock_run,
@@ -826,6 +828,7 @@ class TestNativeWindowsInstallerFunction:
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
         mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
+        mock_remove_npm.return_value = True
 
         result = install_claude._install_claude_native_windows_installer(version='latest')
 
@@ -834,6 +837,7 @@ class TestNativeWindowsInstallerFunction:
         mock_sleep.assert_called()
         mock_unlink.assert_called()
         mock_ensure_path.assert_called()
+        mock_remove_npm.assert_called_once()
         # Verify 'latest' was passed to the installer
         call_args = mock_run.call_args[0][0]
         assert 'latest' in call_args
@@ -1158,6 +1162,7 @@ class TestNativeMacOSInstallerFunction:
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.remove_npm_claude')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.chmod')
     @patch('os.unlink')
@@ -1168,6 +1173,7 @@ class TestNativeMacOSInstallerFunction:
         mock_unlink,
         mock_chmod,
         mock_temp,
+        mock_remove_npm,
         mock_verify,
         mock_run,
         mock_urlopen,
@@ -1185,6 +1191,7 @@ class TestNativeMacOSInstallerFunction:
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
         mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
+        mock_remove_npm.return_value = True
 
         result = install_claude._install_claude_native_macos_installer(version='latest')
 
@@ -1193,6 +1200,7 @@ class TestNativeMacOSInstallerFunction:
         mock_sleep.assert_called()
         mock_unlink.assert_called()
         mock_chmod.assert_called()
+        mock_remove_npm.assert_called_once()
 
     @patch('install_claude.urlopen')
     def test_install_claude_native_macos_installer_network_error(self, mock_urlopen):
@@ -1210,6 +1218,7 @@ class TestNativeLinuxInstallerFunction:
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.remove_npm_claude')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.chmod')
     @patch('os.unlink')
@@ -1220,6 +1229,7 @@ class TestNativeLinuxInstallerFunction:
         mock_unlink,
         mock_chmod,
         mock_temp,
+        mock_remove_npm,
         mock_verify,
         mock_run,
         mock_urlopen,
@@ -1237,6 +1247,7 @@ class TestNativeLinuxInstallerFunction:
 
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
         mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+        mock_remove_npm.return_value = True
 
         result = install_claude._install_claude_native_linux_installer(version='latest')
 
@@ -1245,6 +1256,7 @@ class TestNativeLinuxInstallerFunction:
         mock_sleep.assert_called()
         mock_unlink.assert_called()
         mock_chmod.assert_called()
+        mock_remove_npm.assert_called_once()
 
     @patch('install_claude.urlopen')
     def test_install_claude_native_linux_installer_network_error(self, mock_urlopen):

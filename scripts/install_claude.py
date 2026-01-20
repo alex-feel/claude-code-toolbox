@@ -312,6 +312,49 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
     return result
 
 
+def remove_npm_claude() -> bool:
+    """Remove npm-installed Claude Code to prevent PATH conflicts.
+
+    Removes npm global installation of @anthropic-ai/claude-code using the
+    standard npm uninstall command. This eliminates PATH precedence issues
+    where npm version shadows native installation.
+
+    Should only be called AFTER verify_claude_installation() confirms
+    native installation success (source == 'native').
+
+    Returns:
+        True if npm installation was removed or did not exist, False if removal failed.
+
+    Note:
+        Safe to call even if npm is not installed - returns True in that case.
+    """
+    npm_path = find_command_robust('npm')
+    if not npm_path:
+        # No npm found - nothing to uninstall
+        return True
+
+    info('Removing npm installation to prevent PATH conflicts...')
+
+    # Check if npm Claude package is actually installed
+    # npm list -g returns non-zero if package not found
+    check_result = run_command([npm_path, 'list', '-g', CLAUDE_NPM_PACKAGE])
+    if check_result.returncode != 0:
+        # Package not installed via npm
+        info('No npm Claude installation detected')
+        return True
+
+    # Perform uninstallation
+    result = run_command([npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
+
+    if result.returncode == 0:
+        success('Removed npm Claude installation successfully')
+        return True
+
+    warning(f'npm uninstall returned code {result.returncode}')
+    warning('Manual removal may be needed: npm uninstall -g @anthropic-ai/claude-code')
+    return False
+
+
 def parse_version(version_str: str) -> tuple[int, int, int] | None:
     """Parse version string to tuple."""
     match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
@@ -1865,6 +1908,8 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         is_installed, claude_path, source = verify_claude_installation()
         if is_installed and source == 'native':
             success(f'Direct download installation verified at: {claude_path}')
+            # Remove npm installation to prevent PATH conflicts
+            remove_npm_claude()
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -1968,6 +2013,8 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
+                # Remove npm installation to prevent PATH conflicts
+                remove_npm_claude()
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2053,6 +2100,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
+                # Remove npm installation to prevent PATH conflicts (only if native confirmed)
+                if source == 'native':
+                    remove_npm_claude()
                 return True
             warning('Native installation completed but Claude executable not found')
             error('Installation verification failed')
@@ -2117,6 +2167,8 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
+                # Remove npm installation to prevent PATH conflicts
+                remove_npm_claude()
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2203,6 +2255,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
+                # Remove npm installation to prevent PATH conflicts (only if native confirmed)
+                if source == 'native':
+                    remove_npm_claude()
                 return True
             warning('Native installation completed but Claude executable not found')
             error('Installation verification failed')
@@ -2272,6 +2327,8 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         is_installed, claude_path, source = verify_claude_installation()
         if is_installed and source == 'native':
             success(f'Native installation verified at: {claude_path}')
+            # Remove npm installation to prevent PATH conflicts
+            remove_npm_claude()
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2414,7 +2471,8 @@ def ensure_claude() -> bool:
                         if post_install and post_source == 'native':
                             success('Successfully migrated from npm to native installation')
                             info(f'Version maintained: {requested_version}')
-                            info('The npm installation can be removed with: npm uninstall -g @anthropic-ai/claude-code')
+                            # Remove npm installation to prevent PATH conflicts
+                            remove_npm_claude()
                             return True
                         warning('Migration attempted but native installation not detected')
                         warning(f'Continuing with npm installation at: {claude_path}')
@@ -2447,7 +2505,8 @@ def ensure_claude() -> bool:
                         info(f'Previous version: {pre_migration_version}')
                         new_version = get_claude_version()
                         info(f'Current version: {new_version}')
-                        info('The npm installation can be removed with: npm uninstall -g @anthropic-ai/claude-code')
+                        # Remove npm installation to prevent PATH conflicts
+                        remove_npm_claude()
                         return True
                     warning('Migration attempted but native installation not detected')
                     warning(f'Continuing with npm installation at: {claude_path}')
