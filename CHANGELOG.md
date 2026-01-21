@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.22.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.22.0...v4.22.1) (2026-01-21)
+
+
+### Bug Fixes
+
+* update installMethod config after native Claude installation ([d73ca5a](https://github.com/alex-feel/claude-code-toolbox/commit/d73ca5ae5cff6ad15361acedeae5b3f23933fe9b))
+
 ## [4.22.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.21.4...v4.22.0) (2026-01-20)
 
 
