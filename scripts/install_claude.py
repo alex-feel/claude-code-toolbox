@@ -356,19 +356,21 @@ def remove_npm_claude() -> bool:
 
 
 def update_install_method_config(method: str = 'native') -> bool:
-    """Update installMethod in Claude configuration with CLI-first strategy.
+    """Update installMethod in Claude configuration via direct file modification.
 
-    Uses the official Claude CLI as the primary method for updating config,
-    with direct file modification as a fallback for edge cases where the
-    CLI is unavailable or fails (e.g., corrupted binary, permission issues).
+    Directly modifies ~/.claude.json to set the installMethod value.
+    This eliminates System Diagnostics warnings about config mismatch.
 
-    This eliminates System Diagnostics warnings about config mismatch by
-    ensuring ~/.claude.json reflects the actual installation method.
+    The `claude config` CLI command was deprecated in v1.0.7 and removed
+    in v2.0.0. Direct file modification is the only supported method
+    for updating configuration in Claude Code v2.x.
 
     Args:
         method: Installation method to set. Valid values:
             - 'native': For native (non-npm) installations
             - 'npm-global': For npm global installations
+            - 'system': For system-level installations
+            - 'local': For local installations
 
     Returns:
         True if configuration was successfully updated, False otherwise.
@@ -377,28 +379,7 @@ def update_install_method_config(method: str = 'native') -> bool:
         This function is non-blocking - failure does not affect the calling
         installation function's success status. A warning is logged on failure
         to inform the user that manual config update may be needed.
-
-    Example:
-        >>> # Called after successful native installation verification
-        >>> if is_installed and source == 'native':
-        ...     remove_npm_claude()
-        ...     update_install_method_config('native')
     """
-    # PRIMARY: Use Claude CLI (official API)
-    # This respects Claude Code's config format and any future format changes
-    claude_path = find_command_robust('claude')
-    if claude_path:
-        result = run_command(
-            [claude_path, 'config', 'set', '-g', 'installMethod', method],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            success(f'Updated installMethod to "{method}" via CLI')
-            return True
-        warning('CLI config update failed, trying direct file update...')
-
-    # FALLBACK: Direct file modification
-    # Only used when CLI is unavailable or fails (edge cases)
     config_path = Path.home() / '.claude.json'
     try:
         config: dict[str, Any] = {}
@@ -411,12 +392,11 @@ def update_install_method_config(method: str = 'native') -> bool:
         with open(config_path, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=2)
 
-        success(f'Updated installMethod to "{method}" via direct file update')
+        success(f'Updated installMethod to "{method}" in ~/.claude.json')
         return True
 
     except json.JSONDecodeError as e:
         warning(f'Could not parse existing config: {e}')
-        warning('Config file may be corrupted - manual fix may be needed')
         return False
     except PermissionError as e:
         warning(f'Permission denied updating config: {e}')
