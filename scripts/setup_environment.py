@@ -3864,12 +3864,6 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
-
-    # Skip profile-scoped servers - they are configured via create_mcp_config_file()
-    if scope == 'profile':
-        info(f'MCP server {name} has scope: profile (will be configured via --strict-mcp-config)')
-        return True  # Not an error, just handled elsewhere
-
     transport = server.get('transport')
     url = server.get('url')
     command = server.get('command')
@@ -3924,6 +3918,11 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             info(f"Removed MCP server {name} from scope(s): {', '.join(scopes_removed)}")
         else:
             info(f'MCP server {name} was not found in any scope')
+
+        # Profile-scoped servers are configured via create_mcp_config_file(), not claude mcp add
+        if scope == 'profile':
+            info(f'MCP server {name} has scope: profile (will be configured via --strict-mcp-config)')
+            return True
 
         # Build the base command
         base_cmd = [str(claude_cmd), 'mcp', 'add']
@@ -4127,6 +4126,14 @@ def configure_all_mcp_servers(
     if profile_servers and profile_mcp_config_path:
         info(f'Creating profile MCP config with {len(profile_servers)} server(s)...')
         create_mcp_config_file(profile_servers, profile_mcp_config_path)
+    elif profile_mcp_config_path and profile_mcp_config_path.exists():
+        # Remove stale profile MCP config file when no profile servers are configured
+        info(f'Removing stale profile MCP config: {profile_mcp_config_path.name}')
+        try:
+            profile_mcp_config_path.unlink()
+            success(f'Removed stale profile MCP config: {profile_mcp_config_path.name}')
+        except OSError as e:
+            warning(f'Failed to remove stale profile MCP config: {e}')
 
     return True, profile_servers
 

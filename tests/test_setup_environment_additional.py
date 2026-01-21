@@ -2655,12 +2655,12 @@ class TestMCPProfileScope:
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
-    def test_configure_mcp_server_profile_scope_skipped(
+    def test_configure_mcp_server_profile_scope_removes_from_all_scopes(
         self,
         mock_find: MagicMock,
         _mock_system: MagicMock,
     ) -> None:
-        """Test that profile-scoped servers are skipped by configure_mcp_server."""
+        """Test that profile-scoped servers are removed from all scopes but not added via claude mcp add."""
         del mock_find  # Unused but required for patch
         del _mock_system  # Unused but required for patch
 
@@ -2670,13 +2670,29 @@ class TestMCPProfileScope:
             'scope': 'profile',
         }
 
-        # Should return True (success) but not actually configure
         with patch('setup_environment.run_command') as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
-            # run_command should NOT be called for profile-scoped servers
-            mock_run.assert_not_called()
+            # run_command should be called 3 times (once per scope) for removal
+            assert mock_run.call_count == 3
+
+            # Verify removal was attempted from all scopes
+            calls = mock_run.call_args_list
+            scopes_removed = set()
+            for call in calls:
+                args = call[0][0]  # First positional argument is the command list
+                # Verify it's a removal command
+                assert 'mcp' in args
+                assert 'remove' in args
+                assert 'profile-server' in args
+                # Extract scope
+                scope_idx = args.index('--scope') + 1
+                scopes_removed.add(args[scope_idx])
+
+            # Verify all three scopes were attempted
+            assert scopes_removed == {'user', 'local', 'project'}
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
@@ -2840,3 +2856,68 @@ class TestMCPProfileScope:
             assert 'profile-2' in config['mcpServers']
             assert 'default-scope' not in config['mcpServers']
             assert 'explicit-user' not in config['mcpServers']
+
+    def test_stale_mcp_config_file_removed_when_no_profile_servers(self) -> None:
+        """Test that stale MCP config file is removed when no profile servers exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+            # Create a stale MCP config file
+            config_path.write_text('{"mcpServers": {"stale-server": {}}}')
+            assert config_path.exists()
+
+            # Configure with NO profile servers (only user-scoped)
+            servers = [
+                {'name': 'global-server', 'transport': 'http', 'url': 'http://a.com', 'scope': 'user'},
+            ]
+
+            with patch('setup_environment.configure_mcp_server', return_value=True):
+                success, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, config_path,
+                )
+
+            # Verify stale file was removed
+            assert success is True
+            assert len(profile_servers) == 0
+            assert not config_path.exists()
+
+    def test_mcp_config_file_not_touched_when_path_none(self) -> None:
+        """Test that no file operations occur when profile_mcp_config_path is None."""
+        servers = [
+            {'name': 'server', 'transport': 'http', 'url': 'http://a.com', 'scope': 'user'},
+        ]
+
+        with patch('setup_environment.configure_mcp_server', return_value=True):
+            success, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers, None,  # No profile config path
+            )
+
+        assert success is True
+        assert len(profile_servers) == 0
+        # No assertion about file - just verify no crash
+
+    def test_stale_mcp_config_removal_failure_logged_as_warning(self) -> None:
+        """Test that stale MCP config removal failure is logged as warning, not error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+            # Create a stale MCP config file
+            config_path.write_text('{"mcpServers": {"stale-server": {}}}')
+
+            servers = [
+                {'name': 'server', 'transport': 'http', 'url': 'http://a.com', 'scope': 'user'},
+            ]
+
+            with (
+                patch('setup_environment.configure_mcp_server', return_value=True),
+                patch.object(Path, 'unlink', side_effect=OSError('Permission denied')),
+                patch('setup_environment.warning') as mock_warning,
+            ):
+                success, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, config_path,
+                )
+
+            # Should still return success (non-fatal error)
+            assert success is True
+            assert len(profile_servers) == 0
+            # Warning should have been logged
+            mock_warning.assert_called_once()
+            assert 'Permission denied' in str(mock_warning.call_args)
