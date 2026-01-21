@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.23.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.22.1...v4.23.0) (2026-01-21)
+
+
+### Features
+
+* add MCP server profile scope isolation ([503c5d7](https://github.com/alex-feel/claude-code-toolbox/commit/503c5d7e0bb17b578c758411ce1472a57ec89cb6))
+
 ## [4.22.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.22.0...v4.22.1) (2026-01-21)
 
 
