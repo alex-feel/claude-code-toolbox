@@ -2492,7 +2492,7 @@ class TestMainFunction:
         mock_install.return_value = True
         mock_deps.return_value = True
         mock_download.return_value = True
-        mock_mcp.return_value = True
+        mock_mcp.return_value = (True, [])
         mock_settings.return_value = True
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
@@ -3152,7 +3152,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = True
         mock_download.return_value = True
-        mock_mcp.return_value = True
+        mock_mcp.return_value = (True, [])
         mock_settings.return_value = True
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
@@ -3211,7 +3211,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = True
         mock_download.return_value = True
-        mock_mcp.return_value = True
+        mock_mcp.return_value = (True, [])
         mock_settings.return_value = True
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
@@ -3271,7 +3271,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = True
         mock_download.return_value = True
-        mock_mcp.return_value = True
+        mock_mcp.return_value = (True, [])
         mock_settings.return_value = True
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
@@ -3337,7 +3337,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = True
         mock_download.return_value = True
-        mock_mcp.return_value = True
+        mock_mcp.return_value = (True, [])
         mock_settings.return_value = True
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True

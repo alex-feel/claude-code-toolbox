@@ -1202,7 +1202,7 @@ class TestCreateLauncherScriptEdgeCases:
             shared_script = claude_dir / 'launch-test-env.sh'
             content = shared_script.read_text()
             assert '--append-system-prompt-file' in content
-            assert 'exec claude --append-system-prompt-file' in content
+            assert 'exec claude $MCP_FLAGS --append-system-prompt-file' in content
 
     @patch('platform.system', return_value='Windows')
     def test_create_launcher_windows_mode_replace(self, _mock_system):
@@ -1338,7 +1338,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
     @patch('setup_environment.is_admin', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=True)
+    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
     @patch('pathlib.Path.mkdir')
@@ -1387,7 +1387,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.process_resources', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=True)
+    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
@@ -1432,7 +1432,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=True)
+    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
@@ -1620,9 +1620,9 @@ class TestSystemPromptWithUserFlags:
 
             content = shared_script.read_text()
 
-            # Verify correct argument ordering: prompt flag + file path + user args + settings
+            # Verify correct argument ordering: MCP flags + prompt flag + file path + user args + settings
             assert '--system-prompt-file' in content
-            assert 'exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
+            assert '$MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
@@ -1641,9 +1641,9 @@ class TestSystemPromptWithUserFlags:
             shared_script = claude_dir / 'launch-test-cmd.sh'
             content = shared_script.read_text()
 
-            # Verify correct argument ordering with append mode
+            # Verify correct argument ordering with append mode (includes MCP flags)
             assert '--append-system-prompt-file' in content
-            assert 'exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
+            assert '$MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"' in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_launcher_arguments_order_without_prompt(self, _mock_system):
@@ -1661,8 +1661,8 @@ class TestSystemPromptWithUserFlags:
             shared_script = claude_dir / 'launch-test-cmd.sh'
             content = shared_script.read_text()
 
-            # Verify correct argument ordering without prompt
-            assert 'exec claude "$@" --settings "$SETTINGS_WIN"' in content
+            # Verify correct argument ordering without prompt (includes MCP flags)
+            assert 'claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"' in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_with_prompt_replace_mode(self, _mock_system):
@@ -1682,8 +1682,8 @@ class TestSystemPromptWithUserFlags:
 
             # Should use single exec command, not if-else branches
             assert '--system-prompt-file' in content
-            # Verify user args come before --settings
-            assert 'claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            # Verify user args come before --settings (includes MCP flags)
+            assert '$MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_with_prompt_append_mode(self, _mock_system):
@@ -1702,7 +1702,7 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             assert '--append-system-prompt-file' in content
-            assert 'claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert '$MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
 
     @patch('platform.system', return_value='Linux')
     def test_linux_launcher_arguments_order_without_prompt(self, _mock_system):
@@ -1719,8 +1719,8 @@ class TestSystemPromptWithUserFlags:
             assert launcher is not None
             content = launcher.read_text()
 
-            # Should use single command, not if-else branches
-            assert 'claude "$@" --settings "$SETTINGS_PATH"' in content
+            # Should use single command with MCP flags
+            assert 'claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"' in content
 
     @patch('platform.system', return_value='Darwin')
     def test_macos_launcher_arguments_order(self, _mock_system):
@@ -1739,7 +1739,7 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             # macOS should behave like Linux
-            assert 'claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert '$MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
 
     @patch('platform.system', return_value='Windows')
     def test_windows_no_conditional_branches_for_args(self, _mock_system):
@@ -1779,7 +1779,7 @@ class TestSystemPromptWithUserFlags:
             content = launcher.read_text()
 
             # Should use single command, not if-else for args
-            assert 'claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
+            assert '$MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"' in content
             # But the actual claude command should not be in a conditional
             claude_lines = [line for line in content.split('\n') if line.strip().startswith('claude ')]
             # All claude command lines should not be inside conditionals
@@ -2498,3 +2498,345 @@ class TestHookConfigFileSupport:
             hook_cmd = settings['hooks']['SessionStart'][0]['hooks'][0]['command']
             assert 'hook.sh' in hook_cmd
             assert 'config.yaml' in hook_cmd
+
+
+class TestMCPProfileScope:
+    """Test MCP server profile scope isolation with --strict-mcp-config."""
+
+    def test_create_mcp_config_file_single_server(self) -> None:
+        """Test creating MCP config file with a single server."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {
+                    'name': 'test-server',
+                    'command': 'npx test-server',
+                },
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            assert config_path.exists()
+
+            config = json.loads(config_path.read_text())
+            assert 'mcpServers' in config
+            assert 'test-server' in config['mcpServers']
+            assert config['mcpServers']['test-server']['type'] == 'stdio'
+            assert config['mcpServers']['test-server']['command'] == 'npx test-server'
+
+    def test_create_mcp_config_file_multiple_servers(self) -> None:
+        """Test creating MCP config file with multiple servers."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {
+                    'name': 'server1',
+                    'command': 'uvx server1',
+                },
+                {
+                    'name': 'server2',
+                    'transport': 'http',
+                    'url': 'http://localhost:8080',
+                },
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            config = json.loads(config_path.read_text())
+            assert len(config['mcpServers']) == 2
+            assert 'server1' in config['mcpServers']
+            assert 'server2' in config['mcpServers']
+            assert config['mcpServers']['server1']['type'] == 'stdio'
+            assert config['mcpServers']['server2']['type'] == 'http'
+            assert config['mcpServers']['server2']['url'] == 'http://localhost:8080'
+
+    def test_create_mcp_config_file_with_env(self) -> None:
+        """Test creating MCP config file with environment variables."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {
+                    'name': 'env-server',
+                    'command': 'uvx env-server',
+                    'env': ['API_KEY=secret123', 'DEBUG=true'],
+                },
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            config = json.loads(config_path.read_text())
+            assert 'env' in config['mcpServers']['env-server']
+            assert config['mcpServers']['env-server']['env']['API_KEY'] == 'secret123'
+            assert config['mcpServers']['env-server']['env']['DEBUG'] == 'true'
+
+    def test_create_mcp_config_file_with_env_string(self) -> None:
+        """Test creating MCP config file with single env string."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {
+                    'name': 'env-server',
+                    'command': 'uvx env-server',
+                    'env': 'API_KEY=secret',
+                },
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            config = json.loads(config_path.read_text())
+            assert config['mcpServers']['env-server']['env']['API_KEY'] == 'secret'
+
+    def test_create_mcp_config_file_with_header(self) -> None:
+        """Test creating MCP config file with HTTP headers."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {
+                    'name': 'http-server',
+                    'transport': 'http',
+                    'url': 'http://localhost:8080',
+                    'header': 'Authorization: Bearer token123',
+                },
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            config = json.loads(config_path.read_text())
+            assert 'headers' in config['mcpServers']['http-server']
+            assert config['mcpServers']['http-server']['headers']['Authorization'] == 'Bearer token123'
+
+    def test_create_mcp_config_file_empty_list(self) -> None:
+        """Test creating MCP config file with empty server list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            result = setup_environment.create_mcp_config_file([], config_path)
+
+            assert result is True
+            assert not config_path.exists()  # Should not create file for empty list
+
+    def test_create_mcp_config_file_missing_name(self) -> None:
+        """Test handling server with missing name."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'test-mcp.json'
+
+            servers = [
+                {'command': 'uvx test'},  # Missing 'name'
+            ]
+
+            result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is True
+            # File created but no servers added
+            config = json.loads(config_path.read_text())
+            assert config['mcpServers'] == {}
+
+    def test_create_mcp_config_file_permission_error(self) -> None:
+        """Test handling permission error when creating config file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / 'subdir' / 'test-mcp.json'
+
+            servers = [{'name': 'test', 'command': 'test'}]
+
+            with patch('builtins.open', side_effect=PermissionError('Access denied')):
+                result = setup_environment.create_mcp_config_file(servers, config_path)
+
+            assert result is False
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    def test_configure_mcp_server_profile_scope_skipped(
+        self,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that profile-scoped servers are skipped by configure_mcp_server."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+
+        server = {
+            'name': 'profile-server',
+            'command': 'uvx profile-server',
+            'scope': 'profile',
+        }
+
+        # Should return True (success) but not actually configure
+        with patch('setup_environment.run_command') as mock_run:
+            result = setup_environment.configure_mcp_server(server)
+
+            assert result is True
+            # run_command should NOT be called for profile-scoped servers
+            mock_run.assert_not_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_separates_profile(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that configure_all_mcp_servers separates profile servers."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'global-server', 'command': 'uvx global'},
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 1
+            assert profile_servers[0]['name'] == 'profile-server'
+
+            # Verify profile config file was created
+            assert profile_config.exists()
+            config = json.loads(profile_config.read_text())
+            assert 'profile-server' in config['mcpServers']
+
+    @patch('platform.system', return_value='Linux')
+    def test_launcher_script_includes_mcp_flags_when_profile_exists(self, _mock_system: MagicMock) -> None:
+        """Test launcher script includes --strict-mcp-config when profile servers exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+                has_profile_mcp_servers=True,
+            )
+
+            assert launcher is not None
+            content = launcher.read_text()
+
+            # Verify MCP config logic is present
+            assert 'MCP_CONFIG_PATH=' in content
+            assert 'test-cmd-mcp.json' in content
+            assert 'MCP_FLAGS=""' in content
+            assert '--strict-mcp-config' in content
+            assert '--mcp-config' in content
+            assert '$MCP_FLAGS' in content
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_launcher_includes_mcp_flags(self, _mock_system: MagicMock) -> None:
+        """Test Windows launcher script includes MCP config flags."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+                has_profile_mcp_servers=True,
+            )
+
+            assert launcher is not None
+            shared_script = claude_dir / 'launch-test-cmd.sh'
+            assert shared_script.exists()
+
+            content = shared_script.read_text()
+
+            # Verify MCP config logic in shared script
+            assert 'MCP_CONFIG_PATH=' in content
+            assert 'test-cmd-mcp.json' in content
+            assert '--strict-mcp-config' in content
+            assert '--mcp-config' in content
+
+    @patch('platform.system', return_value='Linux')
+    def test_launcher_without_profile_servers_no_mcp_flags(self, _mock_system: MagicMock) -> None:
+        """Test launcher without profile servers still has MCP flag logic (runtime check)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            launcher = setup_environment.create_launcher_script(
+                claude_dir,
+                'test-cmd',
+                'prompt.md',
+                mode='replace',
+                has_profile_mcp_servers=False,
+            )
+
+            assert launcher is not None
+            content = launcher.read_text()
+
+            # MCP logic should still be present for runtime flexibility
+            # The file check allows configs to be added later
+            assert 'MCP_CONFIG_PATH=' in content
+            assert 'if [ -f "$MCP_CONFIG_PATH" ]' in content
+
+    def test_configure_all_mcp_servers_no_profile_path(self) -> None:
+        """Test configure_all_mcp_servers without profile config path."""
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+        ]
+
+        # Without profile_mcp_config_path, profile servers should still be returned
+        # but no config file created
+        with patch('setup_environment.configure_mcp_server', return_value=True):
+            success, profile_servers = setup_environment.configure_all_mcp_servers(servers)
+
+        assert success is True
+        assert len(profile_servers) == 1
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_mixed_scopes(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test configure_all_mcp_servers with mixed scope servers."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'default-scope', 'command': 'uvx default'},  # No scope = user (global)
+            {'name': 'explicit-user', 'command': 'uvx user', 'scope': 'user'},
+            {'name': 'profile-1', 'command': 'uvx profile1', 'scope': 'profile'},
+            {'name': 'profile-2', 'transport': 'http', 'url': 'http://localhost', 'scope': 'profile'},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 2
+
+            # Verify profile config contains both profile servers
+            config = json.loads(profile_config.read_text())
+            assert 'profile-1' in config['mcpServers']
+            assert 'profile-2' in config['mcpServers']
+            assert 'default-scope' not in config['mcpServers']
+            assert 'explicit-user' not in config['mcpServers']

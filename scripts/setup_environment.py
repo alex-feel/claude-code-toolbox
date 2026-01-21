@@ -3864,6 +3864,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
+
+    # Skip profile-scoped servers - they are configured via create_mcp_config_file()
+    if scope == 'profile':
+        info(f'MCP server {name} has scope: profile (will be configured via --strict-mcp-config)')
+        return True  # Not an error, just handled elsewhere
+
     transport = server.get('transport')
     url = server.get('url')
     command = server.get('command')
@@ -4083,18 +4089,127 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         return False
 
 
-def configure_all_mcp_servers(servers: list[dict[str, Any]]) -> bool:
-    """Configure all MCP servers from configuration."""
+def configure_all_mcp_servers(
+    servers: list[dict[str, Any]],
+    profile_mcp_config_path: Path | None = None,
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Configure all MCP servers from configuration.
+
+    Args:
+        servers: List of MCP server configurations
+        profile_mcp_config_path: Path for profile-scoped servers JSON file
+
+    Returns:
+        Tuple of (success: bool, profile_servers: list)
+    """
     if not servers:
         info('No MCP servers to configure')
-        return True
+        return True, []
 
     info('Configuring MCP servers...')
 
+    # Separate profile-scoped servers from regular servers
+    profile_servers: list[dict[str, Any]] = []
+    regular_servers: list[dict[str, Any]] = []
+
     for server in servers:
+        scope = server.get('scope', 'user')
+        if scope == 'profile':
+            profile_servers.append(server)
+        else:
+            regular_servers.append(server)
+
+    # Configure regular servers via claude mcp add
+    for server in regular_servers:
         configure_mcp_server(server)
 
-    return True
+    # Create profile MCP config file if there are profile-scoped servers
+    if profile_servers and profile_mcp_config_path:
+        info(f'Creating profile MCP config with {len(profile_servers)} server(s)...')
+        create_mcp_config_file(profile_servers, profile_mcp_config_path)
+
+    return True, profile_servers
+
+
+def create_mcp_config_file(
+    servers: list[dict[str, Any]],
+    config_path: Path,
+) -> bool:
+    """Create MCP server configuration JSON file for profile-scoped servers.
+
+    Generates a JSON file in .mcp.json format with mcpServers key.
+    This file is loaded via --strict-mcp-config --mcp-config at runtime,
+    making these servers visible ONLY in the profile session.
+
+    Args:
+        servers: List of MCP server configurations with scope: profile
+        config_path: Path where the JSON file will be written
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not servers:
+        return True
+
+    mcp_config: dict[str, Any] = {'mcpServers': {}}
+
+    for server in servers:
+        name = server.get('name')
+        if not name:
+            warning('MCP server missing name, skipping')
+            continue
+
+        server_config: dict[str, Any] = {}
+
+        # HTTP/SSE transport
+        transport = server.get('transport')
+        url = server.get('url')
+        if transport and url:
+            server_config['type'] = transport
+            server_config['url'] = url
+            header = server.get('header')
+            # Parse header string to dict (format: "Key: Value")
+            if header and ':' in header:
+                key, _, value = header.partition(':')
+                server_config['headers'] = {key.strip(): value.strip()}
+
+        # Stdio transport (command)
+        command = server.get('command')
+        if command:
+            server_config['type'] = 'stdio'
+            server_config['command'] = command
+
+        # Environment variables
+        env_config = server.get('env')
+        if env_config:
+            env_dict: dict[str, str] = {}
+            if isinstance(env_config, str):
+                # Single env var format: "KEY=VALUE"
+                if '=' in env_config:
+                    key, _, value = env_config.partition('=')
+                    env_dict[key] = value
+            elif isinstance(env_config, list):
+                for item in cast(list[object], env_config):
+                    if isinstance(item, str) and '=' in item:
+                        key, _, value = item.partition('=')
+                        env_dict[key] = value
+            if env_dict:
+                server_config['env'] = env_dict
+
+        mcp_config['mcpServers'][name] = server_config
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, 'w') as f:
+            json.dump(mcp_config, f, indent=2)
+        success(f'Created profile MCP config: {config_path.name}')
+        return True
+    except PermissionError:
+        error(f'Permission denied writing to {config_path}')
+        return False
+    except Exception as e:
+        error(f'Failed to create MCP config file: {e}')
+        return False
 
 
 def download_hook_files(
@@ -4449,6 +4564,7 @@ def create_launcher_script(
     command_name: str,
     system_prompt_file: str | None = None,
     mode: str = 'replace',
+    has_profile_mcp_servers: bool = False,
 ) -> Path | None:
     """Create launcher script for starting Claude with optional system prompt.
 
@@ -4457,11 +4573,16 @@ def create_launcher_script(
         command_name: Name of the command to create launcher for
         system_prompt_file: Optional system prompt filename (if None, only settings are used)
         mode: System prompt mode ('append' or 'replace'), defaults to 'replace'
+        has_profile_mcp_servers: Whether profile-scoped MCP servers exist (enables --strict-mcp-config)
 
     Returns:
         Path to launcher script if created successfully, None otherwise
     """
     launcher_path = claude_user_dir / f'start-{command_name}'
+
+    # Log if profile MCP servers will be configured via --strict-mcp-config
+    if has_profile_mcp_servers:
+        info('Launcher will use --strict-mcp-config for profile MCP isolation')
 
     system = platform.system()
 
@@ -4534,6 +4655,14 @@ set -euo pipefail
 # Get Windows path for settings
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}-additional-settings.json")"
+
+# MCP configuration for profile-scoped servers
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
+MCP_FLAGS=""
+if [ -f "$MCP_CONFIG_PATH" ]; then
+  MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
+  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+fi
 
 PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -4617,35 +4746,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude "$@" --settings "$SETTINGS_WIN"
+      exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -4653,20 +4782,20 @@ fi
                     # Append mode: use --append-system-prompt-file if available
                     shared_sh_content += '''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude "$@" --settings "$SETTINGS_WIN"
+    exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -4679,7 +4808,15 @@ set -euo pipefail
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}-additional-settings.json")"
 
-exec claude "$@" --settings "$SETTINGS_WIN"
+# MCP configuration for profile-scoped servers
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
+MCP_FLAGS=""
+if [ -f "$MCP_CONFIG_PATH" ]; then
+  MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
+  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+fi
+
+exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -4699,6 +4836,13 @@ exec claude "$@" --settings "$SETTINGS_WIN"
 CLAUDE_USER_DIR="$HOME/.claude"
 SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
+
+# MCP configuration for profile-scoped servers
+MCP_CONFIG_PATH="$CLAUDE_USER_DIR/{command_name}-mcp.json"
+MCP_FLAGS=""
+if [ -f "$MCP_CONFIG_PATH" ]; then
+  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
     echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
@@ -4787,37 +4931,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude "$@" --settings "$SETTINGS_PATH"
+      claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
     fi
   fi
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -4826,20 +4970,20 @@ fi
                     launcher_content += f'''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude "$@" --settings "$SETTINGS_PATH"
+    claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -4851,10 +4995,17 @@ fi
 CLAUDE_USER_DIR="$HOME/.claude"
 SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
 
+# MCP configuration for profile-scoped servers
+MCP_CONFIG_PATH="$CLAUDE_USER_DIR/{command_name}-mcp.json"
+MCP_FLAGS=""
+if [ -f "$MCP_CONFIG_PATH" ]; then
+  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+fi
+
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
-claude "$@" --settings "$SETTINGS_PATH"
+claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
@@ -5453,7 +5604,13 @@ def main() -> None:
             warning('Please ensure Node.js is installed and in PATH')
             # Don't fail hard, let user see the issue
 
-        configure_all_mcp_servers(mcp_servers)
+        # Calculate profile MCP config path for profile-scoped servers
+        profile_mcp_config_path: Path | None = None
+        if primary_command_name:
+            profile_mcp_config_path = claude_user_dir / f'{primary_command_name}-mcp.json'
+
+        _, profile_servers = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
+        has_profile_mcp_servers = len(profile_servers) > 0
 
         # Check if command creation is needed
         if primary_command_name:
@@ -5493,7 +5650,9 @@ def main() -> None:
             if system_prompt:
                 clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
                 prompt_filename = Path(clean_prompt).name
-            launcher_path = create_launcher_script(claude_user_dir, primary_command_name, prompt_filename, mode)
+            launcher_path = create_launcher_script(
+                claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
+            )
 
             # Step 15: Register global command(s)
             if launcher_path:
@@ -5535,7 +5694,12 @@ def main() -> None:
                 print('   * System prompt: replacing default')
         if model:
             print(f'   * Model: {model}')
-        print(f'   * MCP servers: {len(mcp_servers)} configured')
+        if profile_servers:
+            global_count = len(mcp_servers) - len(profile_servers)
+            profile_count = len(profile_servers)
+            print(f'   * MCP servers: {global_count} global, {profile_count} profile-scoped (isolated)')
+        else:
+            print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:
             perm_items: list[str] = []
             if 'defaultMode' in permissions:
