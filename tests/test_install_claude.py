@@ -1920,3 +1920,212 @@ class TestRemoveNpmClaude:
         # Verify Windows path was used correctly
         args = mock_run.call_args_list[0][0][0]
         assert args[0] == r'C:\Program Files\nodejs\npm.cmd'
+
+
+class TestUpdateInstallMethodConfig:
+    """Test update_install_method_config() function for config updates."""
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_update_config_cli_success(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test update_install_method_config returns True when CLI succeeds."""
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        mock_find.assert_called_once_with('claude')
+        mock_run.assert_called_once()
+        # Verify correct CLI command
+        args = mock_run.call_args[0][0]
+        assert args == ['/usr/local/bin/claude', 'config', 'set', '-g', 'installMethod', 'native']
+
+    def test_update_config_no_cli_fallback_to_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config uses file fallback when CLI not found."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{"existingKey": "value"}')
+
+        with (
+            patch('install_claude.find_command_robust', return_value=None),
+            patch('install_claude.Path.home', return_value=tmp_path),
+        ):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        # Verify file was updated
+        config = json.loads(config_file.read_text())
+        assert config['installMethod'] == 'native'
+        assert config['existingKey'] == 'value'  # Preserved
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_update_config_cli_fails_fallback_to_file(
+        self, mock_find: MagicMock, mock_run: MagicMock, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config uses file fallback when CLI fails."""
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run.return_value = MagicMock(returncode=1)  # CLI fails
+
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{}')
+
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config['installMethod'] == 'native'
+
+    def test_update_config_creates_new_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config creates config file if missing."""
+        config_file = tmp_path / '.claude.json'
+        assert not config_file.exists()
+
+        with (
+            patch('install_claude.find_command_robust', return_value=None),
+            patch('install_claude.Path.home', return_value=tmp_path),
+        ):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        assert config_file.exists()
+        config = json.loads(config_file.read_text())
+        assert config == {'installMethod': 'native'}
+
+    def test_update_config_corrupted_file(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config handles corrupted config file."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('not valid json {{{')
+
+        with (
+            patch('install_claude.find_command_robust', return_value=None),
+            patch('install_claude.Path.home', return_value=tmp_path),
+        ):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is False  # Should fail gracefully
+
+    def test_update_config_permission_denied(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config handles permission errors."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{}')
+
+        with (
+            patch('install_claude.find_command_robust', return_value=None),
+            patch('install_claude.Path.home', return_value=tmp_path),
+            patch('builtins.open', side_effect=PermissionError('Permission denied')),
+        ):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is False
+
+    def test_update_config_preserves_existing_keys(
+        self, tmp_path: Path,
+    ) -> None:
+        """Test update_install_method_config preserves other config keys."""
+        config_file = tmp_path / '.claude.json'
+        existing_config = {
+            'theme': 'dark',
+            'telemetry': False,
+            'installMethod': 'global',  # Old value to be updated
+        }
+        config_file.write_text(json.dumps(existing_config))
+
+        with (
+            patch('install_claude.find_command_robust', return_value=None),
+            patch('install_claude.Path.home', return_value=tmp_path),
+        ):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config['installMethod'] == 'native'
+        assert config['theme'] == 'dark'  # Preserved
+        assert config['telemetry'] is False  # Preserved
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_update_config_npm_global_method(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test update_install_method_config works with npm-global method."""
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = install_claude.update_install_method_config('npm-global')
+
+        assert result is True
+        args = mock_run.call_args[0][0]
+        assert args[-1] == 'npm-global'
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command_robust')
+    def test_update_config_windows_claude_path(
+        self, mock_find: MagicMock, mock_run: MagicMock,
+    ) -> None:
+        """Test update_install_method_config works with Windows claude path."""
+        mock_find.return_value = r'C:\Users\test\.local\bin\claude.exe'
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        args = mock_run.call_args[0][0]
+        assert args[0] == r'C:\Users\test\.local\bin\claude.exe'
+
+
+class TestNativeInstallCallsConfigUpdate:
+    """Test that native installation functions call update_install_method_config."""
+
+    def test_windows_native_install_calls_config_update(
+        self,
+    ) -> None:
+        """Test install_claude_native_windows calls update_install_method_config."""
+        with (
+            patch('install_claude.ensure_local_bin_in_path_windows'),
+            patch('platform.system', return_value='Windows'),
+            patch('install_claude._download_claude_direct_from_gcs', return_value=True),
+            patch('pathlib.Path.chmod'),  # Mock chmod to prevent file operations
+            patch(
+                'install_claude.verify_claude_installation',
+                return_value=(True, '/path/to/claude', 'native'),
+            ),
+            patch('install_claude.remove_npm_claude') as mock_remove_npm,
+            patch('install_claude.update_install_method_config') as mock_update_config,
+        ):
+            install_claude.install_claude_native_windows(version='2.0.76')
+
+            mock_remove_npm.assert_called_once()
+            mock_update_config.assert_called_once_with('native')
+
+    def test_macos_native_install_calls_config_update(
+        self,
+    ) -> None:
+        """Test install_claude_native_macos calls update_install_method_config."""
+        with (
+            patch('install_claude._ensure_local_bin_in_path_unix'),
+            patch('sys.platform', 'darwin'),
+            patch('install_claude._download_claude_direct_from_gcs', return_value=True),
+            patch('pathlib.Path.chmod'),  # Mock chmod to prevent file operations
+            patch(
+                'install_claude.verify_claude_installation',
+                return_value=(True, '/path/to/claude', 'native'),
+            ),
+            patch('install_claude.remove_npm_claude') as mock_remove_npm,
+            patch('install_claude.update_install_method_config') as mock_update_config,
+        ):
+            install_claude.install_claude_native_macos(version='2.0.76')
+
+            mock_remove_npm.assert_called_once()
+            mock_update_config.assert_called_once_with('native')
