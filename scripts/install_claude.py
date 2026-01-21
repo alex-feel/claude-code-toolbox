@@ -355,6 +355,77 @@ def remove_npm_claude() -> bool:
     return False
 
 
+def update_install_method_config(method: str = 'native') -> bool:
+    """Update installMethod in Claude configuration with CLI-first strategy.
+
+    Uses the official Claude CLI as the primary method for updating config,
+    with direct file modification as a fallback for edge cases where the
+    CLI is unavailable or fails (e.g., corrupted binary, permission issues).
+
+    This eliminates System Diagnostics warnings about config mismatch by
+    ensuring ~/.claude.json reflects the actual installation method.
+
+    Args:
+        method: Installation method to set. Valid values:
+            - 'native': For native (non-npm) installations
+            - 'npm-global': For npm global installations
+
+    Returns:
+        True if configuration was successfully updated, False otherwise.
+
+    Note:
+        This function is non-blocking - failure does not affect the calling
+        installation function's success status. A warning is logged on failure
+        to inform the user that manual config update may be needed.
+
+    Example:
+        >>> # Called after successful native installation verification
+        >>> if is_installed and source == 'native':
+        ...     remove_npm_claude()
+        ...     update_install_method_config('native')
+    """
+    # PRIMARY: Use Claude CLI (official API)
+    # This respects Claude Code's config format and any future format changes
+    claude_path = find_command_robust('claude')
+    if claude_path:
+        result = run_command(
+            [claude_path, 'config', 'set', '-g', 'installMethod', method],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            success(f'Updated installMethod to "{method}" via CLI')
+            return True
+        warning('CLI config update failed, trying direct file update...')
+
+    # FALLBACK: Direct file modification
+    # Only used when CLI is unavailable or fails (edge cases)
+    config_path = Path.home() / '.claude.json'
+    try:
+        config: dict[str, Any] = {}
+        if config_path.exists():
+            with open(config_path, encoding='utf-8') as f:
+                config = json.load(f)
+
+        config['installMethod'] = method
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+
+        success(f'Updated installMethod to "{method}" via direct file update')
+        return True
+
+    except json.JSONDecodeError as e:
+        warning(f'Could not parse existing config: {e}')
+        warning('Config file may be corrupted - manual fix may be needed')
+        return False
+    except PermissionError as e:
+        warning(f'Permission denied updating config: {e}')
+        return False
+    except OSError as e:
+        warning(f'Could not update config file: {e}')
+        return False
+
+
 def parse_version(version_str: str) -> tuple[int, int, int] | None:
     """Parse version string to tuple."""
     match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
@@ -1910,6 +1981,8 @@ def install_claude_native_windows(version: str | None = None) -> bool:
             success(f'Direct download installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
             remove_npm_claude()
+            # Update config to reflect native installation method
+            update_install_method_config('native')
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2015,6 +2088,8 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
                 remove_npm_claude()
+                # Update config to reflect native installation method
+                update_install_method_config('native')
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2100,9 +2175,10 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
-                # Remove npm installation to prevent PATH conflicts (only if native confirmed)
+                # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
                     remove_npm_claude()
+                    update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
             error('Installation verification failed')
@@ -2169,6 +2245,8 @@ def install_claude_native_macos(version: str | None = None) -> bool:
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
                 remove_npm_claude()
+                # Update config to reflect native installation method
+                update_install_method_config('native')
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2255,9 +2333,10 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
-                # Remove npm installation to prevent PATH conflicts (only if native confirmed)
+                # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
                     remove_npm_claude()
+                    update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
             error('Installation verification failed')
@@ -2329,6 +2408,8 @@ def install_claude_native_linux(version: str | None = None) -> bool:
             success(f'Native installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
             remove_npm_claude()
+            # Update config to reflect native installation method
+            update_install_method_config('native')
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2473,6 +2554,8 @@ def ensure_claude() -> bool:
                             info(f'Version maintained: {requested_version}')
                             # Remove npm installation to prevent PATH conflicts
                             remove_npm_claude()
+                            # Update config to reflect native installation method
+                            update_install_method_config('native')
                             return True
                         warning('Migration attempted but native installation not detected')
                         warning(f'Continuing with npm installation at: {claude_path}')
@@ -2507,6 +2590,8 @@ def ensure_claude() -> bool:
                         info(f'Current version: {new_version}')
                         # Remove npm installation to prevent PATH conflicts
                         remove_npm_claude()
+                        # Update config to reflect native installation method
+                        update_install_method_config('native')
                         return True
                     warning('Migration attempted but native installation not detected')
                     warning(f'Continuing with npm installation at: {claude_path}')
