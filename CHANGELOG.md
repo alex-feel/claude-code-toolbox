@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.23.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.23.0...v4.23.1) (2026-01-21)
+
+
+### Bug Fixes
+
+* ensure profile MCP servers removed from all scopes before configuration ([44cb5ba](https://github.com/alex-feel/claude-code-toolbox/commit/44cb5ba6a1b9bb48a4d3e3715f3a0aebb5e4485a))
+
 ## [4.23.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.22.1...v4.23.0) (2026-01-21)
 
 
