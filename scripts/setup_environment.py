@@ -4343,6 +4343,13 @@ def configure_all_mcp_servers(
         # Add to profile config if profile scope present
         if has_profile:
             profile_servers.append(server)
+            # For profile-only servers, call configure_mcp_server to trigger removal
+            # from all scopes (user, local, project). The function will early-return
+            # after removal since scope == 'profile', skipping the claude mcp add.
+            if not has_global:
+                server_copy = server.copy()
+                server_copy['scope'] = 'profile'
+                configure_mcp_server(server_copy)
 
         # Configure for each non-profile scope via claude mcp add
         for scope in non_profile_scopes:
