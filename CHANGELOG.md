@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.0...v4.24.1) (2026-01-22)
+
+
+### Bug Fixes
+
+* prevent MSYS path conversion in run_bash_command ([e62da7c](https://github.com/alex-feel/claude-code-toolbox/commit/e62da7cbd25631d1177513fc8c247fb20ab82884))
+
 ## [4.24.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.23.1...v4.24.0) (2026-01-22)
 
 
