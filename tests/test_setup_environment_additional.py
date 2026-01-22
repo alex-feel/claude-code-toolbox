@@ -2758,6 +2758,260 @@ class TestMCPProfileScope:
             assert 'profile-server' in config['mcpServers']
 
     @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_profile_only_triggers_removal(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that profile-only servers trigger removal from all scopes via configure_all_mcp_servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-only-server', 'command': 'uvx profile-only', 'scope': 'profile'},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 1
+            assert profile_servers[0]['name'] == 'profile-only-server'
+
+            # Verify removal was attempted from all 3 scopes
+            assert mock_run.call_count == 3, (
+                f'Expected 3 removal calls (user, local, project), got {mock_run.call_count}'
+            )
+
+            # Verify each call was a removal command
+            calls = mock_run.call_args_list
+            scopes_removed: set[str] = set()
+            for call in calls:
+                args = call[0][0]
+                assert 'mcp' in args
+                assert 'remove' in args
+                assert 'profile-only-server' in args
+                scope_idx = args.index('--scope') + 1
+                scopes_removed.add(args[scope_idx])
+
+            assert scopes_removed == {'user', 'local', 'project'}, (
+                f'Expected removal from all scopes, got: {scopes_removed}'
+            )
+
+            # Verify NO add command was executed (profile servers skip claude mcp add)
+            for call in calls:
+                args = call[0][0]
+                assert 'add' not in args, 'Profile-only server should not call claude mcp add'
+
+            # Verify stats are correct
+            assert stats['profile_count'] == 1
+            assert stats['global_count'] == 0
+            assert stats['combined_count'] == 0
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_multi_scope_triggers_removal_and_add(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that [user, profile] scope triggers removal from all scopes AND adds to user scope."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'multi-scope-server',
+                'command': 'uvx multi-scope',
+                'scope': ['user', 'profile'],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 1
+            assert profile_servers[0]['name'] == 'multi-scope-server'
+
+            # Verify removal was attempted from all 3 scopes (3 calls)
+            # PLUS the add command for user scope (1 call via run_command)
+            # Total should be at least 3 removal calls + potential add call
+            removal_calls = [
+                call for call in mock_run.call_args_list
+                if 'remove' in call[0][0]
+            ]
+            assert len(removal_calls) == 3, f'Expected 3 removal calls, got {len(removal_calls)}'
+
+            # Verify profile config created
+            assert profile_config.exists()
+            config = json.loads(profile_config.read_text())
+            assert 'multi-scope-server' in config['mcpServers']
+
+            # Verify stats
+            assert stats['profile_count'] == 1
+            assert stats['global_count'] == 1
+            assert stats['combined_count'] == 1
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_user_scope_unchanged(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that user-scoped servers work exactly as before (regression test)."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'user-server', 'command': 'uvx user-server', 'scope': 'user'},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            # User-scope servers should NOT be in profile_servers
+            assert len(profile_servers) == 0
+
+            # Should call removal (3 times) + add (1 time) = 4 calls
+            assert mock_run.call_count == 4
+
+            # Verify stats
+            assert stats['profile_count'] == 0
+            assert stats['global_count'] == 1
+            assert stats['combined_count'] == 0
+
+            # Profile config should NOT be created
+            assert not profile_config.exists()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_multiple_profile_only_servers(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that multiple profile-only servers each trigger removal from all scopes."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server-1', 'command': 'uvx profile1', 'scope': 'profile'},
+            {'name': 'profile-server-2', 'command': 'uvx profile2', 'scope': 'profile'},
+            {'name': 'profile-server-3', 'transport': 'http', 'url': 'http://localhost', 'scope': 'profile'},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 3
+
+            # 3 servers * 3 removal scopes = 9 removal calls
+            assert mock_run.call_count == 9
+
+            # Verify all servers attempted removal from all scopes
+            server_scopes_removed: dict[str, set[str]] = {
+                'profile-server-1': set(),
+                'profile-server-2': set(),
+                'profile-server-3': set(),
+            }
+            for call in mock_run.call_args_list:
+                args = call[0][0]
+                for server_name in server_scopes_removed:
+                    if server_name in args:
+                        scope_idx = args.index('--scope') + 1
+                        server_scopes_removed[server_name].add(args[scope_idx])
+
+            for server_name, scopes in server_scopes_removed.items():
+                assert scopes == {'user', 'local', 'project'}, (
+                    f'{server_name} missing removal scopes: {scopes}'
+                )
+
+            # Verify stats
+            assert stats['profile_count'] == 3
+            assert stats['global_count'] == 0
+            assert stats['combined_count'] == 0
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_configure_all_mcp_servers_comprehensive_scope_mix(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test comprehensive mix: user-only, profile-only, and multi-scope servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'user-only', 'command': 'uvx user-only', 'scope': 'user'},
+            {'name': 'profile-only', 'command': 'uvx profile-only', 'scope': 'profile'},
+            {'name': 'user-profile', 'command': 'uvx user-profile', 'scope': ['user', 'profile']},
+            {'name': 'local-profile', 'command': 'uvx local-profile', 'scope': ['local', 'profile']},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+
+            # 3 servers have profile scope: profile-only, user-profile, local-profile
+            assert len(profile_servers) == 3
+            profile_names = {s['name'] for s in profile_servers}
+            assert profile_names == {'profile-only', 'user-profile', 'local-profile'}
+
+            # Verify stats
+            assert stats['profile_count'] == 3
+            assert stats['global_count'] == 3  # user-only, user-profile (user), local-profile (local)
+            assert stats['combined_count'] == 2  # user-profile, local-profile
+
+            # Verify profile config contains correct servers
+            config = json.loads(profile_config.read_text())
+            assert 'profile-only' in config['mcpServers']
+            assert 'user-profile' in config['mcpServers']
+            assert 'local-profile' in config['mcpServers']
+            assert 'user-only' not in config['mcpServers']
+
+    @patch('platform.system', return_value='Linux')
     def test_launcher_script_includes_mcp_flags_when_profile_exists(self, _mock_system: MagicMock) -> None:
         """Test launcher script includes --strict-mcp-config when profile servers exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
