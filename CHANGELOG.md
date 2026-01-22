@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.4...v4.24.5) (2026-01-22)
+
+
+### Bug Fixes
+
+* expand tildes in user-scope STDIO MCP commands on Windows ([6aee29a](https://github.com/alex-feel/claude-code-toolbox/commit/6aee29a07b9772a6fda157c8a86d3ff97c783ea8))
+
 ## [4.24.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.3...v4.24.4) (2026-01-22)
 
 
