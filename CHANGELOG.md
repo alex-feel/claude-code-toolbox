@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.2...v4.24.3) (2026-01-22)
+
+
+### Bug Fixes
+
+* resolve MCP server removal and display format bugs ([b18cc6a](https://github.com/alex-feel/claude-code-toolbox/commit/b18cc6ae59684b053ad5cfc8d859567110549726))
+
 ## [4.24.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.1...v4.24.2) (2026-01-22)
 
 
