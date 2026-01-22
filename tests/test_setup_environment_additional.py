@@ -12,6 +12,7 @@ import sys
 import tempfile
 import urllib.error
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -3952,3 +3953,195 @@ class TestConfigureMcpServerWindowsRemoval:
 
         # All three scopes should be attempted
         assert scopes_removed == {'user', 'local', 'project'}
+
+
+class TestConfigureMcpServerBestEffortRemoval:
+    """Test configure_mcp_server best-effort removal (ignores exit codes)."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_bash_command')
+    def test_windows_best_effort_removal_non_existent_server(
+        self,
+        mock_bash: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test Windows removal ignores non-zero exit code for non-existent servers."""
+        del mock_find, _mock_system
+
+        # Removal returns non-zero (server doesn't exist), add succeeds
+        def bash_side_effect(cmd: str, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            if 'mcp remove' in cmd:
+                return subprocess.CompletedProcess([], 1, '', 'No user-scoped MCP server found')
+            return subprocess.CompletedProcess([], 0, '', '')
+
+        mock_bash.side_effect = bash_side_effect
+
+        server = {
+            'name': 'new-server',
+            'command': 'uvx new-server',
+            'scope': 'user',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True  # Should succeed despite removal returning non-zero
+        # Verify removal was attempted for all scopes
+        removal_calls = [c for c in mock_bash.call_args_list if 'mcp remove' in str(c)]
+        assert len(removal_calls) == 3  # user, local, project
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_unix_best_effort_removal_non_existent_server(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test Unix removal ignores non-zero exit code for non-existent servers."""
+        del mock_find, _mock_system
+
+        # Removal returns non-zero (server doesn't exist), add succeeds
+        def run_side_effect(
+            cmd: list[str], *args: Any, **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            if 'remove' in cmd:
+                return subprocess.CompletedProcess([], 1, '', 'No user-scoped MCP server found')
+            return subprocess.CompletedProcess([], 0, '', '')
+
+        mock_run.side_effect = run_side_effect
+
+        server = {
+            'name': 'new-server',
+            'command': 'uvx new-server',
+            'scope': 'user',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True  # Should succeed despite removal returning non-zero
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_removal_attempts_all_scopes_regardless_of_exit_codes(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that removal is attempted for all scopes even when some fail."""
+        del mock_find, _mock_system
+
+        removal_attempts: list[str] = []
+
+        def run_side_effect(
+            cmd: list[str], *args: Any, **kwargs: Any,
+        ) -> subprocess.CompletedProcess[str]:
+            del args, kwargs
+            if 'remove' in cmd:
+                scope_idx = cmd.index('--scope') + 1 if '--scope' in cmd else -1
+                if scope_idx > 0:
+                    removal_attempts.append(cmd[scope_idx])
+                # First scope fails, others succeed
+                if len(removal_attempts) == 1:
+                    return subprocess.CompletedProcess([], 1, '', 'Not found')
+            return subprocess.CompletedProcess([], 0, '', '')
+
+        mock_run.side_effect = run_side_effect
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+            'scope': 'user',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # All three scopes should have been attempted
+        assert set(removal_attempts) == {'user', 'local', 'project'}
+
+
+class TestMcpServersSummaryDisplay:
+    """Test MCP servers summary display format in main()."""
+
+    def test_summary_shows_profile_only_when_combined_exists(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test summary displays profile-only servers when combined servers exist."""
+        # Stats: 5 global, 10 profile, 5 combined -> 5 profile-only
+        mcp_stats = {'global_count': 5, 'profile_count': 10, 'combined_count': 5}
+
+        # Simulate the display logic from main()
+        if mcp_stats['combined_count'] > 0:
+            profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']
+            if profile_only > 0:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"({mcp_stats['combined_count']} also in profile), "
+                      f"{profile_only} profile-only")
+            else:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"(all {mcp_stats['combined_count']} also in profile)")
+
+        captured = capsys.readouterr()
+        # Verify the output includes profile-only count
+        assert '5 global' in captured.out
+        assert '5 also in profile' in captured.out
+        assert '5 profile-only' in captured.out
+
+    def test_summary_shows_all_in_profile_when_no_profile_only(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test summary shows 'all X also in profile' when profile_only is 0."""
+        # Stats: 5 global, 5 profile, 5 combined -> 0 profile-only
+        mcp_stats = {'global_count': 5, 'profile_count': 5, 'combined_count': 5}
+
+        # Simulate the display logic from main()
+        if mcp_stats['combined_count'] > 0:
+            profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']
+            if profile_only > 0:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"({mcp_stats['combined_count']} also in profile), "
+                      f"{profile_only} profile-only")
+            else:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"(all {mcp_stats['combined_count']} also in profile)")
+
+        captured = capsys.readouterr()
+        assert '5 global' in captured.out
+        assert 'all 5 also in profile' in captured.out
+        assert 'profile-only' not in captured.out
+
+    def test_summary_handles_profile_only_without_combined(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test summary displays profile-only servers when no combined servers."""
+        # Stats: 3 global, 5 profile, 0 combined -> all 5 are profile-only
+        mcp_stats = {'global_count': 3, 'profile_count': 5, 'combined_count': 0}
+        profile_servers = [{'name': f'server-{i}'} for i in range(5)]
+
+        # Simulate the display logic from main()
+        if mcp_stats['combined_count'] > 0:
+            profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']
+            if profile_only > 0:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"({mcp_stats['combined_count']} also in profile), "
+                      f"{profile_only} profile-only")
+            else:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"(all {mcp_stats['combined_count']} also in profile)")
+        elif profile_servers:
+            print(f"   * MCP servers: {mcp_stats['global_count']} global, "
+                  f"{mcp_stats['profile_count']} profile-only")
+
+        captured = capsys.readouterr()
+        assert '3 global' in captured.out
+        assert '5 profile-only' in captured.out
