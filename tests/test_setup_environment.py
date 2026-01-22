@@ -1600,6 +1600,302 @@ class TestConfigureMCPServer:
         assert '/claude"' in bash_cmd or "/claude'" in bash_cmd or 'claude" mcp' in bash_cmd
 
 
+class TestMCPTildeExpansionWindows:
+    """Test tilde expansion in user-scope STDIO MCP commands on Windows.
+
+    Validates that tildes in commands are expanded using Python's os.path.expanduser()
+    before being passed to Git Bash, preventing bash from expanding ~ to Unix-style
+    /c/Users/... paths.
+    """
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_windows_expands_tilde_in_command(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify tildes in user-scope STDIO commands are expanded to Windows paths.
+
+        Ensures that tildes are expanded using Python's os.path.expanduser() which
+        produces Windows paths (C:\\Users\\...) rather than letting Git Bash expand
+        them to Unix-style paths (/c/Users/...).
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Mock expand_tildes_in_command to return Windows-style expanded path
+        mock_expand_tilde.return_value = 'python C:\\Users\\test\\.claude\\mcp\\mcp_wrapper.py'
+
+        server = {
+            'name': 'tilde-test-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/mcp/mcp_wrapper.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called with the original command
+        mock_expand_tilde.assert_called_once_with('python ~/.claude/mcp/mcp_wrapper.py')
+        # Verify bash command contains expanded path with forward slashes
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        assert 'C:/Users/test/.claude/mcp/mcp_wrapper.py' in bash_cmd
+        # Verify no unexpanded tilde in command portion (after '--')
+        command_part = bash_cmd.split('-- ')[1] if '-- ' in bash_cmd else bash_cmd
+        assert '~' not in command_part
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_windows_npx_with_tilde_expands(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify npx commands with tildes are expanded AND wrapped with cmd /c.
+
+        npx commands on Windows require both tilde expansion AND cmd /c wrapper
+        for proper execution in Git Bash.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'npx C:\\Users\\test\\.claude\\mcp\\server-script'
+
+        server = {
+            'name': 'npx-tilde-server',
+            'scope': 'user',
+            'command': 'npx ~/.claude/mcp/server-script',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        # Verify cmd /c wrapper with expanded path
+        assert 'cmd /c npx C:/Users/test/.claude/mcp/server-script' in bash_cmd
+        # Verify no unexpanded tilde in the command part
+        command_part = bash_cmd.split('-- ')[1] if '-- ' in bash_cmd else bash_cmd
+        assert '~' not in command_part
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_windows_no_tilde_unchanged(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify commands without tildes are not modified (regression test).
+
+        Commands that don't contain tildes should pass through unchanged to
+        ensure backward compatibility.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Command without tilde returns unchanged
+        mock_expand_tilde.return_value = 'uvx mcp-server-package'
+
+        server = {
+            'name': 'no-tilde-server',
+            'scope': 'user',
+            'command': 'uvx mcp-server-package',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        mock_expand_tilde.assert_called_once_with('uvx mcp-server-package')
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        assert 'uvx mcp-server-package' in bash_cmd
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_profile_scope_unchanged(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
+    ):
+        """Verify profile-scope servers return early without STDIO add operation.
+
+        Profile-scope servers are configured via --strict-mcp-config, not claude mcp add.
+        On Windows, removals use run_bash_command, then the function returns early.
+        """
+        del mock_system, mock_run_cmd  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'profile-server',
+            'scope': 'profile',
+            'command': 'python ~/.claude/mcp/script.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # On Windows, removals use run_bash_command (3 calls: user, local, project)
+        # Then profile scope returns early - no add operation
+        assert mock_bash_cmd.call_count == 3
+        # All bash calls should be removal commands, not 'mcp add'
+        for call in mock_bash_cmd.call_args_list:
+            bash_cmd = call.args[0]
+            assert 'mcp remove' in bash_cmd
+            assert 'mcp add' not in bash_cmd
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_windows_multiple_tildes_expanded(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify commands with multiple tilde paths all get expanded.
+
+        When a command contains multiple tilde references (e.g., script path
+        and config path), all should be expanded.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Both tildes expanded
+        mock_expand_tilde.return_value = (
+            'python C:\\Users\\test\\.claude\\mcp\\script.py '
+            '--config C:\\Users\\test\\.config\\mcp.yaml'
+        )
+
+        server = {
+            'name': 'multi-tilde-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/mcp/script.py --config ~/.config/mcp.yaml',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        # Verify both paths expanded with forward slashes
+        assert 'C:/Users/test/.claude/mcp/script.py' in bash_cmd
+        assert 'C:/Users/test/.config/mcp.yaml' in bash_cmd
+        # No unexpanded tildes in command portion
+        command_part = bash_cmd.split('-- ')[1] if '-- ' in bash_cmd else bash_cmd
+        assert '~' not in command_part
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_windows_backslash_to_forward_slash(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify backslashes from os.path.expanduser() are converted to forward slashes.
+
+        Windows os.path.expanduser() returns backslashes (C:\\Users\\...) which must
+        be converted to forward slashes for consistent cross-platform paths.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Simulate os.path.expanduser returning backslashes
+        mock_expand_tilde.return_value = 'python C:\\Users\\test\\.claude\\script.py'
+
+        server = {
+            'name': 'backslash-test-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/script.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        # Extract command portion after '--'
+        command_part = bash_cmd.split('-- ')[1] if '-- ' in bash_cmd else bash_cmd
+        # Verify no backslashes in command part
+        assert '\\' not in command_part
+        # Verify forward slashes are used
+        assert 'C:/Users/test/.claude/script.py' in bash_cmd
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_local_scope_stdio_with_tilde(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify local-scope also gets tilde expansion on Windows.
+
+        Local-scope servers use the same STDIO code path as user-scope
+        and should receive the same tilde expansion treatment.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'python C:\\Users\\test\\.claude\\mcp\\local_server.py'
+
+        server = {
+            'name': 'local-tilde-server',
+            'scope': 'local',
+            'command': 'python ~/.claude/mcp/local_server.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        # Tilde expanded and backslashes converted
+        assert 'C:/Users/test/.claude/mcp/local_server.py' in bash_cmd
+        # No unexpanded tilde in command portion
+        command_part = bash_cmd.split('-- ')[1] if '-- ' in bash_cmd else bash_cmd
+        assert '~' not in command_part
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_combined_scope_with_tilde(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify combined scope servers with tildes work correctly.
+
+        When scope is [user, profile], the user-scope add command should
+        have expanded tilde, while profile servers are returned for separate handling.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'python C:\\Users\\test\\.claude\\mcp\\combined.py'
+
+        server = {
+            'name': 'combined-tilde-server',
+            'scope': ['user', 'profile'],
+            'command': 'python ~/.claude/mcp/combined.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # expand_tildes_in_command should be called for user-scope add
+        mock_expand_tilde.assert_called()
+        # Verify user-scope bash command has expanded path
+        bash_cmd = mock_bash_cmd.call_args.args[0]
+        assert 'C:/Users/test/.claude/mcp/combined.py' in bash_cmd
+
+
 class TestCreateAdditionalSettings:
     """Test additional settings creation."""
 
