@@ -3854,3 +3854,165 @@ class TestParallelWorkersConfiguration:
         # Test fallback to default
         value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
         assert value == 3
+
+
+class TestRunBashCommandMsysPathConversion:
+    """Tests for MSYS path conversion prevention in run_bash_command().
+
+    Git Bash (MSYS2) automatically converts POSIX-style paths like /c to
+    Windows drive paths like C:/. This breaks cmd.exe's /c flag which is
+    used to run commands. These tests verify that MSYS_NO_PATHCONV=1 is
+    set correctly to disable this conversion.
+    """
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    def test_msys_no_pathconv_set_on_windows(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify MSYS_NO_PATHCONV=1 is set in env on Windows."""
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test')
+
+        # Verify subprocess.run was called with env parameter containing MSYS_NO_PATHCONV
+        assert mock_run.called
+        call_kwargs = mock_run.call_args[1]
+        assert 'env' in call_kwargs
+        assert call_kwargs['env'].get('MSYS_NO_PATHCONV') == '1'
+
+    @patch('scripts.setup_environment.sys.platform', 'linux')
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_msys_no_pathconv_not_set_on_linux(
+        self, mock_run: MagicMock, mock_which: MagicMock,
+    ) -> None:
+        """Verify MSYS_NO_PATHCONV is NOT set in env on Linux."""
+        mock_which.return_value = '/usr/bin/bash'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test')
+
+        assert mock_run.called
+        call_kwargs = mock_run.call_args[1]
+        # On Linux, env should not contain MSYS_NO_PATHCONV
+        env = call_kwargs.get('env')
+        assert env is not None
+        assert 'MSYS_NO_PATHCONV' not in env
+
+    @patch('scripts.setup_environment.sys.platform', 'darwin')
+    @patch('shutil.which')
+    @patch('subprocess.run')
+    def test_msys_no_pathconv_not_set_on_macos(
+        self, mock_run: MagicMock, mock_which: MagicMock,
+    ) -> None:
+        """Verify MSYS_NO_PATHCONV is NOT set in env on macOS."""
+        mock_which.return_value = '/bin/bash'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test')
+
+        assert mock_run.called
+        call_kwargs = mock_run.call_args[1]
+        # On macOS, env should not contain MSYS_NO_PATHCONV
+        env = call_kwargs.get('env')
+        assert env is not None
+        assert 'MSYS_NO_PATHCONV' not in env
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    def test_c_flag_preserved_in_command(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify /c flag is preserved and not converted to C:/."""
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        # Command that includes /c flag (typical Windows cmd wrapper)
+        setup_environment.run_bash_command('cmd /c npx test-package')
+
+        # Verify the command string passed to subprocess contains /c not C:/
+        assert mock_run.called
+        call_args = mock_run.call_args[0][0]
+        command_arg = call_args[-1]  # Last element is the command string
+        assert '/c' in command_arg
+        assert 'C:/' not in command_arg
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    @patch.dict('os.environ', {'EXISTING_VAR': 'existing_value', 'PATH': '/usr/bin'})
+    def test_existing_env_vars_preserved(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify existing environment variables are preserved when adding MSYS_NO_PATHCONV."""
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test')
+
+        call_kwargs = mock_run.call_args[1]
+        env = call_kwargs.get('env')
+        assert env is not None
+        # MSYS_NO_PATHCONV should be set
+        assert env.get('MSYS_NO_PATHCONV') == '1'
+        # Existing environment variables should be preserved
+        assert env.get('EXISTING_VAR') == 'existing_value'
+        assert env.get('PATH') == '/usr/bin'
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    def test_tilde_expansion_still_works(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify that disabling path conversion does not break tilde expansion.
+
+        Tilde expansion (~) is handled by bash itself, not MSYS path conversion,
+        so it should continue to work when MSYS_NO_PATHCONV=1 is set.
+        """
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '/c/Users/test', '')
+
+        result = setup_environment.run_bash_command('echo ~')
+
+        # The command should execute successfully
+        assert mock_run.called
+        assert result.returncode == 0
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    def test_login_shell_with_msys_no_pathconv(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify MSYS_NO_PATHCONV is set even with login_shell=True."""
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test', login_shell=True)
+
+        call_kwargs = mock_run.call_args[1]
+        env = call_kwargs.get('env')
+        assert env is not None
+        assert env.get('MSYS_NO_PATHCONV') == '1'
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('setup_environment.find_bash_windows')
+    @patch('subprocess.run')
+    def test_capture_output_with_msys_no_pathconv(
+        self, mock_run: MagicMock, mock_find_bash: MagicMock,
+    ) -> None:
+        """Verify MSYS_NO_PATHCONV is set with capture_output=False."""
+        mock_find_bash.return_value = r'C:\Program Files\Git\bin\bash.exe'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        setup_environment.run_bash_command('echo test', capture_output=False)
+
+        call_kwargs = mock_run.call_args[1]
+        env = call_kwargs.get('env')
+        assert env is not None
+        assert env.get('MSYS_NO_PATHCONV') == '1'

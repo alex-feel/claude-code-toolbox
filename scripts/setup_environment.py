@@ -695,8 +695,14 @@ def run_bash_command(
 
     debug_log(f'Executing: {args}')
 
+    # Disable MSYS path conversion on Windows to preserve /c flags and other arguments
+    # that would otherwise be incorrectly converted to Windows drive paths (e.g., /c -> C:/)
+    env = os.environ.copy()
+    if sys.platform == 'win32':
+        env['MSYS_NO_PATHCONV'] = '1'
+
     try:
-        result = subprocess.run(args, capture_output=capture_output, text=True)
+        result = subprocess.run(args, capture_output=capture_output, text=True, env=env)
         debug_log(f'Exit code: {result.returncode}')
         if capture_output:
             stdout_preview = result.stdout[:500] if result.stdout else '(empty)'
