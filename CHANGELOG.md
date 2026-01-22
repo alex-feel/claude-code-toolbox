@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.24.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.23.1...v4.24.0) (2026-01-22)
+
+
+### Features
+
+* add combined scope support for MCP servers ([9c01263](https://github.com/alex-feel/claude-code-toolbox/commit/9c01263183ad6c80cca819cc2b1e375d95860df7))
+
+
+### Bug Fixes
+
+* parse MCP profile config commands correctly ([b51cd4c](https://github.com/alex-feel/claude-code-toolbox/commit/b51cd4c7965fc5daebd53824c955d97684c2d62a))
+
 ## [4.23.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.23.0...v4.23.1) (2026-01-21)
 
 
