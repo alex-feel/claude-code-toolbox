@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.4](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.3...v4.24.4) (2026-01-22)
+
+
+### Bug Fixes
+
+* ensure profile-only MCP servers trigger removal from all scopes ([2b80428](https://github.com/alex-feel/claude-code-toolbox/commit/2b8042875eaaefa8cec31be0b1013607752b53b3))
+
 ## [4.24.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.2...v4.24.3) (2026-01-22)
 
 
