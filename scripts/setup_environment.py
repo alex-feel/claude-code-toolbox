@@ -4229,7 +4229,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 # Build command string for STDIO
                 # npx needs cmd /c wrapper on Windows even in bash
-                command_str = f'cmd /c {command}' if 'npx' in command else command
+                # Expand tildes using Python (produces C:\Users\...) and convert to forward slashes
+                # This prevents Git Bash from expanding ~ to /c/Users/... (Unix format)
+                expanded_command = expand_tildes_in_command(command).replace('\\', '/')
+                command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
                     f'export PATH="{unix_explicit_path}:$PATH" && '
