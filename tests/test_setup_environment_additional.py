@@ -6,6 +6,7 @@ Focuses on error paths, edge cases, and complex scenarios.
 
 import json
 import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -2523,8 +2524,17 @@ class TestMCPProfileScope:
             config = json.loads(config_path.read_text())
             assert 'mcpServers' in config
             assert 'test-server' in config['mcpServers']
-            assert config['mcpServers']['test-server']['type'] == 'stdio'
-            assert config['mcpServers']['test-server']['command'] == 'npx test-server'
+            server_config = config['mcpServers']['test-server']
+            assert server_config['type'] == 'stdio'
+            # Verify command + args format (Windows wraps npx with cmd /c)
+            if platform.system() == 'Windows':
+                assert server_config['command'] == 'cmd'
+                assert server_config['args'] == ['/c', 'npx', 'test-server']
+            else:
+                assert server_config['command'] == 'npx'
+                assert server_config['args'] == ['test-server']
+            # Verify env object present for format consistency
+            assert server_config['env'] == {}
 
     def test_create_mcp_config_file_multiple_servers(self) -> None:
         """Test creating MCP config file with multiple servers."""
@@ -2551,6 +2561,10 @@ class TestMCPProfileScope:
             assert 'server1' in config['mcpServers']
             assert 'server2' in config['mcpServers']
             assert config['mcpServers']['server1']['type'] == 'stdio'
+            # Verify command + args format for stdio server
+            assert config['mcpServers']['server1']['command'] == 'uvx'
+            assert config['mcpServers']['server1']['args'] == ['server1']
+            assert config['mcpServers']['server1']['env'] == {}
             assert config['mcpServers']['server2']['type'] == 'http'
             assert config['mcpServers']['server2']['url'] == 'http://localhost:8080'
 
@@ -3502,3 +3516,166 @@ class TestCombinedScopeSupport:
             assert success_flag is True
             assert len(profile_servers) == 0
             assert not config_path.exists()
+
+
+class TestParseMcpCommand:
+    """Test parse_mcp_command() function for MCP config formatting."""
+
+    # === Basic Parsing Tests ===
+
+    def test_simple_command_no_args(self) -> None:
+        """Test simple executable without arguments."""
+        result = setup_environment.parse_mcp_command('bash')
+        assert result['command'] == 'bash'
+        assert result['args'] == []
+
+    def test_command_with_single_arg(self) -> None:
+        """Test command with single argument."""
+        result = setup_environment.parse_mcp_command('uvx server')
+        assert result['command'] == 'uvx'
+        assert result['args'] == ['server']
+
+    def test_command_with_multiple_args(self) -> None:
+        """Test command with multiple arguments."""
+        result = setup_environment.parse_mcp_command('npx -y @package/name')
+        # Result depends on platform (Windows wraps with cmd /c)
+        if platform.system() == 'Windows':
+            assert result['command'] == 'cmd'
+            assert result['args'] == ['/c', 'npx', '-y', '@package/name']
+        else:
+            assert result['command'] == 'npx'
+            assert result['args'] == ['-y', '@package/name']
+
+    # === Tilde Expansion Tests ===
+
+    def test_tilde_expansion_in_path_arg(self) -> None:
+        """Test tilde path expansion in argument."""
+        home = str(Path.home())
+        result = setup_environment.parse_mcp_command('bash ~/.claude/script.sh')
+        assert result['command'] == 'bash'
+        # Path should be expanded and POSIX-formatted
+        assert len(result['args']) == 1
+        assert '~' not in result['args'][0]
+        assert home.replace('\\', '/') in result['args'][0] or home in result['args'][0]
+
+    def test_tilde_expansion_in_executable(self) -> None:
+        """Test tilde path expansion when executable has tilde."""
+        home = str(Path.home())
+        result = setup_environment.parse_mcp_command('~/scripts/server.sh --port 8080')
+        assert '~' not in result['command']
+        assert home.replace('\\', '/') in result['command'] or home in result['command']
+
+    def test_multiple_tilde_paths(self) -> None:
+        """Test multiple tilde paths in single command."""
+        result = setup_environment.parse_mcp_command('bash ~/.claude/script.sh ~/.config/settings.json')
+        assert result['command'] == 'bash'
+        assert len(result['args']) == 2
+        for arg in result['args']:
+            assert '~' not in arg
+
+    # === Windows npx/npm Handling Tests ===
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_npx_wrapped_with_cmd(self) -> None:
+        """Test npx command is wrapped with cmd /c on Windows."""
+        result = setup_environment.parse_mcp_command('npx -y @mobilenext/mobile-mcp')
+        assert result['command'] == 'cmd'
+        assert result['args'][0] == '/c'
+        assert result['args'][1] == 'npx'
+        assert '-y' in result['args']
+        assert '@mobilenext/mobile-mcp' in result['args']
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_npm_wrapped_with_cmd(self) -> None:
+        """Test npm command is wrapped with cmd /c on Windows."""
+        result = setup_environment.parse_mcp_command('npm exec server')
+        assert result['command'] == 'cmd'
+        assert result['args'][0] == '/c'
+        assert result['args'][1] == 'npm'
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_non_npm_command_not_wrapped(self) -> None:
+        """Test non-npm commands are NOT wrapped on Windows."""
+        result = setup_environment.parse_mcp_command('uvx my-server')
+        assert result['command'] == 'uvx'
+        assert result['args'] == ['my-server']
+
+    @pytest.mark.skipif(platform.system() == 'Windows', reason='Non-Windows test')
+    def test_unix_npx_not_wrapped(self) -> None:
+        """Test npx is NOT wrapped on Unix systems."""
+        result = setup_environment.parse_mcp_command('npx -y @mobilenext/mobile-mcp')
+        assert result['command'] == 'npx'
+        assert '-y' in result['args']
+
+    # === POSIX Path Conversion Tests ===
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_path_converted_to_posix(self) -> None:
+        """Test Windows backslash paths converted to POSIX forward slashes."""
+        # Use a path with backslashes that expand_tildes_in_command would return
+        with patch('setup_environment.expand_tildes_in_command', return_value=r'bash C:\Users\test\script.sh'):
+            result = setup_environment.parse_mcp_command(r'bash C:\Users\test\script.sh')
+        assert result['command'] == 'bash'
+        assert '\\' not in result['args'][0]
+        assert '/' in result['args'][0]
+
+    def test_posix_path_unchanged(self) -> None:
+        """Test POSIX paths remain unchanged."""
+        result = setup_environment.parse_mcp_command('bash /usr/local/bin/script.sh')
+        assert result['command'] == 'bash'
+        assert result['args'] == ['/usr/local/bin/script.sh']
+
+    # === Quoted Arguments Tests ===
+
+    def test_quoted_arg_with_spaces(self) -> None:
+        """Test quoted argument with spaces is preserved."""
+        result = setup_environment.parse_mcp_command('bash -c "echo hello world"')
+        assert result['command'] == 'bash'
+        assert '-c' in result['args']
+        assert 'echo hello world' in result['args']
+
+    def test_single_quoted_arg(self) -> None:
+        """Test single-quoted argument is preserved."""
+        result = setup_environment.parse_mcp_command("bash -c 'echo test'")
+        assert result['command'] == 'bash'
+        assert '-c' in result['args']
+        assert 'echo test' in result['args']
+
+    # === Edge Cases ===
+
+    def test_empty_command(self) -> None:
+        """Test empty command string."""
+        result = setup_environment.parse_mcp_command('')
+        assert result['command'] == ''
+        assert result['args'] == []
+
+    def test_whitespace_only_command(self) -> None:
+        """Test whitespace-only command string."""
+        result = setup_environment.parse_mcp_command('   ')
+        # shlex.split of whitespace returns []
+        assert result['command'] == '   '  # Falls back to original
+        assert result['args'] == []
+
+    def test_malformed_quotes_fallback(self) -> None:
+        """Test malformed quotes fall back to split()."""
+        result = setup_environment.parse_mcp_command('bash "unclosed quote')
+        # Should not crash, falls back to simple split
+        assert result['command'] == 'bash'
+        assert '"unclosed' in result['args'] or 'quote' in result['args']
+
+    def test_special_characters_in_args(self) -> None:
+        """Test special characters in arguments."""
+        result = setup_environment.parse_mcp_command('npx @scope/package-name:1.0.0')
+        if platform.system() == 'Windows':
+            assert '@scope/package-name:1.0.0' in result['args']
+        else:
+            assert result['args'] == ['@scope/package-name:1.0.0']
+
+    def test_non_path_arg_unchanged(self) -> None:
+        """Test non-path arguments are not modified."""
+        result = setup_environment.parse_mcp_command('server --port 8080 --host localhost')
+        assert result['command'] == 'server'
+        assert '--port' in result['args']
+        assert '8080' in result['args']
+        assert '--host' in result['args']
+        assert 'localhost' in result['args']

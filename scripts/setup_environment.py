@@ -867,6 +867,58 @@ def expand_tildes_in_command(command: str) -> str:
     return re.sub(tilde_pattern, expand_match, command)
 
 
+def parse_mcp_command(command_str: str) -> dict[str, Any]:
+    """Parse MCP command string into official MCP JSON schema format.
+
+    Converts a shell command string into the structured format expected by
+    Claude Code's MCP configuration. Handles:
+    - Tilde path expansion to absolute paths
+    - Shell-aware splitting with shlex
+    - Windows npx/npm wrapper with cmd /c
+    - POSIX path format for arguments (cross-platform compatibility)
+
+    Args:
+        command_str: Full command string from YAML config
+
+    Returns:
+        Dict with 'command' (executable) and 'args' (argument array) keys
+    """
+    # Step 1: Expand tilde paths using existing function (DRY principle)
+    expanded = expand_tildes_in_command(command_str)
+
+    # Step 2: Convert backslashes to forward slashes BEFORE shlex.split
+    # This prevents shlex from interpreting backslashes as escape characters
+    # and ensures consistent POSIX path format in the output
+    expanded = expanded.replace('\\', '/')
+
+    # Step 3: Parse command into parts using shlex
+    try:
+        parts = shlex.split(expanded)
+    except ValueError:
+        # Fallback for malformed commands
+        parts = expanded.split()
+
+    if not parts:
+        return {'command': expanded, 'args': []}
+
+    executable = parts[0]
+    args = parts[1:] if len(parts) > 1 else []
+
+    # Step 4: Windows-specific handling for npx/npm commands
+    if platform.system() == 'Windows' and any(
+        npm_cmd in executable.lower() for npm_cmd in ['npx', 'npm']
+    ):
+        return {
+            'command': 'cmd',
+            'args': ['/c', executable] + args,
+        }
+
+    return {
+        'command': executable,
+        'args': args,
+    }
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -4310,13 +4362,17 @@ def create_mcp_config_file(
                 key, _, value = header.partition(':')
                 server_config['headers'] = {key.strip(): value.strip()}
 
-        # Stdio transport (command)
+        # Stdio transport - with proper command + args format
         command = server.get('command')
         if command:
             server_config['type'] = 'stdio'
-            server_config['command'] = command
+            parsed = parse_mcp_command(command)
+            server_config['command'] = parsed['command']
+            if parsed['args']:
+                server_config['args'] = parsed['args']
+            server_config['env'] = {}  # Format consistency with claude mcp add
 
-        # Environment variables
+        # Environment variables (override default empty env)
         env_config = server.get('env')
         if env_config:
             env_dict: dict[str, str] = {}
