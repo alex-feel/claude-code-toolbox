@@ -4079,12 +4079,38 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         # take precedence, followed by project, then user - so we remove from all scopes
         info(f'Removing existing MCP server {name} from all scopes if present...')
         scopes_removed: list[str] = []
-        for remove_scope in ['user', 'local', 'project']:
-            remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
-            result = run_command(remove_cmd, capture_output=True)
-            # Check if removal was successful (exit code 0)
-            if result.returncode == 0:
-                scopes_removed.append(remove_scope)
+
+        if system == 'Windows':
+            # Windows: Use bash execution for consistency with add operation
+            # This ensures removal uses the same environment (PATH, shell, MSYS settings)
+            # as the add operation, preventing "not found" errors due to asymmetric execution
+            nodejs_path = r'C:\Program Files\nodejs'
+            current_path = os.environ.get('PATH', '')
+
+            if Path(nodejs_path).exists() and nodejs_path not in current_path:
+                windows_explicit_path = f'{nodejs_path};{current_path}'
+            else:
+                windows_explicit_path = current_path
+
+            unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+            bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
+            unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
+
+            for remove_scope in ['user', 'local', 'project']:
+                bash_cmd = (
+                    f'export PATH="{unix_explicit_path}:$PATH" && '
+                    f'"{unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
+                )
+                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                if result.returncode == 0:
+                    scopes_removed.append(remove_scope)
+        else:
+            # Unix: Direct subprocess execution
+            for remove_scope in ['user', 'local', 'project']:
+                remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
+                result = run_command(remove_cmd, capture_output=True)
+                if result.returncode == 0:
+                    scopes_removed.append(remove_scope)
 
         if scopes_removed:
             info(f"Removed MCP server {name} from scope(s): {', '.join(scopes_removed)}")
@@ -4263,7 +4289,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
-) -> tuple[bool, list[dict[str, Any]]]:
+) -> tuple[bool, list[dict[str, Any]], dict[str, int]]:
     """Configure all MCP servers from configuration.
 
     Handles combined scope configurations where servers can be added to multiple
@@ -4276,16 +4302,27 @@ def configure_all_mcp_servers(
         profile_mcp_config_path: Path for profile-scoped servers JSON file
 
     Returns:
-        Tuple of (success: bool, profile_servers: list of servers with profile scope)
+        Tuple of (success: bool, profile_servers: list, stats: dict)
+        stats contains:
+            - global_count: Number of servers with any non-profile scope
+            - profile_count: Number of servers with profile scope
+            - combined_count: Number of servers with BOTH global AND profile scopes
     """
     if not servers:
         info('No MCP servers to configure')
-        return True, []
+        return True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}
 
     info('Configuring MCP servers...')
 
     # Collect servers for profile config
     profile_servers: list[dict[str, Any]] = []
+
+    # Track statistics for accurate summary display
+    stats = {
+        'global_count': 0,      # Servers with any non-profile scope
+        'profile_count': 0,     # Servers with profile scope
+        'combined_count': 0,    # Servers with BOTH global AND profile scopes
+    }
 
     for server in servers:
         server_name = server.get('name', 'unnamed')
@@ -4299,6 +4336,15 @@ def configure_all_mcp_servers(
 
         has_profile = 'profile' in scopes
         non_profile_scopes = [s for s in scopes if s != 'profile']
+        has_global = len(non_profile_scopes) > 0
+
+        # Update statistics
+        if has_profile:
+            stats['profile_count'] += 1
+        if has_global:
+            stats['global_count'] += 1
+        if has_profile and has_global:
+            stats['combined_count'] += 1
 
         # Add to profile config if profile scope present
         if has_profile:
@@ -4323,7 +4369,7 @@ def configure_all_mcp_servers(
         except OSError as e:
             warning(f'Failed to remove stale profile MCP config: {e}')
 
-    return True, profile_servers
+    return True, profile_servers, stats
 
 
 def create_mcp_config_file(
@@ -5808,7 +5854,7 @@ def main() -> None:
         if primary_command_name:
             profile_mcp_config_path = claude_user_dir / f'{primary_command_name}-mcp.json'
 
-        _, profile_servers = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
+        _, profile_servers, mcp_stats = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
         has_profile_mcp_servers = len(profile_servers) > 0
 
         # Check if command creation is needed
@@ -5893,10 +5939,14 @@ def main() -> None:
                 print('   * System prompt: replacing default')
         if model:
             print(f'   * Model: {model}')
-        if profile_servers:
-            global_count = len(mcp_servers) - len(profile_servers)
-            profile_count = len(profile_servers)
-            print(f'   * MCP servers: {global_count} global, {profile_count} profile-scoped (isolated)')
+        if mcp_stats['combined_count'] > 0:
+            # Servers with BOTH global AND profile scope
+            print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                  f"({mcp_stats['combined_count']} also in profile)")
+        elif profile_servers:
+            # Servers with EITHER global OR profile scope (mutually exclusive)
+            print(f"   * MCP servers: {mcp_stats['global_count']} global, "
+                  f"{mcp_stats['profile_count']} profile-scoped (isolated)")
         else:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:

@@ -587,9 +587,9 @@ class TestMCPServerConfigurationEdgeCases:
             result = setup_environment.configure_mcp_server(server)
 
             assert result is True
-            # run_command: 3 removes; run_bash_command: 1 add (Windows HTTP uses bash)
-            assert mock_run.call_count == 3
-            assert mock_bash.call_count == 1
+            # Windows: all operations use bash (3 removes + 1 add)
+            assert mock_run.call_count == 0
+            assert mock_bash.call_count == 4
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
@@ -687,27 +687,29 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # Should call run_command 3 times for removing from all scopes
-        assert mock_run.call_count == 3
-        # Should call run_bash_command once for add (Windows STDIO uses bash)
-        assert mock_bash.call_count == 1
-        # Check that cmd /c was used for npx in the bash command
+        # Windows: all operations use bash (3 removes + 1 add)
+        assert mock_run.call_count == 0
+        assert mock_bash.call_count == 4
+        # Check that cmd /c was used for npx in the add command (last bash call)
         bash_cmd = mock_bash.call_args[0][0]
         assert 'cmd /c npx @modelcontextprotocol/server-memory' in bash_cmd
         assert 'export PATH=' in bash_cmd
 
+    @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
-    def test_configure_mcp_server_exception(self, mock_find):
+    def test_configure_mcp_server_exception(self, mock_find, _mock_system):
         """Test MCP configuration with exception."""
         del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
         server = {'name': 'test', 'command': 'test'}
 
-        # Exception happens on the add command (second call)
+        # Exception happens during processing (after some remove calls)
         with patch(
             'setup_environment.run_command',
             side_effect=[
-                subprocess.CompletedProcess([], 0, '', ''),  # remove succeeds
-                Exception('Unexpected'),  # add throws exception
+                subprocess.CompletedProcess([], 0, '', ''),  # remove user succeeds
+                subprocess.CompletedProcess([], 0, '', ''),  # remove local succeeds
+                Exception('Unexpected'),  # remove project throws exception
             ],
         ):
             result = setup_environment.configure_mcp_server(server)
@@ -839,11 +841,11 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is True
 
-        # run_command: 3 removes; run_bash_command: 1 add (Windows HTTP uses bash)
-        assert mock_run.call_count == 3
-        assert mock_bash.call_count == 1
+        # Windows: all operations use bash (3 removes + 1 add)
+        assert mock_run.call_count == 0
+        assert mock_bash.call_count == 4
 
-        # Check bash command contains env flags
+        # Check bash command contains env flags (last bash call is add)
         bash_cmd = mock_bash.call_args[0][0]
         assert '--env "AUTH_TOKEN=token123"' in bash_cmd
         assert '--env "REGION=us-west"' in bash_cmd
@@ -1339,7 +1341,10 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
     @patch('setup_environment.is_admin', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
+    @patch(
+        'setup_environment.configure_all_mcp_servers',
+        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
+    )
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
     @patch('pathlib.Path.mkdir')
@@ -1388,7 +1393,10 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.process_resources', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
+    @patch(
+        'setup_environment.configure_all_mcp_servers',
+        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
+    )
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
@@ -1433,7 +1441,10 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.install_dependencies', return_value=True)
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
-    @patch('setup_environment.configure_all_mcp_servers', return_value=(True, []))
+    @patch(
+        'setup_environment.configure_all_mcp_servers',
+        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
+    )
     @patch('setup_environment.create_additional_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
@@ -2731,7 +2742,7 @@ class TestMCPProfileScope:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'test-mcp.json'
 
-            success, profile_servers = setup_environment.configure_all_mcp_servers(
+            success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
                 profile_mcp_config_path=profile_config,
             )
@@ -2827,7 +2838,7 @@ class TestMCPProfileScope:
         # Without profile_mcp_config_path, profile servers should still be returned
         # but no config file created
         with patch('setup_environment.configure_mcp_server', return_value=True):
-            success, profile_servers = setup_environment.configure_all_mcp_servers(servers)
+            success, profile_servers, _ = setup_environment.configure_all_mcp_servers(servers)
 
         assert success is True
         assert len(profile_servers) == 1
@@ -2856,7 +2867,7 @@ class TestMCPProfileScope:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'test-mcp.json'
 
-            success, profile_servers = setup_environment.configure_all_mcp_servers(
+            success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
                 profile_mcp_config_path=profile_config,
             )
@@ -2885,7 +2896,7 @@ class TestMCPProfileScope:
             ]
 
             with patch('setup_environment.configure_mcp_server', return_value=True):
-                success, profile_servers = setup_environment.configure_all_mcp_servers(
+                success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, config_path,
                 )
 
@@ -2901,7 +2912,7 @@ class TestMCPProfileScope:
         ]
 
         with patch('setup_environment.configure_mcp_server', return_value=True):
-            success, profile_servers = setup_environment.configure_all_mcp_servers(
+            success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers, None,  # No profile config path
             )
 
@@ -2925,7 +2936,7 @@ class TestMCPProfileScope:
                 patch.object(Path, 'unlink', side_effect=OSError('Permission denied')),
                 patch('setup_environment.warning') as mock_warning,
             ):
-                success, profile_servers = setup_environment.configure_all_mcp_servers(
+                success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, config_path,
                 )
 
@@ -3162,7 +3173,7 @@ class TestCombinedScopeSupport:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'test-mcp.json'
 
-            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+            success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
                 profile_mcp_config_path=profile_config,
             )
@@ -3204,7 +3215,7 @@ class TestCombinedScopeSupport:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'test-mcp.json'
 
-            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+            success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
                 profile_mcp_config_path=profile_config,
             )
@@ -3236,7 +3247,7 @@ class TestCombinedScopeSupport:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'test-mcp.json'
 
-            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+            success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
                 profile_mcp_config_path=profile_config,
             )
@@ -3303,7 +3314,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3330,7 +3341,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3352,7 +3363,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3374,7 +3385,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3403,7 +3414,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3430,7 +3441,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3457,7 +3468,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3485,7 +3496,7 @@ class TestCombinedScopeSupport:
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 profile_config = Path(tmpdir) / 'test-mcp.json'
-                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
 
@@ -3508,7 +3519,7 @@ class TestCombinedScopeSupport:
                 {'name': 'user-only-server', 'command': 'uvx user-only', 'scope': 'user'},
             ]
 
-            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+            success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers, config_path,
             )
 
@@ -3679,3 +3690,265 @@ class TestParseMcpCommand:
         assert '8080' in result['args']
         assert '--host' in result['args']
         assert 'localhost' in result['args']
+
+
+class TestConfigureAllMcpServersStats:
+    """Test configure_all_mcp_servers stats tracking (Bug 2 fix)."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_stats_combined_scope_server(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test stats correctly track combined scope servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'combined-server',
+                'command': 'uvx combined-server',
+                'scope': ['user', 'profile'],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 1
+            # Combined scope: counted in both global and profile, plus combined
+            assert stats['global_count'] == 1
+            assert stats['profile_count'] == 1
+            assert stats['combined_count'] == 1
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_stats_profile_only_server(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test stats correctly track profile-only servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'profile-server',
+                'command': 'uvx profile-server',
+                'scope': 'profile',
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 1
+            # Profile-only: counted only in profile
+            assert stats['global_count'] == 0
+            assert stats['profile_count'] == 1
+            assert stats['combined_count'] == 0
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_stats_user_only_server(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test stats correctly track user-only (global) servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'user-server',
+                'command': 'uvx user-server',
+                'scope': 'user',
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert len(profile_servers) == 0
+            # User-only: counted only in global
+            assert stats['global_count'] == 1
+            assert stats['profile_count'] == 0
+            assert stats['combined_count'] == 0
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_stats_mixed_servers(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test stats correctly track mixed scope servers."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'user-only', 'command': 'uvx user-only', 'scope': 'user'},
+            {'name': 'profile-only', 'command': 'uvx profile-only', 'scope': 'profile'},
+            {'name': 'combined-1', 'command': 'uvx combined-1', 'scope': ['user', 'profile']},
+            {'name': 'combined-2', 'command': 'uvx combined-2', 'scope': ['local', 'profile']},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            # profile_servers: profile-only, combined-1, combined-2 = 3
+            assert len(profile_servers) == 3
+            # global_count: user-only, combined-1, combined-2 = 3
+            assert stats['global_count'] == 3
+            # profile_count: profile-only, combined-1, combined-2 = 3
+            assert stats['profile_count'] == 3
+            # combined_count: combined-1, combined-2 = 2
+            assert stats['combined_count'] == 2
+
+
+class TestConfigureMcpServerWindowsRemoval:
+    """Test configure_mcp_server Windows vs Unix removal branching (Bug 1 fix)."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    def test_windows_removal_uses_bash(
+        self,
+        mock_run: MagicMock,
+        mock_bash: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test Windows MCP removal uses run_bash_command for consistency."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # On Windows, both removal and add should use bash
+        # Removal: 3 calls to run_bash_command (one per scope)
+        # Add: 1 call to run_bash_command
+        assert mock_bash.call_count >= 3  # At least 3 removal calls
+
+        # Verify removal calls contain 'mcp remove'
+        removal_calls = [
+            call for call in mock_bash.call_args_list
+            if 'mcp remove' in str(call)
+        ]
+        assert len(removal_calls) >= 3
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_unix_removal_uses_run_command(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test Unix MCP removal uses run_command directly."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # On Unix, run_command is used for both removal and add
+        # Removal: 3 calls (one per scope)
+        # Add: 1 call
+        assert mock_run.call_count == 4
+
+        # Verify removal calls contain 'mcp' and 'remove'
+        removal_calls = [
+            call for call in mock_run.call_args_list
+            if 'remove' in str(call[0][0])
+        ]
+        assert len(removal_calls) == 3
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    def test_windows_removal_all_scopes(
+        self,
+        mock_run: MagicMock,
+        mock_bash: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test Windows removal attempts all three scopes via bash."""
+        del mock_find, _mock_system, mock_run
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'multi-scope-server',
+            'command': 'uvx multi-scope-server',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+
+        # Extract scope values from bash commands
+        scopes_removed = set()
+        for call in mock_bash.call_args_list:
+            cmd = call[0][0]
+            if 'mcp remove' in cmd:
+                if '--scope user' in cmd:
+                    scopes_removed.add('user')
+                elif '--scope local' in cmd:
+                    scopes_removed.add('local')
+                elif '--scope project' in cmd:
+                    scopes_removed.add('project')
+
+        # All three scopes should be attempted
+        assert scopes_removed == {'user', 'local', 'project'}
