@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.1...v4.24.2) (2026-01-22)
+
+
+### Bug Fixes
+
+* resolve MCP server configuration bugs on Windows ([b09ab7b](https://github.com/alex-feel/claude-code-toolbox/commit/b09ab7bb4829a930b930e545b3a6ce793179e43d))
+
 ## [4.24.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.0...v4.24.1) (2026-01-22)
 
 
