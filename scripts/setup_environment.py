@@ -4077,8 +4077,9 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         # Remove existing MCP server from all scopes to avoid conflicts
         # When servers with the same name exist at multiple scopes, local-scoped servers
         # take precedence, followed by project, then user - so we remove from all scopes
-        info(f'Removing existing MCP server {name} from all scopes if present...')
-        scopes_removed: list[str] = []
+        # Best-effort removal: Claude CLI returns non-zero if server doesn't exist in a scope,
+        # which is expected behavior, not an error - we simply attempt removal from all scopes
+        info(f'Removing existing MCP server {name} from all scopes (best-effort)...')
 
         if system == 'Windows':
             # Windows: Use bash execution for consistency with add operation
@@ -4101,21 +4102,14 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                     f'export PATH="{unix_explicit_path}:$PATH" && '
                     f'"{unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
                 )
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
-                if result.returncode == 0:
-                    scopes_removed.append(remove_scope)
+                # Best-effort: ignore exit code, server may not exist in this scope
+                run_bash_command(bash_cmd, capture_output=True, login_shell=True)
         else:
             # Unix: Direct subprocess execution
             for remove_scope in ['user', 'local', 'project']:
                 remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
-                result = run_command(remove_cmd, capture_output=True)
-                if result.returncode == 0:
-                    scopes_removed.append(remove_scope)
-
-        if scopes_removed:
-            info(f"Removed MCP server {name} from scope(s): {', '.join(scopes_removed)}")
-        else:
-            info(f'MCP server {name} was not found in any scope')
+                # Best-effort: ignore exit code, server may not exist in this scope
+                run_command(remove_cmd, capture_output=True)
 
         # Profile-scoped servers are configured via create_mcp_config_file(), not claude mcp add
         if scope == 'profile':
@@ -5941,12 +5935,18 @@ def main() -> None:
             print(f'   * Model: {model}')
         if mcp_stats['combined_count'] > 0:
             # Servers with BOTH global AND profile scope
-            print(f"   * MCP servers: {mcp_stats['global_count']} global "
-                  f"({mcp_stats['combined_count']} also in profile)")
+            profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']
+            if profile_only > 0:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"({mcp_stats['combined_count']} also in profile), "
+                      f"{profile_only} profile-only")
+            else:
+                print(f"   * MCP servers: {mcp_stats['global_count']} global "
+                      f"(all {mcp_stats['combined_count']} also in profile)")
         elif profile_servers:
-            # Servers with EITHER global OR profile scope (mutually exclusive)
+            # Servers with ONLY profile scope (no global scope)
             print(f"   * MCP servers: {mcp_stats['global_count']} global, "
-                  f"{mcp_stats['profile_count']} profile-scoped (isolated)")
+                  f"{mcp_stats['profile_count']} profile-only")
         else:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:
