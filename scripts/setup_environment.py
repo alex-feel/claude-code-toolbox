@@ -3860,6 +3860,120 @@ def verify_nodejs_available() -> bool:
     return False
 
 
+def validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
+    """Validate scope combination for MCP server configuration.
+
+    Validates that the provided scope combination is valid according to these rules:
+    - Single scope values are always valid (user, local, project, profile)
+    - Combined scopes MUST include 'profile' for meaningful combination
+    - Pure non-profile combinations are INVALID (they overlap at runtime)
+    - Profile + multiple non-profile scopes trigger a WARNING (valid but unusual)
+
+    Args:
+        scopes: List of normalized scope values (lowercase)
+
+    Returns:
+        Tuple of (is_valid, message_or_none)
+        - If is_valid is False, message contains the ERROR description
+        - If is_valid is True and message is not None, it is a WARNING
+        - If is_valid is True and message is None, combination is fully valid
+    """
+    valid_scopes = {'user', 'local', 'project', 'profile'}
+    non_profile_scopes = {'user', 'local', 'project'}
+
+    # Check for invalid scope values
+    invalid = set(scopes) - valid_scopes
+    if invalid:
+        return False, f'Invalid scope values: {invalid}. Valid scopes: {valid_scopes}'
+
+    # Check for duplicate values
+    if len(scopes) != len(set(scopes)):
+        return False, 'Duplicate scope values not allowed'
+
+    # Single scope is always valid
+    if len(scopes) == 1:
+        return True, None
+
+    has_profile = 'profile' in scopes
+    non_profile = [s for s in scopes if s in non_profile_scopes]
+
+    # Multiple non-profile scopes WITHOUT profile -> ERROR
+    # These scopes overlap at runtime (all config files are read and merged)
+    if not has_profile and len(non_profile) > 1:
+        return False, (
+            f"Cannot combine {non_profile} - these scopes overlap at runtime "
+            "(all config files are read and merged). Use ONE of user/local/project, "
+            "or combine with 'profile' for isolated profile sessions."
+        )
+
+    # Profile + multiple non-profile -> WARNING (valid but unusual)
+    if has_profile and len(non_profile) > 1:
+        return True, (
+            f'In profile mode, only profile config is used. In normal mode, '
+            f'servers from {non_profile} will all be loaded. Ensure server names '
+            'do not conflict across these locations.'
+        )
+
+    # Profile + one other scope (or just profile) -> VALID
+    return True, None
+
+
+def normalize_scope(scope_value: str | list[str] | None) -> list[str]:
+    """Normalize scope to list format with case normalization.
+
+    Supports multiple input formats for flexibility:
+    - None -> ['user'] (default behavior, backward compatible)
+    - 'user' -> ['user'] (single string)
+    - 'User' -> ['user'] (case normalization)
+    - 'user, profile' -> ['user', 'profile'] (comma-separated string)
+    - ['user', 'profile'] -> ['user', 'profile'] (list passthrough)
+    - ['User', 'PROFILE'] -> ['user', 'profile'] (list with case normalization)
+
+    Args:
+        scope_value: Raw scope value from YAML config (string, list, or None)
+
+    Returns:
+        List of normalized scope strings (lowercase, deduplicated)
+
+    Raises:
+        ValueError: If scope combination is invalid per validate_scope_combination()
+    """
+    if scope_value is None:
+        return ['user']
+
+    if isinstance(scope_value, str):
+        scopes = (
+            [s.strip().lower() for s in scope_value.split(',')]
+            if ',' in scope_value
+            else [scope_value.strip().lower()]
+        )
+    else:
+        # scope_value is list[str] at this point per type hint
+        scopes = [str(s).strip().lower() for s in scope_value]
+
+    # Remove empty strings and duplicates while preserving order
+    seen: set[str] = set()
+    result: list[str] = []
+    for s in scopes:
+        if s and s not in seen:
+            seen.add(s)
+            result.append(s)
+
+    if not result:
+        return ['user']
+
+    # Validate combination
+    is_valid, message = validate_scope_combination(result)
+    if not is_valid:
+        raise ValueError(f'Invalid scope configuration: {message}')
+
+    # Log warning if applicable
+    if message:
+        warning(f'Combined scope warning: {message}')
+
+    return result
+
+
 def configure_mcp_server(server: dict[str, Any]) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
@@ -4094,12 +4208,17 @@ def configure_all_mcp_servers(
 ) -> tuple[bool, list[dict[str, Any]]]:
     """Configure all MCP servers from configuration.
 
+    Handles combined scope configurations where servers can be added to multiple
+    locations simultaneously. For example, `scope: [user, profile]` adds the server
+    to both ~/.claude.json (for global access) and the profile MCP config file
+    (for isolated profile sessions).
+
     Args:
-        servers: List of MCP server configurations
+        servers: List of MCP server configurations from YAML
         profile_mcp_config_path: Path for profile-scoped servers JSON file
 
     Returns:
-        Tuple of (success: bool, profile_servers: list)
+        Tuple of (success: bool, profile_servers: list of servers with profile scope)
     """
     if not servers:
         info('No MCP servers to configure')
@@ -4107,20 +4226,31 @@ def configure_all_mcp_servers(
 
     info('Configuring MCP servers...')
 
-    # Separate profile-scoped servers from regular servers
+    # Collect servers for profile config
     profile_servers: list[dict[str, Any]] = []
-    regular_servers: list[dict[str, Any]] = []
 
     for server in servers:
-        scope = server.get('scope', 'user')
-        if scope == 'profile':
-            profile_servers.append(server)
-        else:
-            regular_servers.append(server)
+        server_name = server.get('name', 'unnamed')
+        scope_value = server.get('scope', 'user')
 
-    # Configure regular servers via claude mcp add
-    for server in regular_servers:
-        configure_mcp_server(server)
+        try:
+            scopes = normalize_scope(scope_value)
+        except ValueError as e:
+            error(f'Server {server_name}: {e}')
+            continue  # Skip invalid server configuration
+
+        has_profile = 'profile' in scopes
+        non_profile_scopes = [s for s in scopes if s != 'profile']
+
+        # Add to profile config if profile scope present
+        if has_profile:
+            profile_servers.append(server)
+
+        # Configure for each non-profile scope via claude mcp add
+        for scope in non_profile_scopes:
+            server_copy = server.copy()
+            server_copy['scope'] = scope
+            configure_mcp_server(server_copy)
 
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:

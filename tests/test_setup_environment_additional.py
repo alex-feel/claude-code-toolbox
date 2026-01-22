@@ -2921,3 +2921,584 @@ class TestMCPProfileScope:
             # Warning should have been logged
             mock_warning.assert_called_once()
             assert 'Permission denied' in str(mock_warning.call_args)
+
+
+class TestCombinedScopeSupport:
+    """Test combined scope support for MCP server configuration."""
+
+    # ========== Unit Tests: validate_scope_combination() ==========
+
+    def test_validate_single_scope_user(self) -> None:
+        """Test single user scope is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['user'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_single_scope_local(self) -> None:
+        """Test single local scope is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['local'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_single_scope_project(self) -> None:
+        """Test single project scope is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['project'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_single_scope_profile(self) -> None:
+        """Test single profile scope is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['profile'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_user_profile_combination(self) -> None:
+        """Test user + profile combination is valid (primary use case)."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'profile'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_local_profile_combination(self) -> None:
+        """Test local + profile combination is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['local', 'profile'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_project_profile_combination(self) -> None:
+        """Test project + profile combination is valid."""
+        is_valid, message = setup_environment.validate_scope_combination(['project', 'profile'])
+        assert is_valid is True
+        assert message is None
+
+    def test_validate_user_local_error(self) -> None:
+        """Test user + local without profile is ERROR (runtime overlap)."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'local'])
+        assert is_valid is False
+        assert message is not None
+        assert 'overlap at runtime' in message
+
+    def test_validate_user_project_error(self) -> None:
+        """Test user + project without profile is ERROR (runtime overlap)."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'project'])
+        assert is_valid is False
+        assert 'overlap at runtime' in message
+
+    def test_validate_local_project_error(self) -> None:
+        """Test local + project without profile is ERROR (runtime overlap)."""
+        is_valid, message = setup_environment.validate_scope_combination(['local', 'project'])
+        assert is_valid is False
+        assert 'overlap at runtime' in message
+
+    def test_validate_triple_non_profile_error(self) -> None:
+        """Test user + local + project without profile is ERROR."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'local', 'project'])
+        assert is_valid is False
+        assert 'overlap at runtime' in message
+
+    def test_validate_user_local_profile_warning(self) -> None:
+        """Test user + local + profile is valid with WARNING."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'local', 'profile'])
+        assert is_valid is True
+        assert message is not None
+        assert 'will all be loaded' in message
+
+    def test_validate_all_scopes_warning(self) -> None:
+        """Test all four scopes is valid with WARNING (universal server)."""
+        is_valid, message = setup_environment.validate_scope_combination(
+            ['user', 'local', 'project', 'profile'],
+        )
+        assert is_valid is True
+        assert message is not None
+
+    def test_validate_duplicate_scope_error(self) -> None:
+        """Test duplicate scope values is ERROR."""
+        is_valid, message = setup_environment.validate_scope_combination(['profile', 'profile'])
+        assert is_valid is False
+        assert 'Duplicate' in message
+
+    def test_validate_invalid_scope_error(self) -> None:
+        """Test invalid scope value is ERROR."""
+        is_valid, message = setup_environment.validate_scope_combination(['invalid'])
+        assert is_valid is False
+        assert 'Invalid scope values' in message
+
+    def test_validate_mixed_invalid_scope_error(self) -> None:
+        """Test mix of valid and invalid scope values is ERROR."""
+        is_valid, message = setup_environment.validate_scope_combination(['user', 'unknown', 'profile'])
+        assert is_valid is False
+        assert 'unknown' in message
+
+    def test_validate_order_independence_user_profile(self) -> None:
+        """Test that order does not matter: [user, profile] == [profile, user]."""
+        is_valid1, msg1 = setup_environment.validate_scope_combination(['user', 'profile'])
+        is_valid2, msg2 = setup_environment.validate_scope_combination(['profile', 'user'])
+        assert is_valid1 == is_valid2
+        assert msg1 == msg2
+
+    # ========== Unit Tests: normalize_scope() ==========
+
+    def test_normalize_none_returns_user(self) -> None:
+        """Test None defaults to ['user']."""
+        result = setup_environment.normalize_scope(None)
+        assert result == ['user']
+
+    def test_normalize_single_string(self) -> None:
+        """Test single string normalization."""
+        result = setup_environment.normalize_scope('user')
+        assert result == ['user']
+
+    def test_normalize_single_string_uppercase(self) -> None:
+        """Test uppercase string is normalized to lowercase."""
+        result = setup_environment.normalize_scope('USER')
+        assert result == ['user']
+
+    def test_normalize_single_string_mixed_case(self) -> None:
+        """Test mixed case string is normalized."""
+        result = setup_environment.normalize_scope('Profile')
+        assert result == ['profile']
+
+    def test_normalize_comma_separated(self) -> None:
+        """Test comma-separated string parsing."""
+        result = setup_environment.normalize_scope('user, profile')
+        assert result == ['user', 'profile']
+
+    def test_normalize_comma_separated_no_spaces(self) -> None:
+        """Test comma-separated string without spaces."""
+        result = setup_environment.normalize_scope('user,profile')
+        assert result == ['user', 'profile']
+
+    def test_normalize_comma_separated_mixed_case(self) -> None:
+        """Test comma-separated string with mixed case."""
+        result = setup_environment.normalize_scope('User, PROFILE')
+        assert result == ['user', 'profile']
+
+    def test_normalize_list(self) -> None:
+        """Test list passthrough."""
+        result = setup_environment.normalize_scope(['user', 'profile'])
+        assert result == ['user', 'profile']
+
+    def test_normalize_list_uppercase(self) -> None:
+        """Test list with uppercase values is normalized."""
+        result = setup_environment.normalize_scope(['USER', 'PROFILE'])
+        assert result == ['user', 'profile']
+
+    def test_normalize_list_mixed_case(self) -> None:
+        """Test list with mixed case values."""
+        result = setup_environment.normalize_scope(['User', 'Profile'])
+        assert result == ['user', 'profile']
+
+    def test_normalize_empty_string_returns_user(self) -> None:
+        """Test empty string defaults to ['user']."""
+        result = setup_environment.normalize_scope('')
+        assert result == ['user']
+
+    def test_normalize_whitespace_only_returns_user(self) -> None:
+        """Test whitespace-only string defaults to ['user']."""
+        result = setup_environment.normalize_scope('   ')
+        assert result == ['user']
+
+    def test_normalize_empty_list_returns_user(self) -> None:
+        """Test empty list defaults to ['user']."""
+        result = setup_environment.normalize_scope([])
+        assert result == ['user']
+
+    def test_normalize_list_with_whitespace(self) -> None:
+        """Test list values with leading/trailing whitespace."""
+        result = setup_environment.normalize_scope(['  user  ', '  profile  '])
+        assert result == ['user', 'profile']
+
+    def test_normalize_removes_empty_strings_from_list(self) -> None:
+        """Test empty strings are removed from list."""
+        result = setup_environment.normalize_scope(['user', '', 'profile'])
+        assert result == ['user', 'profile']
+
+    def test_normalize_invalid_combination_raises(self) -> None:
+        """Test invalid scope combination raises ValueError."""
+        with pytest.raises(ValueError, match='overlap at runtime'):
+            setup_environment.normalize_scope(['user', 'local'])
+
+    def test_normalize_invalid_scope_value_raises(self) -> None:
+        """Test invalid scope value raises ValueError."""
+        with pytest.raises(ValueError, match='Invalid scope'):
+            setup_environment.normalize_scope(['invalid'])
+
+    # ========== Integration Tests: configure_all_mcp_servers() ==========
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_combined_scope_adds_to_both_locations(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that [user, profile] scope adds server to both locations."""
+        del mock_find, _mock_system  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'combined-server',
+                'command': 'uvx combined-server',
+                'scope': ['user', 'profile'],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success_flag is True
+            # Server should be in profile_servers list
+            assert len(profile_servers) == 1
+            assert profile_servers[0]['name'] == 'combined-server'
+            # Profile config file should exist
+            assert profile_config.exists()
+            config = json.loads(profile_config.read_text())
+            assert 'combined-server' in config['mcpServers']
+            # configure_mcp_server should have been called for user scope
+            # (removal calls + add call)
+            assert mock_run.call_count >= 3  # At least 3 removal calls
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_combined_scope_project_profile(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test [project, profile] scope adds to project scope and profile config."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {
+                'name': 'project-profile-server',
+                'transport': 'http',
+                'url': 'http://localhost:8080',
+                'scope': ['project', 'profile'],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success_flag is True
+            assert len(profile_servers) == 1
+            assert profile_config.exists()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_combined_scope_with_multiple_servers(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test multiple servers with different scope configurations."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'user-only', 'command': 'uvx user-only', 'scope': 'user'},
+            {'name': 'profile-only', 'command': 'uvx profile-only', 'scope': 'profile'},
+            {'name': 'combined', 'command': 'uvx combined', 'scope': ['user', 'profile']},
+            {'name': 'local-profile', 'command': 'uvx local-profile', 'scope': ['local', 'profile']},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'test-mcp.json'
+
+            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success_flag is True
+            # 3 servers should be in profile config: profile-only, combined, local-profile
+            assert len(profile_servers) == 3
+            profile_names = [s['name'] for s in profile_servers]
+            assert 'profile-only' in profile_names
+            assert 'combined' in profile_names
+            assert 'local-profile' in profile_names
+            assert 'user-only' not in profile_names
+
+    @patch('setup_environment.warning')
+    def test_combined_scope_warning_logged_for_multiple_non_profile(
+        self,
+        mock_warning: MagicMock,
+    ) -> None:
+        """Test that WARNING is logged for [user, local, profile] combination."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'multi-scope-server',
+                    'command': 'uvx multi-scope',
+                    'scope': ['user', 'local', 'profile'],
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                setup_environment.configure_all_mcp_servers(servers, profile_config)
+
+            # Warning should have been logged during normalize_scope
+            assert mock_warning.called
+            warning_messages = [str(call) for call in mock_warning.call_args_list]
+            assert any('will all be loaded' in msg for msg in warning_messages)
+
+    @patch('setup_environment.error')
+    def test_invalid_scope_combination_error_logged(
+        self,
+        mock_error: MagicMock,
+    ) -> None:
+        """Test that ERROR is logged for invalid [user, local] combination."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'invalid-scope-server',
+                    'command': 'uvx invalid-scope',
+                    'scope': ['user', 'local'],  # Invalid - no profile
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+            # Should still return True (graceful degradation)
+            assert success_flag is True
+            # But no servers should be configured
+            assert len(profile_servers) == 0
+            # Error should have been logged
+            assert mock_error.called
+            assert any('overlap at runtime' in str(call) for call in mock_error.call_args_list)
+
+    def test_backward_compatibility_string_scope(self) -> None:
+        """Test backward compatibility: string scope still works."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {'name': 'old-style-server', 'command': 'uvx old-style', 'scope': 'user'},
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+            assert success_flag is True
+            assert len(profile_servers) == 0  # Not a profile server
+
+    def test_backward_compatibility_no_scope(self) -> None:
+        """Test backward compatibility: missing scope defaults to user."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {'name': 'no-scope-server', 'command': 'uvx no-scope'},  # No scope specified
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+            assert success_flag is True
+            assert len(profile_servers) == 0  # Defaults to user, not profile
+
+    def test_backward_compatibility_profile_string(self) -> None:
+        """Test backward compatibility: 'profile' string scope still works."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {'name': 'profile-string-server', 'command': 'uvx profile-string', 'scope': 'profile'},
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+                assert success_flag is True
+                assert len(profile_servers) == 1
+                assert profile_config.exists()
+
+    # ========== Edge Case Tests ==========
+
+    def test_comma_separated_string_scope(self) -> None:
+        """Test comma-separated string scope parsing."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'comma-server',
+                    'command': 'uvx comma-server',
+                    'scope': 'user, profile',  # Comma-separated string
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+                assert success_flag is True
+                assert len(profile_servers) == 1
+                assert profile_config.exists()
+
+    def test_scope_case_insensitivity(self) -> None:
+        """Test that scope values are case-insensitive."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'case-server',
+                    'command': 'uvx case-server',
+                    'scope': ['USER', 'PROFILE'],  # Uppercase
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+            assert success_flag is True
+            assert len(profile_servers) == 1
+
+    def test_universal_server_all_scopes(self) -> None:
+        """Test universal server with all four scopes."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+            patch('setup_environment.warning'),  # Suppress warning output
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'universal-server',
+                    'command': 'uvx universal-server',
+                    'scope': ['user', 'local', 'project', 'profile'],
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+                assert success_flag is True
+                assert len(profile_servers) == 1
+                assert profile_config.exists()
+                # configure_mcp_server should be called for user, local, project (3 times)
+
+    def test_profile_only_scope_no_claude_mcp_add(self) -> None:
+        """Test that profile-only scope does NOT call claude mcp add."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.run_command') as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+            servers = [
+                {
+                    'name': 'profile-only-server',
+                    'command': 'uvx profile-only',
+                    'scope': ['profile'],  # List with only profile
+                },
+            ]
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                profile_config = Path(tmpdir) / 'test-mcp.json'
+                success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                    servers, profile_config,
+                )
+
+            assert success_flag is True
+            assert len(profile_servers) == 1
+            # configure_mcp_server should NOT be called for non-profile scopes
+
+    def test_stale_profile_config_removed_when_combined_scope_removed(self) -> None:
+        """Test stale profile config is removed when servers change from profile to user-only."""
+        with (
+            patch('setup_environment.configure_mcp_server', return_value=True), tempfile.TemporaryDirectory() as tmpdir,
+        ):
+            config_path = Path(tmpdir) / 'test-mcp.json'
+            # Create a stale MCP config file
+            config_path.write_text('{"mcpServers": {"stale-server": {}}}')
+            assert config_path.exists()
+
+            # Configure with NO profile servers (only user-scoped)
+            servers = [
+                {'name': 'user-only-server', 'command': 'uvx user-only', 'scope': 'user'},
+            ]
+
+            success_flag, profile_servers = setup_environment.configure_all_mcp_servers(
+                servers, config_path,
+            )
+
+            # Verify stale file was removed
+            assert success_flag is True
+            assert len(profile_servers) == 0
+            assert not config_path.exists()
