@@ -829,12 +829,58 @@ def get_bash_preferred_command(cmd_path: str) -> str:
     return cmd_path
 
 
+def normalize_tilde_path(path: str, resolve: bool = False) -> str:
+    """Normalize a path by expanding tildes and environment variables.
+
+    This is the SINGLE SOURCE OF TRUTH for tilde/env-var expansion.
+    All path expansion MUST go through this function (DRY compliance).
+
+    Key invariant: A tilde path (~...) is ALWAYS local, never a URL.
+    After expansion, tilde paths become absolute local paths.
+
+    Args:
+        path: Path string (may contain ~, $VAR, %VAR%)
+        resolve: If True, also resolve to absolute path via Path.resolve()
+
+    Returns:
+        Normalized path with tildes and env vars expanded
+
+    Examples:
+        >>> normalize_tilde_path("~/.claude/agent.md")
+        '/home/user/.claude/agent.md'
+
+        >>> normalize_tilde_path("$HOME/config.yaml")
+        '/home/user/config.yaml'
+
+        >>> normalize_tilde_path("./relative/path", resolve=True)
+        '/absolute/path/to/relative/path'
+    """
+    if not path:
+        return path
+
+    # Step 1: Expand tilde (~, ~username)
+    expanded = os.path.expanduser(path)
+
+    # Step 2: Expand environment variables ($VAR, %VAR%)
+    expanded = os.path.expandvars(expanded)
+
+    # Step 3: Optionally resolve to absolute path
+    if resolve:
+        path_obj = Path(expanded)
+        if not path_obj.is_absolute():
+            expanded = str(path_obj.resolve())
+
+    return expanded
+
+
 def expand_tildes_in_command(command: str) -> str:
     """Expand tilde paths in a shell command.
 
     When commands are executed via subprocess with shell=False or wrapped in bash -c,
     the shell's tilde expansion doesn't occur. This function explicitly expands
-    tilde paths to their absolute equivalents using os.path.expanduser.
+    tilde paths to their absolute equivalents.
+
+    Uses normalize_tilde_path() internally for DRY compliance.
 
     Args:
         command: Shell command that may contain tilde paths
@@ -849,26 +895,21 @@ def expand_tildes_in_command(command: str) -> str:
         >>> expand_tildes_in_command("echo 'text' >> ~/.config/file")
         "echo 'text' >> /home/user/.config/file"
     """
-
     # Pattern matches ~ and ~username paths
     # Matches: ~ followed by optional username, then slash and path components
     # Examples: ~/.bashrc, ~/dir/file, ~user/.config
     tilde_pattern = r'(~[^/\s]*(?:/[^\s]*)?)'
 
     def expand_match(match: re.Match[str]) -> str:
-        """Expand a single tilde path match."""
+        """Expand a single tilde path match using central function."""
         path = match.group(1)
-        try:
-            # os.path.expanduser handles both ~ and ~username
-            expanded = os.path.expanduser(path)
-            # Only return expanded path if expansion actually occurred
-            # This prevents expanding tildes in strings like "~test" that aren't paths
-            if expanded != path:
-                return expanded
-            return path
-        except Exception:
-            # If expansion fails for any reason, return original path
-            return path
+        # DRY: Use central normalization function
+        expanded = normalize_tilde_path(path)
+        # Only return expanded path if expansion actually occurred
+        # This prevents expanding tildes in strings like "~test" that aren't paths
+        if expanded != path:
+            return expanded
+        return path
 
     return re.sub(tilde_pattern, expand_match, command)
 
@@ -2058,10 +2099,12 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
     """Resolve a resource path to either a URL or local path.
 
     Priority:
-    1. If resource_path is already a full URL, return as-is (remote)
-    2. If base_url is configured, combine with resource_path (remote)
-    3. If config was loaded from URL, derive base from it (remote)
-    4. Otherwise, treat as local path (absolute or relative)
+    1. Normalize path FIRST (expand tildes and environment variables)
+    2. If normalized path is a full URL, return as-is (remote)
+    3. If normalized path is ABSOLUTE, return as local (critical fix for tilde paths)
+    4. If base_url is configured, combine with resource_path (remote)
+    5. If config was loaded from URL, derive base from it (remote)
+    6. Otherwise, resolve relative path locally
 
     Args:
         resource_path: The resource path from config (URL or local path)
@@ -2073,11 +2116,22 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
             - resolved_path: Full URL or absolute local path
             - is_remote: True if URL, False if local path
     """
-    # 1. If full URL, return as-is
-    if resource_path.startswith(('http://', 'https://')):
-        return resource_path, True
+    # CRITICAL FIX: Normalize FIRST (handles ~, $VAR, %VAR%)
+    # This ensures tilde paths become absolute BEFORE any URL derivation logic
+    normalized_path = normalize_tilde_path(resource_path)
 
-    # 2. If base-url configured, use it (always remote)
+    # 1. If full URL, return as-is (remote)
+    if normalized_path.startswith(('http://', 'https://')):
+        return normalized_path, True
+
+    # CRITICAL FIX: Check if normalized path is ABSOLUTE
+    # Tilde paths (~/.claude/file) become absolute after normalization (/home/user/.claude/file)
+    # Absolute paths are DEFINITIONALLY local - they must NOT go through URL derivation
+    path_obj = Path(normalized_path)
+    if path_obj.is_absolute():
+        return str(path_obj.resolve()), False
+
+    # 2. If base-url configured, use it (RELATIVE PATHS ONLY reach here)
     if base_url:
         # Auto-append {path} if not present
         if '{path}' not in base_url:
@@ -2087,43 +2141,28 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
         # Handle GitLab URL encoding for paths
         if '/api/v4/projects/' in base_url and '/repository/files/' in base_url:
             # URL encode the path for GitLab API
-            encoded_path = urllib.parse.quote(resource_path, safe='')
+            encoded_path = urllib.parse.quote(normalized_path, safe='')
             return base_url.replace('{path}', encoded_path), True
         # For other URLs, just replace the placeholder
-        return base_url.replace('{path}', resource_path), True
+        return base_url.replace('{path}', normalized_path), True
 
-    # 3. If config from URL, derive base from it
+    # 3. If config from URL, derive base from it (RELATIVE PATHS ONLY)
     if config_source.startswith(('http://', 'https://')):
         derived_base = derive_base_url(config_source)
         # Handle GitLab URL encoding
         if '/api/v4/projects/' in derived_base and '/repository/files/' in derived_base:
-            encoded_path = urllib.parse.quote(resource_path, safe='')
+            encoded_path = urllib.parse.quote(normalized_path, safe='')
             return derived_base.replace('{path}', encoded_path), True
-        return derived_base.replace('{path}', resource_path), True
+        return derived_base.replace('{path}', normalized_path), True
 
-    # 4. Treat as local path (absolute or relative)
-    # Handle home directory expansion (~)
-    if resource_path.startswith('~'):
-        resource_path = os.path.expanduser(resource_path)
-
-    # Handle environment variables (e.g., %USERPROFILE%, $HOME)
-    resource_path = os.path.expandvars(resource_path)
-
-    # Convert to Path object for proper handling
-    path_obj = Path(resource_path)
-
-    # Check if it's already an absolute path
-    if path_obj.is_absolute():
-        return str(path_obj.resolve()), False
-
-    # It's a relative path - resolve relative to config location
+    # 4. Relative path with local config - resolve relative to config location
     config_path = Path(config_source)
     # Config source might be just a name from repo library
     # In this case, paths should be resolved relative to current directory
     config_dir = config_path.parent if config_path.is_file() else Path.cwd()
 
     # Resolve the resource path relative to config directory
-    resource_full_path = (config_dir / resource_path).resolve()
+    resource_full_path = (config_dir / normalized_path).resolve()
     return str(resource_full_path), False
 
 
@@ -3076,12 +3115,15 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 result = run_command(parts_with_force, capture_output=False)
             else:
                 # Windows dependencies are PowerShell commands (user-provided in YAML)
-                # This is different from MCP server config which uses bash for generated commands
-                result = run_command(['powershell', '-NoProfile', '-Command', dep], capture_output=False)
+                # Expand tildes before execution (PowerShell doesn't expand ~ natively)
+                expanded_dep = expand_tildes_in_command(dep)
+                result = run_command(['powershell', '-NoProfile', '-Command', expanded_dep], capture_output=False)
         else:
             if parts[0] == 'uv' and len(parts) >= 3 and parts[1] == 'tool' and parts[2] == 'install':
                 dep_with_force = dep.replace('uv tool install', 'uv tool install --force')
-                result = run_command(['bash', '-c', dep_with_force], capture_output=False)
+                # Apply tilde expansion consistently (same as other commands)
+                expanded_dep = expand_tildes_in_command(dep_with_force)
+                result = run_command(['bash', '-c', expanded_dep], capture_output=False)
             else:
                 expanded_dep = expand_tildes_in_command(dep)
                 result = run_command(['bash', '-c', expanded_dep], capture_output=False)
@@ -4249,8 +4291,19 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 if result.returncode != 0:
                     debug_log(f'STDIO failed! stdout={result.stdout}, stderr={result.stderr}')
             else:
-                # Unix-like systems - direct execution
+                # Unix-like systems - expand tildes and execute
                 info(f'Configuring stdio MCP server {name}...')
+
+                # Apply tilde expansion to command (same as Windows path)
+                # This ensures ~/ paths in MCP server commands work on Mac/Linux
+                if command:
+                    expanded_command = expand_tildes_in_command(command)
+                    # Rebuild base_cmd with expanded command if tilde was expanded
+                    # base_cmd structure: [..., '--', command_parts...]
+                    if expanded_command != command and '--' in [str(arg) for arg in base_cmd]:
+                        separator_idx = [str(arg) for arg in base_cmd].index('--')
+                        base_cmd = list(base_cmd[:separator_idx + 1]) + expanded_command.split()
+
                 result = run_command(base_cmd, capture_output=True)
         else:
             error(f'MCP server {name} missing url or command')

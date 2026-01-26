@@ -421,6 +421,158 @@ class TestTildeExpansion:
         assert expanded == f'cat {home}/.config/claude/settings.json'
 
 
+class TestNormalizeTildePath:
+    """Test the central path normalization function."""
+
+    def test_expand_simple_tilde(self):
+        """Test expanding simple tilde to home directory."""
+        result = setup_environment.normalize_tilde_path('~/.claude/agent.md')
+        home = str(Path.home())
+        assert result == f'{home}/.claude/agent.md'
+        assert '~' not in result
+
+    def test_expand_tilde_with_username(self):
+        """Test expanding ~username format."""
+        # This test verifies the function handles ~username
+        # The actual expansion depends on the system
+        result = setup_environment.normalize_tilde_path('~root/.bashrc')
+        # On most systems, ~root expands to /root
+        assert result != '~root/.bashrc' or not Path('/root').exists()
+
+    def test_expand_environment_variable_unix_style(self):
+        """Test expanding $VAR format environment variables."""
+        os.environ['TEST_VAR_PATH'] = '/test/path'
+        try:
+            result = setup_environment.normalize_tilde_path('$TEST_VAR_PATH/file.txt')
+            assert result == '/test/path/file.txt'
+        finally:
+            del os.environ['TEST_VAR_PATH']
+
+    def test_expand_environment_variable_windows_style(self):
+        """Test expanding %VAR% format environment variables."""
+        os.environ['TEST_WIN_PATH'] = '/test/win/path'
+        try:
+            result = setup_environment.normalize_tilde_path('%TEST_WIN_PATH%/file.txt')
+            # On Windows, %VAR% is expanded; on Unix, it may not be
+            # os.path.expandvars handles both
+            if platform.system() == 'Windows':
+                assert result == '/test/win/path/file.txt'
+        finally:
+            del os.environ['TEST_WIN_PATH']
+
+    def test_expand_combined_tilde_and_env_var(self):
+        """Test expanding both tilde and environment variable."""
+        os.environ['SUBDIR'] = 'mysubdir'
+        try:
+            result = setup_environment.normalize_tilde_path('~/$SUBDIR/file.txt')
+            home = str(Path.home())
+            assert result == f'{home}/mysubdir/file.txt'
+        finally:
+            del os.environ['SUBDIR']
+
+    def test_empty_string_returns_empty(self):
+        """Test that empty string returns empty string."""
+        result = setup_environment.normalize_tilde_path('')
+        assert result == ''
+
+    def test_none_like_empty_returns_unchanged(self):
+        """Test that falsy values return unchanged."""
+        result = setup_environment.normalize_tilde_path('')
+        assert result == ''
+
+    def test_no_expansion_needed(self):
+        """Test path without tilde or env vars passes through."""
+        result = setup_environment.normalize_tilde_path('/absolute/path/file.txt')
+        assert result == '/absolute/path/file.txt'
+
+    def test_relative_path_without_resolve(self):
+        """Test relative path without resolve flag stays relative."""
+        result = setup_environment.normalize_tilde_path('./relative/path')
+        assert result == './relative/path'
+
+    def test_relative_path_with_resolve(self):
+        """Test relative path with resolve=True becomes absolute."""
+        result = setup_environment.normalize_tilde_path('./relative/path', resolve=True)
+        assert Path(result).is_absolute()
+
+    def test_absolute_path_with_resolve_unchanged(self):
+        """Test absolute path with resolve=True is still valid."""
+        if platform.system() == 'Windows':
+            # On Windows, use a proper Windows absolute path
+            result = setup_environment.normalize_tilde_path('C:\\absolute\\path', resolve=True)
+            assert 'C:' in result
+            assert 'absolute' in result
+        else:
+            result = setup_environment.normalize_tilde_path('/absolute/path', resolve=True)
+            assert result == '/absolute/path'
+
+    def test_url_passes_through_unchanged(self):
+        """Test that URLs are not modified (defensive behavior)."""
+        url = 'https://example.com/file.md'
+        result = setup_environment.normalize_tilde_path(url)
+        assert result == url
+
+    def test_windows_path_unchanged_on_windows(self):
+        """Test Windows paths work correctly."""
+        if platform.system() == 'Windows':
+            result = setup_environment.normalize_tilde_path('C:\\Users\\test\\file.txt')
+            assert 'C:' in result
+
+    def test_tilde_only_expands_to_home(self):
+        """Test that ~ alone expands to home directory."""
+        result = setup_environment.normalize_tilde_path('~')
+        assert result == str(Path.home())
+
+    def test_nested_path_expansion(self):
+        """Test deeply nested path with tilde."""
+        result = setup_environment.normalize_tilde_path('~/.config/claude/agents/my-agent.md')
+        home = str(Path.home())
+        assert result == f'{home}/.config/claude/agents/my-agent.md'
+
+    @pytest.mark.parametrize(('path', 'expected_contains'), [
+        ('~/.claude', str(Path.home())),
+        ('~/test/file.md', str(Path.home())),
+        ('~/.config/claude/settings.json', str(Path.home())),
+    ])
+    def test_parametrized_tilde_expansion(self, path, expected_contains):
+        """Parametrized test for various tilde paths."""
+        result = setup_environment.normalize_tilde_path(path)
+        assert expected_contains in result
+        assert '~' not in result
+
+
+class TestNormalizeTildePathUserScenario:
+    """Test the specific user scenario that triggered the bug investigation."""
+
+    def test_files_to_download_dest_tilde_expansion(self):
+        """Test files-to-download with dest: ~/.claude/scripts/ pattern.
+
+        This is the PRIMARY test case that validates the fix works for the user's
+        actual configuration pattern.
+        """
+        dest_path = '~/.claude/scripts/'
+        result = setup_environment.normalize_tilde_path(dest_path)
+        home = str(Path.home())
+        expected = f'{home}/.claude/scripts/'
+        assert result == expected
+        assert '~' not in result
+        assert Path(result.rstrip('/')).is_absolute() or result.startswith(home)
+
+    def test_files_to_download_with_nested_dest(self):
+        """Test nested destination paths."""
+        dest_path = '~/.claude/agents/custom/'
+        result = setup_environment.normalize_tilde_path(dest_path)
+        home = str(Path.home())
+        assert result == f'{home}/.claude/agents/custom/'
+
+    def test_resolve_resource_path_integration_scenario(self):
+        """Test that normalized path is correctly identified as absolute."""
+        dest_path = '~/.claude/scripts/my-script.py'
+        normalized = setup_environment.normalize_tilde_path(dest_path)
+        # After normalization, the path should be absolute
+        assert Path(normalized).is_absolute()
+
+
 class TestDownloadFile:
     """Test file download functionality."""
 
@@ -751,6 +903,117 @@ class TestResolveResourcePath:
             None,
         )
         assert is_remote is False
+
+
+class TestResolveResourcePathTildeExpansion:
+    """Test P1 fix: tilde paths resolved as LOCAL even with remote config source.
+
+    This test class validates the critical fix where tilde paths (~/.claude/file)
+    must be recognized as local paths and NOT be combined with remote URLs.
+    """
+
+    def test_tilde_path_with_remote_config_returns_local(self):
+        """Critical P1 test: ~/ path must return LOCAL even when config is from URL.
+
+        This was the core bug: tilde paths were being treated as relative and
+        incorrectly combined with remote config URL.
+        """
+        path, is_remote = setup_environment.resolve_resource_path(
+            '~/.claude/scripts/my-script.py',
+            'https://raw.githubusercontent.com/user/repo/main/config.yaml',
+            None,
+        )
+        home = str(Path.home())
+        assert path.startswith(home)
+        assert is_remote is False
+        assert '~' not in path
+
+    def test_tilde_path_with_base_url_returns_local(self):
+        """Tilde paths must return LOCAL even when base_url is configured."""
+        path, is_remote = setup_environment.resolve_resource_path(
+            '~/.config/file.yaml',
+            'local_config.yaml',
+            'https://example.com/base/',
+        )
+        home = str(Path.home())
+        assert path.startswith(home)
+        assert is_remote is False
+
+    def test_env_var_path_with_remote_config_returns_local(self):
+        """Environment variable paths must also resolve as LOCAL."""
+        os.environ['MY_CONFIG_DIR'] = str(Path.home() / '.myconfig')
+        try:
+            path, is_remote = setup_environment.resolve_resource_path(
+                '$MY_CONFIG_DIR/file.yaml',
+                'https://example.com/config.yaml',
+                None,
+            )
+            assert is_remote is False
+            assert str(Path.home()) in path
+        finally:
+            del os.environ['MY_CONFIG_DIR']
+
+    def test_relative_path_with_remote_config_returns_remote(self):
+        """Relative paths (no tilde) should still derive from remote config."""
+        path, is_remote = setup_environment.resolve_resource_path(
+            'agents/my-agent.md',
+            'https://raw.githubusercontent.com/user/repo/main/config.yaml',
+            None,
+        )
+        assert is_remote is True
+        assert 'https://' in path
+
+    def test_absolute_path_with_remote_config_returns_local(self):
+        """Absolute paths (non-tilde) must return LOCAL."""
+        abs_path = 'C:\\Users\\test\\file.txt' if platform.system() == 'Windows' else '/home/user/file.txt'
+
+        path, is_remote = setup_environment.resolve_resource_path(
+            abs_path,
+            'https://example.com/config.yaml',
+            None,
+        )
+        assert is_remote is False
+
+    def test_user_scenario_files_to_download_dest(self):
+        """Test the EXACT user scenario that reported the bug.
+
+        User had: files-to-download with dest: ~/.claude/scripts/
+        Bug: This was being combined with remote URL instead of expanded locally.
+        """
+        path, is_remote = setup_environment.resolve_resource_path(
+            '~/.claude/scripts/',
+            'https://raw.githubusercontent.com/org/repo/main/environments/python.yaml',
+            None,
+        )
+        home = str(Path.home())
+        # Path should start with home directory
+        assert path.startswith(home)
+        assert is_remote is False
+
+    def test_tilde_in_nested_config_path(self):
+        """Test tilde expansion with deeply nested paths."""
+        path, is_remote = setup_environment.resolve_resource_path(
+            '~/.config/claude/agents/specialized/data-analyst.md',
+            'https://example.com/config.yaml',
+            None,
+        )
+        home = str(Path.home())
+        assert home in path
+        assert is_remote is False
+
+    def test_windows_env_var_with_remote_config(self):
+        """Test Windows-style environment variable with remote config."""
+        if platform.system() == 'Windows':
+            # On Windows, %USERPROFILE% is expanded
+            path, is_remote = setup_environment.resolve_resource_path(
+                '%USERPROFILE%/.claude/file.txt',
+                'https://example.com/config.yaml',
+                None,
+            )
+            # After expansion, should be absolute and local
+            assert is_remote is False
+            assert '~' not in path
+            assert '%' not in path
 
 
 class TestLoadConfig:
@@ -1231,6 +1494,93 @@ class TestInstallDependencies:
         result = setup_environment.install_dependencies({'windows': ['uv tool install ruff']})
         assert result is True
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.expand_tildes_in_command')
+    def test_install_dependencies_windows_powershell_expands_tilde(
+        self, mock_expand, mock_run, mock_system,
+    ):
+        """Test that Windows PowerShell dependencies expand tildes.
+
+        P3 fix: Ensures tilde paths in PowerShell commands are expanded on Windows.
+        PowerShell does not natively expand ~ paths, so we must do it before execution.
+        """
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        home = str(Path.home())
+        mock_expand.return_value = f'Write-Output "test" >> {home}/.config/file.txt'
+
+        # PowerShell command with tilde path (not a known command like npm, pip, winget, uv tool)
+        result = setup_environment.install_dependencies({
+            'windows': ['Write-Output "test" >> ~/.config/file.txt'],
+        })
+
+        assert result is True
+        mock_expand.assert_called_with('Write-Output "test" >> ~/.config/file.txt')
+        # Verify PowerShell command uses expanded path
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == 'powershell'
+        assert call_args[1] == '-NoProfile'
+        assert call_args[2] == '-Command'
+        assert home in call_args[3]
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.expand_tildes_in_command')
+    def test_install_dependencies_uv_tool_linux_expands_tilde(
+        self, mock_expand, mock_run, mock_system,
+    ):
+        """Test that uv tool install with tilde path expands on Linux.
+
+        P4 fix: Ensures tilde paths in uv tool install commands are expanded on Linux.
+        Without this fix, uv tool install commands bypass tilde expansion.
+        """
+        # Verify mock configuration
+        assert mock_system.return_value == 'Linux'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        home = str(Path.home())
+        mock_expand.return_value = f'uv tool install --force {home}/.local/tools/my-tool'
+
+        result = setup_environment.install_dependencies({
+            'linux': ['uv tool install ~/.local/tools/my-tool'],
+        })
+
+        assert result is True
+        # Verify expand_tildes_in_command was called with the --force flag added
+        mock_expand.assert_called()
+        call_arg = mock_expand.call_args[0][0]
+        assert '--force' in call_arg
+        assert '~/.local/tools/my-tool' in call_arg
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.expand_tildes_in_command')
+    def test_install_dependencies_uv_tool_macos_expands_tilde(
+        self, mock_expand, mock_run, mock_system,
+    ):
+        """Test that uv tool install with tilde path expands on macOS.
+
+        P4 fix: Ensures tilde paths in uv tool install commands are expanded on macOS.
+        Without this fix, uv tool install commands bypass tilde expansion.
+        """
+        # Verify mock configuration
+        assert mock_system.return_value == 'Darwin'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        home = str(Path.home())
+        mock_expand.return_value = f'uv tool install --force {home}/.local/tools/custom-tool'
+
+        result = setup_environment.install_dependencies({
+            'mac': ['uv tool install ~/.local/tools/custom-tool'],
+        })
+
+        assert result is True
+        # Verify expand_tildes_in_command was called with the --force flag added
+        mock_expand.assert_called()
+        call_arg = mock_expand.call_args[0][0]
+        assert '--force' in call_arg
+        assert '~/.local/tools/custom-tool' in call_arg
 
 
 class TestInstallNodejsIfRequested:
@@ -1894,6 +2244,166 @@ class TestMCPTildeExpansionWindows:
         # Verify user-scope bash command has expanded path
         bash_cmd = mock_bash_cmd.call_args.args[0]
         assert 'C:/Users/test/.claude/mcp/combined.py' in bash_cmd
+
+
+class TestMCPTildeExpansionUnix:
+    """Test tilde expansion in STDIO MCP commands on Mac/Linux.
+
+    P2 fix: Ensures tilde paths in MCP server commands are expanded
+    on Unix systems, matching the Windows behavior.
+    """
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_macos_expands_tilde(
+        self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify tildes in STDIO commands are expanded on macOS."""
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'python /Users/test/.claude/mcp/server.py'
+
+        server = {
+            'name': 'macos-tilde-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/mcp/server.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called
+        mock_expand_tilde.assert_called()
+        # Verify expanded path is used in command
+        call_args = mock_run_cmd.call_args
+        cmd_list = call_args[0][0]
+        # Command should contain expanded path
+        assert any('/Users/test/.claude' in str(arg) for arg in cmd_list)
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_linux_expands_tilde(
+        self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify tildes in STDIO commands are expanded on Linux."""
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = '/usr/bin/claude'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'python /home/test/.claude/mcp/server.py'
+
+        server = {
+            'name': 'linux-tilde-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/mcp/server.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called
+        mock_expand_tilde.assert_called()
+        # Verify expanded path is used in command
+        call_args = mock_run_cmd.call_args
+        cmd_list = call_args[0][0]
+        # Command should contain expanded path
+        assert any('/home/test/.claude' in str(arg) for arg in cmd_list)
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_unix_no_tilde_unchanged(
+        self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify commands without tildes pass through unchanged on Unix."""
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Command without tilde returns unchanged
+        mock_expand_tilde.return_value = 'uvx mcp-server-package'
+
+        server = {
+            'name': 'no-tilde-unix-server',
+            'scope': 'user',
+            'command': 'uvx mcp-server-package',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called
+        mock_expand_tilde.assert_called_with('uvx mcp-server-package')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_stdio_linux_multiple_tildes_expanded(
+        self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify commands with multiple tilde paths all get expanded on Linux."""
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = '/usr/bin/claude'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        # Both tildes expanded
+        mock_expand_tilde.return_value = (
+            'python /home/test/.claude/mcp/script.py '
+            '--config /home/test/.config/mcp.yaml'
+        )
+
+        server = {
+            'name': 'multi-tilde-linux-server',
+            'scope': 'user',
+            'command': 'python ~/.claude/mcp/script.py --config ~/.config/mcp.yaml',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called
+        mock_expand_tilde.assert_called()
+        # Verify expanded path is used in command
+        call_args = mock_run_cmd.call_args
+        cmd_list = call_args[0][0]
+        # Command should contain expanded paths
+        cmd_str = ' '.join(str(arg) for arg in cmd_list)
+        assert '/home/test/.claude/mcp/script.py' in cmd_str
+        assert '/home/test/.config/mcp.yaml' in cmd_str
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('setup_environment.expand_tildes_in_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_local_scope_macos_with_tilde(
+        self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
+    ):
+        """Verify local-scope also gets tilde expansion on macOS."""
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_expand_tilde.return_value = 'python /Users/test/.claude/mcp/local_server.py'
+
+        server = {
+            'name': 'local-tilde-macos-server',
+            'scope': 'local',
+            'command': 'python ~/.claude/mcp/local_server.py',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        # Verify expand_tildes_in_command was called
+        mock_expand_tilde.assert_called()
+        # Verify expanded path is used in command
+        call_args = mock_run_cmd.call_args
+        cmd_list = call_args[0][0]
+        # Command should contain expanded path
+        assert any('/Users/test/.claude' in str(arg) for arg in cmd_list)
 
 
 class TestCreateAdditionalSettings:
