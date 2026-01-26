@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.24.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.5...v4.24.6) (2026-01-26)
+
+
+### Bug Fixes
+
+* centralize tilde path expansion across all platforms and config sections ([46a086b](https://github.com/alex-feel/claude-code-toolbox/commit/46a086b4c43c238a9c925c563581f70681de4903))
+
 ## [4.24.5](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.4...v4.24.5) (2026-01-22)
 
 
