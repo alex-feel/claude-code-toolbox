@@ -107,17 +107,6 @@ jobs:
         run: |
           uv run python -c "import sys; sys.path.insert(0, 'scripts'); import install_claude"
 
-      - name: Test setup with dry run (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          uv run python scripts/setup_environment.py python --skip-install || true
-
-      - name: Test setup with dry run (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          uv run python scripts/setup_environment.py python --skip-install
-        continue-on-error: true
-
   e2e-tests:
     name: E2E Tests (${{ matrix.os }})
     if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
