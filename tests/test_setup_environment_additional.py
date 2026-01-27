@@ -3407,8 +3407,10 @@ class TestCombinedScopeSupport:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
+    @patch('setup_environment.run_bash_command')
     def test_combined_scope_adds_to_both_locations(
         self,
+        mock_bash: MagicMock,
         mock_run: MagicMock,
         mock_find: MagicMock,
         _mock_system: MagicMock,
@@ -3416,6 +3418,7 @@ class TestCombinedScopeSupport:
         """Test that [user, profile] scope adds server to both locations."""
         del mock_find, _mock_system  # Unused but required for patch
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         servers = [
             {
@@ -3448,8 +3451,10 @@ class TestCombinedScopeSupport:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
+    @patch('setup_environment.run_bash_command')
     def test_combined_scope_project_profile(
         self,
+        mock_bash: MagicMock,
         mock_run: MagicMock,
         mock_find: MagicMock,
         _mock_system: MagicMock,
@@ -3457,6 +3462,7 @@ class TestCombinedScopeSupport:
         """Test [project, profile] scope adds to project scope and profile config."""
         del mock_find, _mock_system
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         servers = [
             {
@@ -3482,8 +3488,10 @@ class TestCombinedScopeSupport:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command_robust', return_value='claude')
     @patch('setup_environment.run_command')
+    @patch('setup_environment.run_bash_command')
     def test_combined_scope_with_multiple_servers(
         self,
+        mock_bash: MagicMock,
         mock_run: MagicMock,
         mock_find: MagicMock,
         _mock_system: MagicMock,
@@ -3491,6 +3499,7 @@ class TestCombinedScopeSupport:
         """Test multiple servers with different scope configurations."""
         del mock_find, _mock_system
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         servers = [
             {'name': 'user-only', 'command': 'uvx user-only', 'scope': 'user'},

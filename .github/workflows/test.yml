@@ -39,7 +39,7 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run pytest with coverage
-        run: uv run pytest -v --cov=scripts --cov-report=term-missing --cov-report=xml --cov-report=html --junit-xml=test-results.xml tests/
+        run: uv run pytest -v --cov=scripts --cov-report=term-missing --cov-report=xml --cov-report=html --junit-xml=test-results.xml --ignore=tests/e2e/ tests/
 
       - name: Upload test results
         if: always()
@@ -118,11 +118,98 @@ jobs:
           uv run python scripts/setup_environment.py python --skip-install
         continue-on-error: true
 
+  e2e-tests:
+    name: E2E Tests (${{ matrix.os }})
+    if: ${{ ! startsWith(github.head_ref, 'release-please--branches--') }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run E2E tests
+        run: uv run pytest tests/e2e/ -v --tb=long --junit-xml=e2e-results.xml
+
+      - name: Upload E2E test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-${{ matrix.os }}
+          path: e2e-results.xml
+
+      - name: Upload debug artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-debug-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}
+          retention-days: 5
+
+      - name: Verify no artifacts in real home
+        shell: bash
+        run: |
+          echo "Checking for leaked E2E test artifacts..."
+
+          LEAKED=0
+
+          # Check ~/.claude for e2e-test patterns
+          if ls ~/.claude/*e2e* 2>/dev/null; then
+            echo "ERROR: Found e2e artifacts in ~/.claude/"
+            LEAKED=1
+          fi
+
+          # Check ~/.local/bin for e2e-test patterns
+          if ls ~/.local/bin/*e2e* 2>/dev/null; then
+            echo "ERROR: Found e2e artifacts in ~/.local/bin/"
+            LEAKED=1
+          fi
+
+          # Check ~/.config/claude for e2e-test patterns (Linux/macOS)
+          if ls ~/.config/claude/*e2e* 2>/dev/null; then
+            echo "ERROR: Found e2e artifacts in ~/.config/claude/"
+            LEAKED=1
+          fi
+
+          # Check for .mcp.json in project root (created by project-scoped MCP servers)
+          if [ -f ".mcp.json" ]; then
+            echo "ERROR: Found .mcp.json artifact in project root!"
+            echo "Contents:"
+            cat .mcp.json
+            LEAKED=1
+          fi
+
+          if [ "$LEAKED" -eq 1 ]; then
+            echo "FAILURE: E2E test artifacts leaked to real home directory!"
+            exit 1
+          fi
+
+          echo "SUCCESS: No leaked E2E test artifacts found"
+
   # Summary job
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: [test, test-install-scripts]
+    needs: [test, test-install-scripts, e2e-tests]
     if: ${{ always() && ! startsWith(github.head_ref, 'release-please--branches--') }}
 
     steps:
@@ -139,3 +226,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Validation Tests" >> $GITHUB_STEP_SUMMARY
           echo "- ✅ Install scripts tested" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### E2E Tests" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Ubuntu E2E tests passed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Windows E2E tests passed" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ macOS E2E tests passed" >> $GITHUB_STEP_SUMMARY

@@ -83,6 +83,89 @@ uv run pytest -k "test_colors"
 uv run pytest -v
 ```
 
+### E2E Testing
+
+The project includes a comprehensive End-to-End (E2E) testing framework that verifies the complete setup workflow on all platforms.
+
+#### Directory Structure
+
+```text
+tests/e2e/
+├── __init__.py
+├── conftest.py              # E2E fixtures (isolated_home, golden_config, mock_repo_path)
+├── golden_config.yaml       # Comprehensive config with ALL supported YAML keys
+├── validators.py            # Composable validation functions
+├── expected/                # Platform-specific expected outputs
+│   ├── __init__.py
+│   ├── common.py            # Shared expected values
+│   ├── linux.py             # Linux expectations
+│   ├── macos.py             # macOS expectations
+│   └── windows.py           # Windows expectations
+├── fixtures/
+│   └── mock_repo/           # Mock source files for testing
+│       ├── agents/
+│       ├── commands/
+│       ├── configs/
+│       ├── hooks/
+│       ├── prompts/
+│       └── skills/
+├── test_full_setup.py       # Main E2E workflow tests
+├── test_output_files.py     # JSON file content verification
+├── test_launcher_scripts.py # Platform-specific launcher tests
+├── test_path_handling.py    # Tilde expansion and path format tests
+└── test_cleanup.py          # Artifact cleanup verification
+```
+
+#### Running E2E Tests
+
+```bash
+# Run all E2E tests
+uv run pytest tests/e2e/ -v
+
+# Run E2E tests with detailed output
+uv run pytest tests/e2e/ -v --tb=long
+
+# Run specific E2E test module
+uv run pytest tests/e2e/test_output_files.py -v
+
+# Run E2E tests matching a pattern
+uv run pytest tests/e2e/ -k "test_launcher" -v
+```
+
+#### Golden Configuration Purpose
+
+The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as:
+
+1. **Single source of truth** for testing - exercises every configuration option
+2. **Regression prevention** - ensures all config keys work correctly on all platforms
+3. **Documentation by example** - demonstrates the complete configuration schema
+
+The golden config includes:
+- Core settings: `name`, `command-names`, `base-url`, `claude-code-version`
+- Dependencies: `dependencies` (with platform-specific variants)
+- Resources: `agents`, `slash-commands`, `skills`, `files-to-download`
+- Hooks: `hooks` (files and events with command/prompt types)
+- MCP Servers: `mcp-servers` (http, sse, stdio transports)
+- Settings: `model`, `permissions`, `env-variables`, `os-env-variables`
+- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`
+- Extras: `company-announcements`, `attribution`, `status-line`
+
+#### Key Design Principles
+
+- **Complete isolation**: Tests use `tmp_path` and monkeypatched home directories
+- **Function-scoped fixtures**: Each test starts with a clean state
+- **Composable validators**: Return all errors, not just the first
+- **Platform-specific expectations**: Separate modules for Linux, macOS, Windows
+- **CI cleanup verification**: Dedicated step verifies no artifacts leak to real home
+
+#### CI Integration
+
+E2E tests run as a dedicated job in GitHub Actions with:
+- **Platform matrix**: Ubuntu, Windows, macOS
+- **Independent execution**: `fail-fast: false` - each platform runs to completion
+- **Artifact upload**: Debug artifacts on failure for troubleshooting
+- **Cleanup verification**: Post-test check for leaked artifacts
+
 ### Code Quality & Linting
 
 **CRITICAL: Always use pre-commit for code quality checks. DO NOT use `ruff format` directly.**

@@ -1,0 +1,14 @@
+# E2E Test Hook Configuration
+# Passed to hooks via command line argument
+
+hook_name: "e2e-test-hook"
+version: "1.0.0"
+
+settings:
+  enabled: true
+  verbose: false
+  log_level: "info"
+
+validation:
+  check_syntax: true
+  max_file_size_kb: 1024
