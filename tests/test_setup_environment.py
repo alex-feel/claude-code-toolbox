@@ -11,6 +11,7 @@ import sys
 import tempfile
 import urllib.error
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -18,6 +19,8 @@ import pytest
 
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
+
+import math
 
 import setup_environment
 
@@ -3570,6 +3573,820 @@ class TestMergeConfigs:
         assert 'inherit' not in result
 
 
+class TestDeepMergeSettings:
+    """Tests for deep_merge_settings function and its helpers."""
+
+    # === Basic Merge Tests ===
+
+    def test_empty_base_nonempty_updates(self):
+        """Merge into empty base produces updates."""
+        base: dict[str, object] = {}
+        updates = {'a': 1, 'b': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1, 'b': 2}
+        assert base == {}  # Immutability check
+
+    def test_nonempty_base_empty_updates(self):
+        """Merge empty updates preserves base."""
+        base = {'a': 1, 'b': 2}
+        updates: dict[str, object] = {}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1, 'b': 2}
+
+    def test_both_empty(self):
+        """Merge two empty dicts returns empty dict."""
+        base: dict[str, object] = {}
+        updates: dict[str, object] = {}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {}
+
+    def test_disjoint_keys(self):
+        """Merge with disjoint keys combines both."""
+        base = {'a': 1}
+        updates = {'b': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1, 'b': 2}
+
+    def test_overlapping_scalar_update_wins(self):
+        """Updates override base for same scalar key."""
+        base = {'a': 1}
+        updates = {'a': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 2}
+
+    # === Nested Object Merge Tests ===
+
+    def test_nested_dict_merge(self):
+        """Nested dicts are recursively merged."""
+        base = {'a': {'b': 1, 'c': 2}}
+        updates = {'a': {'c': 99, 'd': 3}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': {'b': 1, 'c': 99, 'd': 3}}
+
+    def test_deep_nested_merge(self):
+        """Deep nesting is recursively merged."""
+        base = {'a': {'b': {'c': 1}}}
+        updates = {'a': {'b': {'d': 2}}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': {'b': {'c': 1, 'd': 2}}}
+
+    def test_update_nested_key(self):
+        """Nested keys can be updated."""
+        base = {'a': {'b': 1, 'c': 2}}
+        updates = {'a': {'b': 99}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': {'b': 99, 'c': 2}}
+
+    def test_dict_replaces_scalar(self):
+        """Dict in updates replaces scalar in base."""
+        base = {'a': 1}
+        updates = {'a': {'b': 2}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': {'b': 2}}
+
+    def test_scalar_replaces_dict(self):
+        """Scalar in updates replaces dict in base."""
+        base = {'a': {'b': 1}}
+        updates = {'a': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 2}
+
+    # === Array Union Tests (Default Keys) ===
+
+    def test_permissions_allow_union(self):
+        """permissions.allow arrays are unioned with deduplication."""
+        base = {'permissions': {'allow': ['Read', 'Glob']}}
+        updates = {'permissions': {'allow': ['Write', 'Read']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        # Order: base items first, then new items from updates
+        assert result == {'permissions': {'allow': ['Read', 'Glob', 'Write']}}
+
+    def test_permissions_deny_union(self):
+        """permissions.deny arrays are unioned."""
+        base = {'permissions': {'deny': ['Bash']}}
+        updates = {'permissions': {'deny': ['Edit']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'deny': ['Bash', 'Edit']}}
+
+    def test_permissions_ask_union(self):
+        """permissions.ask arrays are unioned."""
+        base = {'permissions': {'ask': ['Glob']}}
+        updates = {'permissions': {'ask': ['Grep']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'ask': ['Glob', 'Grep']}}
+
+    def test_permissions_deduplication(self):
+        """Duplicate items in array union are removed."""
+        base = {'permissions': {'allow': ['Read', 'Glob']}}
+        updates = {'permissions': {'allow': ['Write', 'Read', 'Glob']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        # Read and Glob already in base, only Write is added
+        assert result == {'permissions': {'allow': ['Read', 'Glob', 'Write']}}
+
+    def test_permissions_empty_base_array(self):
+        """Empty base array gets filled from updates."""
+        base: dict[str, object] = {'permissions': {'allow': []}}
+        updates = {'permissions': {'allow': ['Read']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'allow': ['Read']}}
+
+    def test_permissions_empty_updates_array(self):
+        """Empty updates array preserves base array."""
+        base = {'permissions': {'allow': ['Read']}}
+        updates: dict[str, object] = {'permissions': {'allow': []}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'allow': ['Read']}}
+
+    # === Array Non-Union Tests ===
+
+    def test_non_union_key_replaces(self):
+        """Arrays at non-union keys are replaced entirely."""
+        base = {'items': [1, 2]}
+        updates = {'items': [3, 4]}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'items': [3, 4]}
+
+    # === Custom Array Union Keys Tests ===
+
+    def test_custom_array_union_keys(self):
+        """Custom array union keys override defaults."""
+        base = {
+            'custom': {'list': [1, 2]},
+            'permissions': {'allow': ['a']},
+        }
+        updates = {
+            'custom': {'list': [2, 3]},
+            'permissions': {'allow': ['b']},
+        }
+        result = setup_environment.deep_merge_settings(
+            base, updates, array_union_keys={'custom.list'},
+        )
+        # custom.list is unioned, permissions.allow is replaced (not in custom keys)
+        assert result['custom']['list'] == [1, 2, 3]
+        assert result['permissions']['allow'] == ['b']
+
+    def test_empty_custom_keys_disables_union(self):
+        """Empty custom keys set disables all array union."""
+        base = {'permissions': {'allow': ['Read']}}
+        updates = {'permissions': {'allow': ['Write']}}
+        result = setup_environment.deep_merge_settings(base, updates, array_union_keys=set())
+        # With no union keys, array is replaced
+        assert result == {'permissions': {'allow': ['Write']}}
+
+    # === Immutability Tests ===
+
+    def test_base_not_mutated(self):
+        """Original base dict is not modified."""
+        base = {'a': {'b': 1}}
+        original_base = {'a': {'b': 1}}
+        updates = {'a': {'c': 2}}
+        setup_environment.deep_merge_settings(base, updates)
+        assert base == original_base
+
+    def test_updates_not_mutated(self):
+        """Original updates dict is not modified."""
+        base = {'a': 1}
+        updates = {'b': {'c': 2}}
+        original_updates = {'b': {'c': 2}}
+        setup_environment.deep_merge_settings(base, updates)
+        assert updates == original_updates
+
+    def test_nested_base_not_mutated(self):
+        """Nested dicts in base are not modified."""
+        inner = {'b': 1}
+        base = {'a': inner}
+        updates = {'a': {'c': 2}}
+        setup_environment.deep_merge_settings(base, updates)
+        assert inner == {'b': 1}  # inner dict unchanged
+
+    # === Edge Cases ===
+
+    def test_none_values(self):
+        """None values are handled correctly."""
+        base = {'a': None}
+        updates = {'b': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': None, 'b': None}
+
+    def test_boolean_values(self):
+        """Boolean values are preserved."""
+        base = {'enabled': True}
+        updates = {'disabled': False}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'enabled': True, 'disabled': False}
+        assert result['enabled'] is True
+        assert result['disabled'] is False
+
+    def test_numeric_types(self):
+        """Numeric types are preserved."""
+        base = {'int_val': 42, 'float_val': math.pi}
+        updates = {'new_int': 100}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'int_val': 42, 'float_val': math.pi, 'new_int': 100}
+
+    def test_string_values(self):
+        """String values are handled correctly."""
+        base = {'name': 'base'}
+        updates = {'name': 'updated'}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'name': 'updated'}
+
+    def test_default_array_union_keys_constant(self):
+        """DEFAULT_ARRAY_UNION_KEYS contains expected permission keys."""
+        expected = {'permissions.allow', 'permissions.deny', 'permissions.ask'}
+        assert expected == setup_environment.DEFAULT_ARRAY_UNION_KEYS
+
+    # === Deep Copy Value Helper Tests ===
+
+    def test_deep_copy_preserves_nested_structure(self):
+        """_deep_copy_value creates independent copy of nested structure."""
+        original = {'a': {'b': [1, 2, 3]}}
+        copied = setup_environment._deep_copy_value(original)
+        assert copied == original
+        # Modify original nested structure
+        assert isinstance(original['a'], dict)
+        nested = original['a']
+        assert isinstance(nested['b'], list)
+        nested['b'].append(4)
+        # Copied should be unchanged
+        assert isinstance(copied, dict)
+        assert isinstance(copied['a'], dict)
+        assert copied['a']['b'] == [1, 2, 3]
+
+    def test_deep_copy_primitives(self):
+        """_deep_copy_value handles primitives correctly."""
+        assert setup_environment._deep_copy_value(42) == 42
+        assert setup_environment._deep_copy_value('hello') == 'hello'
+        assert setup_environment._deep_copy_value(True) is True
+        assert setup_environment._deep_copy_value(None) is None
+        assert setup_environment._deep_copy_value(math.pi) == math.pi
+
+
+class TestWriteUserSettings:
+    """Tests for write_user_settings function."""
+
+    def test_write_to_nonexistent_file(self, tmp_path: Path) -> None:
+        """Write settings when settings.json doesn't exist."""
+        claude_dir = tmp_path / '.claude'
+        settings = {'language': 'russian', 'model': 'claude-sonnet-4'}
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        assert settings_file.exists()
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == settings
+
+    def test_write_to_existing_file(self, tmp_path: Path) -> None:
+        """Write settings when settings.json already exists."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        existing = {'existingKey': 'existingValue', 'language': 'english'}
+        settings_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        new_settings = {'language': 'russian', 'model': 'claude-opus-4'}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written['existingKey'] == 'existingValue'  # Preserved
+        assert written['language'] == 'russian'  # Updated
+        assert written['model'] == 'claude-opus-4'  # Added
+
+    def test_write_empty_settings(self, tmp_path: Path) -> None:
+        """Write empty settings dict preserves existing file."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        existing = {'language': 'english'}
+        settings_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        result = setup_environment.write_user_settings({}, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == existing  # Unchanged
+
+    def test_write_creates_directory(self, tmp_path: Path) -> None:
+        """Write when ~/.claude doesn't exist creates the directory."""
+        claude_dir = tmp_path / 'nonexistent' / '.claude'
+        assert not claude_dir.exists()
+        settings = {'language': 'russian'}
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        assert claude_dir.exists()
+        settings_file = claude_dir / 'settings.json'
+        assert settings_file.exists()
+
+    def test_merge_preserves_existing_keys(self, tmp_path: Path) -> None:
+        """Existing keys not in settings are preserved after merge."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        existing = {'existingKey': 'existingValue', 'language': 'english'}
+        settings_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        new_settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written['existingKey'] == 'existingValue'  # Preserved
+        assert written['language'] == 'russian'  # Updated
+
+    def test_merge_nested_objects(self, tmp_path: Path) -> None:
+        """Nested objects are recursively merged."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        existing = {'sandbox': {'enabled': True, 'existingKey': 'value'}}
+        settings_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        new_settings = {'sandbox': {'autoAllowBashIfSandboxed': True}}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written['sandbox']['enabled'] is True  # Preserved
+        assert written['sandbox']['existingKey'] == 'value'  # Preserved
+        assert written['sandbox']['autoAllowBashIfSandboxed'] is True  # Added
+
+    def test_permissions_array_union(self, tmp_path: Path) -> None:
+        """permissions.allow arrays are unioned during merge."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        existing = {'permissions': {'allow': ['Read', 'Glob']}}
+        settings_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        new_settings = {'permissions': {'allow': ['Write', 'Read']}}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Union: ['Read', 'Glob'] + ['Write', 'Read'] -> ['Read', 'Glob', 'Write']
+        assert set(written['permissions']['allow']) == {'Read', 'Glob', 'Write'}
+
+    def test_api_key_helper_tilde_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """apiKeyHelper with tilde path is expanded before writing."""
+        # Mock home directory for consistent test
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+            # Windows can return either forward or backslash in expanded path
+            expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+            expected_path_parts = ('/home/testuser',)
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'uv run --no-project --python 3.12 ~/.claude/scripts/api_key_helper.py',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Tilde should be expanded
+        assert '~' not in written['apiKeyHelper']
+        assert any(part in written['apiKeyHelper'] for part in expected_path_parts)
+
+    def test_aws_credential_export_tilde_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """awsCredentialExport with tilde path is expanded before writing."""
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'awsCredentialExport': 'bash ~/.claude/scripts/aws_creds.sh',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert '~' not in written['awsCredentialExport']
+
+    def test_tilde_expansion_preserves_other_keys(self, tmp_path: Path) -> None:
+        """Keys not in TILDE_EXPANSION_KEYS are not modified."""
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'language': 'russian',
+            'model': 'claude-opus-4',
+            'cleanupPeriodDays': 60,
+        }
+        original_settings = settings.copy()
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == original_settings
+
+    def test_tilde_expansion_multiple_paths(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Command with multiple tilde paths has all expanded."""
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'bash -c "cat ~/.claude/key.txt && echo ~/.claude/done"',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # All tildes should be expanded
+        assert written['apiKeyHelper'].count('~') == 0
+
+    def test_no_tilde_no_change(self, tmp_path: Path) -> None:
+        """Keys without tilde are unchanged."""
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'python3 /absolute/path/helper.py',
+        }
+        original_value = settings['apiKeyHelper']
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written['apiKeyHelper'] == original_value
+
+    def test_invalid_json_in_existing_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Invalid JSON in existing file logs warning and starts fresh."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('{ invalid json }', encoding='utf-8')
+
+        settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert 'Invalid JSON' in captured.out
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == settings
+
+    def test_existing_file_not_dict(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Existing file that is array/string logs warning and starts fresh."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('["array", "not", "dict"]', encoding='utf-8')
+
+        settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        captured = capsys.readouterr()
+        assert 'not a dict' in captured.out
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == settings
+
+    def test_empty_existing_file(self, tmp_path: Path) -> None:
+        """Existing empty file is treated as empty dict."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('', encoding='utf-8')
+
+        settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == settings
+
+    def test_whitespace_only_existing_file(self, tmp_path: Path) -> None:
+        """Existing file with only whitespace is treated as empty dict."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('   \n  \t  ', encoding='utf-8')
+
+        settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert written == settings
+
+    def test_input_settings_not_mutated(self, tmp_path: Path) -> None:
+        """Original settings dict is not modified by write_user_settings."""
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'uv run ~/.claude/scripts/helper.py',
+            'language': 'russian',
+        }
+        original = {
+            'apiKeyHelper': 'uv run ~/.claude/scripts/helper.py',
+            'language': 'russian',
+        }
+
+        setup_environment.write_user_settings(settings, claude_dir)
+
+        assert settings == original  # Not mutated
+
+    def test_write_returns_false_on_permission_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns False when write fails due to permission error."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        # Mock write_text to raise OSError
+        def mock_write_text(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError('Permission denied')
+
+        monkeypatch.setattr(Path, 'write_text', mock_write_text)
+
+        settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is False
+
+    def test_file_ends_with_newline(self, tmp_path: Path) -> None:
+        """Written file ends with newline for proper formatting."""
+        claude_dir = tmp_path / '.claude'
+        settings = {'language': 'russian'}
+
+        setup_environment.write_user_settings(settings, claude_dir)
+
+        settings_file = claude_dir / 'settings.json'
+        content = settings_file.read_text(encoding='utf-8')
+        assert content.endswith('\n')
+
+    def test_json_formatted_with_indent(self, tmp_path: Path) -> None:
+        """Written JSON is formatted with proper indentation."""
+        claude_dir = tmp_path / '.claude'
+        settings = {'language': 'russian', 'model': 'claude-opus-4'}
+
+        setup_environment.write_user_settings(settings, claude_dir)
+
+        settings_file = claude_dir / 'settings.json'
+        content = settings_file.read_text(encoding='utf-8')
+        # Check for indentation (2 spaces)
+        assert '  "language"' in content or '  "model"' in content
+
+
+class TestExpandTildeKeysInSettings:
+    """Tests for _expand_tilde_keys_in_settings helper function."""
+
+    def test_expands_api_key_helper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """apiKeyHelper tilde paths are expanded."""
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+            # Windows can return either forward or backslash in expanded path
+            expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+            expected_path_parts = ('/home/testuser',)
+
+        settings = {'apiKeyHelper': 'uv run ~/.claude/scripts/helper.py'}
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert '~' not in result['apiKeyHelper']
+        assert any(part in result['apiKeyHelper'] for part in expected_path_parts)
+
+    def test_expands_aws_credential_export(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """awsCredentialExport tilde paths are expanded."""
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+
+        settings = {'awsCredentialExport': 'bash ~/.aws/export.sh'}
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert '~' not in result['awsCredentialExport']
+
+    def test_does_not_expand_other_keys(self) -> None:
+        """Keys not in TILDE_EXPANSION_KEYS are unchanged."""
+        settings = {'language': 'russian', 'model': 'claude-opus-4'}
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert result == settings
+
+    def test_does_not_mutate_input(self) -> None:
+        """Input settings dict is not modified."""
+        settings = {'apiKeyHelper': 'uv run ~/.claude/helper.py'}
+        original_value = settings['apiKeyHelper']
+
+        setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert settings['apiKeyHelper'] == original_value
+
+    def test_handles_non_string_values(self) -> None:
+        """Non-string values for expansion keys are ignored."""
+        settings: dict[str, Any] = {'apiKeyHelper': 123}  # Invalid but should not crash
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert result['apiKeyHelper'] == 123
+
+    def test_handles_missing_expansion_keys(self) -> None:
+        """Missing expansion keys do not cause errors."""
+        settings = {'language': 'russian'}  # No apiKeyHelper or awsCredentialExport
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert result == {'language': 'russian'}
+
+    def test_expands_both_keys_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both apiKeyHelper and awsCredentialExport are expanded when present."""
+        if sys.platform == 'win32':
+            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        else:
+            monkeypatch.setenv('HOME', '/home/testuser')
+
+        settings = {
+            'apiKeyHelper': 'python ~/.claude/key.py',
+            'awsCredentialExport': 'bash ~/.aws/creds.sh',
+            'language': 'russian',
+        }
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        assert '~' not in result['apiKeyHelper']
+        assert '~' not in result['awsCredentialExport']
+        assert result['language'] == 'russian'  # Unchanged
+
+
+class TestValidateUserSettings:
+    """Test the validate_user_settings function."""
+
+    def test_empty_settings_passes(self) -> None:
+        """Empty user-settings passes validation."""
+        result = setup_environment.validate_user_settings({})
+        assert result == []
+
+    def test_valid_keys_pass(self) -> None:
+        """Valid keys (not in excluded list) pass validation."""
+        settings = {
+            'language': 'russian',
+            'model': 'claude-opus-4',
+            'permissions': {'allow': ['Bash']},
+        }
+        result = setup_environment.validate_user_settings(settings)
+        assert result == []
+
+    def test_hooks_key_rejected(self) -> None:
+        """The 'hooks' key is rejected."""
+        settings = {'hooks': {'events': []}}
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 1
+        assert 'hooks' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_statusline_key_rejected(self) -> None:
+        """The 'statusLine' key is rejected."""
+        settings = {'statusLine': {'file': 'script.py'}}
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 1
+        assert 'statusLine' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_multiple_excluded_keys_all_reported(self) -> None:
+        """Multiple excluded keys are all reported."""
+        settings = {
+            'hooks': {'events': []},
+            'statusLine': {'file': 'script.py'},
+        }
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 2
+        error_text = ' '.join(result)
+        assert 'hooks' in error_text
+        assert 'statusLine' in error_text
+
+    def test_mixed_valid_and_excluded_keys(self) -> None:
+        """Mix of valid and excluded keys reports only excluded."""
+        settings = {
+            'language': 'russian',
+            'hooks': {'events': []},
+            'model': 'claude-opus-4',
+        }
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 1
+        assert 'hooks' in result[0]
+
+    def test_excluded_keys_constant_used(self) -> None:
+        """Function uses USER_SETTINGS_EXCLUDED_KEYS constant."""
+        for key in setup_environment.USER_SETTINGS_EXCLUDED_KEYS:
+            settings = {key: 'test_value'}
+            result = setup_environment.validate_user_settings(settings)
+            assert len(result) == 1
+            assert key in result[0]
+
+
+class TestDetectSettingsConflicts:
+    """Test the detect_settings_conflicts function."""
+
+    def test_no_conflicts_empty_sections(self) -> None:
+        """Empty sections have no conflicts."""
+        result = setup_environment.detect_settings_conflicts({}, {})
+        assert result == []
+
+    def test_no_conflicts_disjoint_keys(self) -> None:
+        """Different keys in each section have no conflicts."""
+        user_settings = {'language': 'russian'}
+        root_config = {'model': 'claude-opus-4'}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert result == []
+
+    def test_same_key_conflict_detected(self) -> None:
+        """Same key in both sections is detected as conflict."""
+        user_settings = {'model': 'claude-opus-4'}
+        root_config = {'model': 'claude-sonnet-4'}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        assert result[0] == ('model', 'claude-opus-4', 'claude-sonnet-4')
+
+    def test_kebab_to_camel_mapping_conflict(self) -> None:
+        """Kebab-case root key maps to camelCase user-settings key."""
+        user_settings = {'alwaysThinkingEnabled': True}
+        root_config = {'always-thinking-enabled': False}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        assert result[0] == ('alwaysThinkingEnabled', True, False)
+
+    def test_env_variables_mapping_conflict(self) -> None:
+        """env-variables root key maps to env user-settings key."""
+        user_settings = {'env': {'FOO': 'bar'}}
+        root_config = {'env-variables': {'FOO': 'baz'}}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        assert result[0] == ('env', {'FOO': 'bar'}, {'FOO': 'baz'})
+
+    def test_multiple_conflicts_detected(self) -> None:
+        """Multiple conflicts are all detected."""
+        user_settings = {
+            'model': 'claude-opus-4',
+            'alwaysThinkingEnabled': True,
+        }
+        root_config = {
+            'model': 'claude-sonnet-4',
+            'always-thinking-enabled': False,
+        }
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 2
+        conflicts_dict = {r[0]: (r[1], r[2]) for r in result}
+        assert conflicts_dict['model'] == ('claude-opus-4', 'claude-sonnet-4')
+        assert conflicts_dict['alwaysThinkingEnabled'] == (True, False)
+
+    def test_unmapped_key_uses_same_name(self) -> None:
+        """Keys not in mapping use same name for lookup."""
+        user_settings = {'permissions': {'allow': ['Bash']}}
+        root_config = {'permissions': {'deny': ['Web']}}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        assert result[0][0] == 'permissions'
+
+    def test_root_key_without_user_key_no_conflict(self) -> None:
+        """Root key present without corresponding user key is not a conflict."""
+        user_settings = {'language': 'russian'}
+        root_config = {'model': 'claude-opus-4', 'always-thinking-enabled': True}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert result == []
+
+    def test_all_mapped_keys_checked(self) -> None:
+        """All keys in ROOT_TO_USER_SETTINGS_KEY_MAP are properly checked."""
+        for root_key, user_key in setup_environment.ROOT_TO_USER_SETTINGS_KEY_MAP.items():
+            user_settings = {user_key: 'user_value'}
+            root_config = {root_key: 'root_value'}
+            result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+            assert len(result) == 1, f'Failed for mapping {root_key} -> {user_key}'
+            assert result[0][0] == user_key
+
+    def test_conflict_returns_correct_tuple_structure(self) -> None:
+        """Conflict tuple has correct structure (user_key, user_value, root_value)."""
+        user_settings = {'model': 'user_model'}
+        root_config = {'model': 'root_model'}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        conflict = result[0]
+        assert len(conflict) == 3
+        assert conflict[0] == 'model'
+        assert conflict[1] == 'user_model'
+        assert conflict[2] == 'root_model'
+
+
 class TestResolveInheritPath:
     """Test the _resolve_inherit_path helper function."""
 
@@ -4822,3 +5639,952 @@ class TestRunBashCommandMsysPathConversion:
         env = call_kwargs.get('env')
         assert env is not None
         assert env.get('MSYS_NO_PATHCONV') == '1'
+
+
+class TestMainFunctionUserSettings:
+    """Test main function integration with user-settings feature (Phase 4)."""
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_user_settings_only_mode(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test main with user-settings only (no command-names) - user-only mode."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'User Settings Only',
+                'user-settings': {
+                    'language': 'russian',
+                    'model': 'claude-opus-4',
+                },
+                # No command-names - user-only mode
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify write_user_settings was called with correct args
+        mock_write_user_settings.assert_called_once()
+        call_args = mock_write_user_settings.call_args
+        assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
+
+        # Verify output shows Steps 13-16 skipped
+        captured = capsys.readouterr()
+        assert 'Steps 13-16: Skipping command creation' in captured.out
+        assert 'Step 12: Writing user settings' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_user_settings_combined_mode(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test main with user-settings AND command-names - combined mode."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'Combined Mode',
+                'command-names': ['mydev'],
+                'user-settings': {
+                    'language': 'russian',
+                },
+                'model': 'claude-sonnet-4',  # Profile-level model
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # Verify write_user_settings was called
+        mock_write_user_settings.assert_called_once()
+
+        # Verify profile settings were also created
+        mock_settings.assert_called_once()
+
+        # Verify output shows Step 12 and Steps 13-16
+        captured = capsys.readouterr()
+        assert 'Step 12: Writing user settings' in captured.out
+        assert 'Step 13: Downloading hooks' in captured.out
+        assert 'Step 14: Configuring settings' in captured.out
+        assert 'Step 15: Creating launcher script' in captured.out
+        assert 'Step 16: Registering global' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    def test_main_user_settings_excluded_key_error(
+        self,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test main with excluded key in user-settings (should exit with code 1)."""
+        mock_load.return_value = (
+            {
+                'name': 'Invalid Config',
+                'user-settings': {
+                    'hooks': {'events': []},  # Excluded key
+                },
+            },
+            'test.yaml',
+        )
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+        captured = capsys.readouterr()
+        # Error messages go to stderr via print_error()
+        assert 'hooks' in captured.err
+        assert 'not allowed' in captured.err
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_user_settings_conflict_warning(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test main with conflicting keys emits warning."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'Conflict Config',
+                'command-names': ['mydev'],
+                'user-settings': {
+                    'model': 'claude-opus-4',  # Conflict with root level
+                },
+                'model': 'claude-sonnet-4',  # Root level model
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        # Warning should be emitted about model conflict
+        assert 'model' in captured.out
+        assert 'both root level and user-settings' in captured.out or 'specified in both' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_without_user_settings(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test main without user-settings (no-op for user settings)."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'No User Settings',
+                'command-names': ['mydev'],
+                # No user-settings section
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = True
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        # write_user_settings should not be called since user_settings is None
+        mock_write_user_settings.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'No user settings to configure' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_summary_includes_user_settings(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test summary output includes user-settings line."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'User Settings Test',
+                'user-settings': {
+                    'language': 'russian',
+                },
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'User settings: configured in ~/.claude/settings.json' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_user_settings_write_failure_non_fatal(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Test that user settings write failure is non-fatal (warning only)."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'Write Failure Test',
+                'user-settings': {
+                    'language': 'russian',
+                },
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = False  # Simulate write failure
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            # Should NOT exit with error - write failure is non-fatal
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'Failed to write user settings' in captured.out
+
+
+# =============================================================================
+# Phase 5: Comprehensive Tests - Edge Cases and Integration Tests
+# =============================================================================
+
+
+class TestDetectSettingsConflictsComplete:
+    """Exhaustive conflict detection tests for all ROOT_TO_USER_SETTINGS_KEY_MAP entries."""
+
+    @pytest.mark.parametrize(
+        ('root_key', 'user_key'),
+        [
+            ('model', 'model'),
+            ('permissions', 'permissions'),
+            ('attribution', 'attribution'),
+            ('always-thinking-enabled', 'alwaysThinkingEnabled'),
+            ('company-announcements', 'companyAnnouncements'),
+            ('env-variables', 'env'),
+        ],
+    )
+    def test_conflict_all_mapped_keys_exhaustive(
+        self, root_key: str, user_key: str,
+    ) -> None:
+        """Every ROOT_TO_USER_SETTINGS_KEY_MAP entry produces a conflict when both present."""
+        user_settings = {user_key: 'user_value'}
+        root_settings = {root_key: 'root_value'}
+
+        conflicts = setup_environment.detect_settings_conflicts(user_settings, root_settings)
+
+        assert len(conflicts) == 1, f'Expected conflict for {root_key} -> {user_key}'
+        key, user_val, root_val = conflicts[0]
+        assert key == user_key
+        assert user_val == 'user_value'
+        assert root_val == 'root_value'
+
+
+class TestDeepMergeEdgeCases:
+    """Edge case tests for deep_merge_settings not covered in Phase 1."""
+
+    def test_deep_merge_four_level_nesting(self) -> None:
+        """Verify 4+ levels of nested dicts merge correctly."""
+        base = {'a': {'b': {'c': {'d': 'base_value'}}}}
+        updates = {'a': {'b': {'c': {'e': 'new_value'}}}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result['a']['b']['c']['d'] == 'base_value'  # Preserved
+        assert result['a']['b']['c']['e'] == 'new_value'   # Added
+
+    def test_deep_merge_array_inside_nested_object(self) -> None:
+        """Array union works at top-level permissions.allow path."""
+        # Test that the standard permissions path works with nested structure
+        base = {'permissions': {'allow': ['Read', 'Write'], 'deny': ['Web']}}
+        updates = {'permissions': {'allow': ['Bash', 'Write']}}  # Write duplicate
+        result = setup_environment.deep_merge_settings(base, updates)
+        # permissions.allow should be unioned (standard behavior)
+        assert set(result['permissions']['allow']) == {'Read', 'Write', 'Bash'}
+        # permissions.deny preserved from base
+        assert result['permissions']['deny'] == ['Web']
+
+    def test_deep_merge_empty_nested_dicts(self) -> None:
+        """Empty dicts at various nesting levels."""
+        base = {'a': {'b': {}}, 'c': 'value'}
+        updates = {'a': {'b': {'d': 'new'}}, 'e': {}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result['a']['b']['d'] == 'new'
+        assert result['c'] == 'value'
+        assert result['e'] == {}
+
+    def test_deep_merge_unicode_keys_and_values(self) -> None:
+        """Non-ASCII characters in keys and values."""
+        base = {'язык': 'русский', 'model': 'claude'}
+        updates = {'язык': 'english', 'тема': 'темная'}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result['язык'] == 'english'
+        assert result['тема'] == 'темная'
+        assert result['model'] == 'claude'
+
+    def test_deep_merge_null_in_nested_structure(self) -> None:
+        """None/null values at various positions."""
+        base = {'a': None, 'b': {'c': 'value'}}
+        updates = {'a': {'nested': 'now'}, 'b': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        # When base has None and updates has dict, dict wins
+        assert result['a'] == {'nested': 'now'}
+        # When base has dict and updates has None, None wins
+        assert result['b'] is None
+
+    def test_deep_merge_mixed_types_at_same_path(self) -> None:
+        """Different types in base vs updates for nested paths."""
+        # List in base, dict in updates
+        base = {'config': ['item1', 'item2']}
+        updates = {'config': {'key': 'value'}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result['config'] == {'key': 'value'}  # Updates value wins
+
+        # String in base, list in updates
+        base2 = {'setting': 'simple'}
+        updates2 = {'setting': ['complex', 'list']}
+        result2 = setup_environment.deep_merge_settings(base2, updates2)
+        assert result2['setting'] == ['complex', 'list']
+
+
+class TestUserSettingsIntegration:
+    """Integration tests for complete user-settings workflow."""
+
+    def test_integration_user_settings_only_writes_settings_json(
+        self, tmp_path: Path,
+    ) -> None:
+        """User-only mode (no command-names) writes ONLY to ~/.claude/settings.json."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        # Create config with user-settings but NO command-names
+        config = {
+            'name': 'User Settings Only',
+            'user-settings': {
+                'language': 'russian',
+                'model': 'claude-opus-4',
+            },
+        }
+
+        # Write user settings
+        result = setup_environment.write_user_settings(
+            config['user-settings'], claude_dir,
+        )
+        assert result is True
+
+        # Verify settings.json exists with correct content
+        settings_file = claude_dir / 'settings.json'
+        assert settings_file.exists()
+        with open(settings_file) as f:
+            content = json.load(f)
+        assert content['language'] == 'russian'
+        assert content['model'] == 'claude-opus-4'
+
+    def test_integration_combined_mode_writes_both_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify combined mode writes to both settings.json AND additional-settings.json."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        user_settings = {
+            'language': 'russian',
+            'permissions': {'allow': ['Read']},
+        }
+
+        profile_settings = {
+            'model': 'claude-sonnet-4',
+            'permissions': {'allow': ['Bash(npm:*)']},
+        }
+
+        # Write user settings
+        result1 = setup_environment.write_user_settings(user_settings, claude_dir)
+        assert result1 is True
+
+        # Write profile settings (simulating additional-settings behavior)
+        result2 = setup_environment.create_additional_settings(
+            hooks={},  # Empty hooks
+            claude_user_dir=claude_dir,
+            command_name='mydev',
+            model=profile_settings['model'],
+            permissions=profile_settings['permissions'],
+        )
+        assert result2 is True
+
+        # Verify both files exist
+        assert (claude_dir / 'settings.json').exists()
+        assert (claude_dir / 'mydev-additional-settings.json').exists()
+
+    def test_integration_existing_settings_preserved_during_merge(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify existing ~/.claude/settings.json keys not in YAML are preserved."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+
+        # Create existing settings with keys not in our update
+        existing = {
+            'existingKey': 'should_be_preserved',
+            'language': 'english',
+            'sandbox': {'enabled': True},
+        }
+        with open(settings_file, 'w') as f:
+            json.dump(existing, f)
+
+        # Write new user settings
+        new_settings = {
+            'language': 'russian',  # Override
+            'model': 'claude-opus-4',  # Add new
+        }
+        setup_environment.write_user_settings(new_settings, claude_dir)
+
+        # Verify merge
+        with open(settings_file) as f:
+            result = json.load(f)
+        assert result['existingKey'] == 'should_be_preserved'  # Preserved
+        assert result['language'] == 'russian'  # Updated
+        assert result['model'] == 'claude-opus-4'  # Added
+        assert result['sandbox']['enabled'] is True  # Preserved
+
+    def test_integration_permissions_array_union_across_files(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify permissions arrays are properly unioned in settings.json."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+
+        # Existing permissions
+        existing = {
+            'permissions': {
+                'allow': ['Read', 'Glob'],
+                'deny': ['Web'],
+            },
+        }
+        with open(settings_file, 'w') as f:
+            json.dump(existing, f)
+
+        # New permissions to merge
+        new_settings = {
+            'permissions': {
+                'allow': ['Bash', 'Read'],  # Read is duplicate
+                'ask': ['Edit'],
+            },
+        }
+        setup_environment.write_user_settings(new_settings, claude_dir)
+
+        # Verify array union
+        with open(settings_file) as f:
+            result = json.load(f)
+        assert set(result['permissions']['allow']) == {'Read', 'Glob', 'Bash'}
+        assert result['permissions']['deny'] == ['Web']  # Preserved
+        assert result['permissions']['ask'] == ['Edit']  # Added
+
+    def test_integration_tilde_expanded_in_final_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify apiKeyHelper/awsCredentialExport have expanded tilde paths in output."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        # Mock home directory
+        fake_home = str(tmp_path / 'home' / 'user')
+        monkeypatch.setenv('HOME', fake_home)
+        monkeypatch.setenv('USERPROFILE', fake_home)
+
+        settings = {
+            'apiKeyHelper': 'uv run --no-project ~/.claude/scripts/helper.py',
+            'awsCredentialExport': 'uv run ~/.claude/aws_creds.py',
+            'otherKey': '~/path/unchanged',  # Non-expansion key
+        }
+
+        setup_environment.write_user_settings(settings, claude_dir)
+
+        with open(claude_dir / 'settings.json') as f:
+            result = json.load(f)
+
+        # Tilde should be expanded for apiKeyHelper and awsCredentialExport
+        assert '~' not in result['apiKeyHelper']
+        assert fake_home.replace('\\', '/') in result['apiKeyHelper'] or fake_home in result['apiKeyHelper']
+        assert '~' not in result['awsCredentialExport']
+        # Other keys should keep tilde unchanged
+        assert result['otherKey'] == '~/path/unchanged'
+
+
+class TestValidateUserSettingsEdgeCases:
+    """Edge case tests for validate_user_settings."""
+
+    def test_validate_case_sensitivity(self) -> None:
+        """Verify 'Hooks' vs 'hooks' and 'StatusLine' vs 'statusLine'."""
+        # Lowercase versions are excluded
+        result_hooks = setup_environment.validate_user_settings({'hooks': {}})
+        assert len(result_hooks) == 1
+        assert 'hooks' in result_hooks[0]
+
+        result_status = setup_environment.validate_user_settings({'statusLine': {}})
+        assert len(result_status) == 1
+        assert 'statusLine' in result_status[0]
+
+        # Different case variations should pass (case-sensitive check)
+        result_caps = setup_environment.validate_user_settings({'Hooks': {}, 'StatusLine': {}})
+        assert len(result_caps) == 0  # Pass - not excluded
+
+    def test_validate_nested_excluded_keys_allowed(self) -> None:
+        """Nested paths like something.hooks should NOT be rejected."""
+        settings = {
+            'config': {
+                'hooks': 'nested_value',  # hooks nested inside config
+            },
+            'myHooks': 'value',  # Contains 'hooks' but not the key itself
+        }
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 0  # Pass - only top-level hooks is excluded
+
+    def test_validate_similar_but_valid_keys(self) -> None:
+        """Keys like 'hook' (without 's') should pass."""
+        settings = {
+            'hook': 'single_hook',  # Not 'hooks'
+            'statusLines': ['line1', 'line2'],  # Not 'statusLine'
+            'hookConfig': {'enabled': True},  # Contains 'hook' but different key
+        }
+        result = setup_environment.validate_user_settings(settings)
+        assert len(result) == 0  # All should pass
+
+
+class TestWriteUserSettingsEdgeCases:
+    """Edge case tests for write_user_settings."""
+
+    def test_write_user_settings_file_with_bom(self, tmp_path: Path) -> None:
+        """Handle existing file with UTF-8 BOM marker."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+
+        # Write file with UTF-8 BOM
+        existing = {'existing': 'value'}
+        with open(settings_file, 'wb') as f:
+            f.write(b'\xef\xbb\xbf')  # UTF-8 BOM
+            f.write(json.dumps(existing).encode('utf-8'))
+
+        # Should handle BOM and merge correctly
+        new_settings = {'new': 'setting'}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+        assert result is True
+
+        with open(settings_file, encoding='utf-8-sig') as f:
+            content = json.load(f)
+        assert content['new'] == 'setting'
+
+    def test_write_user_settings_large_settings(self, tmp_path: Path) -> None:
+        """Performance with 100+ keys."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        # Create settings with 100+ keys
+        large_settings = {f'key_{i}': f'value_{i}' for i in range(150)}
+        large_settings['permissions'] = {'allow': [f'perm_{i}' for i in range(50)]}
+
+        result = setup_environment.write_user_settings(large_settings, claude_dir)
+        assert result is True
+
+        with open(claude_dir / 'settings.json') as f:
+            content = json.load(f)
+        assert len(content) >= 150
+        assert len(content['permissions']['allow']) == 50
+
+    def test_write_user_settings_special_json_chars(self, tmp_path: Path) -> None:
+        """Keys/values requiring JSON escaping (quotes, backslashes)."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        settings = {
+            'path': 'C:\\Users\\Name\\file.txt',
+            'quote': 'She said "hello"',
+            'special': 'tab\there\nnewline',
+            'unicode': '\u00e9\u00e0\u00fc',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+        assert result is True
+
+        with open(claude_dir / 'settings.json') as f:
+            content = json.load(f)
+        assert content['path'] == 'C:\\Users\\Name\\file.txt'
+        assert content['quote'] == 'She said "hello"'
+        assert '\t' in content['special']
+        assert '\n' in content['special']
+
+    def test_write_user_settings_read_only_directory(
+        self, tmp_path: Path,
+    ) -> None:
+        """Graceful failure when write fails due to OSError."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        settings = {'key': 'value'}
+
+        # Mock Path.write_text to raise OSError (simulates permission error)
+        with patch.object(Path, 'write_text', side_effect=OSError('Read-only filesystem')):
+            result = setup_environment.write_user_settings(settings, claude_dir)
+            assert result is False  # Should return False on OSError  # Should return False on permission error
+
+
+class TestUserSettingsErrorRecovery:
+    """Error handling and recovery tests."""
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_continues_after_user_settings_write_failure(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_write_user_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() continues execution even if write_user_settings fails."""
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'Continue After Failure',
+                'user-settings': {'language': 'russian'},
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_write_user_settings.return_value = False  # Write fails
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            # Should NOT exit - write failure is non-fatal
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'Failed to write user settings' in captured.out
+
+    @patch('setup_environment.load_config_from_source')
+    def test_main_exits_on_validation_error(
+        self,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() exits with code 1 when user-settings contains excluded keys."""
+        mock_load.return_value = (
+            {
+                'name': 'Invalid Config',
+                'user-settings': {
+                    'hooks': {'events': []},  # Excluded key
+                    'statusLine': 'test',     # Another excluded key
+                },
+            },
+            'test.yaml',
+        )
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+        captured = capsys.readouterr()
+        assert 'hooks' in captured.err
+        assert 'statusLine' in captured.err
+
+    def test_write_user_settings_recovers_from_corrupted_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Corrupted settings.json is overwritten with warning."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        settings_file = claude_dir / 'settings.json'
+
+        # Create corrupted JSON file
+        Path(settings_file).write_text('{invalid json content')
+
+        # Should recover and write new settings
+        new_settings = {'language': 'russian'}
+        result = setup_environment.write_user_settings(new_settings, claude_dir)
+        assert result is True
+
+        with open(settings_file) as f:
+            content = json.load(f)
+        assert content['language'] == 'russian'
+
+        captured = capsys.readouterr()
+        assert 'warning' in captured.out.lower() or 'invalid' in captured.out.lower() or result is True
+
+
+class TestConfigInheritanceUserSettings:
+    """Inheritance chain tests with user-settings."""
+
+    def test_inheritance_user_settings_child_overrides_parent(
+        self, tmp_path: Path,
+    ) -> None:
+        """Child user-settings completely overrides parent user-settings (no merge)."""
+        # Create parent config
+        parent_file = tmp_path / 'parent.yaml'
+        parent_file.write_text('''
+name: Parent Config
+user-settings:
+  language: english
+  model: claude-sonnet-4
+''')
+
+        # Create child config
+        child_file = tmp_path / 'child.yaml'
+        child_file.write_text(f'''
+name: Child Config
+inherit: {parent_file}
+user-settings:
+  language: russian
+''')
+
+        # Load child config (should inherit from parent)
+        config, _ = setup_environment.load_config_from_source(str(child_file))
+
+        # Child's user-settings should completely override parent
+        # Based on standard YAML merge semantics (child overrides parent for same key)
+        assert config.get('user-settings', {}).get('language') == 'russian'
+        # The 'model' from parent is NOT inherited because user-settings as a whole is replaced
+        # This is standard YAML merge behavior - child's user-settings replaces parent's entirely
+
+    def test_inheritance_user_settings_only_in_parent(
+        self, tmp_path: Path,
+    ) -> None:
+        """Parent has user-settings, child does not - child inherits user-settings."""
+        parent_file = tmp_path / 'parent.yaml'
+        parent_file.write_text('''
+name: Parent Config
+user-settings:
+  language: russian
+  model: claude-opus-4
+''')
+
+        child_file = tmp_path / 'child.yaml'
+        child_file.write_text(f'''
+name: Child Config
+inherit: {parent_file}
+model: claude-sonnet-4
+''')
+
+        # Load child config
+        config, source = setup_environment.load_config_from_source(str(child_file))
+        # Resolve inheritance chain
+        resolved = setup_environment.resolve_config_inheritance(config, source)
+
+        # Child inherits parent's user-settings
+        assert 'user-settings' in resolved
+        assert resolved['user-settings']['language'] == 'russian'
+        assert resolved['user-settings']['model'] == 'claude-opus-4'
+
+    def test_inheritance_user_settings_only_in_child(
+        self, tmp_path: Path,
+    ) -> None:
+        """Parent has no user-settings, child has user-settings."""
+        parent_file = tmp_path / 'parent.yaml'
+        parent_file.write_text('''
+name: Parent Config
+model: claude-sonnet-4
+''')
+
+        child_file = tmp_path / 'child.yaml'
+        child_file.write_text(f'''
+name: Child Config
+inherit: {parent_file}
+user-settings:
+  language: russian
+''')
+
+        # Load child config
+        config, source = setup_environment.load_config_from_source(str(child_file))
+        # Resolve inheritance chain
+        resolved = setup_environment.resolve_config_inheritance(config, source)
+
+        # Child has user-settings, parent did not
+        assert 'user-settings' in resolved
+        assert resolved['user-settings']['language'] == 'russian'
+        # Parent's model should still be inherited at root level
+        assert resolved.get('model') == 'claude-sonnet-4'

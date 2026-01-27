@@ -51,6 +51,42 @@ OS_ENV_VARIABLES_KEY = 'os-env-variables'
 ENV_VAR_MARKER_START = '# >>> claude-code-toolbox >>>'
 ENV_VAR_MARKER_END = '# <<< claude-code-toolbox <<<'
 
+# Default keys where arrays should be unioned during deep merge
+# These correspond to permissions arrays in Claude Code settings
+DEFAULT_ARRAY_UNION_KEYS: set[str] = {
+    'permissions.allow',
+    'permissions.deny',
+    'permissions.ask',
+}
+
+# Keys that contain shell commands requiring tilde expansion
+# These keys may reference file paths that need ~ expanded to absolute paths
+# Uses expand_tildes_in_command() for consistent expansion (DRY with commit 46a086b)
+TILDE_EXPANSION_KEYS: set[str] = {
+    'apiKeyHelper',
+    'awsCredentialExport',
+}
+
+# Keys that are NOT allowed in the user-settings section
+# These keys have path resolution issues or are inherently profile-specific
+USER_SETTINGS_EXCLUDED_KEYS: set[str] = {
+    'hooks',       # Path resolution issues; profile-specific event handlers
+    'statusLine',  # Path resolution issues; profile-specific display config
+}
+
+# Mapping from root-level YAML keys to their user-settings equivalents
+# Used for conflict detection between profile settings and user settings
+# Root keys use kebab-case, user-settings uses camelCase (matching JSON schema)
+ROOT_TO_USER_SETTINGS_KEY_MAP: dict[str, str] = {
+    'model': 'model',                           # Same in both
+    'permissions': 'permissions',               # Same in both
+    'attribution': 'attribution',               # Same in both
+    'always-thinking-enabled': 'alwaysThinkingEnabled',
+    'company-announcements': 'companyAnnouncements',
+    'env-variables': 'env',                     # Different names
+}
+
+
 # Platform-specific imports with proper type checking support
 if sys.platform == 'win32':
     import winreg
@@ -94,6 +130,11 @@ def debug_log(message: str) -> None:
 # Type variable for generic parallel execution
 T = TypeVar('T')
 R = TypeVar('R')
+
+# Type alias for JSON-compatible values used in deep merge operations
+# Recursive type representing dict, list, or primitive values
+type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
+
 
 # Default number of parallel workers - can be overridden via CLAUDE_PARALLEL_WORKERS env var
 # Reduced from 5 to 3 to decrease likelihood of hitting GitHub secondary rate limits
@@ -912,6 +953,282 @@ def expand_tildes_in_command(command: str) -> str:
         return path
 
     return re.sub(tilde_pattern, expand_match, command)
+
+
+def _deep_copy_value(value: JsonValue) -> JsonValue:
+    """Create a deep copy of a JSON-compatible value.
+
+    Args:
+        value: A JSON-compatible value (dict, list, or primitive).
+
+    Returns:
+        A deep copy of the value.
+    """
+    if isinstance(value, dict):
+        return {k: _deep_copy_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy_value(item) for item in value]
+    # Primitives (str, int, float, bool, None) are immutable
+    return value
+
+
+def _merge_recursive(
+    target: dict[str, JsonValue],
+    source: dict[str, JsonValue],
+    array_union_keys: set[str],
+    current_path: str,
+) -> None:
+    """Recursively merge source into target in-place.
+
+    Args:
+        target: Target dict to merge into (mutated in-place).
+        source: Source dict to merge from.
+        array_union_keys: Set of dot-notation paths for array union behavior.
+        current_path: Current dot-notation path for tracking nested location.
+    """
+    for key, value in source.items():
+        # Build dot-notation path for this key
+        key_path = f'{current_path}.{key}' if current_path else key
+
+        if key not in target:
+            # Key doesn't exist in target - add it (deep copy)
+            target[key] = _deep_copy_value(value)
+        elif isinstance(value, dict) and isinstance(target[key], dict):
+            # Both are dicts - recurse
+            _merge_recursive(
+                cast(dict[str, JsonValue], target[key]),
+                value,
+                array_union_keys,
+                key_path,
+            )
+        elif key_path in array_union_keys and isinstance(value, list) and isinstance(target[key], list):
+            # Array union: combine and deduplicate (preserve order, add new items)
+            existing = cast(list[JsonValue], target[key])
+            new_items = value
+            combined = existing + [item for item in new_items if item not in existing]
+            target[key] = combined
+        else:
+            # Scalar or type mismatch - update wins (deep copy)
+            target[key] = _deep_copy_value(value)
+
+
+def deep_merge_settings(
+    base: dict[str, Any],
+    updates: dict[str, Any],
+    array_union_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    """Deep merge updates into base dict, with array union for specified keys.
+
+    Performs recursive merging where nested dicts are merged (not replaced),
+    and arrays at specified key paths are unioned (with deduplication).
+
+    Key behaviors:
+    - Keys NOT in updates: PRESERVED unchanged from base
+    - Keys IN updates: UPDATED or ADDED
+    - Nested dicts: Recursively merged (not replaced entirely)
+    - Arrays at array_union_keys: Additive union with deduplication
+
+    Args:
+        base: Existing settings dict to merge into. Not modified.
+        updates: New settings values to merge.
+        array_union_keys: Set of dot-notation keys where arrays should be unioned
+                         (e.g., {"permissions.allow", "permissions.deny"}).
+                         Defaults to DEFAULT_ARRAY_UNION_KEYS if None.
+
+    Returns:
+        New merged dict with base keys preserved and updates applied.
+
+    Examples:
+        >>> base = {"a": 1, "b": {"c": 2}}
+        >>> updates = {"b": {"d": 3}, "e": 4}
+        >>> deep_merge_settings(base, updates)
+        {"a": 1, "b": {"c": 2, "d": 3}, "e": 4}
+
+        >>> base = {"permissions": {"allow": ["Read", "Glob"]}}
+        >>> updates = {"permissions": {"allow": ["Write", "Read"]}}
+        >>> deep_merge_settings(base, updates)
+        {"permissions": {"allow": ["Read", "Glob", "Write"]}}
+    """
+    # Use default union keys if not specified
+    if array_union_keys is None:
+        array_union_keys = DEFAULT_ARRAY_UNION_KEYS
+
+    # Create a fresh result dict (do not mutate base)
+    result: dict[str, JsonValue] = {}
+
+    # Start with all keys from base (deep copied)
+    for key, value in base.items():
+        result[key] = _deep_copy_value(cast(JsonValue, value))
+
+    # Merge in updates
+    _merge_recursive(result, cast(dict[str, JsonValue], updates), array_union_keys, '')
+
+    return cast(dict[str, Any], result)
+
+
+def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    """Expand tilde paths in settings keys that contain shell commands.
+
+    Uses expand_tildes_in_command() for DRY compliance with commit 46a086b.
+
+    Args:
+        settings: User settings dict (not modified)
+
+    Returns:
+        New dict with tilde paths expanded in relevant keys
+    """
+    result = settings.copy()
+    for key in TILDE_EXPANSION_KEYS:
+        if key in result and isinstance(result[key], str):
+            original = result[key]
+            expanded = expand_tildes_in_command(original)
+            if expanded != original:
+                debug_log(f'Expanded tilde in {key}: {original} -> {expanded}')
+            result[key] = expanded
+    return result
+
+
+def write_user_settings(
+    settings: dict[str, Any],
+    claude_user_dir: Path,
+) -> bool:
+    """Write user settings to ~/.claude/settings.json with deep merge.
+
+    Implements the three-step merge process:
+    1. READ existing ~/.claude/settings.json (or empty dict if not exists)
+    2. DEEP MERGE new settings values into existing
+    3. WRITE merged result back to file
+
+    Before merging, expands tilde paths in keys containing shell commands
+    (apiKeyHelper, awsCredentialExport) using expand_tildes_in_command().
+
+    Args:
+        settings: User settings dict from YAML user-settings section
+        claude_user_dir: Path to ~/.claude directory
+
+    Returns:
+        True if settings were written successfully, False on write failure.
+    """
+    settings_file = claude_user_dir / 'settings.json'
+
+    # Step 0: Expand tilde paths in command keys
+    expanded_settings = _expand_tilde_keys_in_settings(settings)
+
+    # Step 1: READ existing settings
+    existing: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            file_content = settings_file.read_text(encoding='utf-8')
+            if file_content.strip():  # Only parse non-empty files
+                parsed = json.loads(file_content)
+                if isinstance(parsed, dict):
+                    existing = cast(dict[str, Any], parsed)
+                else:
+                    warning(f'Existing {settings_file} is not a dict, starting fresh')
+        except json.JSONDecodeError as e:
+            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
+
+    # Step 2: DEEP MERGE new settings into existing
+    merged = deep_merge_settings(existing, expanded_settings)
+
+    # Step 3: WRITE merged result back to file
+    try:
+        # Ensure directory exists
+        claude_user_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write with pretty formatting
+        settings_file.write_text(
+            json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
+        success(f'Wrote user settings to {settings_file}')
+        return True
+    except OSError as e:
+        warning(f'Failed to write user settings to {settings_file}: {e}')
+        return False
+
+
+def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
+    """Validate user-settings section for excluded keys.
+
+    Checks that the user-settings section does not contain keys that are
+    not allowed (hooks, statusLine) due to path resolution or profile-specific
+    behavior issues.
+
+    Args:
+        user_settings: Dict from YAML user-settings section.
+
+    Returns:
+        List of error messages. Empty list if validation passes.
+
+    Examples:
+        >>> validate_user_settings({'language': 'russian', 'model': 'claude-opus-4'})
+        []
+
+        >>> validate_user_settings({'hooks': {'events': []}})
+        ["Key 'hooks' is not allowed in user-settings (profile-specific only)"]
+
+        >>> validate_user_settings({'statusLine': {'file': 'script.py'}})
+        ["Key 'statusLine' is not allowed in user-settings (profile-specific only)"]
+    """
+    return [
+        f"Key '{key}' is not allowed in user-settings (profile-specific only)"
+        for key in user_settings
+        if key in USER_SETTINGS_EXCLUDED_KEYS
+    ]
+
+
+def detect_settings_conflicts(
+    user_settings: dict[str, Any],
+    root_config: dict[str, Any],
+) -> list[tuple[str, Any, Any]]:
+    """Detect conflicts where same setting appears in both sections.
+
+    Identifies keys that are specified in both the user-settings section
+    and at the root level of the config. When using a profile command,
+    root-level values take precedence over user-settings values.
+
+    Args:
+        user_settings: Dict from YAML user-settings section.
+        root_config: The full root-level config dict.
+
+    Returns:
+        List of (user_settings_key, user_value, root_value) tuples for conflicts.
+        Empty list if no conflicts found.
+
+    Examples:
+        >>> user = {'model': 'claude-opus-4'}
+        >>> root = {'model': 'claude-sonnet-4', 'command-names': ['myenv']}
+        >>> detect_settings_conflicts(user, root)
+        [('model', 'claude-opus-4', 'claude-sonnet-4')]
+
+        >>> user = {'alwaysThinkingEnabled': True}
+        >>> root = {'always-thinking-enabled': False}
+        >>> detect_settings_conflicts(user, root)
+        [('alwaysThinkingEnabled', True, False)]
+
+        >>> user = {'language': 'russian'}
+        >>> root = {'model': 'claude-opus-4'}
+        >>> detect_settings_conflicts(user, root)
+        []
+    """
+    conflicts: list[tuple[str, Any, Any]] = []
+
+    # Build reverse mapping: user-settings key -> root key
+    user_to_root_map: dict[str, str] = {
+        v: k for k, v in ROOT_TO_USER_SETTINGS_KEY_MAP.items()
+    }
+
+    for user_key, user_value in user_settings.items():
+        # Find corresponding root key (may be same or different name)
+        root_key = user_to_root_map.get(user_key, user_key)
+
+        # Check if this key exists at root level
+        if root_key in root_config:
+            root_value = root_config[root_key]
+            conflicts.append((user_key, user_value, root_value))
+
+    return conflicts
 
 
 def parse_mcp_command(command_str: str) -> dict[str, Any]:
@@ -5734,6 +6051,9 @@ def main() -> None:
         # Extract status_line configuration
         status_line = config.get('status-line')
 
+        # Extract user-settings configuration (global user-level settings)
+        user_settings = config.get('user-settings')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -5754,6 +6074,23 @@ def main() -> None:
             else:
                 info(f'Claude Code version specified: {claude_code_version_str}')
                 claude_code_version_normalized = claude_code_version_str
+
+        # Validate user-settings section for excluded keys
+        if user_settings:
+            user_settings_errors = validate_user_settings(user_settings)
+            if user_settings_errors:
+                for err in user_settings_errors:
+                    error(err)
+                sys.exit(1)
+
+        # Detect conflicts between user-settings and root-level settings
+        if user_settings and primary_command_name:
+            conflicts = detect_settings_conflicts(user_settings, config)
+            for user_key, user_value, root_value in conflicts:
+                warning(f"Key '{user_key}' specified in both root level and user-settings.")
+                warning(f'  user-settings value: {user_value}')
+                warning(f'  root-level value: {root_value}')
+                warning('  When using profile command, root-level value takes precedence.')
 
         header(environment_name)
 
@@ -5914,17 +6251,28 @@ def main() -> None:
         _, profile_servers, mcp_stats = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
         has_profile_mcp_servers = len(profile_servers) > 0
 
+        # Step 12: Write user settings
+        print()
+        print(f'{Colors.CYAN}Step 12: Writing user settings...{Colors.NC}')
+        if user_settings:
+            if write_user_settings(user_settings, claude_user_dir):
+                success('User settings configured successfully')
+            else:
+                warning('Failed to write user settings (non-fatal)')
+        else:
+            info('No user settings to configure')
+
         # Check if command creation is needed
         if primary_command_name:
-            # Step 12: Download hooks
+            # Step 13: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 12: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 13: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth)
 
-            # Step 13: Configure settings
+            # Step 14: Configure settings
             print()
-            print(f'{Colors.CYAN}Step 13: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 14: Configuring settings...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -5944,9 +6292,9 @@ def main() -> None:
                 status_line_arg,
             )
 
-            # Step 14: Create launcher script
+            # Step 15: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 14: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 15: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -5956,21 +6304,21 @@ def main() -> None:
                 claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 15: Register global command(s)
+            # Step 16: Register global command(s)
             if launcher_path:
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 15: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 16: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 15: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 16: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 12-15: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 13-16: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -6044,6 +6392,8 @@ def main() -> None:
                 print(f'   * OS environment variables: {set_vars} configured')
             if del_vars > 0:
                 print(f'   * OS environment variables: {del_vars} deleted')
+        if user_settings:
+            print('   * User settings: configured in ~/.claude/settings.json')
         # Only show hooks count if command was specified (hooks was defined)
         if command_names:
             hooks = config.get('hooks', {})
