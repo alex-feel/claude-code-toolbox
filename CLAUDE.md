@@ -226,6 +226,55 @@ uv run pytest
 
 **Important:** Never skip the test suite. Even small changes can have unexpected impacts.
 
+## E2E Testing Requirements for New Features
+
+**Any new functionality MUST include E2E tests.** This is a mandatory requirement.
+
+### When to Add E2E Tests
+
+E2E tests are required when adding:
+- New YAML configuration keys to `setup_environment.py`
+- New file types or download mechanisms
+- New launcher script functionality
+- New MCP server transport types
+- Changes to output file structures (JSON files, scripts)
+- New hooks or event types
+
+### How to Add E2E Tests for New Features
+
+1. **Update `tests/e2e/golden_config.yaml`** - Add the new configuration key with representative test values. This file must contain ALL supported YAML keys.
+
+2. **Update mock repository if needed** - Add mock files to `tests/e2e/fixtures/mock_repo/` for new file types.
+
+3. **Update validators** - Add validation logic to `tests/e2e/validators.py` for new JSON structures or file content.
+
+4. **Update expected outputs** - Modify platform-specific expectations in `tests/e2e/expected/` if the feature generates platform-dependent output.
+
+5. **Add targeted tests** - Create or update test modules in `tests/e2e/` for specific feature validation.
+
+### E2E Test Pattern
+
+```python
+def test_new_feature(e2e_isolated_home: dict[str, Path], golden_config: dict[str, Any]) -> None:
+    """Test description."""
+    # 1. Get relevant paths from fixture
+    claude_dir = e2e_isolated_home['claude_dir']
+
+    # 2. Run setup with golden config (or specific test config)
+    # 3. Validate outputs using composable validators
+    errors = validate_new_feature(output_path, golden_config)
+
+    # 4. Assert no errors (fail with all errors, not just first)
+    assert not errors, '\n'.join(errors)
+```
+
+### Validator Design Rules
+
+- Return `list[str]` of errors (empty = success)
+- Collect ALL errors, not just the first one
+- Include context in error messages (file path, field name, expected vs actual)
+- Use helper functions for reusable validation patterns
+
 ## Commit Conventions
 
 This repository uses Conventional Commits (enforced by commitizen):
