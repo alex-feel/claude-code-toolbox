@@ -83,6 +83,89 @@ uv run pytest -k "test_colors"
 uv run pytest -v
 ```
 
+### E2E Testing
+
+The project includes a comprehensive End-to-End (E2E) testing framework that verifies the complete setup workflow on all platforms.
+
+#### Directory Structure
+
+```text
+tests/e2e/
+├── __init__.py
+├── conftest.py              # E2E fixtures (isolated_home, golden_config, mock_repo_path)
+├── golden_config.yaml       # Comprehensive config with ALL supported YAML keys
+├── validators.py            # Composable validation functions
+├── expected/                # Platform-specific expected outputs
+│   ├── __init__.py
+│   ├── common.py            # Shared expected values
+│   ├── linux.py             # Linux expectations
+│   ├── macos.py             # macOS expectations
+│   └── windows.py           # Windows expectations
+├── fixtures/
+│   └── mock_repo/           # Mock source files for testing
+│       ├── agents/
+│       ├── commands/
+│       ├── configs/
+│       ├── hooks/
+│       ├── prompts/
+│       └── skills/
+├── test_full_setup.py       # Main E2E workflow tests
+├── test_output_files.py     # JSON file content verification
+├── test_launcher_scripts.py # Platform-specific launcher tests
+├── test_path_handling.py    # Tilde expansion and path format tests
+└── test_cleanup.py          # Artifact cleanup verification
+```
+
+#### Running E2E Tests
+
+```bash
+# Run all E2E tests
+uv run pytest tests/e2e/ -v
+
+# Run E2E tests with detailed output
+uv run pytest tests/e2e/ -v --tb=long
+
+# Run specific E2E test module
+uv run pytest tests/e2e/test_output_files.py -v
+
+# Run E2E tests matching a pattern
+uv run pytest tests/e2e/ -k "test_launcher" -v
+```
+
+#### Golden Configuration Purpose
+
+The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as:
+
+1. **Single source of truth** for testing - exercises every configuration option
+2. **Regression prevention** - ensures all config keys work correctly on all platforms
+3. **Documentation by example** - demonstrates the complete configuration schema
+
+The golden config includes:
+- Core settings: `name`, `command-names`, `base-url`, `claude-code-version`
+- Dependencies: `dependencies` (with platform-specific variants)
+- Resources: `agents`, `slash-commands`, `skills`, `files-to-download`
+- Hooks: `hooks` (files and events with command/prompt types)
+- MCP Servers: `mcp-servers` (http, sse, stdio transports)
+- Settings: `model`, `permissions`, `env-variables`, `os-env-variables`
+- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`
+- Extras: `company-announcements`, `attribution`, `status-line`
+
+#### Key Design Principles
+
+- **Complete isolation**: Tests use `tmp_path` and monkeypatched home directories
+- **Function-scoped fixtures**: Each test starts with a clean state
+- **Composable validators**: Return all errors, not just the first
+- **Platform-specific expectations**: Separate modules for Linux, macOS, Windows
+- **CI cleanup verification**: Dedicated step verifies no artifacts leak to real home
+
+#### CI Integration
+
+E2E tests run as a dedicated job in GitHub Actions with:
+- **Platform matrix**: Ubuntu, Windows, macOS
+- **Independent execution**: `fail-fast: false` - each platform runs to completion
+- **Artifact upload**: Debug artifacts on failure for troubleshooting
+- **Cleanup verification**: Post-test check for leaked artifacts
+
 ### Code Quality & Linting
 
 **CRITICAL: Always use pre-commit for code quality checks. DO NOT use `ruff format` directly.**
@@ -142,6 +225,55 @@ uv run pytest
 - Use ONLY `uv run pre-commit run --all-files` for code quality checks
 
 **Important:** Never skip the test suite. Even small changes can have unexpected impacts.
+
+## E2E Testing Requirements for New Features
+
+**Any new functionality MUST include E2E tests.** This is a mandatory requirement.
+
+### When to Add E2E Tests
+
+E2E tests are required when adding:
+- New YAML configuration keys to `setup_environment.py`
+- New file types or download mechanisms
+- New launcher script functionality
+- New MCP server transport types
+- Changes to output file structures (JSON files, scripts)
+- New hooks or event types
+
+### How to Add E2E Tests for New Features
+
+1. **Update `tests/e2e/golden_config.yaml`** - Add the new configuration key with representative test values. This file must contain ALL supported YAML keys.
+
+2. **Update mock repository if needed** - Add mock files to `tests/e2e/fixtures/mock_repo/` for new file types.
+
+3. **Update validators** - Add validation logic to `tests/e2e/validators.py` for new JSON structures or file content.
+
+4. **Update expected outputs** - Modify platform-specific expectations in `tests/e2e/expected/` if the feature generates platform-dependent output.
+
+5. **Add targeted tests** - Create or update test modules in `tests/e2e/` for specific feature validation.
+
+### E2E Test Pattern
+
+```python
+def test_new_feature(e2e_isolated_home: dict[str, Path], golden_config: dict[str, Any]) -> None:
+    """Test description."""
+    # 1. Get relevant paths from fixture
+    claude_dir = e2e_isolated_home['claude_dir']
+
+    # 2. Run setup with golden config (or specific test config)
+    # 3. Validate outputs using composable validators
+    errors = validate_new_feature(output_path, golden_config)
+
+    # 4. Assert no errors (fail with all errors, not just first)
+    assert not errors, '\n'.join(errors)
+```
+
+### Validator Design Rules
+
+- Return `list[str]` of errors (empty = success)
+- Collect ALL errors, not just the first one
+- Include context in error messages (file path, field name, expected vs actual)
+- Use helper functions for reusable validation patterns
 
 ## Commit Conventions
 

@@ -1,0 +1,157 @@
+# E2E Test Environment - Comprehensive Configuration
+# Contains ALL supported YAML keys for complete E2E testing
+# Generated from source code analysis of setup_environment.py
+
+name: "E2E Test Environment"
+
+# Command names (PRIMARY format - array)
+command-names:
+  - "e2e-test-cmd"
+  - "e2e-test-alias"
+
+# Base URL for resources (uses local mock_repo for testing)
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+
+# Claude Code version
+claude-code-version: "latest"
+
+# Node.js installation flag
+install-nodejs: false
+
+# Platform-specific dependencies
+dependencies:
+  common:
+    - "echo 'common-dependency-installed'"
+  windows:
+    - "echo 'windows-dependency-installed'"
+  linux:
+    - "echo 'linux-dependency-installed'"
+  macos:
+    - "echo 'macos-dependency-installed'"
+
+# Agent markdown files
+agents:
+  - "agents/e2e-test-agent.md"
+
+# Slash command files
+slash-commands:
+  - "commands/e2e-test-command.md"
+
+# Skills configuration
+skills:
+  - name: "e2e-test-skill"
+    base: "skills/"
+    files:
+      - "SKILL.md"
+      - "e2e-test-skill.md"
+
+# Additional files to download
+files-to-download:
+  - source: "configs/e2e-extra-file.txt"
+    dest: "~/.claude/e2e-extra-file.txt"
+
+# Hooks configuration
+hooks:
+  files:
+    - "hooks/e2e_test_hook.py"
+    - "configs/e2e-hook-config.yaml"
+  events:
+    # Command hook with config
+    - event: "PostToolUse"
+      matcher: "Edit|MultiEdit|Write"
+      type: "command"
+      command: "e2e_test_hook.py"
+      config: "e2e-hook-config.yaml"
+    # Prompt hook example
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "prompt"
+      prompt: "Consider security implications before executing bash commands"
+      timeout: 30
+
+# MCP Servers - all transport types
+mcp-servers:
+  # HTTP transport (user scope)
+  - name: "e2e-http-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/api"
+    header: "X-API-Key: test-key"
+    env: "E2E_HTTP_TOKEN"
+  # SSE transport (project scope)
+  - name: "e2e-sse-server"
+    scope: "project"
+    transport: "sse"
+    url: "http://localhost:3001/events"
+  # STDIO transport (profile scope)
+  - name: "e2e-stdio-server"
+    scope: "profile"
+    command: "python"
+    args:
+      - "-m"
+      - "e2e_test_server"
+    env:
+      - "E2E_STDIO_DEBUG=1"
+      - "E2E_STDIO_LOG_LEVEL=debug"
+
+# Model configuration
+model: "sonnet"
+
+# Permissions configuration
+permissions:
+  defaultMode: "default"
+  allow:
+    - "mcp__e2e-http-server"
+    - "mcp__e2e-sse-server"
+    - "mcp__e2e-stdio-server"
+    - "Read"
+    - "Glob"
+    - "Grep"
+  deny:
+    - "Bash(rm -rf)"
+  ask:
+    - "Edit"
+    - "Write"
+
+# Environment variables for Claude
+env-variables:
+  E2E_TEST_VAR: "test_value"
+  E2E_ANOTHER_VAR: "another_value"
+  E2E_PATH_VAR: "~/.claude/e2e-data"
+
+# OS-level environment variables
+os-env-variables:
+  E2E_OS_VAR: "os_test_value"
+  E2E_OS_PATH: "/opt/e2e/bin"
+
+# Command defaults
+command-defaults:
+  system-prompt: "prompts/e2e-test-prompt.md"
+  mode: "replace"
+
+# User settings (merged into settings.json)
+user-settings:
+  language: "english"
+  theme: "dark"
+
+# Always-thinking mode
+always-thinking-enabled: true
+
+# Company announcements
+company-announcements:
+  - "Welcome to E2E Testing Environment"
+  - "This is a test announcement for validation"
+
+# Attribution settings (new format)
+attribution:
+  commit: "E2E Test Attribution for Commits"
+  pr: "E2E Test Attribution for Pull Requests"
+
+# DEPRECATED: include-co-authored-by (for backward compatibility testing)
+# include-co-authored-by: true
+
+# Status line configuration
+status-line:
+  file: "hooks/e2e_statusline.py"
+  config: "configs/e2e-statusline-config.yaml"
+  padding: 0

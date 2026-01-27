@@ -1,0 +1,8 @@
+E2E Test Extra File
+===================
+
+This file validates the files-to-download feature.
+It should be downloaded to ~/.claude/e2e-extra-file.txt
+
+Created: E2E Test Suite
+Purpose: Validate arbitrary file download capability

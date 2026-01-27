@@ -1,0 +1,12 @@
+# E2E Test Status Line Configuration
+
+display:
+  icon: "beaker"
+  color: "green"
+  prefix: "[E2E]"
+
+refresh_interval_ms: 5000
+
+conditions:
+  show_on_error: true
+  show_on_warning: true
