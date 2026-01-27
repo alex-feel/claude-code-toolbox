@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.6...v4.25.0) (2026-01-27)
+
+
+### Features
+
+* add user-settings configuration support ([5fb66fd](https://github.com/alex-feel/claude-code-toolbox/commit/5fb66fd40fa271b37b9734dce7644a658850d3dd))
+
 ## [4.24.6](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.5...v4.24.6) (2026-01-26)
 
 
