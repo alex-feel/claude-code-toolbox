@@ -220,6 +220,18 @@ def _validate_mcp_server_config(name: str, server: dict[str, Any]) -> list[str]:
                 "Expected command to be 'cmd' with args starting with '/c', 'npx'",
             )
 
+    # Non-Windows: cmd /c wrapper must NOT be present
+    # This catches bugs where Windows-specific wrapping is incorrectly applied on Unix
+    if sys.platform != 'win32':
+        command = server.get('command', '')
+        if command == 'cmd':
+            args = server.get('args', [])
+            if args and len(args) >= 2 and args[0] == '/c':
+                errors.append(
+                    f"Server '{name}': Windows-specific 'cmd /c' wrapper found on Unix. "
+                    "This indicates a cross-platform bug in MCP server configuration.",
+                )
+
     # Validate transport-specific fields
     server_type = server.get('type', '')
     if server_type in ('http', 'sse') and 'url' not in server:
