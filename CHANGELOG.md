@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.1...v4.25.2) (2026-01-28)
+
+
+### Bug Fixes
+
+* resolve Unix MCP server command generation with npx/npm ([fb7d702](https://github.com/alex-feel/claude-code-toolbox/commit/fb7d7021313b18923115cf6f23e4183768c86730))
+
 ## [4.25.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.0...v4.25.1) (2026-01-28)
 
 
