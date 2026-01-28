@@ -3956,6 +3956,75 @@ class TestParseMcpCommand:
         assert 'localhost' in result['args']
 
 
+class TestBuildPlatformAwareCommand:
+    """Test build_platform_aware_command() function for cross-platform command building."""
+
+    def test_simple_command(self) -> None:
+        """Test simple command without special handling."""
+        result = setup_environment.build_platform_aware_command('python')
+        assert result == ['python']
+
+    def test_command_with_args(self) -> None:
+        """Test command with arguments."""
+        result = setup_environment.build_platform_aware_command('python -m server')
+        assert result == ['python', '-m', 'server']
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_npx_wrapped(self) -> None:
+        """Test npx command is wrapped with cmd /c on Windows."""
+        result = setup_environment.build_platform_aware_command('npx -y @package/name')
+        assert result[0] == 'cmd'
+        assert result[1] == '/c'
+        assert result[2] == 'npx'
+        assert '-y' in result
+        assert '@package/name' in result
+
+    @pytest.mark.skipif(platform.system() != 'Windows', reason='Windows-specific test')
+    def test_windows_npm_wrapped(self) -> None:
+        """Test npm command is wrapped with cmd /c on Windows."""
+        result = setup_environment.build_platform_aware_command('npm exec server')
+        assert result[0] == 'cmd'
+        assert result[1] == '/c'
+        assert result[2] == 'npm'
+
+    @pytest.mark.skipif(platform.system() == 'Windows', reason='Non-Windows test')
+    def test_unix_npx_not_wrapped(self) -> None:
+        """Test npx is NOT wrapped on Unix systems."""
+        result = setup_environment.build_platform_aware_command('npx -y @package/name')
+        assert result[0] == 'npx'
+        assert 'cmd' not in result
+        assert '/c' not in result
+
+    @pytest.mark.skipif(platform.system() == 'Windows', reason='Non-Windows test')
+    def test_unix_npm_not_wrapped(self) -> None:
+        """Test npm is NOT wrapped on Unix systems."""
+        result = setup_environment.build_platform_aware_command('npm exec server')
+        assert result[0] == 'npm'
+        assert 'cmd' not in result
+
+    def test_empty_command(self) -> None:
+        """Test empty command string returns empty list."""
+        result = setup_environment.build_platform_aware_command('')
+        assert result == []
+
+    def test_whitespace_command(self) -> None:
+        """Test whitespace-only command string returns empty list."""
+        result = setup_environment.build_platform_aware_command('   ')
+        assert result == []
+
+    def test_non_npm_command_not_wrapped(self) -> None:
+        """Test non-npm/npx commands are never wrapped."""
+        result = setup_environment.build_platform_aware_command('uvx my-server --debug')
+        assert result == ['uvx', 'my-server', '--debug']
+
+    def test_quoted_args_preserved(self) -> None:
+        """Test quoted arguments are preserved correctly."""
+        result = setup_environment.build_platform_aware_command('python -c "print(1)"')
+        assert result[0] == 'python'
+        assert '-c' in result
+        assert 'print(1)' in result
+
+
 class TestConfigureAllMcpServersStats:
     """Test configure_all_mcp_servers stats tracking (Bug 2 fix)."""
 

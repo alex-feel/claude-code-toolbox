@@ -1231,6 +1231,39 @@ def detect_settings_conflicts(
     return conflicts
 
 
+def build_platform_aware_command(command: str) -> list[str]:
+    """Build command list with platform-appropriate wrapping.
+
+    On Windows, wraps npx/npm commands with 'cmd /c' to enable proper PATH
+    resolution. On Unix, returns command parts directly.
+
+    Args:
+        command: The command string to process
+
+    Returns:
+        List of command parts ready for execution or config generation
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        # Fallback for malformed commands
+        parts = command.split()
+
+    if not parts:
+        return [command] if command.strip() else []
+
+    executable = parts[0]
+    args = parts[1:] if len(parts) > 1 else []
+
+    # Windows-specific handling for npx/npm commands
+    if platform.system() == 'Windows' and any(
+        npm_cmd in executable.lower() for npm_cmd in ['npx', 'npm']
+    ):
+        return ['cmd', '/c', executable] + args
+
+    return [executable] + args
+
+
 def parse_mcp_command(command_str: str) -> dict[str, Any]:
     """Parse MCP command string into official MCP JSON schema format.
 
@@ -1238,7 +1271,7 @@ def parse_mcp_command(command_str: str) -> dict[str, Any]:
     Claude Code's MCP configuration. Handles:
     - Tilde path expansion to absolute paths
     - Shell-aware splitting with shlex
-    - Windows npx/npm wrapper with cmd /c
+    - Windows npx/npm wrapper with cmd /c (via build_platform_aware_command)
     - POSIX path format for arguments (cross-platform compatibility)
 
     Args:
@@ -1255,31 +1288,14 @@ def parse_mcp_command(command_str: str) -> dict[str, Any]:
     # and ensures consistent POSIX path format in the output
     expanded = expanded.replace('\\', '/')
 
-    # Step 3: Parse command into parts using shlex
-    try:
-        parts = shlex.split(expanded)
-    except ValueError:
-        # Fallback for malformed commands
-        parts = expanded.split()
-
-    if not parts:
+    # Step 3: Build platform-aware command using shared helper
+    cmd_parts = build_platform_aware_command(expanded)
+    if not cmd_parts:
         return {'command': expanded, 'args': []}
 
-    executable = parts[0]
-    args = parts[1:] if len(parts) > 1 else []
-
-    # Step 4: Windows-specific handling for npx/npm commands
-    if platform.system() == 'Windows' and any(
-        npm_cmd in executable.lower() for npm_cmd in ['npx', 'npm']
-    ):
-        return {
-            'command': 'cmd',
-            'args': ['/c', executable] + args,
-        }
-
     return {
-        'command': executable,
-        'args': args,
+        'command': cmd_parts[0],
+        'args': cmd_parts[1:] if len(cmd_parts) > 1 else [],
     }
 
 
@@ -4551,11 +4567,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 base_cmd.extend(['--env', env_var])
             base_cmd.extend(['--'])
 
-            # Special handling for npx (needs cmd /c wrapper on Windows)
-            if 'npx' in command:
-                base_cmd.extend(['cmd', '/c', command])
-            else:
-                base_cmd.extend(command.split())
+            # Build platform-aware command using shared helper
+            base_cmd.extend(build_platform_aware_command(command))
 
             # Windows STDIO transport - use bash for consistent cross-platform behavior
             # This unifies STDIO with HTTP transport (both use run_bash_command)

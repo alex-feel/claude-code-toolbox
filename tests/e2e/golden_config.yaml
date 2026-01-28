@@ -93,6 +93,12 @@ mcp-servers:
     env:
       - "E2E_STDIO_DEBUG=1"
       - "E2E_STDIO_LOG_LEVEL=debug"
+  # NPX transport (local scope) - tests Windows cmd /c wrapping
+  - name: "e2e-npx-server"
+    scope: "local"
+    command: "npx @modelcontextprotocol/server-memory"
+    env:
+      - "E2E_NPX_DEBUG=1"
 
 # Model configuration
 model: "sonnet"
@@ -104,6 +110,7 @@ permissions:
     - "mcp__e2e-http-server"
     - "mcp__e2e-sse-server"
     - "mcp__e2e-stdio-server"
+    - "mcp__e2e-npx-server"
     - "Read"
     - "Glob"
     - "Grep"
