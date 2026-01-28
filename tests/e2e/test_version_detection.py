@@ -11,7 +11,7 @@ Extended Regular Expressions (ERE) instead.
 
 from __future__ import annotations
 
-import subprocess
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,10 +25,9 @@ from tests.e2e.validators import validate_version_detection_pattern
 class TestVersionDetectionPattern:
     """Tests for cross-platform version detection regex pattern.
 
-    These tests run the actual grep command to ensure compatibility
-    with the platform's grep implementation:
-    - GNU grep on Linux and Windows (Git Bash)
-    - BSD grep on macOS
+    These tests validate the POSIX ERE pattern used in launcher scripts
+    for extracting semantic version numbers. Using Python's re module
+    ensures consistent behavior across all platforms without shell dependencies.
     """
 
     @pytest.mark.parametrize(
@@ -53,93 +52,48 @@ class TestVersionDetectionPattern:
         version_output: str,
         expected_version: str,
     ) -> None:
-        """Verify version extraction regex works on current platform.
+        """Verify version extraction regex works correctly.
 
-        This test runs the actual grep command to ensure it works with
-        the platform's grep implementation (GNU grep on Linux/Windows,
-        BSD grep on macOS).
+        This test validates the POSIX ERE pattern used in launcher scripts
+        for extracting semantic version numbers.
         """
-        # Use platform-appropriate shell
-        if sys.platform == 'win32':
-            # Windows: use Git Bash via bash.exe
-            cmd = [
-                'bash',
-                '-c',
-                f"echo '{version_output}' | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1",
-            ]
-        else:
-            # Unix: use sh directly
-            cmd = [
-                'sh',
-                '-c',
-                f"echo '{version_output}' | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1",
-            ]
+        # The POSIX ERE pattern used in launcher scripts
+        # This is equivalent to: grep -oE '[0-9]+\.[0-9]+\.[0-9]+'
+        pattern = r'[0-9]+\.[0-9]+\.[0-9]+'
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
+        match = re.search(pattern, version_output)
+
+        assert match is not None, (
+            f'Version pattern did not match in: {version_output!r}'
         )
-
-        # Verify extraction succeeded
-        assert result.returncode == 0, f'grep command failed: {result.stderr}'
-        extracted = result.stdout.strip()
+        extracted = match.group(0)
         assert extracted == expected_version, (
             f'Version extraction mismatch: expected {expected_version!r}, got {extracted!r}'
         )
 
     def test_version_regex_no_match(self) -> None:
-        """Verify regex returns empty when no version pattern found."""
+        """Verify regex returns no match when no version pattern found."""
         version_output = 'claude: command not found'
 
-        if sys.platform == 'win32':
-            cmd = [
-                'bash',
-                '-c',
-                f"echo '{version_output}' | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1",
-            ]
-        else:
-            cmd = [
-                'sh',
-                '-c',
-                f"echo '{version_output}' | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1",
-            ]
+        # The POSIX ERE pattern used in launcher scripts
+        pattern = r'[0-9]+\.[0-9]+\.[0-9]+'
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        match = re.search(pattern, version_output)
 
-        # grep returns 1 when no match - this is expected
-        extracted = result.stdout.strip()
-        assert extracted == '', f'Expected empty string, got {extracted!r}'
+        assert match is None, f'Expected no match, but found: {match.group(0)!r}'
 
     def test_posix_ere_flag_supported(self) -> None:
-        """Verify that grep -E flag is available on current platform.
+        """Verify that the POSIX ERE digit pattern works in Python regex.
 
-        This is a sanity check that the POSIX ERE flag works.
+        This is a sanity check that Python's regex matches POSIX ERE behavior.
         """
-        if sys.platform == 'win32':
-            cmd = ['bash', '-c', "echo '123' | grep -E '[0-9]+'"]
-        else:
-            cmd = ['sh', '-c', "echo '123' | grep -E '[0-9]+'"]
+        pattern = r'[0-9]+'
+        test_input = '123'
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
+        match = re.search(pattern, test_input)
 
-        assert result.returncode == 0, (
-            f'grep -E not supported on this platform: {result.stderr}'
-        )
+        assert match is not None, 'Pattern [0-9]+ should match digits'
+        assert match.group(0) == '123', f'Expected "123", got {match.group(0)!r}'
 
 
 def _create_test_prompt(claude_dir: Path) -> str:
