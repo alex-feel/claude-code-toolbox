@@ -632,6 +632,58 @@ def _validate_unix_launcher(path: Path, content: str, command_name: str) -> list
     return errors
 
 
+def validate_version_detection_pattern(content: str, script_name: str) -> list[str]:
+    """Validate that script uses cross-platform version detection pattern.
+
+    Checks that the script uses POSIX ERE (grep -oE) instead of PCRE (grep -oP)
+    for compatibility with macOS BSD grep.
+
+    Args:
+        content: Script content to validate
+        script_name: Name of the script for error messages
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+
+    # Check for forbidden PCRE patterns
+    if 'grep -oP' in content:
+        errors.append(
+            f'{script_name}: Contains grep -oP (PCRE) which is not supported on macOS. '
+            'Use grep -oE (POSIX ERE) instead.',
+        )
+
+    if 'grep -P' in content:
+        errors.append(
+            f'{script_name}: Contains grep -P (PCRE) which is not supported on macOS. '
+            'Use grep -E (POSIX ERE) instead.',
+        )
+
+    # Check for PCRE digit shorthand in grep context
+    # Look for patterns like: grep ... '\\d+' or grep ... "\\d+"
+    if 'grep' in content and ('\\\\d+' in content or "'\\d+" in content):
+        errors.append(
+            f'{script_name}: Contains \\d+ (PCRE digit) which is not supported on macOS. '
+            'Use [0-9]+ (POSIX) instead.',
+        )
+
+    # Verify correct pattern is present (if version detection is used)
+    if 'get_claude_version' in content:
+        if 'grep -oE' not in content:
+            errors.append(
+                f'{script_name}: Version detection function exists but grep -oE not found. '
+                'Version detection must use POSIX ERE for cross-platform compatibility.',
+            )
+        if '[0-9]+' not in content:
+            errors.append(
+                f'{script_name}: Version detection function exists but [0-9]+ pattern not found. '
+                'Must use POSIX digit class for cross-platform compatibility.',
+            )
+
+    return errors
+
+
 def validate_all_paths_expanded(data: dict[str, Any], path_keys: list[str]) -> list[str]:
     """Validate that specified keys in a dict have expanded paths (no tildes).
 
