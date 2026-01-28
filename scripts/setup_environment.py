@@ -5291,7 +5291,7 @@ fi
 
 # Version detection function
 get_claude_version() {{
-  claude --version 2>/dev/null | grep -oP '\\d+\\.\\d+\\.\\d+' | head -1
+  claude --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1
 }}
 
 # Version comparison function (checks if version1 >= version2)
@@ -5471,7 +5471,7 @@ fi
 
 # Version detection function
 get_claude_version() {{
-  claude --version 2>/dev/null | grep -oP '\\d+\\.\\d+\\.\\d+' | head -1
+  claude --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1
 }}
 
 # Version comparison function (checks if version1 >= version2)
