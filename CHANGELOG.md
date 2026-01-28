@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.25.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.0...v4.25.1) (2026-01-28)
+
+
+### Bug Fixes
+
+* replace grep -P with grep -E for macOS compatibility ([79a2b96](https://github.com/alex-feel/claude-code-toolbox/commit/79a2b967291914ec4b6f45c7a54503e0dc9ffcc2))
+
 ## [4.25.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.24.6...v4.25.0) (2026-01-27)
 
 
