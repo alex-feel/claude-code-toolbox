@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.26.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.2...v4.26.0) (2026-01-29)
+
+
+### Features
+
+* add node prefix for JavaScript hooks (.js, .mjs, .cjs) ([0346c74](https://github.com/alex-feel/claude-code-toolbox/commit/0346c7453486e3b7dbd0d3fa3ce3b5834dcc7452))
+
 ## [4.25.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.1...v4.25.2) (2026-01-28)
 
 
