@@ -5119,6 +5119,10 @@ def create_additional_settings(
                 # Supports both .py and .pyw extensions
                 is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
 
+                # Determine if this is a JavaScript/Node.js script (case-insensitive check)
+                # Supports .js (standard), .mjs (ES modules), .cjs (CommonJS modules)
+                is_javascript_script = clean_command.lower().endswith(('.js', '.mjs', '.cjs'))
+
                 if is_python_script:
                     # Python script - use uv run for cross-platform execution
                     # Build absolute path to the hook file in .claude/hooks/
@@ -5139,6 +5143,24 @@ def create_additional_settings(
                         config_path = claude_user_dir / 'hooks' / Path(clean_config).name
                         config_path_str = config_path.as_posix()
                         full_command = f'{full_command} {config_path_str}'
+
+                elif is_javascript_script:
+                    # JavaScript script - use node for cross-platform execution
+                    # node.exe is a binary (not batch script), works directly on all platforms
+                    # Windows: .js files are associated with WSH (JScript), NOT Node.js
+                    # Unix: .js files have no default handler
+                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    hook_path_str = hook_path.as_posix()
+                    full_command = f'node {hook_path_str}'
+
+                    # Append config file path if specified
+                    if config:
+                        # Strip query parameters from config filename
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
+
                 else:
                     # Other file - build absolute path and use as-is
                     # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
