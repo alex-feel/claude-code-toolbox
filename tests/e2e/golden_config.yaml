@@ -53,15 +53,37 @@ files-to-download:
 # Hooks configuration
 hooks:
   files:
+    # Python hook
     - "hooks/e2e_test_hook.py"
     - "configs/e2e-hook-config.yaml"
+    # JavaScript hooks (all extensions)
+    - "hooks/e2e_test_hook.js"
+    - "hooks/e2e_test_hook_esm.mjs"
+    - "hooks/e2e_test_hook_cjs.cjs"
+    - "configs/e2e-js-hook-config.json"
   events:
-    # Command hook with config
+    # Python command hook with config
     - event: "PostToolUse"
       matcher: "Edit|MultiEdit|Write"
       type: "command"
       command: "e2e_test_hook.py"
       config: "e2e-hook-config.yaml"
+    # JavaScript command hook (.js)
+    - event: "PostToolUse"
+      matcher: "Read"
+      type: "command"
+      command: "e2e_test_hook.js"
+    # JavaScript ES module hook (.mjs) with config
+    - event: "PreToolUse"
+      matcher: "Glob"
+      type: "command"
+      command: "e2e_test_hook_esm.mjs"
+      config: "e2e-js-hook-config.json"
+    # JavaScript CommonJS hook (.cjs)
+    - event: "PreToolUse"
+      matcher: "Grep"
+      type: "command"
+      command: "e2e_test_hook_cjs.cjs"
     # Prompt hook example
     - event: "PreToolUse"
       matcher: "Bash"

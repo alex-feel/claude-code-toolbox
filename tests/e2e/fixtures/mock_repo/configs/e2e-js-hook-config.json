@@ -1,0 +1,9 @@
+{
+  "name": "E2E JavaScript Hook Config",
+  "version": "1.0.0",
+  "settings": {
+    "strict_mode": true,
+    "timeout_ms": 5000,
+    "log_level": "info"
+  }
+}

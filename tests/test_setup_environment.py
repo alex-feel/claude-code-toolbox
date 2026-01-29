@@ -2522,6 +2522,239 @@ class TestCreateAdditionalSettings:
             assert 'hooks' in settings
             assert 'PostToolUse' in settings['hooks']
 
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_with_javascript_hooks(self, mock_download):
+        """Test creating settings with JavaScript hooks includes node prefix."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/quality-check.js'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit|Write',
+                        'type': 'command',
+                        'command': 'quality-check.js',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'hooks' in settings
+            assert 'PostToolUse' in settings['hooks']
+
+            # Verify node prefix is present
+            hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert hook_command.startswith('node ')
+            assert 'quality-check.js' in hook_command
+
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_with_mjs_hooks(self, mock_download):
+        """Test creating settings with .mjs ES module hooks includes node prefix."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/validator.mjs'],
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Bash',
+                        'type': 'command',
+                        'command': 'validator.mjs',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_command = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
+            assert hook_command.startswith('node ')
+            assert 'validator.mjs' in hook_command
+
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_with_cjs_hooks(self, mock_download):
+        """Test creating settings with .cjs CommonJS hooks includes node prefix."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/legacy-hook.cjs'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Read',
+                        'type': 'command',
+                        'command': 'legacy-hook.cjs',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert hook_command.startswith('node ')
+            assert 'legacy-hook.cjs' in hook_command
+
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_javascript_hook_with_config(self, mock_download):
+        """Test JavaScript hooks with config file path appended correctly."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/quality-check.js', 'configs/js-hook-config.yaml'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit|Write',
+                        'type': 'command',
+                        'command': 'quality-check.js',
+                        'config': 'js-hook-config.yaml',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert hook_command.startswith('node ')
+            assert 'quality-check.js' in hook_command
+            assert 'js-hook-config.yaml' in hook_command
+
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_mixed_python_javascript_hooks(self, mock_download):
+        """Test mixed Python and JavaScript hooks get correct prefixes."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/python_hook.py', 'hooks/js_hook.js'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit',
+                        'type': 'command',
+                        'command': 'python_hook.py',
+                    },
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Write',
+                        'type': 'command',
+                        'command': 'js_hook.js',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Find Python and JavaScript hooks
+            post_tool_use_hooks = settings['hooks']['PostToolUse']
+
+            for hook_group in post_tool_use_hooks:
+                for hook in hook_group['hooks']:
+                    if 'python_hook.py' in hook['command']:
+                        assert 'uv run' in hook['command']
+                    elif 'js_hook.js' in hook['command']:
+                        assert hook['command'].startswith('node ')
+
+    @patch('setup_environment.handle_resource')
+    def test_create_additional_settings_javascript_case_insensitive(self, mock_download):
+        """Test JavaScript extension detection is case-insensitive."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/Hook.JS'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit',
+                        'type': 'command',
+                        'command': 'Hook.JS',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_additional_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert hook_command.startswith('node ')
+
     def test_create_additional_settings_always_thinking_enabled_true(self):
         """Test alwaysThinkingEnabled set to true."""
         with tempfile.TemporaryDirectory() as tmpdir:

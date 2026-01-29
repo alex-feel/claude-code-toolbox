@@ -218,11 +218,15 @@ def mock_repo_path() -> Path:
         │   └── e2e-test-skill.md
         ├── hooks/
         │   ├── e2e_test_hook.py
-        │   └── e2e_statusline.py
+        │   ├── e2e_statusline.py
+        │   ├── e2e_test_hook.js          # JavaScript hook (standard)
+        │   ├── e2e_test_hook_esm.mjs     # JavaScript hook (ES module)
+        │   └── e2e_test_hook_cjs.cjs     # JavaScript hook (CommonJS)
         ├── configs/
         │   ├── e2e-hook-config.yaml
         │   ├── e2e-statusline-config.yaml
-        │   └── e2e-extra-file.txt
+        │   ├── e2e-extra-file.txt
+        │   └── e2e-js-hook-config.json   # Config for JavaScript hooks
         └── prompts/
             └── e2e-test-prompt.md
 

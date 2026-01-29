@@ -447,11 +447,37 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                         f"Hook event '{event_name}' matcher '{expected_matcher}' has empty hooks list",
                     )
                 else:
-                    errors.extend(
-                        f'Hook type mismatch for {event_name}: expected {hook_type!r}'
-                        for hook in inner_hooks
-                        if hook.get('type') != hook_type
-                    )
+                    for hook in inner_hooks:
+                        if hook.get('type') != hook_type:
+                            errors.append(
+                                f'Hook type mismatch for {event_name}: expected {hook_type!r}',
+                            )
+
+                        # Validate command prefix for script types
+                        if hook_type == 'command':
+                            command = hook.get('command', '')
+                            command_file = event_config.get('command', '')
+                            command_file_lower = command_file.lower()
+
+                            # Check Python prefix
+                            if (
+                                command_file_lower.endswith(('.py', '.pyw'))
+                                and 'uv run' not in command
+                            ):
+                                errors.append(
+                                    f"Python hook '{command_file}' missing 'uv run' prefix "
+                                    f'in command: {command}',
+                                )
+
+                            # Check JavaScript prefix
+                            elif (
+                                command_file_lower.endswith(('.js', '.mjs', '.cjs'))
+                                and not command.startswith('node ')
+                            ):
+                                errors.append(
+                                    f"JavaScript hook '{command_file}' missing 'node' prefix "
+                                    f'in command: {command}',
+                                )
                 break
 
         if not found_matcher and expected_matcher:
