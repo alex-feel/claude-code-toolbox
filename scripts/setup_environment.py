@@ -137,8 +137,8 @@ type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str,
 
 
 # Default number of parallel workers - can be overridden via CLAUDE_PARALLEL_WORKERS env var
-# Reduced from 5 to 3 to decrease likelihood of hitting GitHub secondary rate limits
-DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+# Reduced from 5 to 2 to decrease likelihood of hitting GitHub secondary rate limits
+DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
 
 
 def is_parallel_mode_enabled() -> bool:
@@ -155,6 +155,7 @@ def execute_parallel(
     items: list[T],
     func: Callable[[T], R],
     max_workers: int = DEFAULT_PARALLEL_WORKERS,
+    stagger_delay: float = 0.0,
 ) -> list[R]:
     """Execute a function on items in parallel with error isolation.
 
@@ -164,7 +165,9 @@ def execute_parallel(
     Args:
         items: List of items to process
         func: Function to apply to each item
-        max_workers: Maximum number of parallel workers (default: 5)
+        max_workers: Maximum number of parallel workers (default: 2)
+        stagger_delay: Delay in seconds between task submissions to prevent
+            thundering herd on rate-limited APIs (default: 0.0)
 
     Returns:
         List of results in the same order as input items.
@@ -186,10 +189,12 @@ def execute_parallel(
     results_with_index: list[tuple[int, R | BaseException]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks with their index for ordering
-        future_to_index: dict[concurrent.futures.Future[R], int] = {
-            executor.submit(func, item): idx for idx, item in enumerate(items)
-        }
+        # Submit tasks with optional stagger delay to prevent thundering herd
+        future_to_index: dict[concurrent.futures.Future[R], int] = {}
+        for idx, item in enumerate(items):
+            future_to_index[executor.submit(func, item)] = idx
+            if stagger_delay > 0 and idx < len(items) - 1:
+                time.sleep(stagger_delay)
 
         # Collect results as they complete
         for future in concurrent.futures.as_completed(future_to_index):
@@ -228,6 +233,7 @@ def execute_parallel_safe(
     func: Callable[[T], R],
     default_on_error: R,
     max_workers: int = DEFAULT_PARALLEL_WORKERS,
+    stagger_delay: float = 0.0,
 ) -> list[R]:
     """Execute a function on items in parallel with error handling.
 
@@ -238,7 +244,9 @@ def execute_parallel_safe(
         items: List of items to process
         func: Function to apply to each item
         default_on_error: Value to return for items that raise exceptions
-        max_workers: Maximum number of parallel workers (default: 5)
+        max_workers: Maximum number of parallel workers (default: 2)
+        stagger_delay: Delay in seconds between task submissions to prevent
+            thundering herd on rate-limited APIs (default: 0.0)
 
     Returns:
         List of results in the same order as input items.
@@ -254,7 +262,7 @@ def execute_parallel_safe(
             debug_log(f'Item processing failed: {exc}')
             return default_on_error
 
-    return execute_parallel(items, safe_func, max_workers)
+    return execute_parallel(items, safe_func, max_workers, stagger_delay=stagger_delay)
 
 
 # Windows UAC elevation helper functions
@@ -3489,8 +3497,8 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 def fetch_with_retry[T](
     request_func: Callable[[], T],
     url: str,
-    max_retries: int = 3,
-    initial_backoff: float = 1.0,
+    max_retries: int = 10,
+    initial_backoff: float = 2.0,
 ) -> T:
     """Execute a fetch operation with retry logic for rate limiting.
 
@@ -3500,8 +3508,8 @@ def fetch_with_retry[T](
     Args:
         request_func: Function that performs the actual request and returns result
         url: URL being fetched (for logging purposes)
-        max_retries: Maximum number of retry attempts (default: 3)
-        initial_backoff: Initial backoff time in seconds (default: 1.0)
+        max_retries: Maximum number of retry attempts (default: 10)
+        initial_backoff: Initial backoff time in seconds (default: 2.0)
 
     Returns:
         Result from request_func
@@ -3889,8 +3897,8 @@ def process_resources(
         resource, destination = task
         return handle_resource(resource, destination, config_source, base_url, auth_param)
 
-    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
-    results = execute_parallel_safe(download_tasks, download_single_resource, False)
+    # Execute downloads in parallel with stagger delay to avoid rate limiting
+    results = execute_parallel_safe(download_tasks, download_single_resource, False, stagger_delay=0.5)
     return all(results)
 
 
@@ -3949,7 +3957,7 @@ def process_file_downloads(
             continue
 
         # Expand destination path (~ and environment variables)
-        # This makes it work cross-platform: ~/.config, %USERPROFILE%\bin, $HOME/.local
+        # This makes it work cross-platform: ~/.config, %USERPROFILE%\\bin, $HOME/.local
         expanded_dest = os.path.expanduser(str(dest))
         expanded_dest = os.path.expandvars(expanded_dest)
         dest_path = Path(expanded_dest)
@@ -3970,9 +3978,9 @@ def process_file_downloads(
         source, dest_path = download_info
         return handle_resource(source, dest_path, config_source, base_url, auth_param)
 
-    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    # Execute downloads in parallel with stagger delay to avoid rate limiting
     if valid_downloads:
-        download_results = execute_parallel_safe(valid_downloads, download_single_file, False)
+        download_results = execute_parallel_safe(valid_downloads, download_single_file, False, stagger_delay=0.5)
         success_count = sum(1 for result in download_results if result)
         failed_count = len(download_results) - success_count + invalid_count
     else:
@@ -4115,8 +4123,8 @@ def process_skills(
         """Install a single skill and return success status."""
         return process_skill(skill_config, skills_dir, config_source, auth_param)
 
-    # Execute skill installations in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
-    results = execute_parallel_safe(skills_config, install_single_skill, False)
+    # Execute skill installations in parallel with stagger delay to avoid rate limiting
+    results = execute_parallel_safe(skills_config, install_single_skill, False, stagger_delay=0.5)
     return all(results)
 
 
@@ -4892,8 +4900,8 @@ def download_hook_files(
         file, destination = task
         return handle_resource(file, destination, config_source, base_url, auth_param)
 
-    # Execute downloads in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
-    results = execute_parallel_safe(download_tasks, download_single_hook, False)
+    # Execute downloads in parallel with stagger delay to avoid rate limiting
+    results = execute_parallel_safe(download_tasks, download_single_hook, False, stagger_delay=0.5)
     return all(results)
 
 
@@ -6184,12 +6192,16 @@ def main() -> None:
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
 
+        # Track download failures across all steps for final error reporting
+        download_failures: list[str] = []
+
         # Step 3: Download/copy custom files
         print()
         print(f'{Colors.CYAN}Step 3: Processing file downloads...{Colors.NC}')
         files_to_download = config.get('files-to-download', [])
         if files_to_download:
-            process_file_downloads(files_to_download, config_source, base_url, args.auth)
+            if not process_file_downloads(files_to_download, config_source, base_url, args.auth):
+                download_failures.append('file downloads')
         else:
             info('No custom files to download')
 
@@ -6217,13 +6229,21 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 7: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
-        process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth)
+        if agents:
+            if not process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth):
+                download_failures.append('agents')
+        else:
+            info('No agents to process')
 
         # Step 8: Process slash commands
         print()
         print(f'{Colors.CYAN}Step 8: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
-        process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth)
+        if commands:
+            if not process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth):
+                download_failures.append('slash commands')
+        else:
+            info('No slash commands to process')
 
         # Step 9: Process skills
         print()
@@ -6235,7 +6255,11 @@ def main() -> None:
             if isinstance(skills_raw, list)
             else []
         )
-        process_skills(skills, skills_dir, config_source, args.auth)
+        if skills:
+            if not process_skills(skills, skills_dir, config_source, args.auth):
+                download_failures.append('skills')
+        else:
+            info('No skills configured')
 
         # Step 10: Process system prompt (if specified)
         print()
@@ -6246,7 +6270,8 @@ def main() -> None:
             clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
             sys_prompt_filename = Path(clean_prompt).name
             prompt_path = prompts_dir / sys_prompt_filename
-            handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth)
+            if not handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth):
+                download_failures.append('system prompt')
         else:
             info('No additional system prompt configured')
 
@@ -6303,7 +6328,8 @@ def main() -> None:
             print()
             print(f'{Colors.CYAN}Step 13: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
-            download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth)
+            if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth):
+                download_failures.append('hook files')
 
             # Step 14: Configure settings
             print()
@@ -6357,7 +6383,33 @@ def main() -> None:
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Final message
+        # Check for download failures and report accordingly
+        if download_failures:
+            print()
+            print(f'{Colors.RED}========================================================================{Colors.NC}')
+            print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
+            print(f'{Colors.RED}========================================================================{Colors.NC}')
+            print()
+            error('The following resources failed to download:')
+            for failure in download_failures:
+                error(f'  - {failure}')
+            print()
+            error('Configuration steps were completed, but some files are missing.')
+            error('Please check your network connection and authentication, then re-run the setup.')
+            print()
+
+            # If running elevated via UAC, add a pause so user can see the error
+            if was_elevated_via_uac and not is_running_in_pytest():
+                print()
+                print(f'{Colors.RED}========================================================================{Colors.NC}')
+                print(f'{Colors.RED}     Setup Completed with Download Errors{Colors.NC}')
+                print(f'{Colors.RED}========================================================================{Colors.NC}')
+                print()
+                input('Press Enter to exit...')
+
+            sys.exit(1)
+
+        # Final message - success (no download failures)
         print()
         print(f'{Colors.GREEN}========================================================================{Colors.NC}')
         print(f'{Colors.GREEN}                    Setup Complete!{Colors.NC}')

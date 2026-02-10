@@ -831,8 +831,9 @@ class TestMainFlowWithValidation:
         ):
             setup_environment.main()
 
-        # Verify exit was called
-        mock_exit.assert_called_once_with(1)
+        # Verify exit was called with code 1 (may be called multiple times
+        # since mocked sys.exit doesn't actually halt execution)
+        mock_exit.assert_any_call(1)
         # Verify error messages
         mock_error.assert_any_call('Configuration validation failed!')
         mock_error.assert_any_call('The following files are not accessible:')
