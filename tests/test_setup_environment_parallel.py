@@ -116,8 +116,8 @@ class TestExecuteParallel:
         assert call_order == [1, 2, 3, 4, 5]  # Sequential order preserved
 
     def test_default_max_workers(self) -> None:
-        """Test that default max_workers is 3 (reduced from 5 to minimize rate limiting)."""
-        assert DEFAULT_PARALLEL_WORKERS == 3
+        """Test that default max_workers is 2 (reduced to minimize rate limiting)."""
+        assert DEFAULT_PARALLEL_WORKERS == 2
 
     def test_custom_max_workers(self) -> None:
         """Test that custom max_workers is respected."""
@@ -513,3 +513,54 @@ class TestSkillsWithParallelExecution:
                 )
 
             assert result is True
+
+
+class TestStaggerDelay:
+    """Test stagger delay between parallel task submissions."""
+
+    @patch('setup_environment.time.sleep')
+    def test_stagger_delay_applied_between_submissions(self, mock_sleep: MagicMock) -> None:
+        """Test that stagger_delay causes sleep between task submissions."""
+        items = [1, 2, 3]
+        results = setup_environment.execute_parallel(
+            items, lambda x: x * 2, max_workers=2, stagger_delay=0.5,
+        )
+        assert sorted(results) == [2, 4, 6]
+        # Should sleep between submissions (not after the last one)
+        stagger_calls = [c for c in mock_sleep.call_args_list if c[0][0] == 0.5]
+        assert len(stagger_calls) == 2  # Between items 1->2 and 2->3
+
+    def test_stagger_delay_zero_is_default(self) -> None:
+        """Test that default stagger_delay is 0.0."""
+        import inspect
+
+        sig = inspect.signature(setup_environment.execute_parallel)
+        assert sig.parameters['stagger_delay'].default == 0.0
+
+    @patch('setup_environment.time.sleep')
+    def test_stagger_delay_zero_no_sleep(self, mock_sleep: MagicMock) -> None:
+        """Test no sleep when stagger_delay is 0."""
+        items = [1, 2, 3]
+        results = setup_environment.execute_parallel(
+            items, lambda x: x * 2, max_workers=2, stagger_delay=0.0,
+        )
+        assert sorted(results) == [2, 4, 6]
+        mock_sleep.assert_not_called()
+
+    @patch('setup_environment.time.sleep')
+    def test_stagger_delay_safe_variant(self, mock_sleep: MagicMock) -> None:
+        """Test stagger delay passes through execute_parallel_safe."""
+        items = [1, 2, 3]
+        results = setup_environment.execute_parallel_safe(
+            items, lambda x: x * 2, default_on_error=0, stagger_delay=0.5,
+        )
+        assert sorted(results) == [2, 4, 6]
+        stagger_calls = [c for c in mock_sleep.call_args_list if c[0][0] == 0.5]
+        assert len(stagger_calls) == 2
+
+    def test_stagger_delay_safe_default_is_zero(self) -> None:
+        """Test that default stagger_delay for execute_parallel_safe is 0.0."""
+        import inspect
+
+        sig = inspect.signature(setup_environment.execute_parallel_safe)
+        assert sig.parameters['stagger_delay'].default == 0.0

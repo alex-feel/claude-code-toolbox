@@ -3593,6 +3593,280 @@ class TestMainFunction:
             mock_exit.assert_not_called()
 
 
+class TestDownloadFailureTracking:
+    """Test that download failures are tracked and reported in main()."""
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_file_downloads')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.download_hook_files')
+    @patch('setup_environment.handle_resource')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_exits_with_error_on_download_failure(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_handle: MagicMock,
+        mock_hooks: MagicMock,
+        mock_skills: MagicMock,
+        mock_files: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Test that main() exits with code 1 when downloads fail."""
+        del mock_mkdir, mock_is_admin
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['test-env'],
+                'agents': ['agents/test.md'],
+                'slash-commands': ['commands/test.md'],
+                'hooks': {'files': ['hook.py']},
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        # Agents download fails
+        mock_resources.return_value = False
+        mock_files.return_value = True
+        mock_skills.return_value = True
+        mock_hooks.return_value = True
+        mock_handle.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_file_downloads')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.download_hook_files')
+    @patch('setup_environment.handle_resource')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_shows_success_when_all_downloads_succeed(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_handle: MagicMock,
+        mock_hooks: MagicMock,
+        mock_skills: MagicMock,
+        mock_files: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Test that main() shows success banner when all downloads succeed."""
+        del mock_mkdir, mock_is_admin
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['test-env'],
+                'agents': ['agents/test.md'],
+                'slash-commands': ['commands/test.md'],
+                'hooks': {'files': ['hook.py']},
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        mock_resources.return_value = True
+        mock_files.return_value = True
+        mock_skills.return_value = True
+        mock_hooks.return_value = True
+        mock_handle.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            # sys.exit should NOT be called with 1 when everything succeeds
+            mock_exit.assert_not_called()
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_file_downloads')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.download_hook_files')
+    @patch('setup_environment.handle_resource')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_reports_all_failed_categories(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_handle: MagicMock,
+        mock_hooks: MagicMock,
+        mock_skills: MagicMock,
+        mock_files: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Test that main() lists all failure categories, not just the first."""
+        del mock_mkdir, mock_is_admin
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['test-env'],
+                'agents': ['agents/test.md'],
+                'slash-commands': ['commands/test.md'],
+                'skills': [{'name': 'test-skill'}],
+                'files-to-download': [{'source': 'file.txt', 'dest': '~/file.txt'}],
+                'hooks': {'files': ['hook.py']},
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        # Multiple categories fail
+        mock_files.return_value = False
+        mock_resources.return_value = False
+        mock_skills.return_value = False
+        mock_hooks.return_value = False
+        mock_handle.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with (
+            patch('sys.argv', ['setup_environment.py', 'test']),
+            patch('sys.exit') as mock_exit,
+            patch('builtins.print') as mock_print,
+        ):
+            setup_environment.main()
+            mock_exit.assert_called_with(1)
+
+            # Verify the error banner was printed
+            printed_text = ' '.join(str(call) for call in mock_print.call_args_list)
+            assert 'Setup Completed with Errors' in printed_text
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_file_downloads')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.download_hook_files')
+    @patch('setup_environment.handle_resource')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_continues_config_steps_despite_download_failures(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_handle: MagicMock,
+        mock_hooks: MagicMock,
+        mock_skills: MagicMock,
+        mock_files: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Test that main() continues configuration steps even when downloads fail."""
+        del mock_mkdir, mock_is_admin
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['test-env'],
+                'agents': ['agents/test.md'],
+                'slash-commands': ['commands/test.md'],
+                'mcp-servers': [{'name': 'test'}],
+                'hooks': {'files': ['hook.py']},
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = True
+        # Downloads fail
+        mock_resources.return_value = False
+        mock_files.return_value = True
+        mock_skills.return_value = True
+        mock_hooks.return_value = True
+        mock_handle.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit'):
+            setup_environment.main()
+            # MCP servers should still be configured despite download failures
+            mock_mcp.assert_called_once()
+            # Settings should still be created
+            mock_settings.assert_called_once()
+            # Launcher should still be created
+            mock_launcher.assert_called_once()
+            # Global command should still be registered
+            mock_register.assert_called_once()
+
+
 class TestClaudeCodeVersion:
     """Test claude-code-version configuration handling."""
 
@@ -5662,7 +5936,10 @@ class TestFetchWithRetry:
                 raise error
             return 'content'
 
-        result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file', max_retries=3)
+        result = setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=3, initial_backoff=1.0,
+        )
         assert result == 'content'
         assert call_count == 4  # Initial + 3 retries
         assert mock_sleep.call_count == 3
@@ -5677,6 +5954,74 @@ class TestFetchWithRetry:
         assert 4.0 <= sleep_times[2] <= 5.0
 
 
+class TestFetchWithRetryNewDefaults:
+    """Test fetch retry logic with new default parameters."""
+
+    def test_default_max_retries_is_10(self) -> None:
+        """Test that default max_retries is 10."""
+        import inspect
+
+        sig = inspect.signature(setup_environment.fetch_with_retry)
+        assert sig.parameters['max_retries'].default == 10
+
+    def test_default_initial_backoff_is_2(self) -> None:
+        """Test that default initial_backoff is 2.0."""
+        import inspect
+
+        sig = inspect.signature(setup_environment.fetch_with_retry)
+        assert sig.parameters['initial_backoff'].default == 2.0
+
+    @patch('setup_environment.time.sleep')
+    def test_backoff_sequence_with_new_defaults(self, mock_sleep: MagicMock) -> None:
+        """Test exponential backoff sequence with default parameters."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 4:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {}, None,
+                )
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file', max_retries=3, initial_backoff=2.0,
+        )
+        assert result == 'content'
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        # First retry: ~2s (2 * 2^0 + jitter)
+        assert 2.0 <= sleep_times[0] <= 2.5
+        # Second retry: ~4s (2 * 2^1 + jitter)
+        assert 4.0 <= sleep_times[1] <= 5.0
+        # Third retry: ~8s (2 * 2^2 + jitter)
+        assert 8.0 <= sleep_times[2] <= 10.0
+
+    @patch('setup_environment.time.sleep')
+    def test_backoff_capped_at_60_seconds(self, mock_sleep: MagicMock) -> None:
+        """Test that backoff never exceeds 60 seconds."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 7:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {}, None,
+                )
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=10, initial_backoff=2.0,
+        )
+        assert result == 'content'
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        # After attempt 5+, backoff should be capped at 60s (with jitter up to 75s max)
+        for sleep_time in sleep_times[5:]:
+            assert sleep_time <= 75.0  # 60s + 25% jitter
+
+
 class TestParallelWorkersConfiguration:
     """Test parallel workers configuration via environment variable.
 
@@ -5685,31 +6030,31 @@ class TestParallelWorkersConfiguration:
     """
 
     def test_default_parallel_workers_value(self) -> None:
-        """Test that default parallel workers is 3."""
+        """Test that default parallel workers is 2."""
         # Verify the module has the expected default
-        assert setup_environment.DEFAULT_PARALLEL_WORKERS == 3
+        assert setup_environment.DEFAULT_PARALLEL_WORKERS == 2
 
     def test_parallel_workers_env_parsing_logic(self) -> None:
         """Test that CLAUDE_PARALLEL_WORKERS parsing logic works correctly."""
         # Test the parsing logic that the module uses at load time
-        # The module uses: int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        # The module uses: int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
 
         # Test with env var set
         os.environ['CLAUDE_PARALLEL_WORKERS'] = '2'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
         assert value == 2
 
         # Test with higher value
         os.environ['CLAUDE_PARALLEL_WORKERS'] = '10'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
         assert value == 10
 
         # Clean up
         os.environ.pop('CLAUDE_PARALLEL_WORKERS', None)
 
         # Test fallback to default
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '3'))
-        assert value == 3
+        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        assert value == 2
 
 
 class TestRunBashCommandMsysPathConversion:

@@ -334,6 +334,19 @@ The setup scripts support these environment variables for debugging and customiz
 
 - `CLAUDE_CODE_TOOLBOX_DEBUG`: Set to `1`, `true`, or `yes` to enable verbose debug logging during MCP server configuration and other operations
 - `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
+- `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
+- `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
+
+### Download Retry Configuration
+
+The setup scripts include robust retry logic for handling GitHub API rate limiting during file downloads:
+
+- **Retry attempts:** 10 (with exponential backoff)
+- **Initial delay:** 2 seconds, doubling each retry
+- **Maximum delay cap:** 60 seconds per retry
+- **Jitter:** Random 0-25% added to prevent synchronized retries
+- **Stagger delay:** 0.5 second delay between launching concurrent download threads
+- **Total worst-case wait:** ~6 minutes per file (covers extended rate limit windows)
 
 ### Hooks Configuration Structure
 
