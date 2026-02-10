@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.26.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.26.0...v4.26.1) (2026-02-10)
+
+
+### Bug Fixes
+
+* enhance GitHub API rate limiting resilience and error reporting ([be3f9b9](https://github.com/alex-feel/claude-code-toolbox/commit/be3f9b9ca063a101590548d65a98e87989a260bc))
+
 ## [4.26.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.25.2...v4.26.0) (2026-01-29)
 
 
