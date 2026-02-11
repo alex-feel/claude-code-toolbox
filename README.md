@@ -104,6 +104,8 @@ export CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/mai
 export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
+> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed. Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
+
 **✅ After setup, use the simple command:**
 ```bash
 <command-name>  # Works in all Windows shells (PowerShell, CMD, Git Bash)
@@ -219,6 +221,8 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 
 The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
 
+> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed (e.g., for npm global installs). Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
+
 ### Environment Variables
 
 Control the installation behavior with these environment variables:
@@ -233,6 +237,12 @@ Control the installation behavior with these environment variables:
 
 - Specify a particular version to install (e.g., `1.0.128`)
 - Forces npm installation method (native installers don't support version selection)
+
+#### CLAUDE_ALLOW_ROOT
+
+- Set to `1` to allow running as root on Linux/macOS (default: scripts refuse to run as root)
+- Only the exact value `1` is accepted (`true`, `yes`, or empty strings do not bypass the guard)
+- Use for Docker containers, CI/CD pipelines, or other legitimate root execution environments
 
 **Examples:**
 
@@ -279,6 +289,12 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 - Uninstall npm version: `npm uninstall -g @anthropic-ai/claude-code`
 - Run the installer again (it will use native method by default)
 - Your configurations are preserved (both methods use the same config directory)
+
+#### Script refuses to run as root
+
+- This is intentional - running as root creates configuration under `/root/` instead of your home directory
+- Run as your regular user instead (the script requests sudo only when needed)
+- For Docker/CI: set `CLAUDE_ALLOW_ROOT=1` before running the script
 
 ## 🤝 Contributing
 

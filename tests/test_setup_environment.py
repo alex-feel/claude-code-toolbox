@@ -2,6 +2,7 @@
 Comprehensive tests for setup_environment.py - the main environment setup script.
 """
 
+import contextlib
 import json
 import os
 import platform
@@ -3468,7 +3469,7 @@ class TestMainFunction:
     """Test the main setup flow."""
 
     @patch('setup_environment.load_config_from_source')
-    def test_main_invalid_mode(self, mock_load):
+    def test_main_invalid_mode(self, mock_load: MagicMock) -> None:
         """Test main with invalid mode value."""
         mock_load.return_value = (
             {
@@ -3481,9 +3482,10 @@ class TestMainFunction:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -3548,9 +3550,9 @@ class TestMainFunction:
         """Test main with no configuration specified."""
         # Mock load to simulate no config found
         mock_load.side_effect = Exception('No config specified')
-        with patch('sys.argv', ['setup_environment.py']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude')
@@ -3561,9 +3563,9 @@ class TestMainFunction:
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
         mock_install.return_value = False
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.find_command_robust')
@@ -3655,9 +3657,9 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -3785,15 +3787,15 @@ class TestDownloadFailureTracking:
 
         with (
             patch('sys.argv', ['setup_environment.py', 'test']),
-            patch('sys.exit') as mock_exit,
             patch('builtins.print') as mock_print,
+            pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
-            # Verify the error banner was printed
-            printed_text = ' '.join(str(call) for call in mock_print.call_args_list)
-            assert 'Setup Completed with Errors' in printed_text
+        # Verify the error banner was printed (happens before sys.exit)
+        printed_text = ' '.join(str(call) for call in mock_print.call_args_list)
+        assert 'Setup Completed with Errors' in printed_text
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -5496,9 +5498,9 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     def test_command_names_validation_spaces(self, mock_load):
@@ -5511,9 +5513,9 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
 
 class TestRegisterGlobalCommandWithAliases:
@@ -6366,9 +6368,9 @@ class TestMainFunctionUserSettings:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
         captured = capsys.readouterr()
         # Error messages go to stderr via print_error()
@@ -7043,9 +7045,10 @@ class TestUserSettingsErrorRecovery:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+
+        assert exc_info.value.code == 1
 
         captured = capsys.readouterr()
         assert 'hooks' in captured.err
@@ -7166,3 +7169,86 @@ user-settings:
         assert resolved['user-settings']['language'] == 'russian'
         # Parent's model should still be inherited at root level
         assert resolved.get('model') == 'claude-sonnet-4'
+
+
+class TestRootGuard:
+    """Test root detection guard in setup_environment.py main()."""
+
+    def test_root_guard_exits_when_root_without_override(self) -> None:
+        """Running as root without CLAUDE_ALLOW_ROOT=1 exits with code 1."""
+        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {}, clear=False),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.main()
+        assert exc_info.value.code == 1
+
+    def test_root_guard_allows_when_override_set(self) -> None:
+        """CLAUDE_ALLOW_ROOT=1 allows root execution to proceed."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1'}),
+            patch('sys.argv', ['setup_environment.py', 'python']),
+            contextlib.suppress(SystemExit, Exception),
+        ):
+            setup_environment.main()
+
+    def test_root_guard_skipped_on_windows(self) -> None:
+        """Root guard does not activate on Windows."""
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch('sys.argv', ['setup_environment.py', 'python']),
+            contextlib.suppress(SystemExit, Exception),
+        ):
+            setup_environment.main()
+
+    def test_root_guard_error_message_content(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Root guard error message contains key information."""
+        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {}, clear=False),
+            pytest.raises(SystemExit),
+        ):
+            setup_environment.main()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'root' in combined.lower() or 'sudo' in combined.lower()
+        assert 'CLAUDE_ALLOW_ROOT' in combined
+
+    def test_root_guard_works_on_macos(self) -> None:
+        """Root guard activates on macOS the same as Linux."""
+        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        with (
+            patch('platform.system', return_value='Darwin'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {}, clear=False),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.main()
+        assert exc_info.value.code == 1
+
+    def test_root_guard_runs_before_argument_parsing(self) -> None:
+        """Root guard triggers even without valid CLI arguments.
+
+        The root guard MUST run before argparse to catch all invocations.
+        """
+        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.main()
+        # Should exit from root guard (code 1), NOT from argparse error (code 2)
+        assert exc_info.value.code == 1

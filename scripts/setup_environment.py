@@ -1307,6 +1307,12 @@ def parse_mcp_command(command_str: str) -> dict[str, Any]:
     }
 
 
+# Maximum length for PATH environment variable value on Windows.
+# Windows limits each environment variable's "name=value" string to 32767 chars.
+# For PATH: 32767 - len("PATH") - len("=") = 32762 max value chars.
+_WIN_PATH_VALUE_MAX_LENGTH = 32762
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -1396,7 +1402,9 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
                 # Still update current session in case it's not there yet
                 session_path = os.environ.get('PATH', '')
                 if normalized_dir not in session_path:
-                    os.environ['PATH'] = f'{normalized_dir};{session_path}'
+                    new_session_path = f'{normalized_dir};{session_path}'
+                    if len(new_session_path) <= _WIN_PATH_VALUE_MAX_LENGTH:
+                        os.environ['PATH'] = new_session_path
                 return True, f'Directory already in PATH: {normalized_dir}'
 
             # Add directory to PATH (prepend for higher priority)
@@ -1419,7 +1427,16 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             winreg.CloseKey(reg_key)
 
             # Update current session's PATH
-            os.environ['PATH'] = f'{normalized_dir};{os.environ.get("PATH", "")}'
+            new_session_path = f'{normalized_dir};{os.environ.get("PATH", "")}'
+            if len(new_session_path) <= _WIN_PATH_VALUE_MAX_LENGTH:
+                os.environ['PATH'] = new_session_path
+            else:
+                warning(
+                    f'Session PATH would exceed Windows limit '
+                    f'({len(new_session_path)} > {_WIN_PATH_VALUE_MAX_LENGTH} chars). '
+                    f'Registry updated but current session PATH not refreshed. '
+                    f'Restart your terminal to apply changes.',
+                )
 
             # Broadcast WM_SETTINGCHANGE to notify other processes
             # This is done via setx which broadcasts the change
@@ -1645,6 +1662,17 @@ def refresh_path_from_registry() -> bool:
             # Update os.environ with the refreshed PATH
             old_path = os.environ.get('PATH', '')
             if new_path != old_path:
+                if len(new_path) > _WIN_PATH_VALUE_MAX_LENGTH:
+                    warning(
+                        f'Combined registry PATH ({len(new_path)} chars) exceeds '
+                        f'Windows limit ({_WIN_PATH_VALUE_MAX_LENGTH} chars). '
+                        f'Keeping current session PATH.',
+                    )
+                    info(
+                        'Consider cleaning up unused PATH entries in '
+                        'System Properties > Environment Variables',
+                    )
+                    return True  # Not a failure - PATH stays as-is
                 os.environ['PATH'] = new_path
                 info('Refreshed PATH from Windows registry')
                 return True
@@ -5930,6 +5958,23 @@ def main() -> None:
             print(f'{Colors.GREEN}     Running with Administrator Privileges{Colors.NC}')
             print(f'{Colors.GREEN}========================================================================{Colors.NC}')
             print()
+
+    # Refuse to run as root on Unix unless explicitly allowed
+    if platform.system() != 'Windows':
+        geteuid = getattr(os, 'geteuid', None)
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+            error('This script should NOT be run as root or with sudo')
+            print()
+            warning('Running as root creates configuration under /root/,')
+            warning('not for the regular user you intend to configure.')
+            print()
+            info('Instead, run as your regular user:')
+            info('  curl -fsSL https://raw.githubusercontent.com/alex-feel/'
+                 'claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash')
+            print()
+            info('The installer will request sudo only when needed (e.g., npm).')
+            info('To force root execution: CLAUDE_ALLOW_ROOT=1 <command>')
+            sys.exit(1)
 
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')

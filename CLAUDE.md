@@ -37,12 +37,23 @@ The installer uses a native-first approach with automatic npm fallback:
 **Environment Variables:**
 - `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`
 - `CLAUDE_VERSION` - Forces specific version via npm (native installers don't support version selection)
+- `CLAUDE_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
 
 **Benefits:**
 - Resolves Node.js v25+ compatibility issues (bug #9628)
 - Eliminates Node.js dependency for most users
 - More reliable auto-updates via official Anthropic installers
 - Maintains full backward compatibility with existing npm installations
+
+### Root Detection Guard
+
+All Linux and macOS scripts (both bash bootstrap scripts and Python entry points) refuse to run as root/sudo by default:
+
+- **Detection:** Checks `id -u == 0` (shell scripts) or `os.geteuid() == 0` (Python scripts)
+- **Override:** Set `CLAUDE_ALLOW_ROOT=1` to bypass the guard (only exact value `1` is accepted; `true`, `yes`, or empty strings do NOT work)
+- **Scope:** Applies to all 6 entry points: `install-claude-linux.sh`, `setup-environment.sh` (both Linux and macOS), `install_claude.py`, and `setup_environment.py`
+- **Rationale:** Running as root creates configuration under `/root/` instead of the regular user's home directory, causing environment setup to target the wrong user
+- **When to use override:** Docker containers, CI/CD pipelines, or other legitimate root execution environments
 
 ### Environment Configuration System
 
@@ -336,6 +347,7 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
 - `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
 - `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
+- `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running setup scripts as root on Linux/macOS. By default, all Linux/macOS scripts refuse to run as root to prevent configuration being created under `/root/` instead of the user's home directory. The installer will request `sudo` only when needed (e.g., for npm global installs). Use this override for Docker containers, CI/CD environments, or other legitimate root use cases.
 
 ### Download Retry Configuration
 

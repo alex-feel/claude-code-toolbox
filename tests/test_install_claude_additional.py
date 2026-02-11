@@ -407,9 +407,9 @@ class TestMainFlowAdditional:
         assert mock_node.return_value is False
 
         # Force npm installation method to ensure Node.js is required
-        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
+        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), pytest.raises(SystemExit) as exc_info:
             install_claude.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.ensure_nodejs', return_value=True)
@@ -421,9 +421,9 @@ class TestMainFlowAdditional:
         assert mock_node.return_value is True
         assert mock_claude.return_value is False
 
-        with patch('sys.exit') as mock_exit:
+        with pytest.raises(SystemExit) as exc_info:
             install_claude.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
 
 class TestHelperFunctions:
@@ -1278,6 +1278,270 @@ class TestNativeLinuxInstallerFunction:
         result = install_claude._install_claude_native_linux_installer(version='latest')
 
         assert result is False
+
+
+class TestNativeLinuxInstallerDiagnostics:
+    """Test native Linux installer diagnostic logging (stderr/stdout capture)."""
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    def test_logs_stderr_on_failure(
+        self,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+        capsys,
+    ):
+        """Native Linux installer logs stderr when it fails."""
+        mock_chmod.assert_not_called()  # Not yet called
+        mock_unlink.assert_not_called()  # Not yet called
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\nexit 1'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 1, stdout='Starting install...', stderr='Error: glibc version too old',
+        )
+
+        result = install_claude._install_claude_native_linux_installer(version='latest')
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'exited with code 1' in combined
+        assert 'glibc version too old' in combined
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.remove_npm_claude')
+    @patch('install_claude.update_install_method_config')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    @patch('time.sleep')
+    def test_logs_stdout_on_success(
+        self,
+        mock_sleep,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_update_config,
+        mock_remove_npm,
+        mock_verify,
+        mock_run,
+        mock_urlopen,
+        capsys,
+    ):
+        """Native Linux installer logs stdout on success."""
+        assert mock_sleep.call_count == 0
+        mock_unlink.assert_not_called()
+        mock_chmod.assert_not_called()
+        assert mock_update_config.call_count == 0
+        assert mock_remove_npm.call_count == 0
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\necho "Installing"'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 0, stdout='Claude installed to /home/user/.local/bin/claude', stderr='',
+        )
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+
+        result = install_claude._install_claude_native_linux_installer(version='latest')
+
+        assert result is True
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'Installer output' in combined
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    def test_uses_capture_output_true(
+        self,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Native Linux installer uses capture_output=True for diagnostics."""
+        mock_unlink.assert_not_called()
+        mock_chmod.assert_not_called()
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\nexit 0'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        install_claude._install_claude_native_linux_installer(version='latest')
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs.get('capture_output') is True
+
+
+class TestNativeMacOSInstallerDiagnostics:
+    """Test native macOS installer diagnostic logging (stderr/stdout capture)."""
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    def test_logs_stderr_on_failure(
+        self,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+        capsys,
+    ):
+        """Native macOS installer logs stderr when it fails."""
+        mock_chmod.assert_not_called()
+        mock_unlink.assert_not_called()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\nexit 1'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 1, stdout='Downloading...', stderr='Error: Unsupported macOS version',
+        )
+
+        result = install_claude._install_claude_native_macos_installer(version='latest')
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'exited with code 1' in combined
+        assert 'Unsupported macOS version' in combined
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.chmod')
+    @patch('os.unlink')
+    def test_uses_capture_output_true(
+        self,
+        mock_unlink,
+        mock_chmod,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Native macOS installer uses capture_output=True for diagnostics."""
+        mock_unlink.assert_not_called()
+        mock_chmod.assert_not_called()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'#!/bin/bash\nexit 0'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = '/tmp/install.sh'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        install_claude._install_claude_native_macos_installer(version='latest')
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs.get('capture_output') is True
+
+
+class TestNativeWindowsInstallerDiagnostics:
+    """Test native Windows installer diagnostic logging (stderr/stdout capture)."""
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.unlink')
+    def test_logs_stderr_on_failure(
+        self,
+        mock_unlink,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+        capsys,
+    ):
+        """Native Windows installer logs stderr when it fails."""
+        mock_unlink.assert_not_called()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'Write-Output "Installing"'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\Users\\Test\\AppData\\Local\\Temp\\install.ps1'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            [], 1, stdout='Starting...', stderr='Error: PowerShell execution policy',
+        )
+
+        result = install_claude._install_claude_native_windows_installer(version='latest')
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'exited with code 1' in combined
+        assert 'PowerShell execution policy' in combined
+
+    @patch('install_claude.urlopen')
+    @patch('install_claude.run_command')
+    @patch('tempfile.NamedTemporaryFile')
+    @patch('os.unlink')
+    def test_uses_capture_output_true(
+        self,
+        mock_unlink,
+        mock_temp,
+        mock_run,
+        mock_urlopen,
+    ):
+        """Native Windows installer uses capture_output=True for diagnostics."""
+        mock_unlink.assert_not_called()
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'Write-Output "Installing"'
+        mock_urlopen.return_value.__enter__.return_value = mock_response
+
+        temp_file = MagicMock()
+        temp_file.name = 'C:\\Users\\Test\\AppData\\Local\\Temp\\install.ps1'
+        mock_temp.return_value.__enter__.return_value = temp_file
+
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        install_claude._install_claude_native_windows_installer(version='latest')
+
+        call_kwargs = mock_run.call_args[1]
+        assert call_kwargs.get('capture_output') is True
 
 
 class TestEnsureLocalBinInPathUnix:
