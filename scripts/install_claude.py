@@ -1506,9 +1506,24 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
     # Try with sudo on Unix systems
     if platform.system() != 'Windows':
-        warning('Trying with sudo...')
-        result = run_command(['sudo', 'npm', 'install', '-g', package_spec], capture_output=False)
-        if result.returncode == 0:
+        if will_need_sudo:
+            warning('Global npm directory requires elevated permissions - attempting sudo...')
+        else:
+            warning('Non-sudo install failed, attempting with sudo...')
+
+        try:
+            sudo_result = subprocess.run(
+                ['sudo', npm_path, 'install', '-g', package_spec],
+                capture_output=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            warning('Sudo attempt timed out after 30 seconds')
+            sudo_result = None
+
+        if sudo_result is not None and sudo_result.returncode == 0:
             success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
 
             # If specific version was installed, set DISABLE_AUTOUPDATER
@@ -1517,7 +1532,29 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
             return True
 
+        # Sudo failed - provide TTY-aware guidance
+        if sys.stdin.isatty():
+            warning('Sudo failed. Please check:')
+            info('  1. Your password is correct')
+            info('  2. Your user has sudo privileges (check /etc/sudoers)')
+            info(f'  3. Try manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
+        else:
+            warning('Sudo failed (non-interactive mode detected - no TTY available)')
+            info('When running via curl | bash, sudo cannot prompt for a password.')
+            info('Options:')
+            info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
+            info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
+            info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
+    info('Manual installation options:')
+    info(f'  1. Run with sudo: sudo npm install -g {CLAUDE_NPM_PACKAGE}')
+    info('  2. Configure npm user directory:')
+    info('       npm config set prefix ~/.npm-global')
+    info('       export PATH=~/.npm-global/bin:$PATH')
+    info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
+    info('  3. Force native installer only: CLAUDE_INSTALL_METHOD=native')
+    info('  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash')
     return False
 
 
@@ -2046,7 +2083,7 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
 
         version_msg = f' version {version}' if version != 'latest' else ''
         info(f'Installing Claude Code{version_msg} via native installer...')
-        result = run_command(cmd, capture_output=False)
+        result = run_command(cmd, capture_output=True)
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -2054,6 +2091,9 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
 
         if result.returncode == 0:
             success('Claude Code installed via native installer')
+            # Log installer output for diagnostics
+            if result.stdout and result.stdout.strip():
+                info(f'Installer output: {result.stdout.strip()[:500]}')
 
             # CRITICAL: Ensure ~/.local/bin is in PATH after native installation
             info('Updating PATH for native installation...')
@@ -2081,6 +2121,13 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             error('Claude not accessible after native installer execution')
             info('You may need to restart your terminal or run in a new session')
             return False
+
+        # Installer failed - log diagnostics
+        error(f'Native installer exited with code {result.returncode}')
+        if result.stderr and result.stderr.strip():
+            error(f'Installer error output: {result.stderr.strip()[:500]}')
+        if result.stdout and result.stdout.strip():
+            info(f'Installer output: {result.stdout.strip()[:500]}')
 
     except Exception as e:
         error(f'Native installer failed: {e}')
@@ -2141,7 +2188,7 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             cmd.append(version)  # Shell script accepts version as $1
 
         info('Running native installer (may require password)...')
-        result = run_command(cmd, capture_output=False)
+        result = run_command(cmd, capture_output=True)
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -2149,6 +2196,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
 
         if result.returncode == 0:
             success('Claude Code installed via native installer')
+            # Log installer output for diagnostics
+            if result.stdout and result.stdout.strip():
+                info(f'Installer output: {result.stdout.strip()[:500]}')
             time.sleep(1)
 
             # Verify installation
@@ -2166,6 +2216,10 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             return False
 
         error(f'Native installer exited with code {result.returncode}')
+        if result.stderr and result.stderr.strip():
+            error(f'Installer error output: {result.stderr.strip()[:500]}')
+        if result.stdout and result.stdout.strip():
+            info(f'Installer output: {result.stdout.strip()[:500]}')
         return False
 
     except Exception as e:
@@ -2299,7 +2353,7 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             cmd.append(version)  # Shell script accepts version as $1
 
         info('Running native installer (may require password)...')
-        result = run_command(cmd, capture_output=False)
+        result = run_command(cmd, capture_output=True)
 
         # Clean up
         with contextlib.suppress(Exception):
@@ -2307,6 +2361,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
 
         if result.returncode == 0:
             success('Claude Code installed via native installer')
+            # Log installer output for diagnostics
+            if result.stdout and result.stdout.strip():
+                info(f'Installer output: {result.stdout.strip()[:500]}')
             time.sleep(1)
 
             # Verify installation
@@ -2324,6 +2381,10 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             return False
 
         error(f'Native installer exited with code {result.returncode}')
+        if result.stderr and result.stderr.strip():
+            error(f'Installer error output: {result.stderr.strip()[:500]}')
+        if result.stdout and result.stdout.strip():
+            info(f'Installer output: {result.stdout.strip()[:500]}')
         return False
 
     except Exception as e:
@@ -2500,6 +2561,7 @@ def ensure_claude() -> bool:
                     return True
 
                 warning('Native installation failed, falling back to npm...')
+                info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
                 if install_claude_npm(upgrade=False, version=requested_version):
                     new_version = get_claude_version()
                     if new_version:
@@ -2642,6 +2704,7 @@ def ensure_claude() -> bool:
         return True
 
     warning('Native installation failed, falling back to npm...')
+    info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
     if install_claude_npm(upgrade=False, version=requested_version):
         # Verify with retries to handle PATH synchronization delays
         for attempt in range(3):
@@ -2657,13 +2720,26 @@ def ensure_claude() -> bool:
 
     # All methods failed
     error('Claude Code installation failed with all methods')
-    info('Please try manual installation:')
+    print()
+    info('Troubleshooting steps:')
     if platform.system() == 'Windows':
-        info(f'  Native: irm {CLAUDE_INSTALLER_URL} | iex')
-        info(f'  NPM: npm install -g {CLAUDE_NPM_PACKAGE}')
+        info(f'  1. Try native installer directly: irm {CLAUDE_INSTALLER_URL} | iex')
+        info(f'  2. Try npm: npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  3. Force specific method:')
+        info('       $env:CLAUDE_INSTALL_METHOD="native"  (skip npm)')
+        info('       $env:CLAUDE_INSTALL_METHOD="npm"     (skip native)')
     else:
-        info('  Native: curl -fsSL https://claude.ai/install.sh | bash')
-        info(f'  NPM: npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  1. Try native installer directly:')
+        info('     curl -fsSL https://claude.ai/install.sh | bash')
+        info('  2. Try npm with sudo:')
+        info(f'     sudo npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  3. Configure npm for user installs:')
+        info('     npm config set prefix ~/.npm-global')
+        info('     export PATH=~/.npm-global/bin:$PATH')
+        info(f'     npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  4. Force specific method:')
+        info('     CLAUDE_INSTALL_METHOD=native  (skip npm)')
+        info('     CLAUDE_INSTALL_METHOD=npm     (skip native)')
 
     return False
 
@@ -2760,6 +2836,23 @@ def ensure_local_bin_in_path_windows() -> bool:
 def main() -> None:
     """Main installation flow."""
     banner()
+
+    # Refuse to run as root on Unix unless explicitly allowed
+    if platform.system() != 'Windows':
+        geteuid = getattr(os, 'geteuid', None)
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+            error('This script should NOT be run as root or with sudo')
+            print()
+            warning('Running as root creates configuration under /root/,')
+            warning('not for the regular user you intend to configure.')
+            print()
+            info('Instead, run as your regular user:')
+            info('  curl -fsSL https://raw.githubusercontent.com/alex-feel/'
+                 'claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash')
+            print()
+            info('The installer will request sudo only when needed (e.g., npm).')
+            info('To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>')
+            sys.exit(1)
 
     system = platform.system()
 

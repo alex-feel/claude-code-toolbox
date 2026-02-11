@@ -28,6 +28,21 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
     exit 1
 fi
 
+# Refuse to run as root unless explicitly allowed
+if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_ALLOW_ROOT:-}" != "1" ]; then
+    echo -e "${RED}[FAIL]${NC} This script should NOT be run as root or with sudo"
+    echo ""
+    echo -e "${YELLOW}[WARN]${NC} Running as root creates configuration under /root/,"
+    echo -e "${YELLOW}[WARN]${NC} not for the regular user you intend to configure."
+    echo ""
+    echo -e "${CYAN}[INFO]${NC} Instead, run as your regular user:"
+    echo -e "${CYAN}[INFO]${NC}   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash"
+    echo ""
+    echo -e "${CYAN}[INFO]${NC} The installer will request sudo only when needed (e.g., npm)."
+    echo -e "${CYAN}[INFO]${NC} To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>"
+    exit 1
+fi
+
 # Check if uv is installed
 if ! command -v uv >/dev/null 2>&1; then
     echo -e "${CYAN}[INFO]${NC} Installing uv (Python package manager)..."

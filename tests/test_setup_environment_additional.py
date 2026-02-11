@@ -1320,9 +1320,9 @@ class TestMainFunctionErrorPaths:
         """Test main with config loading exception."""
         mock_load.side_effect = Exception('Config load failed')
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.find_command_robust', return_value=None)
@@ -1331,9 +1331,9 @@ class TestMainFunctionErrorPaths:
         del mock_find  # Unused but required for patch
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
 
-        with patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
-            mock_exit.assert_called_with(1)
+        assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files', return_value=(True, []))
@@ -2340,6 +2340,118 @@ class TestRefreshPathFromRegistry:
         with patch('setup_environment.winreg.OpenKey', side_effect=FileNotFoundError()):
             result = setup_environment.refresh_path_from_registry()
             assert result is False  # Should return False when no PATH found
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_long_path_graceful(self):
+        """Graceful handling when combined registry PATH exceeds Windows limit."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        # Generate paths that exceed the 32762 character limit
+        long_system_path = ';'.join([f'C:\\Windows\\System32\\LongPath{i}' for i in range(1000)])
+        long_user_path = ';'.join([f'C:\\Users\\Test\\.tools\\path{i}' for i in range(500)])
+
+        call_count = [0]
+
+        def query_side_effect(*_args, **_kwargs):  # noqa: ARG001
+            call_count[0] += 1
+            if call_count[0] == 1:  # System PATH
+                return (long_system_path, winreg.REG_SZ)
+            # User PATH
+            return (long_user_path, winreg.REG_SZ)
+
+        with (
+            patch('setup_environment.winreg.OpenKey', return_value=mock_key),
+            patch('setup_environment.winreg.QueryValueEx', side_effect=query_side_effect),
+        ):
+            result = setup_environment.refresh_path_from_registry()
+            # Should return True (graceful handling, not a failure)
+            assert result is True
+            # PATH should still exist (kept previous value)
+            assert os.environ.get('PATH')
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_refresh_path_from_registry_warns_on_long_path(self, capsys):
+        """Warning is emitted when PATH is too long to set in os.environ."""
+        import winreg
+
+        mock_key = MagicMock()
+        mock_key.__enter__ = MagicMock(return_value=mock_key)
+        mock_key.__exit__ = MagicMock(return_value=False)
+
+        # Generate paths exceeding limit
+        long_path = 'C:\\Test;' * 6000  # ~42000 chars
+
+        with (
+            patch('setup_environment.winreg.OpenKey', return_value=mock_key),
+            patch('setup_environment.winreg.QueryValueEx', return_value=(long_path, winreg.REG_SZ)),
+        ):
+            result = setup_environment.refresh_path_from_registry()
+            assert result is True
+
+            captured = capsys.readouterr()
+            combined = captured.out + captured.err
+            # Should warn about PATH length
+            assert 'exceeds' in combined.lower() or 'limit' in combined.lower()
+
+
+class TestAddDirectoryToWindowsPathLength:
+    """Test add_directory_to_windows_path() graceful handling of PATH length limits."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_session_path_too_long_no_crash(self):
+        """No ValueError when session PATH would exceed Windows limit after adding directory."""
+        mock_key = MagicMock()
+
+        local_bin = str(Path.home() / '.local' / 'bin')
+
+        # Create a PATH that is just under the 32762 limit, so os.environ can hold it,
+        # but prepending local_bin + ';' would push it over the limit.
+        # 32762 - len(local_bin) - 1 (semicolon) = just barely under limit
+        target_len = 32762 - len(local_bin)
+        base = 'C:\\P;'
+        repeats = target_len // len(base) + 1
+        long_session_path = (base * repeats)[:target_len]
+
+        with (
+            patch('setup_environment.winreg.OpenKey', return_value=mock_key),
+            patch('setup_environment.winreg.QueryValueEx', return_value=('', 1)),
+            patch('setup_environment.winreg.SetValueEx'),
+            patch('setup_environment.winreg.CloseKey'),
+            patch('subprocess.run'),
+            patch.dict(os.environ, {'PATH': long_session_path}),
+        ):
+            # Should not raise ValueError even though resulting PATH would be > 32762 chars
+            success, message = setup_environment.add_directory_to_windows_path(local_bin)
+            # Registry write should succeed (registry has larger limits)
+            # But session PATH update should be skipped gracefully
+            assert success is True
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_already_in_path_long_session_no_crash(self):
+        """No ValueError when directory already in registry PATH but session PATH too long."""
+        mock_key = MagicMock()
+
+        local_bin = str(Path.home() / '.local' / 'bin')
+
+        # Create a PATH just under the limit that does NOT contain local_bin
+        target_len = 32762 - len(local_bin)
+        base = 'C:\\X;'
+        repeats = target_len // len(base) + 1
+        long_session_path = (base * repeats)[:target_len]
+
+        with (
+            patch('setup_environment.winreg.OpenKey', return_value=mock_key),
+            patch('setup_environment.winreg.QueryValueEx', return_value=(local_bin, 1)),
+            patch('setup_environment.winreg.CloseKey'),
+            patch.dict(os.environ, {'PATH': long_session_path}),
+        ):
+            # Should not crash even though adding to session PATH would exceed limit
+            success, message = setup_environment.add_directory_to_windows_path(local_bin)
+            assert success is True
 
 
 class TestHookConfigFileSupport:
