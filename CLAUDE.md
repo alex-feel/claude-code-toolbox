@@ -392,7 +392,7 @@ The setup scripts support these environment variables for debugging and customiz
 
 ### npm Sudo Handling (Non-Interactive Mode)
 
-When `install_claude_npm()` needs elevated permissions for global npm installs, it gates sudo attempts on TTY availability and cached credentials BEFORE attempting sudo:
+When `install_claude_npm()` or `remove_npm_claude()` needs elevated permissions for global npm operations, sudo attempts are gated on TTY availability and cached credentials BEFORE attempting sudo:
 
 1. **Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password)
 2. **Non-interactive mode** (e.g., `curl | bash`):
@@ -401,7 +401,7 @@ When `install_claude_npm()` needs elevated permissions for global npm installs, 
    - If no cached credentials: sudo is SKIPPED entirely, guidance is provided immediately
 3. **Missing sudo binary**: `FileNotFoundError` is caught gracefully
 
-This prevents the 30-second timeout waste that occurred when `curl | bash` piped installations attempted sudo without a TTY for password input.
+This pattern is applied consistently to both npm install and npm uninstall operations, preventing visible EACCES permission errors and the 30-second timeout waste in `curl | bash` piped installations. The `remove_npm_claude()` function also captures npm output (no `capture_output=False`) to suppress noisy error stack traces from reaching the user's terminal.
 
 ### Download Retry Configuration
 

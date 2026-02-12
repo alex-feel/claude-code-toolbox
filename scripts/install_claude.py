@@ -319,6 +319,11 @@ def remove_npm_claude() -> bool:
     standard npm uninstall command. This eliminates PATH precedence issues
     where npm version shadows native installation.
 
+    On Unix systems, if direct uninstall fails with permission errors, attempts
+    sudo with the same TTY/cached-credentials gating logic used by
+    install_claude_npm(). In non-interactive mode without cached credentials,
+    silently skips the removal and provides guidance.
+
     Should only be called AFTER verify_claude_installation() confirms
     native installation success (source == 'native').
 
@@ -327,6 +332,7 @@ def remove_npm_claude() -> bool:
 
     Note:
         Safe to call even if npm is not installed - returns True in that case.
+        Permission failures are handled gracefully without user-facing errors.
     """
     npm_path = find_command_robust('npm')
     if not npm_path:
@@ -343,15 +349,55 @@ def remove_npm_claude() -> bool:
         info('No npm Claude installation detected')
         return True
 
-    # Perform uninstallation
-    result = run_command([npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE], capture_output=False)
+    # Attempt uninstallation with captured output to suppress noisy error messages
+    result = run_command([npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE])
 
     if result.returncode == 0:
         success('Removed npm Claude installation successfully')
         return True
 
-    warning(f'npm uninstall returned code {result.returncode}')
-    warning('Manual removal may be needed: npm uninstall -g @anthropic-ai/claude-code')
+    # Non-sudo uninstall failed - try with sudo on Unix systems
+    if platform.system() != 'Windows':
+        # Apply same TTY/credential gating as install_claude_npm()
+        can_sudo = False
+        if sys.stdin.isatty():
+            can_sudo = True  # Interactive mode - user can enter password
+        else:
+            # Non-interactive mode: check for cached sudo credentials
+            try:
+                cred_check = subprocess.run(
+                    ['sudo', '-n', 'true'],
+                    capture_output=True,
+                    timeout=5,
+                )
+                can_sudo = cred_check.returncode == 0
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                can_sudo = False
+
+        if can_sudo:
+            info('Retrying npm uninstall with elevated permissions...')
+            try:
+                sudo_result = subprocess.run(
+                    ['sudo', npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
+                    capture_output=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                warning('Sudo npm uninstall timed out')
+                sudo_result = None
+            except FileNotFoundError:
+                sudo_result = None
+
+            if sudo_result is not None and sudo_result.returncode == 0:
+                success('Removed npm Claude installation successfully')
+                return True
+
+    # All attempts failed - provide guidance
+    warning('Could not remove npm installation automatically')
+    info(f'Manual removal may be needed: sudo {npm_path} uninstall -g {CLAUDE_NPM_PACKAGE}')
+    info('This does not affect your native Claude installation.')
     return False
 
 
