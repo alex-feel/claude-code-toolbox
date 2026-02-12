@@ -58,6 +58,34 @@ In `auto` mode, both `native` and `unknown` sources attempt the native installer
 - More reliable auto-updates via official Anthropic installers
 - Maintains full backward compatibility with existing npm installations
 
+### Node.js Compatibility Check Parameter
+
+The `ensure_nodejs()` function accepts a `check_claude_compat` parameter:
+
+| Parameter                   | Default | Behavior                                                             |
+|-----------------------------|---------|----------------------------------------------------------------------|
+| `check_claude_compat=True`  | Yes     | Checks Node.js v25+ SlowBuffer incompatibility (for npm Claude Code) |
+| `check_claude_compat=False` | No      | Only checks minimum version >= 18.0.0 (for general-purpose Node.js)  |
+
+**Usage contexts:**
+- `install_claude.py` main() calls `ensure_nodejs()` (default `True`) -- Claude Code npm runtime needs compatible Node.js
+- `setup_environment.py` `install_nodejs_if_requested()` calls `ensure_nodejs(check_claude_compat=False)` -- `install-nodejs: true` config needs Node.js for general purposes (MCP servers, npx tools), not for Claude Code itself
+
+### Version-Aware Compatibility
+
+The `check_nodejs_compatibility()` function supports version-aware checking via the `CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION` constant:
+
+| Constant Value | Behavior                                                                           |
+|----------------|------------------------------------------------------------------------------------|
+| `None`         | Node.js v25+ is always rejected for npm Claude Code (current default)              |
+| Version string | Node.js v25+ is accepted if installed Claude Code npm version >= the fixed version |
+
+The check works as follows:
+- When Claude Code is installed, `get_claude_version()` detects the installed version
+- If `CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION` is set and the installed version meets the threshold, v25+ is accepted
+- If the installed version is unknown or below the threshold, v25+ is rejected (conservative default)
+- Monitor [GitHub issue #9628](https://github.com/anthropics/claude-code/issues/9628) for when this gets fixed
+
 ### Root Detection Guard
 
 All Linux and macOS scripts (both bash bootstrap scripts and Python entry points) refuse to run as root/sudo by default:

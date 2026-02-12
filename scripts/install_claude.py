@@ -62,6 +62,7 @@ GIT_WINDOWS_URL = 'https://git-scm.com/downloads/win'
 GIT_GITHUB_API = 'https://api.github.com/repos/git-for-windows/git/releases/latest'
 CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
+CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
 
 
 # Logging functions
@@ -1017,11 +1018,20 @@ def get_node_version() -> str | None:
     return None
 
 
-def check_nodejs_compatibility() -> bool:
+def check_nodejs_compatibility(claude_code_version: str | None = None) -> bool:
     """Check if Node.js version is compatible with Claude Code.
 
-    Node.js v25+ removed the SlowBuffer API that Claude Code depends on,
-    causing TypeError when running MCP servers and other operations.
+    Node.js v25+ removed the SlowBuffer API that Claude Code's npm package
+    depends on (via buffer-equal-constant-time v1.0.1), causing TypeError
+    when running MCP servers and other operations.
+
+    The check can be skipped for Claude Code versions that have fixed
+    this dependency issue (tracked via CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION).
+
+    Args:
+        claude_code_version: Installed Claude Code npm version string.
+            If provided and the version is known to have fixed SlowBuffer,
+            the v25+ check is skipped.
 
     Returns:
         True if Node.js version is compatible, False otherwise.
@@ -1038,6 +1048,15 @@ def check_nodejs_compatibility() -> bool:
 
     # Node.js v25+ is incompatible due to SlowBuffer removal (DEP0030)
     if major >= 25:
+        # Check if the installed Claude Code version has fixed the issue
+        if (
+            CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION is not None
+            and claude_code_version is not None
+            and compare_versions(claude_code_version, CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION)
+        ):
+            info(f'Node.js {node_version} accepted: Claude Code {claude_code_version} has SlowBuffer fix')
+            return True
+
         error(f'Node.js {node_version} is incompatible with Claude Code')
         error('Node.js v25+ removed the SlowBuffer API that Claude Code depends on')
         info('Please downgrade to Node.js v22 or v20 (LTS)')
@@ -1231,7 +1250,7 @@ def install_nodejs_direct() -> bool:
 
 
 def install_nodejs_homebrew() -> bool:
-    """Install Node.js using Homebrew on macOS."""
+    """Install Node.js LTS using Homebrew on macOS."""
     if not find_command('brew'):
         info('Installing Homebrew first...')
         result = run_command([
@@ -1242,14 +1261,20 @@ def install_nodejs_homebrew() -> bool:
         if result.returncode != 0:
             return False
 
-    info('Installing Node.js LTS using Homebrew...')
+    info('Installing Node.js LTS (v22) using Homebrew...')
     run_command(['brew', 'update'])
-    result = run_command(['brew', 'install', 'node'])
+    result = run_command(['brew', 'install', 'node@22'])
 
-    if result.returncode == 0:
-        success('Node.js installed via Homebrew')
-        return True
-    return False
+    if result.returncode != 0:
+        return False
+
+    # node@22 is keg-only; create symlinks so node is available in PATH
+    link_result = run_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    if link_result.returncode != 0:
+        warning('brew link failed for node@22; node may not be in PATH')
+
+    success('Node.js LTS installed via Homebrew')
+    return True
 
 
 def install_nodejs_apt() -> bool:
@@ -1279,8 +1304,42 @@ def install_nodejs_apt() -> bool:
     return False
 
 
-def ensure_nodejs() -> bool:
-    """Ensure Node.js is installed and meets minimum version."""
+def _verify_nodejs_version(check_claude_compat: bool = True) -> bool:
+    """Verify installed Node.js meets version requirements.
+
+    Checks minimum version and optionally checks Claude Code compatibility.
+    Used after fresh Node.js installation to ensure consistent validation.
+
+    Args:
+        check_claude_compat: If True, also reject versions incompatible
+            with Claude Code's npm package (v25+ due to SlowBuffer removal).
+
+    Returns:
+        True if Node.js version is acceptable, False otherwise.
+    """
+    node_version = get_node_version()
+    if not node_version:
+        return False
+    if check_claude_compat:
+        claude_ver = get_claude_version()
+        if not check_nodejs_compatibility(claude_code_version=claude_ver):
+            return False
+    return compare_versions(node_version, MIN_NODE_VERSION)
+
+
+def ensure_nodejs(check_claude_compat: bool = True) -> bool:
+    """Ensure Node.js is installed and meets minimum version.
+
+    Args:
+        check_claude_compat: If True (default), also check Node.js version
+            compatibility with Claude Code's npm package (rejects v25+
+            due to SlowBuffer removal). Set to False when Node.js is needed
+            for general purposes (e.g., npx-based MCP servers) rather than
+            Claude Code itself.
+
+    Returns:
+        True if Node.js is installed and meets requirements, False otherwise.
+    """
     info('Checking Node.js installation...')
 
     # On Windows, check standard installation location even if not in PATH
@@ -1297,9 +1356,11 @@ def ensure_nodejs() -> bool:
         info(f'Node.js {current_version} found')
 
         # Check for Node.js compatibility (v25+ incompatibility)
-        if not check_nodejs_compatibility():
-            error('Node.js version is incompatible with Claude Code')
-            return False
+        if check_claude_compat:
+            claude_ver = get_claude_version()
+            if not check_nodejs_compatibility(claude_code_version=claude_ver):
+                error('Node.js version is incompatible with Claude Code')
+                return False
 
         if compare_versions(current_version, MIN_NODE_VERSION):
             success(f'Node.js version meets minimum requirement (>= {MIN_NODE_VERSION})')
@@ -1324,8 +1385,7 @@ def ensure_nodejs() -> bool:
                         os.environ['PATH'] = f'{nodejs_path};{current_path}'
                         info(f'Added {nodejs_path} to PATH after winget installation')
 
-                node_version = get_node_version()
-                if node_version and compare_versions(node_version, MIN_NODE_VERSION):
+                if _verify_nodejs_version(check_claude_compat):
                     return True
 
             if is_admin() and install_nodejs_winget('machine'):
@@ -1338,8 +1398,7 @@ def ensure_nodejs() -> bool:
                         os.environ['PATH'] = f'{nodejs_path};{current_path}'
                         info(f'Added {nodejs_path} to PATH after winget installation')
 
-                node_version = get_node_version()
-                if node_version and compare_versions(node_version, MIN_NODE_VERSION):
+                if _verify_nodejs_version(check_claude_compat):
                     return True
 
         # Fallback to direct download
@@ -1354,30 +1413,28 @@ def ensure_nodejs() -> bool:
                         os.environ['PATH'] = f'{nodejs_path};{current_path}'
                         info(f'Added {nodejs_path} to PATH after installation')
 
-            version = get_node_version()
-            if version and compare_versions(version, MIN_NODE_VERSION):
+            if _verify_nodejs_version(check_claude_compat):
                 return True
 
     elif system == 'Darwin':
         # Try Homebrew first
-        if install_nodejs_homebrew():
-            node_version = get_node_version()
-            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
-                return True
+        if install_nodejs_homebrew() and _verify_nodejs_version(check_claude_compat):
+            return True
 
         # Fallback to direct download
         if install_nodejs_direct():
             time.sleep(2)
-            node_version = get_node_version()
-            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
+            if _verify_nodejs_version(check_claude_compat):
                 return True
 
     else:  # Linux
         # Detect distro and use package manager
-        if Path('/etc/debian_version').exists() and install_nodejs_apt():
-            node_version = get_node_version()
-            if node_version and compare_versions(node_version, MIN_NODE_VERSION):
-                return True
+        if (
+            Path('/etc/debian_version').exists()
+            and install_nodejs_apt()
+            and _verify_nodejs_version(check_claude_compat)
+        ):
+            return True
         warning('Unsupported Linux distribution - please install Node.js manually')
         return False
 

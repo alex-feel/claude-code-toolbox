@@ -289,20 +289,20 @@ class TestEnsureFunctionsAdditional:
         result = install_claude.ensure_git_bash_windows()
         assert result is None
 
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.get_node_version')
     @patch('install_claude.install_nodejs_apt', return_value=True)
-    def test_ensure_nodejs_linux_apt(self, mock_apt, mock_get_version, mock_system):
+    def test_ensure_nodejs_linux_apt(self, mock_apt, mock_get_version, mock_system, mock_compat):
         """Test Node.js installation on Linux via apt."""
         # Verify mock configurations
         assert mock_system.return_value == 'Linux'
         assert mock_apt.return_value is True
 
         # ensure_nodejs calls get_node_version multiple times:
-        # 1. Initial check (line 551) - returns None
-        # 2. After apt installation check 1 (line 609) - returns v20.10.0
-        # 3. After apt installation check 2 (line 610) - returns v20.10.0
-        mock_get_version.side_effect = [None, 'v20.10.0', 'v20.10.0']
+        # 1. Initial check - returns None (not installed)
+        # 2. After apt installation via _verify_nodejs_version - returns v20.10.0
+        mock_get_version.side_effect = [None, 'v20.10.0']
 
         with (
             patch('install_claude.compare_versions', return_value=True),
@@ -311,14 +311,16 @@ class TestEnsureFunctionsAdditional:
             result = install_claude.ensure_nodejs()
             assert result is True
             mock_apt.assert_called_once()
+            mock_compat.assert_called_once()
             # Note: Linux apt path doesn't call time.sleep()
 
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
     @patch('platform.system', return_value='Darwin')
     @patch('install_claude.get_node_version')
     @patch('install_claude.install_nodejs_homebrew', return_value=False)
     @patch('install_claude.install_nodejs_direct', return_value=True)
     @patch('time.sleep')
-    def test_ensure_nodejs_macos_direct(self, mock_sleep, mock_direct, mock_brew, mock_get_version, mock_system):
+    def test_ensure_nodejs_macos_direct(self, mock_sleep, mock_direct, mock_brew, mock_get_version, mock_system, mock_compat):
         """Test Node.js installation on macOS fallback to direct."""
         # Verify mock configurations
         assert mock_system.return_value == 'Darwin'
@@ -326,17 +328,18 @@ class TestEnsureFunctionsAdditional:
         assert mock_direct.return_value is True
 
         # ensure_nodejs calls get_node_version multiple times:
-        # 1. Initial check (line 551) - returns None
-        # 2. After direct installation check 1 (line 601) - returns v20.10.0
-        # 3. After direct installation check 2 (line 601) - returns v20.10.0 (compare_versions calls it again)
-        mock_get_version.side_effect = [None, 'v20.10.0', 'v20.10.0']
+        # 1. Initial check - returns None (not installed)
+        # 2. After direct installation via _verify_nodejs_version - returns v20.10.0
+        mock_get_version.side_effect = [None, 'v20.10.0']
 
         with patch('install_claude.compare_versions', return_value=True):
             result = install_claude.ensure_nodejs()
             assert result is True
             mock_direct.assert_called_once()
             mock_sleep.assert_called()
+            mock_compat.assert_called_once()
 
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.get_node_version')
     @patch('install_claude.compare_versions')
@@ -353,23 +356,25 @@ class TestEnsureFunctionsAdditional:
         mock_compare,
         mock_get_version,
         mock_system,
+        mock_compat,
     ):
         """Test Node.js upgrade when version is too old."""
         # Verify mock configurations
         assert mock_system.return_value == 'Windows'
         assert mock_check.return_value is True
         assert mock_winget.return_value is True
-        assert mock_path_exists.return_value is False  # Verify the path check mock
+        assert mock_path_exists.return_value is False
+        assert mock_compat.return_value is True
 
-        # ensure_nodejs calls get_node_version multiple times:
-        # 1. Initial check (line 551) - returns v16.0.0
-        # 2. After winget install check 1 (line 569) - returns v20.10.0
-        # 3. After winget install check 2 (line 569) for compare_versions - returns v20.10.0
-        mock_get_version.side_effect = ['v16.0.0', 'v20.10.0', 'v20.10.0']
+        # _verify_nodejs_version calls get_node_version once;
+        # check_nodejs_compatibility is mocked and does not consume side_effect
+        # 1. Initial check - returns v16.0.0 (old version)
+        # 2. Post-install _verify_nodejs_version - returns v20.10.0
+        mock_get_version.side_effect = ['v16.0.0', 'v20.10.0']
 
-        # compare_versions is called:
-        # 1. Initial check (line 554) - returns False (v16 < v18)
-        # 2. After winget install (line 569) - returns True (v20 >= v18)
+        # compare_versions called:
+        # 1. Initial check - returns False (v16 < v18)
+        # 2. Inside _verify_nodejs_version - returns True (v20 >= v18)
         mock_compare.side_effect = [False, True]
 
         result = install_claude.ensure_nodejs()
