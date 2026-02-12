@@ -370,6 +370,122 @@ class TestNpmSudoGatingE2E:
         )
 
 
+class TestRemoveNpmClaudeSudoGatingE2E:
+    """E2E tests for sudo gating in remove_npm_claude() npm uninstall."""
+
+    def test_remove_npm_claude_sudo_retry_with_tty(self) -> None:
+        """Sudo retry is attempted when TTY is available and uninstall fails."""
+        mock_subprocess = MagicMock()
+        # sudo npm uninstall succeeds
+        mock_subprocess.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+            ),
+            patch.object(
+                install_claude, 'run_command',
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, '', ''),  # npm list -g
+                    subprocess.CompletedProcess([], 1, '', 'EACCES'),  # npm uninstall -g
+                ],
+            ),
+            patch('subprocess.run', mock_subprocess),
+            patch('sys.stdin') as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = True
+            result = install_claude.remove_npm_claude()
+
+        assert result is True
+        # Only sudo npm uninstall (no credential check with TTY)
+        assert mock_subprocess.call_count == 1, (
+            f'Expected 1 call (sudo uninstall), got {mock_subprocess.call_count}'
+        )
+        sudo_args = mock_subprocess.call_args[0][0]
+        assert sudo_args[0] == 'sudo', (
+            f'Expected sudo command, got: {sudo_args[0]}'
+        )
+        assert sudo_args[1] == '/usr/bin/npm', (
+            f'Expected resolved npm path, got: {sudo_args[1]}'
+        )
+
+    def test_remove_npm_claude_sudo_skip_without_tty(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Sudo is skipped when no TTY and no cached credentials."""
+        mock_subprocess = MagicMock()
+        # Credential check fails (no cached credentials)
+        mock_subprocess.return_value = subprocess.CompletedProcess(
+            ['sudo', '-n', 'true'], 1, '', '',
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+            ),
+            patch.object(
+                install_claude, 'run_command',
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, '', ''),  # npm list -g
+                    subprocess.CompletedProcess([], 1, '', 'EACCES'),  # npm uninstall -g
+                ],
+            ),
+            patch('subprocess.run', mock_subprocess),
+            patch('sys.stdin') as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            result = install_claude.remove_npm_claude()
+
+        assert result is False
+        # Only credential check, no sudo npm uninstall
+        assert mock_subprocess.call_count == 1, (
+            f'Expected 1 call (credential check), got {mock_subprocess.call_count}'
+        )
+        cred_args = mock_subprocess.call_args[0][0]
+        assert cred_args == ['sudo', '-n', 'true'], (
+            f'Expected credential check, got: {cred_args}'
+        )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'does not affect' in combined.lower(), (
+            'Should reassure that native installation is unaffected'
+        )
+
+    def test_remove_npm_claude_error_output_suppressed(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Verify npm EACCES error output is NOT visible to the user (captured)."""
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(
+                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+            ),
+            patch.object(
+                install_claude, 'run_command',
+                side_effect=[
+                    subprocess.CompletedProcess([], 0, '', ''),  # npm list -g
+                    subprocess.CompletedProcess(
+                        [], 1, '', 'npm error code EACCES\nnpm error syscall rename',
+                    ),  # npm uninstall -g fails
+                ],
+            ),
+        ):
+            result = install_claude.remove_npm_claude()
+
+        assert result is False
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        # EACCES error details should NOT appear in user-visible output
+        assert 'EACCES' not in combined, (
+            'npm EACCES error should be captured, not shown to user'
+        )
+        assert 'syscall rename' not in combined, (
+            'npm error details should be captured, not shown to user'
+        )
+
+
 class TestNativeInstallerDiagnostics:
     """E2E tests for native installer diagnostic logging (stderr/stdout capture)."""
 
