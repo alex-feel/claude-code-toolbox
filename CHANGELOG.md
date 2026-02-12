@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.27.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.26.1...v4.27.0) (2026-02-11)
+
+
+### Features
+
+* add root detection guard and enhance npm fallback diagnostics ([616e8d6](https://github.com/alex-feel/claude-code-toolbox/commit/616e8d6f225ae4c9c3a77f56abc736c5854f0d00))
+
 ## [4.26.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.26.0...v4.26.1) (2026-02-10)
 
 
