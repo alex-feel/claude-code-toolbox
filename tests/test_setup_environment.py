@@ -373,28 +373,33 @@ class TestTildeExpansion:
         cmd = "sed -i '/pattern/d' ~/.bashrc"
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f"sed -i '/pattern/d' {home}/.bashrc"
+        bashrc = os.path.normpath(os.path.join(home, '.bashrc'))
+        assert expanded == f"sed -i '/pattern/d' {bashrc}"
 
     def test_expand_multiple_tildes(self):
         """Test expanding multiple tilde paths in one command."""
         cmd = 'cp ~/.config/file1 ~/.local/file2'
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f'cp {home}/.config/file1 {home}/.local/file2'
+        config_file = os.path.normpath(os.path.join(home, '.config', 'file1'))
+        local_file = os.path.normpath(os.path.join(home, '.local', 'file2'))
+        assert expanded == f'cp {config_file} {local_file}'
 
     def test_expand_tilde_in_complex_command(self):
         """Test tilde expansion in complex sed command."""
         cmd = "sed -i -E '/^[[:space:]]*export[[:space:]]+HTTP_PROXY=/d' ~/.bashrc"
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f"sed -i -E '/^[[:space:]]*export[[:space:]]+HTTP_PROXY=/d' {home}/.bashrc"
+        bashrc = os.path.normpath(os.path.join(home, '.bashrc'))
+        assert expanded == f"sed -i -E '/^[[:space:]]*export[[:space:]]+HTTP_PROXY=/d' {bashrc}"
 
     def test_expand_tilde_with_echo(self):
         """Test tilde expansion with echo command."""
         cmd = "echo 'export FOO=bar' >> ~/.bashrc"
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f"echo 'export FOO=bar' >> {home}/.bashrc"
+        bashrc = os.path.normpath(os.path.join(home, '.bashrc'))
+        assert expanded == f"echo 'export FOO=bar' >> {bashrc}"
 
     def test_no_tilde_unchanged(self):
         """Test that commands without tildes remain unchanged."""
@@ -407,22 +412,25 @@ class TestTildeExpansion:
         cmd = "echo '~/.bashrc'"
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
+        bashrc = os.path.normpath(os.path.join(home, '.bashrc'))
         # Our function expands tildes even in quotes, which is correct for subprocess context
-        assert expanded == f"echo '{home}/.bashrc'"
+        assert expanded == f"echo '{bashrc}'"
 
     def test_touch_tilde(self):
         """Test tilde expansion with touch command."""
         cmd = 'touch ~/.bashrc'
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f'touch {home}/.bashrc'
+        bashrc = os.path.normpath(os.path.join(home, '.bashrc'))
+        assert expanded == f'touch {bashrc}'
 
     def test_tilde_with_nested_path(self):
         """Test tilde expansion with deeply nested path."""
         cmd = 'cat ~/.config/claude/settings.json'
         expanded = setup_environment.expand_tildes_in_command(cmd)
         home = str(Path.home())
-        assert expanded == f'cat {home}/.config/claude/settings.json'
+        settings = os.path.normpath(os.path.join(home, '.config', 'claude', 'settings.json'))
+        assert expanded == f'cat {settings}'
 
 
 class TestNormalizeTildePath:
@@ -432,7 +440,8 @@ class TestNormalizeTildePath:
         """Test expanding simple tilde to home directory."""
         result = setup_environment.normalize_tilde_path('~/.claude/agent.md')
         home = str(Path.home())
-        assert result == f'{home}/.claude/agent.md'
+        expected = os.path.normpath(os.path.join(home, '.claude', 'agent.md'))
+        assert result == expected
         assert '~' not in result
 
     def test_expand_tilde_with_username(self):
@@ -448,7 +457,8 @@ class TestNormalizeTildePath:
         os.environ['TEST_VAR_PATH'] = '/test/path'
         try:
             result = setup_environment.normalize_tilde_path('$TEST_VAR_PATH/file.txt')
-            assert result == '/test/path/file.txt'
+            expected = os.path.normpath('/test/path/file.txt')
+            assert result == expected
         finally:
             del os.environ['TEST_VAR_PATH']
 
@@ -460,7 +470,8 @@ class TestNormalizeTildePath:
             # On Windows, %VAR% is expanded; on Unix, it may not be
             # os.path.expandvars handles both
             if platform.system() == 'Windows':
-                assert result == '/test/win/path/file.txt'
+                expected = os.path.normpath('/test/win/path/file.txt')
+                assert result == expected
         finally:
             del os.environ['TEST_WIN_PATH']
 
@@ -470,7 +481,8 @@ class TestNormalizeTildePath:
         try:
             result = setup_environment.normalize_tilde_path('~/$SUBDIR/file.txt')
             home = str(Path.home())
-            assert result == f'{home}/mysubdir/file.txt'
+            expected = os.path.normpath(os.path.join(home, 'mysubdir', 'file.txt'))
+            assert result == expected
         finally:
             del os.environ['SUBDIR']
 
@@ -487,12 +499,14 @@ class TestNormalizeTildePath:
     def test_no_expansion_needed(self):
         """Test path without tilde or env vars passes through."""
         result = setup_environment.normalize_tilde_path('/absolute/path/file.txt')
-        assert result == '/absolute/path/file.txt'
+        expected = os.path.normpath('/absolute/path/file.txt')
+        assert result == expected
 
     def test_relative_path_without_resolve(self):
         """Test relative path without resolve flag stays relative."""
         result = setup_environment.normalize_tilde_path('./relative/path')
-        assert result == './relative/path'
+        expected = os.path.normpath('./relative/path')
+        assert result == expected
 
     def test_relative_path_with_resolve(self):
         """Test relative path with resolve=True becomes absolute."""
@@ -511,10 +525,20 @@ class TestNormalizeTildePath:
             assert result == '/absolute/path'
 
     def test_url_passes_through_unchanged(self):
-        """Test that URLs are not modified (defensive behavior)."""
-        url = 'https://example.com/file.md'
-        result = setup_environment.normalize_tilde_path(url)
-        assert result == url
+        """Test that URLs are not modified by normpath.
+
+        The URL guard in normalize_tilde_path skips os.path.normpath for
+        URLs starting with http:// or https:// to prevent corruption of
+        the :// scheme separator on Windows (where normpath converts
+        forward slashes to backslashes).
+        """
+        https_url = 'https://example.com/file.md'
+        result = setup_environment.normalize_tilde_path(https_url)
+        assert result == https_url
+
+        http_url = 'http://example.com/path/to/file.yaml'
+        result = setup_environment.normalize_tilde_path(http_url)
+        assert result == http_url
 
     def test_windows_path_unchanged_on_windows(self):
         """Test Windows paths work correctly."""
@@ -531,7 +555,8 @@ class TestNormalizeTildePath:
         """Test deeply nested path with tilde."""
         result = setup_environment.normalize_tilde_path('~/.config/claude/agents/my-agent.md')
         home = str(Path.home())
-        assert result == f'{home}/.config/claude/agents/my-agent.md'
+        expected = os.path.normpath(os.path.join(home, '.config', 'claude', 'agents', 'my-agent.md'))
+        assert result == expected
 
     @pytest.mark.parametrize(('path', 'expected_contains'), [
         ('~/.claude', str(Path.home())),
@@ -553,21 +578,29 @@ class TestNormalizeTildePathUserScenario:
 
         This is the PRIMARY test case that validates the fix works for the user's
         actual configuration pattern.
+
+        Note: os.path.normpath strips trailing slashes and normalizes separators,
+        so the result will not have a trailing slash and will use platform-native
+        separators.
         """
         dest_path = '~/.claude/scripts/'
         result = setup_environment.normalize_tilde_path(dest_path)
         home = str(Path.home())
-        expected = f'{home}/.claude/scripts/'
+        expected = os.path.normpath(os.path.join(home, '.claude', 'scripts'))
         assert result == expected
         assert '~' not in result
-        assert Path(result.rstrip('/')).is_absolute() or result.startswith(home)
+        assert Path(result).is_absolute()
 
     def test_files_to_download_with_nested_dest(self):
-        """Test nested destination paths."""
+        """Test nested destination paths.
+
+        Note: os.path.normpath strips trailing slashes and normalizes separators.
+        """
         dest_path = '~/.claude/agents/custom/'
         result = setup_environment.normalize_tilde_path(dest_path)
         home = str(Path.home())
-        assert result == f'{home}/.claude/agents/custom/'
+        expected = os.path.normpath(os.path.join(home, '.claude', 'agents', 'custom'))
+        assert result == expected
 
     def test_resolve_resource_path_integration_scenario(self):
         """Test that normalized path is correctly identified as absolute."""
@@ -575,6 +608,68 @@ class TestNormalizeTildePathUserScenario:
         normalized = setup_environment.normalize_tilde_path(dest_path)
         # After normalization, the path should be absolute
         assert Path(normalized).is_absolute()
+
+
+class TestNormalizeTildePathNormpath:
+    """Test os.path.normpath behavior added to normalize_tilde_path.
+
+    These tests specifically verify the normpath step that normalizes
+    path separators and resolves '.' and '..' components.
+    """
+
+    def test_no_mixed_separators(self):
+        """After normpath, paths should have consistent separators."""
+        result = setup_environment.normalize_tilde_path('~/.claude/scripts/test.py')
+        if sys.platform == 'win32':
+            assert '/' not in result, f'Mixed separators found on Windows: {result}'
+        else:
+            assert '\\' not in result, f'Backslashes found on Unix: {result}'
+
+    def test_normpath_resolves_dot_dot(self):
+        """Verify that normpath resolves '..' components."""
+        result = setup_environment.normalize_tilde_path('~/foo/../bar')
+        assert '..' not in result, f'Unresolved .. found in path: {result}'
+        home = str(Path.home())
+        expected = os.path.normpath(os.path.join(home, 'bar'))
+        assert result == expected
+
+    def test_normpath_resolves_single_dot(self):
+        """Verify that normpath resolves '.' components."""
+        result = setup_environment.normalize_tilde_path('~/./scripts/./test.py')
+        assert '/.' not in result.replace('/.', ''), (
+            f'Unresolved . found in path: {result}'
+        )
+        home = str(Path.home())
+        expected = os.path.normpath(os.path.join(home, 'scripts', 'test.py'))
+        assert result == expected
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
+    def test_windows_consistency(self):
+        """On Windows, tilde-expanded paths should use backslashes consistently."""
+        result = setup_environment.normalize_tilde_path('~/.claude/scripts/file.py')
+        # After normpath on Windows, all separators should be backslashes
+        assert '/' not in result, f'Forward slashes found on Windows: {result}'
+        assert '\\' in result, f'No backslashes found on Windows: {result}'
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific')
+    def test_unix_forward_slashes(self):
+        """On Unix, paths should maintain forward slashes."""
+        result = setup_environment.normalize_tilde_path('~/.claude/scripts/file.py')
+        assert '\\' not in result, f'Backslashes found on Unix: {result}'
+        assert '/' in result, f'No forward slashes found on Unix: {result}'
+
+    def test_normpath_strips_trailing_separator(self):
+        """Verify that normpath strips trailing path separators."""
+        result = setup_environment.normalize_tilde_path('~/.claude/scripts/')
+        assert not result.endswith('/'), f'Trailing / found: {result}'
+        assert not result.endswith('\\'), f'Trailing \\\\ found: {result}'
+
+    def test_multiple_consecutive_separators_normalized(self):
+        """Verify that multiple consecutive separators are collapsed."""
+        result = setup_environment.normalize_tilde_path('~/.claude//scripts///test.py')
+        home = str(Path.home())
+        expected = os.path.normpath(os.path.join(home, '.claude', 'scripts', 'test.py'))
+        assert result == expected
 
 
 class TestDownloadFile:
@@ -1389,6 +1484,158 @@ class TestSetOsEnvVariableWindows:
         assert called_with[0] == ['reg', 'delete', r'HKCU\Environment', '/v', 'MY_VAR', '/f']
 
 
+class TestSetOsEnvVariableProcessSync:
+    """Tests for os.environ synchronization in set_os_env_variable()."""
+
+    def test_updates_process_env_on_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify os.environ is updated when persistent storage succeeds.
+
+        When set_os_env_variable() successfully writes to persistent storage,
+        it should also update os.environ for the current process so that
+        child processes (e.g., Claude Code) see the change immediately.
+        """
+        # Mock the platform-specific function to succeed
+        if sys.platform == 'win32':
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_windows', lambda _n, _v: True,
+            )
+        else:
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_unix', lambda _n, _v: True,
+            )
+
+        test_var = 'E2E_TEST_SET_OS_ENV_SYNC_12345'
+        try:
+            result = setup_environment.set_os_env_variable(test_var, 'test_value')
+            assert result is True
+            assert os.environ.get(test_var) == 'test_value'
+        finally:
+            os.environ.pop(test_var, None)
+
+    def test_removes_from_process_env_on_delete(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify os.environ is updated when variable is deleted.
+
+        When set_os_env_variable() successfully deletes a persistent variable,
+        it should also remove the variable from os.environ.
+        """
+        if sys.platform == 'win32':
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_windows', lambda _n, _v: True,
+            )
+        else:
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_unix', lambda _n, _v: True,
+            )
+
+        test_var = 'E2E_TEST_SET_OS_ENV_DEL_12345'
+        os.environ[test_var] = 'old_value'
+        try:
+            result = setup_environment.set_os_env_variable(test_var, None)
+            assert result is True
+            assert test_var not in os.environ
+        finally:
+            os.environ.pop(test_var, None)
+
+    def test_no_env_change_on_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify os.environ is unchanged when persistent storage fails.
+
+        When the platform-specific function returns False (e.g., setx fails
+        or shell config write fails), os.environ should remain unchanged
+        to maintain consistency between persistent and process state.
+        """
+        if sys.platform == 'win32':
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_windows', lambda _n, _v: False,
+            )
+        else:
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_unix', lambda _n, _v: False,
+            )
+
+        test_var = 'E2E_TEST_SET_OS_ENV_FAIL_12345'
+        os.environ[test_var] = 'old_value'
+        try:
+            result = setup_environment.set_os_env_variable(test_var, None)
+            assert result is False
+            # os.environ should be unchanged because persistent op failed
+            assert os.environ.get(test_var) == 'old_value'
+        finally:
+            os.environ.pop(test_var, None)
+
+    def test_delete_nonexistent_var_no_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify deleting a var not in os.environ does not crash.
+
+        os.environ.pop(name, None) should handle missing keys gracefully.
+        """
+        if sys.platform == 'win32':
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_windows', lambda _n, _v: True,
+            )
+        else:
+            monkeypatch.setattr(
+                setup_environment, 'set_os_env_variable_unix', lambda _n, _v: True,
+            )
+
+        test_var = 'E2E_TEST_NONEXIST_DEL_12345'
+        # Ensure it does not exist
+        os.environ.pop(test_var, None)
+        result = setup_environment.set_os_env_variable(test_var, None)
+        assert result is True
+        assert test_var not in os.environ
+
+
+class TestSetAllOsEnvVariablesUnsetGuidance:
+    """Tests for unset guidance in set_all_os_env_variables()."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_shows_unset_instructions_on_delete(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Verify unset instructions are shown when variables are deleted.
+
+        On Unix, after deleting environment variables from shell configs,
+        set_all_os_env_variables() should print explicit unset commands
+        for the user to run in their current shell session.
+        """
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        config_file = tmp_path / '.bashrc'
+        monkeypatch.setattr(
+            setup_environment,
+            'get_all_shell_config_files',
+            lambda: [config_file],
+        )
+        # First set a variable so there's something to delete
+        setup_environment.add_export_to_file(config_file, 'TOKEN_TO_DELETE', 'secret')
+
+        setup_environment.set_all_os_env_variables({'TOKEN_TO_DELETE': None})
+
+        captured = capsys.readouterr()
+        assert 'unset TOKEN_TO_DELETE' in captured.out
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific test')
+    def test_no_unset_instructions_when_only_setting(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Verify no unset instructions when only setting variables (no deletes)."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(
+            setup_environment,
+            'get_all_shell_config_files',
+            lambda: [tmp_path / '.bashrc'],
+        )
+
+        setup_environment.set_all_os_env_variables({'MY_VAR': 'my_value'})
+
+        captured = capsys.readouterr()
+        assert 'unset' not in captured.out
+
+
 class TestSetAllOsEnvVariables:
     """Tests for set_all_os_env_variables() function."""
 
@@ -1483,8 +1730,9 @@ class TestInstallDependencies:
 
         # Commands should be executed as-is with expanded tilde paths
         home = str(Path.home())
+        zshrc = os.path.normpath(os.path.join(home, '.zshrc'))
         call_args = [call[0][0][2] for call in calls]
-        assert f'echo "export FOO=bar" >> {home}/.zshrc' in call_args
+        assert f'echo "export FOO=bar" >> {zshrc}' in call_args
         assert 'brew install tool' in call_args
 
     @patch('platform.system', return_value='Windows')

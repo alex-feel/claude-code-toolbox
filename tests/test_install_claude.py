@@ -835,6 +835,218 @@ class TestEnsureFunctions:
         mock_native.assert_called_once()
 
 
+class TestEnsureClaudeSourceAwareUpgrade:
+    """Test source-aware upgrade logic in ensure_claude().
+
+    When Claude is already installed but outdated, the upgrade method should
+    match the installation source (native or npm) rather than unconditionally
+    using npm.
+    """
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_native_source_uses_native_installer(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When source is native in auto mode, upgrade should use native installer."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # Native should be used, npm should NOT
+        mock_native.assert_called()
+        mock_npm.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform')
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_npm_source_uses_npm(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When CLAUDE_INSTALL_METHOD=npm, upgrade should use npm directly."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # npm should be used, native should NOT
+        mock_npm.assert_called()
+        mock_native.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_native_source_fallback_to_npm_on_failure(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When native upgrade fails in auto mode, should fall back to npm."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # Both should be called: native first (fails), then npm fallback
+        mock_native.assert_called()
+        mock_npm.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'native'}, clear=False)
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version', return_value='2.0.76')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_native_mode_no_npm_fallback(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When CLAUDE_INSTALL_METHOD=native, no npm fallback on upgrade failure."""
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_version.return_value == '2.0.76'
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # Native should be called, npm should NOT (no fallback in native mode)
+        mock_native.assert_called()
+        mock_npm.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform')
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_npm_mode_always_uses_npm(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When CLAUDE_INSTALL_METHOD=npm, always use npm regardless of source."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        # Source is native, but install_method is npm
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # npm should be used regardless of native source
+        mock_npm.assert_called()
+        mock_native.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform')
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_unknown_source_uses_npm(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When source is unknown in auto mode, should use npm for upgrade."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/usr/bin/claude', 'unknown')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # npm should be used for unknown source, native should NOT
+        mock_npm.assert_called()
+        mock_native.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_version_reported_correctly_after_native(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+    ):
+        """After native upgrade, get_claude_version() should be called to report version."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        # get_claude_version should be called at least twice:
+        # once for initial version check, once after upgrade
+        assert mock_get_version.call_count >= 2
+
+
 class TestMainFunction:
     """Test the main installation flow."""
 
