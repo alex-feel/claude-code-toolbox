@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from scripts.setup_environment import configure_all_mcp_servers
 from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_mcp_config_file
@@ -98,16 +100,17 @@ class TestPathSeparatorConsistency:
             'settings.json paths have inconsistent separators:\n' + '\n'.join(errors)
         )
 
-    def test_user_settings_apikey_path_normalized(
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_user_settings_apikey_path_normalized_on_windows(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify apiKeyHelper tilde path is fully expanded and normalized.
+        """Verify apiKeyHelper tilde path is fully expanded and normalized on Windows.
 
         The golden config contains apiKeyHelper: "~/.claude/scripts/api-key-helper.py"
-        After write_user_settings(), this should be expanded to an absolute path
-        with platform-consistent separators and no tilde.
+        On Windows, after write_user_settings(), this should be expanded to an absolute
+        path with platform-consistent separators and no tilde.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
@@ -146,6 +149,44 @@ class TestPathSeparatorConsistency:
 
         assert not errors, (
             'apiKeyHelper path normalization issues:\n' + '\n'.join(errors)
+        )
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_user_settings_apikey_path_preserved_on_unix(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify apiKeyHelper tilde path is preserved on Unix/Linux/WSL.
+
+        On non-Windows platforms, tildes are preserved in settings.json because
+        Claude Code resolves ~ to the correct home directory at runtime.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        user_settings = golden_config.get('user-settings', {})
+
+        if 'apiKeyHelper' not in user_settings:
+            return
+
+        write_user_settings(user_settings, claude_dir)
+        settings_path = claude_dir / 'settings.json'
+
+        data = json.loads(settings_path.read_text())
+        api_key_helper = data.get('apiKeyHelper', '')
+
+        errors: list[str] = []
+
+        # On Unix, the tilde must be preserved (value should be unchanged)
+        original_value = user_settings['apiKeyHelper']
+        if api_key_helper != original_value:
+            errors.append(
+                f'apiKeyHelper should be preserved on Unix: '
+                f'expected {original_value!r}, got {api_key_helper!r}',
+            )
+
+        assert not errors, (
+            'apiKeyHelper tilde preservation issues:\n' + '\n'.join(errors)
         )
 
     def test_mcp_config_path_separators(

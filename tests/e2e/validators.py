@@ -80,7 +80,9 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     assert data is not None  # For type checker
 
     # Keys that undergo tilde expansion during write_user_settings()
-    # These cannot be compared directly because their values are transformed
+    # Platform-conditional behavior:
+    # - Windows: tildes are expanded to absolute paths (Windows shell doesn't resolve ~)
+    # - Linux/macOS/WSL: tildes are PRESERVED (Claude Code resolves ~ at runtime)
     tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
 
     # Validate user-settings are merged correctly
@@ -88,28 +90,39 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     for key, expected_value in user_settings.items():
         actual_value = data.get(key)
         if key in tilde_keys:
-            # For tilde-expansion keys, verify the value was expanded (not raw match)
-            if actual_value is None:
-                errors.append(f"settings.json key '{key}': missing (expected expanded form)")
-            elif isinstance(actual_value, str) and '~' in actual_value:
-                errors.append(
-                    f"settings.json key '{key}' contains unexpanded tilde: {actual_value}",
-                )
+            if sys.platform == 'win32':
+                # Windows: verify tildes are expanded
+                if actual_value is None:
+                    errors.append(f"settings.json key '{key}': missing (expected expanded form)")
+                elif isinstance(actual_value, str) and '~' in actual_value:
+                    errors.append(
+                        f"settings.json key '{key}' contains unexpanded tilde: {actual_value}",
+                    )
+            else:
+                # Unix/WSL: verify tildes are PRESERVED (value unchanged)
+                if actual_value is None:
+                    errors.append(f"settings.json key '{key}': missing (expected preserved form)")
+                elif actual_value != expected_value:
+                    errors.append(
+                        f"settings.json key '{key}': expected tilde preserved "
+                        f"{expected_value!r}, got {actual_value!r}",
+                    )
         elif actual_value != expected_value:
             errors.append(
                 f"settings.json key '{key}': expected {expected_value!r}, got {actual_value!r}",
             )
 
     # Also check for unexpanded tildes in tilde-expansion keys not in user-settings
-    # (e.g., pre-existing values from a previous merge)
-    errors.extend(
-        f"settings.json key '{key}' contains unexpanded tilde: {data[key]}"
-        for key in tilde_keys
-        if key in data
-        and key not in user_settings
-        and isinstance(data[key], str)
-        and '~' in data[key]
-    )
+    # (only on Windows - on Unix, tildes are expected to remain)
+    if sys.platform == 'win32':
+        errors.extend(
+            f"settings.json key '{key}' contains unexpanded tilde: {data[key]}"
+            for key in tilde_keys
+            if key in data
+            and key not in user_settings
+            and isinstance(data[key], str)
+            and '~' in data[key]
+        )
 
     return errors
 
@@ -798,3 +811,90 @@ def validate_all_paths_expanded(data: dict[str, Any], path_keys: list[str]) -> l
             check_value(data[key], key)
 
     return errors
+
+
+def validate_no_windows_path_contamination(
+    data: dict[str, Any],
+    context: str = '',
+) -> list[str]:
+    """Validate that settings do not contain Windows path contamination on Unix.
+
+    Checks for Windows-specific path patterns (backslashes, drive letters)
+    in tilde-expansion keys on non-Windows platforms.
+
+    Args:
+        data: Parsed JSON data (e.g., settings.json content)
+        context: Optional context for error messages (e.g., 'settings.json')
+
+    Returns:
+        List of error strings (empty if no contamination found)
+    """
+    import re
+
+    if sys.platform != 'win32':
+        errors: list[str] = []
+        tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+        ctx_prefix = f'{context} ' if context else ''
+
+        for key in tilde_keys:
+            if key not in data or not isinstance(data[key], str):
+                continue
+            value = data[key]
+
+            # Check for Windows backslash paths
+            if '\\' in value:
+                errors.append(
+                    f'{ctx_prefix}{key} contains backslash (Windows path contamination): {value}',
+                )
+
+            # Check for Windows drive letters (C:\, D:\, etc.)
+            if re.search(r'[A-Za-z]:[/\\]', value):
+                errors.append(
+                    f'{ctx_prefix}{key} contains Windows drive letter on Unix: {value}',
+                )
+
+        return errors
+    # Not applicable on Windows
+    return []
+
+
+def validate_tilde_preservation_on_unix(
+    data: dict[str, Any],
+    original_settings: dict[str, Any],
+    context: str = '',
+) -> list[str]:
+    """Validate that tilde-expansion keys are preserved on Unix platforms.
+
+    On Linux/macOS/WSL, Claude Code resolves ~ at runtime, so settings.json
+    should contain the original tilde paths unchanged.
+
+    Args:
+        data: Parsed JSON data from settings.json
+        original_settings: Original user-settings from config (before processing)
+        context: Optional context for error messages
+
+    Returns:
+        List of error strings (empty if preservation is correct)
+    """
+    if sys.platform != 'win32':
+        errors: list[str] = []
+        tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+        ctx_prefix = f'{context} ' if context else ''
+
+        for key in tilde_keys:
+            if key not in original_settings:
+                continue
+            original = original_settings[key]
+            actual = data.get(key)
+
+            if actual is None:
+                errors.append(f'{ctx_prefix}{key}: missing (expected preserved tilde value)')
+            elif actual != original:
+                errors.append(
+                    f'{ctx_prefix}{key}: tilde not preserved - '
+                    f'expected {original!r}, got {actual!r}',
+                )
+
+        return errors
+    # Not applicable on Windows
+    return []

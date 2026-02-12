@@ -210,3 +210,98 @@ class TestSourceAwareUpgrade:
         assert result is True
         mock_native.assert_not_called()
         mock_npm.assert_not_called()
+
+
+class TestPathClassification:
+    """E2E tests for verify_claude_installation() path classification.
+
+    These tests verify that different installation paths are correctly
+    classified as 'native', 'npm', or 'unknown' source types.
+    """
+
+    def test_usr_local_bin_classified_as_native(self) -> None:
+        """Verify /usr/local/bin/claude is classified as native."""
+        with (
+            patch('sys.platform', 'linux'),
+            patch.object(
+                install_claude, 'find_command_robust',
+                return_value='/usr/local/bin/claude',
+            ),
+        ):
+            installed, path, source = install_claude.verify_claude_installation()
+
+        assert installed is True
+        assert path == '/usr/local/bin/claude'
+        assert source == 'native', (
+            f'/usr/local/bin/claude should be classified as native, got {source!r}'
+        )
+
+    def test_claude_bin_classified_as_native(self) -> None:
+        """Verify ~/.claude/bin/claude is classified as native."""
+        with (
+            patch('sys.platform', 'linux'),
+            patch.object(
+                install_claude, 'find_command_robust',
+                return_value='/home/user/.claude/bin/claude',
+            ),
+        ):
+            installed, path, source = install_claude.verify_claude_installation()
+
+        assert installed is True
+        assert path == '/home/user/.claude/bin/claude'
+        assert source == 'native', (
+            f'.claude/bin path should be classified as native, got {source!r}'
+        )
+
+    def test_npm_global_path_classified_as_npm(self) -> None:
+        """Verify .npm-global path is classified as npm."""
+        with (
+            patch('sys.platform', 'linux'),
+            patch.object(
+                install_claude, 'find_command_robust',
+                return_value='/home/user/.npm-global/bin/claude',
+            ),
+        ):
+            installed, path, source = install_claude.verify_claude_installation()
+
+        assert installed is True
+        assert path == '/home/user/.npm-global/bin/claude'
+        assert source == 'npm', (
+            f'.npm-global path should be classified as npm, got {source!r}'
+        )
+
+    def test_unknown_source_tries_native_first(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When source is unknown in auto mode, native is tried first, then npm fallback."""
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                install_claude, 'get_claude_version',
+                side_effect=['2.0.76', '2.1.39'],
+            ),
+            patch.object(
+                install_claude, 'get_latest_claude_version', return_value='2.1.39',
+            ),
+            patch.object(install_claude, 'compare_versions', return_value=False),
+            patch.object(
+                install_claude, 'verify_claude_installation',
+                return_value=(True, '/opt/custom/bin/claude', 'unknown'),
+            ),
+            patch.object(
+                install_claude, 'install_claude_native_cross_platform', return_value=True,
+            ) as mock_native,
+            patch.object(install_claude, 'install_claude_npm') as mock_npm,
+            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+        ):
+            result = install_claude.ensure_claude()
+
+        assert result is True
+        mock_native.assert_called()
+        mock_npm.assert_not_called()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'unknown installation' in combined.lower(), (
+            'Should log detection of unknown source'
+        )

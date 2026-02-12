@@ -302,7 +302,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
         if claude_path:
             if 'npm' in claude_path or '.npm-global' in claude_path:
                 result = (True, claude_path, 'npm')
-            elif '.local/bin' in claude_path:
+            elif '.local/bin' in claude_path or '/usr/local/bin' in claude_path or '.claude/bin' in claude_path:
                 result = (True, claude_path, 'native')
             else:
                 result = (True, claude_path, 'unknown')
@@ -1506,45 +1506,71 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
     # Try with sudo on Unix systems
     if platform.system() != 'Windows':
-        if will_need_sudo:
-            warning('Global npm directory requires elevated permissions - attempting sudo...')
-        else:
-            warning('Non-sudo install failed, attempting with sudo...')
-
-        try:
-            sudo_result = subprocess.run(
-                ['sudo', npm_path, 'install', '-g', package_spec],
-                capture_output=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=30,
-            )
-        except subprocess.TimeoutExpired:
-            warning('Sudo attempt timed out after 30 seconds')
-            sudo_result = None
-
-        if sudo_result is not None and sudo_result.returncode == 0:
-            success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
-
-            # If specific version was installed, set DISABLE_AUTOUPDATER
-            if version:
-                set_disable_autoupdater()
-
-            return True
-
-        # Sudo failed - provide TTY-aware guidance
+        # Check if sudo is viable BEFORE attempting
+        can_sudo = False
         if sys.stdin.isatty():
-            warning('Sudo failed. Please check:')
-            info('  1. Your password is correct')
-            info('  2. Your user has sudo privileges (check /etc/sudoers)')
-            info(f'  3. Try manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
+            can_sudo = True  # Interactive mode - user can enter password
         else:
-            warning('Sudo failed (non-interactive mode detected - no TTY available)')
+            # Non-interactive mode: check for cached sudo credentials
+            try:
+                cred_check = subprocess.run(
+                    ['sudo', '-n', 'true'],
+                    capture_output=True,
+                    timeout=5,
+                )
+                can_sudo = cred_check.returncode == 0
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                can_sudo = False
+
+        if not can_sudo:
+            warning('Cannot use sudo (non-interactive mode, no cached credentials)')
             info('When running via curl | bash, sudo cannot prompt for a password.')
             info('Options:')
             info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
             info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+        else:
+            if will_need_sudo:
+                warning('Global npm directory requires elevated permissions - attempting sudo...')
+            else:
+                warning('Non-sudo install failed, attempting with sudo...')
+
+            try:
+                sudo_result = subprocess.run(
+                    ['sudo', npm_path, 'install', '-g', package_spec],
+                    capture_output=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                warning('Sudo attempt timed out after 30 seconds')
+                sudo_result = None
+            except FileNotFoundError:
+                warning('sudo command not found')
+                sudo_result = None
+
+            if sudo_result is not None and sudo_result.returncode == 0:
+                success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
+
+                # If specific version was installed, set DISABLE_AUTOUPDATER
+                if version:
+                    set_disable_autoupdater()
+
+                return True
+
+            # Sudo was attempted but failed - provide context-aware guidance
+            if sys.stdin.isatty():
+                warning('Sudo failed. Please check:')
+                info('  1. Your password is correct')
+                info('  2. Your user has sudo privileges (check /etc/sudoers)')
+                info(f'  3. Try manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
+            else:
+                warning('Sudo failed (cached credentials were available but install still failed)')
+                info('Options:')
+                info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
+                info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
+                info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
 
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     info('Manual installation options:')
@@ -2696,8 +2722,27 @@ def ensure_claude() -> bool:
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
 
-            # npm, winget, or unknown source - use npm
-            if upgrade_source in ('npm', 'unknown', 'winget'):
+            if upgrade_source == 'unknown':
+                # Unknown source likely indicates a native installation at an
+                # unrecognized path. Try native upgrade first, fall back to npm.
+                info(f'Detected unknown installation source at: {upgrade_claude_path}')
+                info(f'Trying native upgrade to {latest_version} first...')
+                if install_claude_native_cross_platform(version=None):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via native installer')
+                    return True
+                warning('Native upgrade failed for unknown source, falling back to npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    return True
+                warning('All upgrade methods failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            # npm or winget source - use npm
+            if upgrade_source in ('npm', 'winget'):
                 info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
             info(f'Upgrading to {latest_version} via npm...')
             if install_claude_npm(upgrade=True, version=latest_version):

@@ -44,7 +44,9 @@ class TestNpmSudoFallback:
             ),
             patch('subprocess.run', mock_subprocess),
             patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
         ):
+            mock_stdin.isatty.return_value = True
             result = install_claude.install_claude_npm()
 
         assert result is True
@@ -56,9 +58,16 @@ class TestNpmSudoFallback:
         )
 
     def test_non_interactive_error_guidance(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Verify non-interactive (no TTY) environments get pipe-specific guidance."""
+        """Verify non-interactive (no TTY) environments get pipe-specific guidance.
+
+        With pre-sudo gating, when no TTY and no cached credentials, sudo is
+        SKIPPED entirely (only the credential check subprocess call happens).
+        """
         mock_subprocess = MagicMock()
-        mock_subprocess.return_value = subprocess.CompletedProcess([], 1, '', 'sudo: no tty')
+        # Credential check returns non-zero (no cached credentials)
+        mock_subprocess.return_value = subprocess.CompletedProcess(
+            ['sudo', '-n', 'true'], 1, '', '',
+        )
 
         with (
             patch('platform.system', return_value='Linux'),
@@ -76,6 +85,14 @@ class TestNpmSudoFallback:
             result = install_claude.install_claude_npm()
 
         assert result is False
+        # Only the credential check should have been called (sudo skipped)
+        assert mock_subprocess.call_count == 1, (
+            f'Expected 1 subprocess.run call (credential check only), got {mock_subprocess.call_count}'
+        )
+        cred_check_args = mock_subprocess.call_args[0][0]
+        assert cred_check_args == ['sudo', '-n', 'true'], (
+            f'Expected credential check call, got: {cred_check_args}'
+        )
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'non-interactive' in combined.lower(), (
@@ -191,7 +208,9 @@ class TestNpmSudoFallback:
             ),
             patch('subprocess.run', mock_subprocess),
             patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
         ):
+            mock_stdin.isatty.return_value = True
             result = install_claude.install_claude_npm()
 
         assert result is True
@@ -216,13 +235,138 @@ class TestNpmSudoFallback:
             ),
             patch('subprocess.run', mock_subprocess),
             patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
         ):
+            mock_stdin.isatty.return_value = True
             install_claude.install_claude_npm()
 
-        # Verify capture_output=True was passed
+        # Verify capture_output=True was passed on the sudo install call
         call_kwargs = mock_subprocess.call_args[1]
         assert call_kwargs.get('capture_output') is True, (
             'Sudo subprocess.run must use capture_output=True to suppress noisy output'
+        )
+
+
+class TestNpmSudoGatingE2E:
+    """E2E tests for pre-sudo TTY/credential gating in install_claude_npm()."""
+
+    def test_npm_sudo_skipped_without_tty(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Sudo is completely skipped when no TTY and no cached credentials."""
+        mock_subprocess = MagicMock()
+        # Credential check returns non-zero (no cached credentials)
+        mock_subprocess.return_value = subprocess.CompletedProcess(
+            ['sudo', '-n', 'true'], 1, '', '',
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'needs_sudo_for_npm', return_value=True),
+            patch.object(
+                install_claude, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', 'EACCES'),
+            ),
+            patch('subprocess.run', mock_subprocess),
+            patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            result = install_claude.install_claude_npm()
+
+        assert result is False
+        # Only credential check should have been called, not sudo npm install
+        assert mock_subprocess.call_count == 1, (
+            f'Expected 1 call (credential check), got {mock_subprocess.call_count}'
+        )
+        cred_args = mock_subprocess.call_args[0][0]
+        assert cred_args == ['sudo', '-n', 'true'], (
+            f'Expected credential check, got: {cred_args}'
+        )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'cannot use sudo' in combined.lower(), (
+            'Should warn that sudo cannot be used'
+        )
+
+    def test_npm_sudo_uses_cached_credentials(self) -> None:
+        """Sudo proceeds when cached credentials are available even without TTY."""
+        mock_subprocess = MagicMock()
+        mock_subprocess.side_effect = [
+            # First call: credential check succeeds
+            subprocess.CompletedProcess(['sudo', '-n', 'true'], 0, '', ''),
+            # Second call: sudo npm install succeeds
+            subprocess.CompletedProcess([], 0, '', ''),
+        ]
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
+            patch.object(
+                install_claude, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', 'permission denied'),
+            ),
+            patch('subprocess.run', mock_subprocess),
+            patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            result = install_claude.install_claude_npm()
+
+        assert result is True
+        # Should have 2 calls: credential check + sudo npm install
+        assert mock_subprocess.call_count == 2, (
+            f'Expected 2 calls (cred check + install), got {mock_subprocess.call_count}'
+        )
+        # Verify first call was credential check
+        first_args = mock_subprocess.call_args_list[0][0][0]
+        assert first_args == ['sudo', '-n', 'true'], (
+            f'First call should be credential check, got: {first_args}'
+        )
+        # Verify second call was sudo npm install
+        second_args = mock_subprocess.call_args_list[1][0][0]
+        assert second_args[0] == 'sudo', (
+            f'Second call should start with sudo, got: {second_args[0]}'
+        )
+        assert '/usr/bin/npm' in second_args, (
+            f'Second call should include npm path, got: {second_args}'
+        )
+
+    def test_npm_sudo_filenotfounderror_graceful(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """FileNotFoundError during credential check is handled gracefully."""
+        mock_subprocess = MagicMock()
+        # Credential check raises FileNotFoundError (no sudo binary)
+        mock_subprocess.side_effect = FileNotFoundError('sudo not found')
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
+            patch.object(
+                install_claude, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', 'permission denied'),
+            ),
+            patch('subprocess.run', mock_subprocess),
+            patch('pathlib.Path.exists', return_value=True),
+            patch('sys.stdin') as mock_stdin,
+        ):
+            mock_stdin.isatty.return_value = False
+            result = install_claude.install_claude_npm()
+
+        assert result is False
+        # Only one call should have been attempted (the credential check that raised)
+        assert mock_subprocess.call_count == 1, (
+            f'Expected 1 call attempt, got {mock_subprocess.call_count}'
+        )
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        # Should not crash - should produce error guidance
+        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+            'Should suggest native installer when sudo unavailable'
         )
 
 
