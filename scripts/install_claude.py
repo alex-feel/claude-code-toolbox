@@ -2649,9 +2649,57 @@ def ensure_claude() -> bool:
                 # Current version is >= latest
                 success(f'Claude Code version {current_version} is already up-to-date (latest: {latest_version})')
                 return True
-            # Current version is older - upgrade via npm
+            # Current version is older - upgrade using source-aware method
             info(f'Claude Code version {current_version} is installed, but {latest_version} is available')
-            info(f'Upgrading to latest version {latest_version} via npm...')
+
+            # Detect current installation source
+            _, upgrade_claude_path, upgrade_source = verify_claude_installation()
+
+            if install_method == 'npm':
+                # NPM-only mode - always use npm
+                info(f'Upgrading to {latest_version} via npm (method: npm)...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version}')
+                    return True
+                warning('npm upgrade failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            if install_method == 'native':
+                # Native-only mode - use native installer
+                info('Upgrading via native installer (method: native)...')
+                if install_claude_native_cross_platform(version=None):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via native installer')
+                    return True
+                warning('Native upgrade failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            # Auto mode: Use source-matching upgrade method
+            if upgrade_source == 'native':
+                info(f'Detected native installation at: {upgrade_claude_path}')
+                info(f'Upgrading to {latest_version} via native installer...')
+                if install_claude_native_cross_platform(version=None):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via native installer')
+                    return True
+                # Native upgrade failed - fall back to npm in auto mode
+                warning('Native upgrade failed, falling back to npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    return True
+                warning('All upgrade methods failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            # npm, winget, or unknown source - use npm
+            if upgrade_source in ('npm', 'unknown', 'winget'):
+                info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
+            info(f'Upgrading to {latest_version} via npm...')
             if install_claude_npm(upgrade=True, version=latest_version):
                 new_version = get_claude_version()
                 if new_version:
