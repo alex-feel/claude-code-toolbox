@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.27.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.0...v4.27.1) (2026-02-12)
+
+
+### Bug Fixes
+
+* resolve upgrade, path separator, and env var sync issues ([56c3ebb](https://github.com/alex-feel/claude-code-toolbox/commit/56c3ebbb3891f88374fd012dd50ac64cc681ae2a))
+
 ## [4.27.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.26.1...v4.27.0) (2026-02-11)
 
 
