@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.27.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.1...v4.27.2) (2026-02-12)
+
+
+### Bug Fixes
+
+* resolve MyPy unreachable code error in is_wsl function ([fa034ef](https://github.com/alex-feel/claude-code-toolbox/commit/fa034ef56ee701d1a9894a8d78498d41aad44fb9))
+* resolve native path detection, tilde preservation, and npm sudo handling ([782b883](https://github.com/alex-feel/claude-code-toolbox/commit/782b883fa7e011439a4e6abfe11e88bbca5dabf0))
+
 ## [4.27.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.0...v4.27.1) (2026-02-12)
 
 
