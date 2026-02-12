@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.27.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.2...v4.27.3) (2026-02-12)
+
+
+### Bug Fixes
+
+* add sudo gating to remove_npm_claude() for EACCES permission errors ([a9b69ea](https://github.com/alex-feel/claude-code-toolbox/commit/a9b69eadf4956a82e9475fd0ff6ea95a21a340f3))
+
 ## [4.27.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.1...v4.27.2) (2026-02-12)
 
 
