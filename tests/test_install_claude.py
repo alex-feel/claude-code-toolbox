@@ -683,13 +683,17 @@ class TestClaudeInstallation:
         assert result is True
         assert '@anthropic-ai/claude-code@latest' in mock_run.call_args[0][0]
 
+    @patch('sys.stdin')
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
-    def test_install_claude_npm_sudo_fallback(self, mock_subprocess_run, mock_run, mock_needs_sudo, mock_find, mock_system):
+    def test_install_claude_npm_sudo_fallback(
+        self, mock_subprocess_run, mock_run, mock_needs_sudo, mock_find, mock_system, mock_stdin,
+    ):
         """Test Claude installation with sudo fallback."""
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             assert mock_system.return_value == 'Linux'
             assert mock_find.return_value == '/usr/bin/npm'
@@ -990,13 +994,13 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native.assert_not_called()
 
     @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
-    @patch('install_claude.install_claude_npm', return_value=True)
-    @patch('install_claude.install_claude_native_cross_platform')
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
-    def test_upgrade_unknown_source_uses_npm(
+    def test_upgrade_unknown_source_tries_native_first(
         self,
         mock_verify,
         mock_get_version,
@@ -1005,7 +1009,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native,
         mock_npm,
     ):
-        """When source is unknown in auto mode, should use npm for upgrade."""
+        """When source is unknown in auto mode, try native first, then npm fallback."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/usr/bin/claude', 'unknown')
 
@@ -1014,9 +1018,40 @@ class TestEnsureClaudeSourceAwareUpgrade:
         # Verify mock configurations
         assert mock_get_latest.return_value == '2.1.39'
         assert mock_compare.return_value is False
-        # npm should be used for unknown source, native should NOT
+        # Native should be tried first for unknown source
+        mock_native.assert_called()
+        # npm should NOT be called since native succeeded
+        mock_npm.assert_not_called()
+
+    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_upgrade_unknown_source_npm_fallback(
+        self,
+        mock_verify,
+        mock_get_version,
+        mock_get_latest,
+        mock_compare,
+        mock_native,
+        mock_npm,
+    ):
+        """When source is unknown and native fails, fall back to npm."""
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/usr/bin/claude', 'unknown')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # Verify mock configurations
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        # Native should be tried first
+        mock_native.assert_called()
+        # npm should be called as fallback since native failed
         mock_npm.assert_called()
-        mock_native.assert_not_called()
 
     @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
@@ -1643,14 +1678,14 @@ class TestVerifyClaudeInstallation:
     @patch('sys.platform', 'linux')
     @patch('install_claude.find_command_robust')
     def test_verify_claude_installation_linux_unknown(self, mock_find):
-        """Test verification on Linux with unknown source."""
-        mock_find.return_value = '/usr/local/bin/claude'
+        """Verify unrecognized path is classified as unknown on Linux."""
+        mock_find.return_value = '/opt/custom/bin/claude'
 
         is_installed, path, source = install_claude.verify_claude_installation()
 
         assert is_installed is True
         assert source == 'unknown'
-        assert path == '/usr/local/bin/claude'
+        assert path == '/opt/custom/bin/claude'
 
     @patch('sys.platform', 'linux')
     @patch('install_claude.find_command_robust', return_value=None)
@@ -1666,15 +1701,15 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'darwin')
     @patch('install_claude.find_command_robust')
-    def test_verify_claude_installation_macos(self, mock_find):
-        """Test verification on macOS."""
-        mock_find.return_value = '/usr/local/bin/claude'
+    def test_verify_claude_installation_macos_unknown(self, mock_find):
+        """Verify unrecognized path is classified as unknown on macOS."""
+        mock_find.return_value = '/opt/homebrew/custom/claude'
 
         is_installed, path, source = install_claude.verify_claude_installation()
 
         assert is_installed is True
         assert source == 'unknown'
-        assert path == '/usr/local/bin/claude'
+        assert path == '/opt/homebrew/custom/claude'
 
     @patch('sys.platform', 'linux')
     @patch('install_claude.find_command_robust')
@@ -1722,6 +1757,66 @@ class TestVerifyClaudeInstallation:
         assert path is not None
         assert '.local\\bin' not in path.lower(), 'Should NOT report native path'
         assert 'npm' in path.lower(), 'Should report actual npm location'
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_usr_local_bin_native(self, mock_find):
+        """Verify /usr/local/bin/claude is classified as native on Linux."""
+        mock_find.return_value = '/usr/local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert path == '/usr/local/bin/claude'
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_macos_usr_local_bin_native(self, mock_find):
+        """Verify /usr/local/bin/claude is classified as native on macOS."""
+        mock_find.return_value = '/usr/local/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert path == '/usr/local/bin/claude'
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_claude_bin_native(self, mock_find):
+        """Verify ~/.claude/bin/claude is classified as native on Linux."""
+        mock_find.return_value = '/home/user/.claude/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert path == '/home/user/.claude/bin/claude'
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_macos_claude_bin_native(self, mock_find):
+        """Verify ~/.claude/bin/claude is classified as native on macOS."""
+        mock_find.return_value = '/Users/testuser/.claude/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'native'
+        assert path == '/Users/testuser/.claude/bin/claude'
+
+    @patch('sys.platform', 'linux')
+    @patch('install_claude.find_command_robust')
+    def test_verify_claude_installation_linux_usr_bin_unknown(self, mock_find):
+        """Verify /usr/bin/claude is classified as unknown (system package territory)."""
+        mock_find.return_value = '/usr/bin/claude'
+
+        is_installed, path, source = install_claude.verify_claude_installation()
+
+        assert is_installed is True
+        assert source == 'unknown'
+        assert path == '/usr/bin/claude'
 
 
 class TestWindowsFileLockHandling:
@@ -2375,14 +2470,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_sudo_uses_resolved_npm_path(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system,
     ):
         """Sudo fallback uses resolved npm_path, not bare 'npm'."""
         assert mock_needs_sudo.return_value is True
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_system.return_value == 'Linux'
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', 'permission denied',
@@ -2394,6 +2491,7 @@ class TestInstallClaudeNpmSudo:
             result = install_claude.install_claude_npm()
 
             assert result is True
+            # With TTY, subprocess.run is called once for sudo npm install (no cred check)
             sudo_call_args = mock_subprocess_run.call_args[0][0]
             assert sudo_call_args[0] == 'sudo'
             assert sudo_call_args[1] == '/usr/bin/npm'
@@ -2408,7 +2506,7 @@ class TestInstallClaudeNpmSudo:
         self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system, capsys,
     ):
-        """When sudo fails and no TTY, show non-interactive guidance."""
+        """When no TTY and no cached credentials, sudo is skipped entirely."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is False
@@ -2417,16 +2515,21 @@ class TestInstallClaudeNpmSudo:
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', 'permission denied',
             )
+            # sudo -n true returns non-zero (no cached credentials)
             mock_subprocess_run.return_value = subprocess.CompletedProcess(
-                [], 1, '', 'sudo: no tty present',
+                [], 1, '', 'sudo: a password is required',
             )
 
             result = install_claude.install_claude_npm()
 
             assert result is False
+            # Only the credential check call, no sudo npm install
+            assert mock_subprocess_run.call_count == 1
+            cred_check_args = mock_subprocess_run.call_args[0][0]
+            assert cred_check_args == ['sudo', '-n', 'true']
             captured = capsys.readouterr()
             combined = captured.out + captured.err
-            assert 'non-interactive' in combined.lower() or 'no tty' in combined.lower()
+            assert 'non-interactive' in combined.lower() or 'cannot use sudo' in combined.lower()
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
@@ -2463,14 +2566,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_sudo_timeout_handled_gracefully(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system, capsys,
     ):
         """Sudo attempt handles timeout gracefully without crashing."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is True
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', 'permission denied',
@@ -2491,14 +2596,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_sudo_capture_output_enabled(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system,
     ):
         """Sudo uses capture_output=True to suppress confusing messages."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is True
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', 'permission denied',
@@ -2518,14 +2625,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_pre_warning_when_sudo_predicted(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system, capsys,
     ):
         """Pre-warning about elevated permissions when sudo predicted."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is True
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', 'permission denied',
@@ -2545,14 +2654,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=False)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_enhanced_error_on_total_failure(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system, capsys,
     ):
-        """On total npm failure, provide manual installation guidance."""
+        """On total npm failure with TTY, provide manual installation guidance."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is False
+        mock_stdin.isatty.return_value = True
         with patch('pathlib.Path.exists', return_value=True):
             mock_run_command.return_value = subprocess.CompletedProcess(
                 [], 1, '', '',
@@ -2577,14 +2688,16 @@ class TestInstallClaudeNpmSudo:
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('subprocess.run')
+    @patch('sys.stdin')
     def test_sudo_success_with_version_sets_autoupdater(
-        self, mock_subprocess_run, mock_run_command,
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
         mock_needs_sudo, mock_find, mock_system,
     ):
         """Sudo install with specific version sets DISABLE_AUTOUPDATER."""
         assert mock_system.return_value == 'Linux'
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_needs_sudo.return_value is True
+        mock_stdin.isatty.return_value = True
         with (
             patch('pathlib.Path.exists', return_value=True),
             patch.object(
@@ -2625,6 +2738,140 @@ class TestInstallClaudeNpmSudo:
 
             assert result is False
             assert mock_run_command.call_count == 1
+
+
+class TestInstallClaudeNpmSudoGating:
+    """Test pre-sudo TTY/credentials gating in install_claude_npm."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.needs_sudo_for_npm', return_value=True)
+    @patch('install_claude.run_command')
+    @patch('subprocess.run')
+    @patch('sys.stdin')
+    def test_npm_sudo_skipped_without_tty_and_no_cached_creds(
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
+        mock_needs_sudo, mock_find, mock_system, capsys,
+    ):
+        """Sudo is skipped entirely when non-interactive and no cached credentials."""
+        assert mock_needs_sudo.return_value is True
+        assert mock_find.return_value == '/usr/bin/npm'
+        assert mock_system.return_value == 'Linux'
+        mock_stdin.isatty.return_value = False
+        with patch('pathlib.Path.exists', return_value=True):
+            mock_run_command.return_value = subprocess.CompletedProcess(
+                [], 1, '', 'permission denied',
+            )
+            # sudo -n true returns non-zero (no cached creds)
+            mock_subprocess_run.return_value = subprocess.CompletedProcess(
+                [], 1, '', 'sudo: a password is required',
+            )
+
+            result = install_claude.install_claude_npm()
+
+            assert result is False
+            # Only the credential check call, no sudo npm install
+            assert mock_subprocess_run.call_count == 1
+            check_call_args = mock_subprocess_run.call_args[0][0]
+            assert check_call_args == ['sudo', '-n', 'true']
+            captured = capsys.readouterr()
+            combined = captured.out + captured.err
+            assert 'cannot use sudo' in combined.lower()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.needs_sudo_for_npm', return_value=True)
+    @patch('install_claude.run_command')
+    @patch('subprocess.run')
+    @patch('sys.stdin')
+    def test_npm_sudo_attempted_with_cached_creds_no_tty(
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
+        mock_needs_sudo, mock_find, mock_system,
+    ):
+        """Sudo is attempted when non-interactive but cached credentials exist."""
+        assert mock_needs_sudo.return_value is True
+        assert mock_find.return_value == '/usr/bin/npm'
+        assert mock_system.return_value == 'Linux'
+        mock_stdin.isatty.return_value = False
+        with patch('pathlib.Path.exists', return_value=True):
+            mock_run_command.return_value = subprocess.CompletedProcess(
+                [], 1, '', 'permission denied',
+            )
+            # First call: sudo -n true succeeds (cached creds)
+            # Second call: sudo npm install succeeds
+            mock_subprocess_run.side_effect = [
+                subprocess.CompletedProcess([], 0, '', ''),  # sudo -n true
+                subprocess.CompletedProcess([], 0, '', ''),  # sudo npm install
+            ]
+
+            result = install_claude.install_claude_npm()
+
+            assert result is True
+            assert mock_subprocess_run.call_count == 2
+            cred_check_args = mock_subprocess_run.call_args_list[0][0][0]
+            assert cred_check_args == ['sudo', '-n', 'true']
+            install_args = mock_subprocess_run.call_args_list[1][0][0]
+            assert install_args[0] == 'sudo'
+            assert install_args[1] == '/usr/bin/npm'
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.needs_sudo_for_npm', return_value=False)
+    @patch('install_claude.run_command')
+    @patch('subprocess.run')
+    @patch('sys.stdin')
+    def test_npm_sudo_attempted_with_tty(
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
+        mock_needs_sudo, mock_find, mock_system,
+    ):
+        """Sudo is attempted directly when TTY is available (interactive mode)."""
+        assert mock_needs_sudo.return_value is False
+        assert mock_find.return_value == '/usr/bin/npm'
+        assert mock_system.return_value == 'Linux'
+        mock_stdin.isatty.return_value = True
+        with patch('pathlib.Path.exists', return_value=True):
+            mock_run_command.return_value = subprocess.CompletedProcess(
+                [], 1, '', 'permission denied',
+            )
+            # Only one subprocess.run call: sudo npm install (no cred check needed)
+            mock_subprocess_run.return_value = subprocess.CompletedProcess(
+                [], 0, '', '',
+            )
+
+            result = install_claude.install_claude_npm()
+
+            assert result is True
+            # No sudo -n true check when TTY is available
+            assert mock_subprocess_run.call_count == 1
+            call_args = mock_subprocess_run.call_args[0][0]
+            assert call_args[0] == 'sudo'
+            assert call_args[1] == '/usr/bin/npm'
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.needs_sudo_for_npm', return_value=True)
+    @patch('install_claude.run_command')
+    @patch('subprocess.run')
+    @patch('sys.stdin')
+    def test_npm_sudo_filenotfounderror_handled(
+        self, mock_stdin, mock_subprocess_run, mock_run_command,
+        mock_needs_sudo, mock_find, mock_system,
+    ):
+        """FileNotFoundError from missing sudo binary is handled gracefully."""
+        assert mock_needs_sudo.return_value is True
+        assert mock_find.return_value == '/usr/bin/npm'
+        assert mock_system.return_value == 'Linux'
+        mock_stdin.isatty.return_value = False
+        with patch('pathlib.Path.exists', return_value=True):
+            mock_run_command.return_value = subprocess.CompletedProcess(
+                [], 1, '', 'permission denied',
+            )
+            # sudo binary does not exist
+            mock_subprocess_run.side_effect = FileNotFoundError('sudo not found')
+
+            result = install_claude.install_claude_npm()
+
+            assert result is False
 
 
 class TestNeedsSudoForNpm:

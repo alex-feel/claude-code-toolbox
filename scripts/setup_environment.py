@@ -878,6 +878,24 @@ def get_bash_preferred_command(cmd_path: str) -> str:
     return cmd_path
 
 
+def is_wsl() -> bool:
+    """Detect if running inside Windows Subsystem for Linux.
+
+    Checks /proc/version for Microsoft/WSL indicators, which is the
+    standard detection method for WSL environments.
+
+    Returns:
+        True if running in WSL, False otherwise
+    """
+    if sys.platform == 'linux':
+        try:
+            version_info = Path('/proc/version').read_text(encoding='utf-8').lower()
+            return 'microsoft' in version_info or 'wsl' in version_info
+        except OSError:
+            return False
+    return False
+
+
 def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     """Normalize a path by expanding tildes, environment variables, and separators.
 
@@ -886,6 +904,11 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
 
     Key invariant: A tilde path (~...) is ALWAYS local, never a URL.
     After expansion, tilde paths become absolute local paths.
+
+    Uses Path.home() for tilde expansion instead of os.path.expanduser()
+    to avoid WSL HOME contamination, where os.path.expanduser() may
+    return a Windows home path (C:\\Users\\user) instead of the correct
+    Linux home (/home/user).
 
     Path separators are normalized via os.path.normpath() to ensure
     platform-consistent separators (backslashes on Windows, forward
@@ -914,8 +937,19 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     if not path:
         return path
 
-    # Step 1: Expand tilde (~, ~username)
-    expanded = os.path.expanduser(path)
+    # Step 1: Expand tilde (~, ~username) using Path.home() for reliability
+    if path.startswith('~'):
+        if path == '~' or path.startswith(('~/', '~\\')):
+            # Current user's home directory - use Path.home() to avoid
+            # WSL HOME contamination from os.path.expanduser()
+            home_str = str(Path.home())
+            # path[2:] skips the ~/ or ~\ prefix (no-op when path == '~')
+            expanded = home_str if path == '~' else str(Path(home_str) / path[2:])
+        else:
+            # ~username case (rare) - fall back to os.path.expanduser
+            expanded = os.path.expanduser(path)
+    else:
+        expanded = path
 
     # Step 2: Expand environment variables ($VAR, %VAR%)
     expanded = os.path.expandvars(expanded)
@@ -1089,22 +1123,34 @@ def deep_merge_settings(
 def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     """Expand tilde paths in settings keys that contain shell commands.
 
-    Uses expand_tildes_in_command() for DRY compliance with commit 46a086b.
+    Platform-conditional behavior:
+    - Windows: Tildes are expanded to absolute paths because Windows shell
+      does not resolve ~ in paths. Uses expand_tildes_in_command() for
+      DRY compliance with commit 46a086b.
+    - Linux/macOS/WSL: Tildes are PRESERVED. Claude Code resolves ~ to the
+      correct home directory at runtime, and preserving tildes keeps paths
+      portable across environments (avoids WSL HOME contamination).
 
     Args:
         settings: User settings dict (not modified)
 
     Returns:
-        New dict with tilde paths expanded in relevant keys
+        New dict with tilde paths expanded (Windows) or preserved (Unix)
     """
     result = settings.copy()
-    for key in TILDE_EXPANSION_KEYS:
-        if key in result and isinstance(result[key], str):
-            original = result[key]
-            expanded = expand_tildes_in_command(original)
-            if expanded != original:
-                debug_log(f'Expanded tilde in {key}: {original} -> {expanded}')
-            result[key] = expanded
+    if sys.platform == 'win32':
+        # Windows: Claude Code does NOT expand tildes, must pre-expand
+        for key in TILDE_EXPANSION_KEYS:
+            if key in result and isinstance(result[key], str):
+                original = result[key]
+                expanded = expand_tildes_in_command(original)
+                if expanded != original:
+                    debug_log(f'Expanded tilde in {key}: {original} -> {expanded}')
+                result[key] = expanded
+    else:
+        # Linux/macOS/WSL: Keep tildes for portability
+        # Claude Code resolves ~ to the correct home directory at runtime
+        debug_log('Preserving tildes in settings keys (non-Windows platform)')
     return result
 
 
@@ -1119,8 +1165,9 @@ def write_user_settings(
     2. DEEP MERGE new settings values into existing
     3. WRITE merged result back to file
 
-    Before merging, expands tilde paths in keys containing shell commands
-    (apiKeyHelper, awsCredentialExport) using expand_tildes_in_command().
+    Before merging, applies platform-conditional tilde handling:
+    - Windows: Expands tilde paths in command keys (apiKeyHelper, awsCredentialExport)
+    - Linux/macOS/WSL: Preserves tildes for runtime resolution by Claude Code
 
     Args:
         settings: User settings dict from YAML user-settings section
@@ -1131,7 +1178,7 @@ def write_user_settings(
     """
     settings_file = claude_user_dir / 'settings.json'
 
-    # Step 0: Expand tilde paths in command keys
+    # Step 0: Platform-conditional tilde handling in command keys
     expanded_settings = _expand_tilde_keys_in_settings(settings)
 
     # Step 1: READ existing settings
@@ -1162,6 +1209,21 @@ def write_user_settings(
             encoding='utf-8',
         )
         success(f'Wrote user settings to {settings_file}')
+
+        # Warn about potential WSL path issues
+        if is_wsl():
+            for key in TILDE_EXPANSION_KEYS:
+                if key in merged and isinstance(merged[key], str):
+                    value = merged[key]
+                    # Check for Windows path patterns (e.g., C:\, D:\)
+                    if re.search(r'[A-Za-z]:\\', value):
+                        warning(
+                            f'WSL detected: {key} contains Windows-style path: {value}. '
+                            'This may not work in the Linux environment. '
+                            'Consider re-running setup from within WSL.',
+                        )
+                        break
+
         return True
     except OSError as e:
         warning(f'Failed to write user settings to {settings_file}: {e}')

@@ -569,6 +569,116 @@ class TestNormalizeTildePath:
         assert expected_contains in result
         assert '~' not in result
 
+    def test_uses_path_home_not_expanduser(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify normalize_tilde_path uses Path.home() not os.path.expanduser().
+
+        Path.home() is preferred because os.path.expanduser() in WSL can return
+        a Windows home directory (C:\\Users\\user) instead of the Linux home
+        (/home/user), leading to corrupted paths in settings.json.
+        """
+        fake_home = '/fake/pathlib/home'
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: Path(fake_home)))
+        result = setup_environment.normalize_tilde_path('~/.claude/test.py')
+        # On Windows, normpath converts / to \, so check platform-normalized version
+        normalized_fake_home = os.path.normpath(fake_home)
+        assert normalized_fake_home in result
+        assert '~' not in result
+
+    def test_path_home_used_for_tilde_only(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify Path.home() is used when path is just '~'."""
+        fake_home = '/mock/home/dir'
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: Path(fake_home)))
+        result = setup_environment.normalize_tilde_path('~')
+        expected = os.path.normpath(fake_home)
+        assert result == expected
+
+    def test_path_home_used_for_tilde_backslash(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify Path.home() is used when path starts with ~\\ (Windows-style)."""
+        fake_home = '/mock/home/dir'
+        monkeypatch.setattr(Path, 'home', staticmethod(lambda: Path(fake_home)))
+        result = setup_environment.normalize_tilde_path('~\\.claude\\test.py')
+        assert fake_home.replace('/', os.sep) in result or fake_home in result
+        assert '~' not in result
+
+    def test_tilde_username_falls_back_to_expanduser(self) -> None:
+        """Verify ~username paths still use os.path.expanduser() fallback."""
+        with patch('os.path.expanduser') as mock_expand:
+            mock_expand.return_value = '/home/someuser/.bashrc'
+            result = setup_environment.normalize_tilde_path('~someuser/.bashrc')
+            mock_expand.assert_called_once_with('~someuser/.bashrc')
+            assert '/home/someuser/.bashrc' in result or result == os.path.normpath('/home/someuser/.bashrc')
+
+
+class TestIsWsl:
+    """Test the is_wsl() WSL detection function."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='WSL detection only applies on non-Windows')
+    def test_detects_wsl_from_proc_version_microsoft(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Detect WSL when /proc/version contains 'microsoft'."""
+        monkeypatch.setattr('sys.platform', 'linux')
+        with patch.object(Path, 'read_text', return_value=(
+            'Linux version 5.15.153.1-microsoft-standard-WSL2 '
+            '(root@1234567890ab) (gcc (GCC) 11.2.0)'
+        )):
+            result = setup_environment.is_wsl()
+        assert result is True
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='WSL detection only applies on non-Windows')
+    def test_detects_wsl_from_proc_version_wsl(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Detect WSL when /proc/version contains 'wsl'."""
+        monkeypatch.setattr('sys.platform', 'linux')
+        with patch.object(Path, 'read_text', return_value=(
+            'Linux version 5.10.0 (WSL) (gcc (GCC) 9.3.0)'
+        )):
+            result = setup_environment.is_wsl()
+        assert result is True
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='WSL detection only applies on non-Windows')
+    def test_returns_false_on_native_linux(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Return False on native Linux (no microsoft/wsl in /proc/version)."""
+        monkeypatch.setattr('sys.platform', 'linux')
+        with patch.object(Path, 'read_text', return_value=(
+            'Linux version 6.2.0-39-generic (buildd@lcy02-amd64-116) '
+            '(x86_64-linux-gnu-gcc-12 (Ubuntu 12.3.0-1ubuntu1~22.04)) '
+            '#40-Ubuntu SMP PREEMPT_DYNAMIC'
+        )):
+            result = setup_environment.is_wsl()
+        assert result is False
+
+    def test_returns_false_on_windows(self) -> None:
+        """Return False on Windows (sys.platform != 'linux')."""
+        with patch.object(sys, 'platform', 'win32'):
+            result = setup_environment.is_wsl()
+        assert result is False
+
+    def test_returns_false_on_macos(self) -> None:
+        """Return False on macOS (sys.platform != 'linux')."""
+        with patch.object(sys, 'platform', 'darwin'):
+            result = setup_environment.is_wsl()
+        assert result is False
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='WSL detection only applies on non-Windows')
+    def test_returns_false_when_proc_version_missing(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Return False when /proc/version doesn't exist (e.g., container)."""
+        monkeypatch.setattr('sys.platform', 'linux')
+        with patch.object(Path, 'read_text', side_effect=OSError('No such file')):
+            result = setup_environment.is_wsl()
+        assert result is False
+
 
 class TestNormalizeTildePathUserScenario:
     """Test the specific user scenario that triggered the bug investigation."""
@@ -4688,16 +4798,14 @@ class TestWriteUserSettings:
         # Union: ['Read', 'Glob'] + ['Write', 'Read'] -> ['Read', 'Glob', 'Write']
         assert set(written['permissions']['allow']) == {'Read', 'Glob', 'Write'}
 
-    def test_api_key_helper_tilde_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """apiKeyHelper with tilde path is expanded before writing."""
-        # Mock home directory for consistent test
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-            # Windows can return either forward or backslash in expanded path
-            expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
-            expected_path_parts = ('/home/testuser',)
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_api_key_helper_tilde_expanded_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """apiKeyHelper with tilde path is expanded before writing on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        # Windows can return either forward or backslash in expanded path
+        expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
 
         claude_dir = tmp_path / '.claude'
         settings = {
@@ -4709,16 +4817,36 @@ class TestWriteUserSettings:
         assert result is True
         settings_file = claude_dir / 'settings.json'
         written = json.loads(settings_file.read_text(encoding='utf-8'))
-        # Tilde should be expanded
+        # Tilde should be expanded on Windows
         assert '~' not in written['apiKeyHelper']
         assert any(part in written['apiKeyHelper'] for part in expected_path_parts)
 
-    def test_aws_credential_export_tilde_expanded(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """awsCredentialExport with tilde path is expanded before writing."""
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_api_key_helper_tilde_preserved_on_unix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """apiKeyHelper with tilde path is preserved on Unix/Linux/WSL."""
+        monkeypatch.setenv('HOME', '/home/testuser')
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'uv run --no-project --python 3.12 ~/.claude/scripts/api_key_helper.py',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Tilde should be preserved on Unix (Claude Code resolves at runtime)
+        assert written['apiKeyHelper'] == settings['apiKeyHelper']
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_aws_credential_export_tilde_expanded_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """awsCredentialExport with tilde path is expanded before writing on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
 
         claude_dir = tmp_path / '.claude'
         settings = {
@@ -4731,6 +4859,26 @@ class TestWriteUserSettings:
         settings_file = claude_dir / 'settings.json'
         written = json.loads(settings_file.read_text(encoding='utf-8'))
         assert '~' not in written['awsCredentialExport']
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_aws_credential_export_tilde_preserved_on_unix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """awsCredentialExport with tilde path is preserved on Unix/Linux/WSL."""
+        monkeypatch.setenv('HOME', '/home/testuser')
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'awsCredentialExport': 'bash ~/.claude/scripts/aws_creds.sh',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Tilde should be preserved on Unix (Claude Code resolves at runtime)
+        assert written['awsCredentialExport'] == settings['awsCredentialExport']
 
     def test_tilde_expansion_preserves_other_keys(self, tmp_path: Path) -> None:
         """Keys not in TILDE_EXPANSION_KEYS are not modified."""
@@ -4749,12 +4897,12 @@ class TestWriteUserSettings:
         written = json.loads(settings_file.read_text(encoding='utf-8'))
         assert written == original_settings
 
-    def test_tilde_expansion_multiple_paths(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Command with multiple tilde paths has all expanded."""
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_tilde_expansion_multiple_paths_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Command with multiple tilde paths has all expanded on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
 
         claude_dir = tmp_path / '.claude'
         settings = {
@@ -4766,8 +4914,28 @@ class TestWriteUserSettings:
         assert result is True
         settings_file = claude_dir / 'settings.json'
         written = json.loads(settings_file.read_text(encoding='utf-8'))
-        # All tildes should be expanded
+        # All tildes should be expanded on Windows
         assert written['apiKeyHelper'].count('~') == 0
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_tilde_expansion_multiple_paths_preserved_on_unix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Command with multiple tilde paths is preserved on Unix/Linux/WSL."""
+        monkeypatch.setenv('HOME', '/home/testuser')
+
+        claude_dir = tmp_path / '.claude'
+        settings = {
+            'apiKeyHelper': 'bash -c "cat ~/.claude/key.txt && echo ~/.claude/done"',
+        }
+
+        result = setup_environment.write_user_settings(settings, claude_dir)
+
+        assert result is True
+        settings_file = claude_dir / 'settings.json'
+        written = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Tildes should be preserved on Unix
+        assert written['apiKeyHelper'] == settings['apiKeyHelper']
 
     def test_no_tilde_no_change(self, tmp_path: Path) -> None:
         """Keys without tilde are unchanged."""
@@ -4903,15 +5071,11 @@ class TestWriteUserSettings:
 class TestExpandTildeKeysInSettings:
     """Tests for _expand_tilde_keys_in_settings helper function."""
 
-    def test_expands_api_key_helper(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """apiKeyHelper tilde paths are expanded."""
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-            # Windows can return either forward or backslash in expanded path
-            expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
-            expected_path_parts = ('/home/testuser',)
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
+    def test_expands_api_key_helper_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """apiKeyHelper tilde paths are expanded on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
+        expected_path_parts = ('C:/Users/testuser', 'C:\\Users\\testuser')
 
         settings = {'apiKeyHelper': 'uv run ~/.claude/scripts/helper.py'}
 
@@ -4920,18 +5084,38 @@ class TestExpandTildeKeysInSettings:
         assert '~' not in result['apiKeyHelper']
         assert any(part in result['apiKeyHelper'] for part in expected_path_parts)
 
-    def test_expands_aws_credential_export(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """awsCredentialExport tilde paths are expanded."""
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific')
+    def test_preserves_api_key_helper_tilde_on_unix(self) -> None:
+        """apiKeyHelper tilde paths are preserved on Linux/macOS."""
+        settings = {'apiKeyHelper': 'uv run ~/.claude/scripts/helper.py'}
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        # Tilde should be PRESERVED on Unix
+        assert result['apiKeyHelper'] == settings['apiKeyHelper']
+        assert '~' in result['apiKeyHelper']
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
+    def test_expands_aws_credential_export_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """awsCredentialExport tilde paths are expanded on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
 
         settings = {'awsCredentialExport': 'bash ~/.aws/export.sh'}
 
         result = setup_environment._expand_tilde_keys_in_settings(settings)
 
         assert '~' not in result['awsCredentialExport']
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific')
+    def test_preserves_aws_credential_export_tilde_on_unix(self) -> None:
+        """awsCredentialExport tilde paths are preserved on Linux/macOS."""
+        settings = {'awsCredentialExport': 'bash ~/.aws/export.sh'}
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        # Tilde should be PRESERVED on Unix
+        assert result['awsCredentialExport'] == settings['awsCredentialExport']
+        assert '~' in result['awsCredentialExport']
 
     def test_does_not_expand_other_keys(self) -> None:
         """Keys not in TILDE_EXPANSION_KEYS are unchanged."""
@@ -4966,12 +5150,10 @@ class TestExpandTildeKeysInSettings:
 
         assert result == {'language': 'russian'}
 
-    def test_expands_both_keys_when_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Both apiKeyHelper and awsCredentialExport are expanded when present."""
-        if sys.platform == 'win32':
-            monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
-        else:
-            monkeypatch.setenv('HOME', '/home/testuser')
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
+    def test_expands_both_keys_when_present_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both apiKeyHelper and awsCredentialExport are expanded on Windows."""
+        monkeypatch.setenv('USERPROFILE', 'C:\\Users\\testuser')
 
         settings = {
             'apiKeyHelper': 'python ~/.claude/key.py',
@@ -4983,6 +5165,22 @@ class TestExpandTildeKeysInSettings:
 
         assert '~' not in result['apiKeyHelper']
         assert '~' not in result['awsCredentialExport']
+        assert result['language'] == 'russian'  # Unchanged
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific')
+    def test_preserves_both_keys_when_present_on_unix(self) -> None:
+        """Both apiKeyHelper and awsCredentialExport are preserved on Unix."""
+        settings = {
+            'apiKeyHelper': 'python ~/.claude/key.py',
+            'awsCredentialExport': 'bash ~/.aws/creds.sh',
+            'language': 'russian',
+        }
+
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        # Tildes should be PRESERVED on Unix
+        assert result['apiKeyHelper'] == settings['apiKeyHelper']
+        assert result['awsCredentialExport'] == settings['awsCredentialExport']
         assert result['language'] == 'russian'  # Unchanged
 
 
@@ -7077,16 +7275,16 @@ class TestUserSettingsIntegration:
         assert result['permissions']['deny'] == ['Web']  # Preserved
         assert result['permissions']['ask'] == ['Edit']  # Added
 
-    def test_integration_tilde_expanded_in_final_output(
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_integration_tilde_expanded_in_final_output_on_windows(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Verify apiKeyHelper/awsCredentialExport have expanded tilde paths in output."""
+        """Verify apiKeyHelper/awsCredentialExport have expanded tilde paths on Windows."""
         claude_dir = tmp_path / '.claude'
         claude_dir.mkdir(parents=True)
 
         # Mock home directory
         fake_home = str(tmp_path / 'home' / 'user')
-        monkeypatch.setenv('HOME', fake_home)
         monkeypatch.setenv('USERPROFILE', fake_home)
 
         settings = {
@@ -7100,11 +7298,39 @@ class TestUserSettingsIntegration:
         with open(claude_dir / 'settings.json') as f:
             result = json.load(f)
 
-        # Tilde should be expanded for apiKeyHelper and awsCredentialExport
+        # Tilde should be expanded for apiKeyHelper and awsCredentialExport on Windows
         assert '~' not in result['apiKeyHelper']
         assert fake_home.replace('\\', '/') in result['apiKeyHelper'] or fake_home in result['apiKeyHelper']
         assert '~' not in result['awsCredentialExport']
         # Other keys should keep tilde unchanged
+        assert result['otherKey'] == '~/path/unchanged'
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_integration_tilde_preserved_in_final_output_on_unix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify apiKeyHelper/awsCredentialExport preserve tilde paths on Unix/Linux/WSL."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        # Mock home directory
+        monkeypatch.setenv('HOME', '/home/testuser')
+
+        settings = {
+            'apiKeyHelper': 'uv run --no-project ~/.claude/scripts/helper.py',
+            'awsCredentialExport': 'uv run ~/.claude/aws_creds.py',
+            'otherKey': '~/path/unchanged',  # Non-expansion key
+        }
+
+        setup_environment.write_user_settings(settings, claude_dir)
+
+        with open(claude_dir / 'settings.json') as f:
+            result = json.load(f)
+
+        # Tilde should be preserved for apiKeyHelper and awsCredentialExport on Unix
+        assert result['apiKeyHelper'] == settings['apiKeyHelper']
+        assert result['awsCredentialExport'] == settings['awsCredentialExport']
+        # Other keys should keep tilde unchanged regardless of platform
         assert result['otherKey'] == '~/path/unchanged'
 
 

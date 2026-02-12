@@ -7,9 +7,16 @@ across all configuration files and launcher scripts.
 from __future__ import annotations
 
 import json
+import os
+import re
+import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import pytest
+
+from scripts import setup_environment
 from scripts.setup_environment import configure_all_mcp_servers
 from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_mcp_config_file
@@ -122,31 +129,29 @@ class TestTildeExpansion:
             errors,
         )
 
-    def test_user_settings_paths_expanded(
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_user_settings_paths_expanded_on_windows(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify settings.json paths have no unexpanded tildes.
+        """Verify settings.json paths have no unexpanded tildes on Windows.
 
-        Checks tilde expansion in user-settings that may contain paths
-        like apiKeyHelper and awsCredentialExport.
+        On Windows, tilde-expansion keys (apiKeyHelper, awsCredentialExport)
+        should have tildes fully expanded to absolute paths.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
         user_settings = golden_config.get('user-settings', {})
 
         if not user_settings:
-            # No user settings to test
             return
 
-        # Write user settings
         write_user_settings(user_settings, claude_dir)
         settings_path = claude_dir / 'settings.json'
 
         data = json.loads(settings_path.read_text())
 
-        # Check known tilde-expansion keys
         tilde_keys = ['apiKeyHelper', 'awsCredentialExport']
         errors: list[str] = []
 
@@ -155,6 +160,50 @@ class TestTildeExpansion:
                 errors.extend(validate_path_expanded(data[key], f'settings.json {key}'))
 
         assert not errors, 'settings.json paths contain unexpanded tildes:\n' + '\n'.join(errors)
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_user_settings_paths_preserved_on_unix(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify settings.json tilde paths are preserved on Unix/WSL.
+
+        On non-Windows platforms, tilde-expansion keys (apiKeyHelper,
+        awsCredentialExport) should preserve tildes because Claude Code
+        resolves ~ to the correct home directory at runtime.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        user_settings = golden_config.get('user-settings', {})
+
+        if not user_settings:
+            return
+
+        write_user_settings(user_settings, claude_dir)
+        settings_path = claude_dir / 'settings.json'
+
+        data = json.loads(settings_path.read_text())
+
+        tilde_keys = ['apiKeyHelper', 'awsCredentialExport']
+        errors: list[str] = []
+
+        for key in tilde_keys:
+            if key not in user_settings:
+                continue
+            original_value = user_settings[key]
+            actual_value = data.get(key)
+            if actual_value is None:
+                errors.append(f'settings.json {key}: missing (expected preserved value)')
+            elif actual_value != original_value:
+                errors.append(
+                    f'settings.json {key}: expected tilde preserved '
+                    f'{original_value!r}, got {actual_value!r}',
+                )
+
+        assert not errors, (
+            'settings.json tilde paths should be preserved on Unix:\n' + '\n'.join(errors)
+        )
 
     def test_hooks_command_paths_expanded(
         self,
@@ -259,3 +308,176 @@ class TestTildeExpansion:
             )
 
         assert not errors, 'statusLine.command contains unexpanded tilde:\n' + '\n'.join(errors)
+
+    def test_expand_tilde_keys_preserves_on_linux(self) -> None:
+        """Verify _expand_tilde_keys_in_settings preserves tildes on Linux/macOS.
+
+        The function should return settings UNCHANGED on non-Windows platforms,
+        because Claude Code resolves ~ at runtime on Unix.
+        """
+        settings = {
+            'apiKeyHelper': 'uv run --no-project --python 3.12 ~/.claude/scripts/helper.py',
+            'awsCredentialExport': '~/.aws/credentials',
+            'language': 'english',
+            'theme': 'dark',
+        }
+
+        with patch('sys.platform', 'linux'):
+            result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        # Tilde keys must be preserved exactly
+        assert result['apiKeyHelper'] == settings['apiKeyHelper'], (
+            f'apiKeyHelper tilde should be preserved on Linux: {result["apiKeyHelper"]}'
+        )
+        assert result['awsCredentialExport'] == settings['awsCredentialExport'], (
+            f'awsCredentialExport tilde should be preserved on Linux: {result["awsCredentialExport"]}'
+        )
+        # Non-tilde keys must also be unchanged
+        assert result['language'] == 'english'
+        assert result['theme'] == 'dark'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific tilde expansion')
+    def test_expand_tilde_keys_expands_on_windows(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Verify _expand_tilde_keys_in_settings expands tildes on Windows.
+
+        On Windows, Claude Code does NOT resolve ~ at runtime, so setup must
+        expand tildes to absolute paths.
+        """
+        settings = {
+            'apiKeyHelper': 'uv run --no-project --python 3.12 ~/.claude/scripts/helper.py',
+            'language': 'english',
+        }
+
+        # sys.platform is already 'win32' on Windows, no patch needed
+        result = setup_environment._expand_tilde_keys_in_settings(settings)
+
+        # apiKeyHelper must NOT contain tilde
+        assert '~' not in result['apiKeyHelper'], (
+            f'apiKeyHelper should have tilde expanded on Windows: {result["apiKeyHelper"]}'
+        )
+        # Must contain the home directory path
+        home_str = str(e2e_isolated_home['home'])
+        assert (
+            home_str in result['apiKeyHelper']
+            or home_str.replace('\\', '/') in result['apiKeyHelper']
+        ), (
+            f'apiKeyHelper should contain home dir ({home_str}): {result["apiKeyHelper"]}'
+        )
+        # Non-tilde keys must be unchanged
+        assert result['language'] == 'english'
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific backslash check')
+    def test_settings_json_no_backslashes_on_linux(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify settings.json does not contain Windows backslash paths on Linux.
+
+        On Linux/WSL, settings.json values for tilde-expansion keys must not
+        contain Windows-style backslash paths or drive letters.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        user_settings = golden_config.get('user-settings', {})
+
+        if not user_settings:
+            return
+
+        write_user_settings(user_settings, claude_dir)
+        settings_path = claude_dir / 'settings.json'
+
+        data = json.loads(settings_path.read_text())
+
+        tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+        errors: list[str] = []
+
+        for key in tilde_keys:
+            if key not in data or not isinstance(data[key], str):
+                continue
+            value = data[key]
+            # Check for Windows-style backslash paths
+            if '\\' in value:
+                errors.append(
+                    f'settings.json {key} contains backslash '
+                    f'(Windows path contamination): {value}',
+                )
+            # Check for drive letters (C:, D:, etc.)
+            if re.search(r'[A-Za-z]:[/\\]', value):
+                errors.append(
+                    f'settings.json {key} contains Windows drive letter on Linux: {value}',
+                )
+
+        assert not errors, (
+            'settings.json contains Windows path contamination on Linux:\n'
+            + '\n'.join(errors)
+        )
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-specific tilde preservation')
+    def test_command_prefix_preserved_with_tilde(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Verify command-prefix strings with tildes are preserved entirely on Linux.
+
+        The apiKeyHelper value containing a command prefix before a tilde path
+        must be preserved EXACTLY as-is on Linux/macOS.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+
+        original_value = (
+            'uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py'
+        )
+        user_settings = {'apiKeyHelper': original_value, 'language': 'english'}
+
+        write_user_settings(user_settings, claude_dir)
+        settings_path = claude_dir / 'settings.json'
+
+        data = json.loads(settings_path.read_text())
+
+        assert data.get('apiKeyHelper') == original_value, (
+            f'apiKeyHelper should be preserved exactly on Unix: '
+            f'expected {original_value!r}, got {data.get("apiKeyHelper")!r}'
+        )
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Linux-specific WSL test')
+    def test_wsl_home_not_contaminating_linux_paths(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Verify Windows USERPROFILE does not contaminate paths on Linux/WSL.
+
+        In WSL, USERPROFILE may be set to a Windows path. The setup must use
+        the Linux HOME, not USERPROFILE, when processing paths on non-Windows.
+        Since tildes are preserved on Linux, there should be NO path expansion
+        at all, preventing any HOME contamination.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+
+        original_value = (
+            'uv run --no-project --python 3.12 ~/.claude/scripts/helper.py'
+        )
+        user_settings = {'apiKeyHelper': original_value}
+
+        write_user_settings(user_settings, claude_dir)
+        settings_path = claude_dir / 'settings.json'
+
+        data = json.loads(settings_path.read_text())
+
+        value = data.get('apiKeyHelper', '')
+        # Must NOT contain any absolute path (should be preserved tilde)
+        assert value == original_value, (
+            f'apiKeyHelper should preserve tilde on Linux (no HOME expansion): '
+            f'expected {original_value!r}, got {value!r}'
+        )
+        # Extra safety: must NOT contain USERPROFILE value
+        userprofile = os.environ.get('USERPROFILE', '')
+        if userprofile:
+            assert userprofile not in value, (
+                f'apiKeyHelper contains USERPROFILE ({userprofile}) on Linux: {value}'
+            )
