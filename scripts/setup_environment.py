@@ -884,16 +884,18 @@ def is_wsl() -> bool:
     Checks /proc/version for Microsoft/WSL indicators, which is the
     standard detection method for WSL environments.
 
+    Uses EAFP (try/except) instead of platform guards to avoid
+    MyPy unreachable-code errors on Linux CI where sys.platform
+    is always 'linux'.
+
     Returns:
         True if running in WSL, False otherwise
     """
-    if sys.platform == 'linux':
-        try:
-            version_info = Path('/proc/version').read_text(encoding='utf-8').lower()
-            return 'microsoft' in version_info or 'wsl' in version_info
-        except OSError:
-            return False
-    return False
+    try:
+        version_info = Path('/proc/version').read_text(encoding='utf-8').lower()
+        return 'microsoft' in version_info or 'wsl' in version_info
+    except OSError:
+        return False
 
 
 def normalize_tilde_path(path: str, resolve: bool = False) -> str:
