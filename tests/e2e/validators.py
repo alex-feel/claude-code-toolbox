@@ -79,21 +79,36 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
 
     assert data is not None  # For type checker
 
+    # Keys that undergo tilde expansion during write_user_settings()
+    # These cannot be compared directly because their values are transformed
+    tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+
     # Validate user-settings are merged correctly
     user_settings = config.get('user-settings', {})
     for key, expected_value in user_settings.items():
         actual_value = data.get(key)
-        if actual_value != expected_value:
+        if key in tilde_keys:
+            # For tilde-expansion keys, verify the value was expanded (not raw match)
+            if actual_value is None:
+                errors.append(f"settings.json key '{key}': missing (expected expanded form)")
+            elif isinstance(actual_value, str) and '~' in actual_value:
+                errors.append(
+                    f"settings.json key '{key}' contains unexpanded tilde: {actual_value}",
+                )
+        elif actual_value != expected_value:
             errors.append(
                 f"settings.json key '{key}': expected {expected_value!r}, got {actual_value!r}",
             )
 
-    # Check for unexpanded tildes in known tilde-expansion keys
-    tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+    # Also check for unexpanded tildes in tilde-expansion keys not in user-settings
+    # (e.g., pre-existing values from a previous merge)
     errors.extend(
         f"settings.json key '{key}' contains unexpanded tilde: {data[key]}"
         for key in tilde_keys
-        if key in data and isinstance(data[key], str) and '~' in data[key]
+        if key in data
+        and key not in user_settings
+        and isinstance(data[key], str)
+        and '~' in data[key]
     )
 
     return errors
@@ -719,6 +734,38 @@ def validate_version_detection_pattern(content: str, script_name: str) -> list[s
                 'Must use POSIX digit class for cross-platform compatibility.',
             )
 
+    return errors
+
+
+def validate_path_separator_consistency(path_str: str, context: str = '') -> list[str]:
+    """Verify path has consistent separators (no mixed forward/back slashes).
+
+    On Windows: paths should use only backslashes after normpath normalization.
+    On Unix: paths should use only forward slashes (backslashes are not path separators).
+
+    This validator detects paths that were expanded (e.g. via os.path.expanduser)
+    but not normalized via os.path.normpath, which can result in mixed separators
+    like ``C:\\Users\\user/.claude/scripts/file.py`` on Windows.
+
+    Args:
+        path_str: The path string to validate
+        context: Optional context for error message (e.g., "statusLine.command")
+
+    Returns:
+        List with error if mixed separators found, empty list otherwise
+    """
+    errors: list[str] = []
+    if sys.platform == 'win32':
+        # On Windows, after normpath, a path that contains a drive letter
+        # or backslash should not also contain forward slash
+        if ('\\' in path_str or ':' in path_str) and '/' in path_str:
+            ctx_msg = f' {context}' if context else ''
+            errors.append(f'Mixed path separators on Windows{ctx_msg}: {path_str}')
+    else:
+        # On Unix, a path containing both forward and backslash is mixed
+        if '\\' in path_str and '/' in path_str:
+            ctx_msg = f' {context}' if context else ''
+            errors.append(f'Mixed path separators on Unix{ctx_msg}: {path_str}')
     return errors
 
 
