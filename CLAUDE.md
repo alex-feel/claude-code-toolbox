@@ -35,9 +35,22 @@ The installer uses a native-first approach with automatic npm fallback:
 - `ensure_claude()` - Main orchestrator with native-first logic
 
 **Environment Variables:**
-- `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`
+- `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
 - `CLAUDE_VERSION` - Forces specific version via npm (native installers don't support version selection)
 - `CLAUDE_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
+
+**Native Path Detection (Non-Windows):**
+
+The `verify_claude_installation()` function classifies the Claude binary location to determine the upgrade strategy:
+
+| Path Pattern | Detected Source | Upgrade Method |
+| ------------ | --------------- | -------------- |
+| Contains `npm` or `.npm-global` | `npm` | npm directly |
+| Contains `.local/bin`, `/usr/local/bin`, or `.claude/bin` | `native` | Native installer |
+| Any other path | `unknown` | Native-first, npm fallback |
+| Not found | `none` | Fresh install |
+
+In `auto` mode, both `native` and `unknown` sources attempt the native installer first. If native fails, npm is used as fallback. Only confirmed `npm` or `winget` sources go directly to npm.
 
 **Benefits:**
 - Resolves Node.js v25+ compatibility issues (bug #9628)
@@ -64,6 +77,26 @@ YAML configurations define complete development environments including:
 - Slash commands
 - System prompts (with configurable mode: append or replace)
 - Hooks (event-driven scripts)
+
+### Platform-Conditional Tilde Expansion in Settings
+
+The `_expand_tilde_keys_in_settings()` function handles tilde (`~`) paths differently based on the platform:
+
+- **Windows:** Tildes are expanded to absolute paths (e.g., `~/.claude/scripts/file.py` becomes `C:\Users\user\.claude\scripts\file.py`). Windows shell does not resolve `~` in paths.
+- **Linux/macOS/WSL:** Tildes are PRESERVED as-is. Claude Code resolves `~` to the correct home directory at runtime. This keeps paths portable across environments and avoids WSL HOME contamination.
+
+**Affected settings keys** (defined in `TILDE_EXPANSION_KEYS`):
+
+- `apiKeyHelper`
+- `awsCredentialExport`
+
+**WSL Detection:**
+
+The `is_wsl()` utility function detects WSL by checking `/proc/version` for Microsoft/WSL indicators. When WSL is detected, the setup emits a warning if settings contain expanded Windows paths.
+
+**Why tildes are preserved on Linux/WSL:**
+
+On WSL, `os.path.expanduser('~')` can return a contaminated Windows home directory (e.g., `C:\Users\user`) instead of the Linux home (e.g., `/home/user`). The `normalize_tilde_path()` function uses `Path.home()` instead of `os.path.expanduser()` to avoid this contamination, but the safest approach on non-Windows platforms is to preserve tildes entirely and let the runtime resolve them.
 
 ### Cross-Shell Command Registration (Windows)
 
@@ -113,18 +146,26 @@ tests/e2e/
 │   ├── macos.py             # macOS expectations
 │   └── windows.py           # Windows expectations
 ├── fixtures/
+│   ├── __init__.py
 │   └── mock_repo/           # Mock source files for testing
+│       ├── configs/         # Mock YAML configurations
+│       ├── hooks/           # Mock hook scripts
 │       ├── agents/
 │       ├── commands/
-│       ├── configs/
-│       ├── hooks/
 │       ├── prompts/
 │       └── skills/
 ├── test_full_setup.py       # Main E2E workflow tests
 ├── test_output_files.py     # JSON file content verification
 ├── test_launcher_scripts.py # Platform-specific launcher tests
 ├── test_path_handling.py    # Tilde expansion and path format tests
-└── test_cleanup.py          # Artifact cleanup verification
+├── test_path_normalization.py # Path separator consistency tests
+├── test_cleanup.py          # Artifact cleanup verification
+├── test_env_variable_handling.py  # OS environment variable tests
+├── test_javascript_hooks.py # JavaScript hook event tests
+├── test_npm_fallback.py     # npm installation and sudo fallback tests
+├── test_root_guard.py       # Root detection guard tests
+├── test_upgrade_source_detection.py # Source-aware upgrade routing tests
+└── test_version_detection.py # Claude Code version detection tests
 ```
 
 #### Running E2E Tests
@@ -348,6 +389,19 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
 - `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
 - `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running setup scripts as root on Linux/macOS. By default, all Linux/macOS scripts refuse to run as root to prevent configuration being created under `/root/` instead of the user's home directory. The installer will request `sudo` only when needed (e.g., for npm global installs). Use this override for Docker containers, CI/CD environments, or other legitimate root use cases.
+
+### npm Sudo Handling (Non-Interactive Mode)
+
+When `install_claude_npm()` needs elevated permissions for global npm installs, it gates sudo attempts on TTY availability and cached credentials BEFORE attempting sudo:
+
+1. **Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password)
+2. **Non-interactive mode** (e.g., `curl | bash`):
+   - Runs `sudo -n true` to check for cached sudo credentials
+   - If cached credentials exist: sudo is attempted
+   - If no cached credentials: sudo is SKIPPED entirely, guidance is provided immediately
+3. **Missing sudo binary**: `FileNotFoundError` is caught gracefully
+
+This prevents the 30-second timeout waste that occurred when `curl | bash` piped installations attempted sudo without a TTY for password input.
 
 ### Download Retry Configuration
 
