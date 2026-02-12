@@ -879,13 +879,17 @@ def get_bash_preferred_command(cmd_path: str) -> str:
 
 
 def normalize_tilde_path(path: str, resolve: bool = False) -> str:
-    """Normalize a path by expanding tildes and environment variables.
+    """Normalize a path by expanding tildes, environment variables, and separators.
 
     This is the SINGLE SOURCE OF TRUTH for tilde/env-var expansion.
     All path expansion MUST go through this function (DRY compliance).
 
     Key invariant: A tilde path (~...) is ALWAYS local, never a URL.
     After expansion, tilde paths become absolute local paths.
+
+    Path separators are normalized via os.path.normpath() to ensure
+    platform-consistent separators (backslashes on Windows, forward
+    slashes on Unix). This also resolves '.' and '..' components.
 
     Args:
         path: Path string (may contain ~, $VAR, %VAR%)
@@ -895,8 +899,11 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
         Normalized path with tildes and env vars expanded
 
     Examples:
-        >>> normalize_tilde_path("~/.claude/agent.md")
+        >>> normalize_tilde_path("~/.claude/agent.md")  # Unix
         '/home/user/.claude/agent.md'
+
+        >>> normalize_tilde_path("~/.claude/agent.md")  # Windows
+        'C:\\\\Users\\\\user\\\\.claude\\\\agent.md'
 
         >>> normalize_tilde_path("$HOME/config.yaml")
         '/home/user/config.yaml'
@@ -913,7 +920,12 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     # Step 2: Expand environment variables ($VAR, %VAR%)
     expanded = os.path.expandvars(expanded)
 
-    # Step 3: Optionally resolve to absolute path
+    # Step 3: Normalize path separators and resolve .. / . components
+    # Skip normpath for URLs - it would corrupt the :// scheme separator
+    if not expanded.startswith(('http://', 'https://')):
+        expanded = os.path.normpath(expanded)
+
+    # Step 4: Optionally resolve to absolute path
     if resolve:
         path_obj = Path(expanded)
         if not path_obj.is_absolute():
@@ -2501,6 +2513,8 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
         return str(path_obj.resolve()), False
 
     # 2. If base-url configured, use it (RELATIVE PATHS ONLY reach here)
+    # Use forward slashes for URL path components (normpath may produce backslashes on Windows)
+    url_path = normalized_path.replace('\\', '/')
     if base_url:
         # Auto-append {path} if not present
         if '{path}' not in base_url:
@@ -2510,19 +2524,19 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
         # Handle GitLab URL encoding for paths
         if '/api/v4/projects/' in base_url and '/repository/files/' in base_url:
             # URL encode the path for GitLab API
-            encoded_path = urllib.parse.quote(normalized_path, safe='')
+            encoded_path = urllib.parse.quote(url_path, safe='')
             return base_url.replace('{path}', encoded_path), True
         # For other URLs, just replace the placeholder
-        return base_url.replace('{path}', normalized_path), True
+        return base_url.replace('{path}', url_path), True
 
     # 3. If config from URL, derive base from it (RELATIVE PATHS ONLY)
     if config_source.startswith(('http://', 'https://')):
         derived_base = derive_base_url(config_source)
         # Handle GitLab URL encoding
         if '/api/v4/projects/' in derived_base and '/repository/files/' in derived_base:
-            encoded_path = urllib.parse.quote(normalized_path, safe='')
+            encoded_path = urllib.parse.quote(url_path, safe='')
             return derived_base.replace('{path}', encoded_path), True
-        return derived_base.replace('{path}', normalized_path), True
+        return derived_base.replace('{path}', url_path), True
 
     # 4. Relative path with local config - resolve relative to config location
     config_path = Path(config_source)
@@ -3289,9 +3303,10 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
 def set_os_env_variable(name: str, value: str | None) -> bool:
     """Set or delete an OS-level persistent environment variable.
 
-    This function sets environment variables that persist across shell sessions.
-    - On Windows: Uses setx (set) or registry (delete)
-    - On macOS/Linux: Writes to all shell config files
+    This function sets environment variables that persist across shell sessions
+    AND updates the current process environment for immediate effect.
+    - On Windows: Uses setx (set) or registry (delete) + os.environ
+    - On macOS/Linux: Writes to all shell config files + os.environ
 
     Args:
         name: Environment variable name.
@@ -3305,6 +3320,15 @@ def set_os_env_variable(name: str, value: str | None) -> bool:
         result = set_os_env_variable_windows(name, value)
     else:
         result = set_os_env_variable_unix(name, value)
+
+    # Update current process environment for immediate effect
+    # This ensures child processes (e.g., Claude Code) see the change
+    if result:
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
     return result
 
 
@@ -3325,6 +3349,7 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     set_count = 0
     delete_count = 0
     failed_count = 0
+    deleted_names: list[str] = []
 
     for name, value in env_vars.items():
         if value is None:
@@ -3332,6 +3357,7 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
             info(f'Deleting environment variable: {name}')
             if set_os_env_variable(name, None):
                 delete_count += 1
+                deleted_names.append(name)
             else:
                 failed_count += 1
         else:
@@ -3353,6 +3379,10 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     # Provide reload instructions for Unix systems
     if sys.platform != 'win32' and (set_count > 0 or delete_count > 0):
         info('Note: Open a new terminal or run "source ~/.bashrc" to apply changes')
+        # Provide explicit unset instructions for deleted variables
+        if deleted_names:
+            unset_cmds = ' '.join(f'unset {n};' for n in deleted_names)
+            info(f'To remove deleted variables from current shell: {unset_cmds}')
 
     return failed_count == 0
 

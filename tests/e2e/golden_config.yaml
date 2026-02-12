@@ -152,6 +152,8 @@ env-variables:
 os-env-variables:
   E2E_OS_VAR: "os_test_value"
   E2E_OS_PATH: "/opt/e2e/bin"
+  E2E_OS_DELETE_VAR: null
+  E2E_OS_DELETE_TOKEN: null
 
 # Command defaults
 command-defaults:
@@ -162,6 +164,7 @@ command-defaults:
 user-settings:
   language: "english"
   theme: "dark"
+  apiKeyHelper: "~/.claude/scripts/api-key-helper.py"
 
 # Always-thinking mode
 always-thinking-enabled: true
