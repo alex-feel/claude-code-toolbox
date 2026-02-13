@@ -238,6 +238,7 @@ class TestNodeInstallationEdgeCases:
             patch.dict('scripts.install_claude.os.environ', {'PATH': 'C:\\Windows\\System32'}),
             patch('scripts.install_claude.get_node_version', return_value='v20.10.0'),
             patch('scripts.install_claude.compare_versions', return_value=True),
+            patch('scripts.install_claude.get_claude_version', return_value=None),
         ):
             result = install_claude.ensure_nodejs()
 
@@ -245,16 +246,17 @@ class TestNodeInstallationEdgeCases:
             # Check that PATH was updated
             assert 'C:\\Program Files\\nodejs' in install_claude.os.environ.get('PATH', '')
 
+    @patch('scripts.install_claude.check_nodejs_compatibility', return_value=True)
     @patch('scripts.install_claude.install_nodejs_apt')
     @patch('scripts.install_claude.Path')
     @patch('scripts.install_claude.platform.system', return_value='Linux')
     @patch('scripts.install_claude.get_node_version')
     @patch('scripts.install_claude.compare_versions')
-    def test_ensure_nodejs_linux_debian(self, mock_compare, mock_get_version, mock_system, mock_path, mock_apt):
+    def test_ensure_nodejs_linux_debian(self, mock_compare, mock_get_version, mock_system, mock_path, mock_apt, mock_compat):
         """Test Node.js installation on Debian-based Linux."""
         del mock_system  # Mark as intentionally unused
-        # get_node_version is called 3 times: initial check, after apt install, and final check
-        mock_get_version.side_effect = [None, 'v20.10.0', 'v20.10.0']  # Not found initially, then found
+        # get_node_version is called twice: initial check, then via _verify_nodejs_version after apt
+        mock_get_version.side_effect = [None, 'v20.10.0']  # Not found initially, then found
         mock_compare.return_value = True
         mock_apt.return_value = True
 
@@ -267,6 +269,7 @@ class TestNodeInstallationEdgeCases:
 
         assert result is True
         assert mock_apt.called
+        mock_compat.assert_called_once()
 
     @patch('scripts.install_claude.platform.system', return_value='Linux')
     @patch('scripts.install_claude.get_node_version', return_value=None)

@@ -628,9 +628,45 @@ class TestNodeJsInstallation:
     @patch('install_claude.find_command')
     @patch('install_claude.run_command')
     def test_install_nodejs_homebrew(self, mock_run, mock_find):
-        """Test Node.js installation via Homebrew."""
+        """Test Node.js LTS installation via Homebrew."""
         mock_find.return_value = '/usr/local/bin/brew'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        result = install_claude.install_nodejs_homebrew()
+        assert result is True
+        # Verify brew install uses node@22 (LTS), not node (current)
+        install_calls = [str(call) for call in mock_run.call_args_list]
+        assert any('node@22' in call for call in install_calls), \
+            'Homebrew should install node@22 (LTS), not node (current)'
+        # Verify brew link is called for keg-only formula
+        assert any('link' in call for call in install_calls), \
+            'brew link should be called for keg-only node@22 formula'
+
+    @patch('install_claude.find_command', return_value='/usr/local/bin/brew')
+    @patch('install_claude.run_command')
+    def test_install_nodejs_homebrew_install_fails(self, mock_run, mock_find):
+        """Homebrew returns False when brew install node@22 fails."""
+        # Verify mock configuration
+        assert mock_find.return_value == '/usr/local/bin/brew'
+        # brew update succeeds, brew install node@22 fails
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 0, '', ''),  # brew update
+            subprocess.CompletedProcess([], 1, '', 'Error installing'),  # brew install node@22
+        ]
+        result = install_claude.install_nodejs_homebrew()
+        assert result is False
+
+    @patch('install_claude.find_command', return_value='/usr/local/bin/brew')
+    @patch('install_claude.run_command')
+    def test_install_nodejs_homebrew_link_fails_still_succeeds(self, mock_run, mock_find):
+        """Homebrew returns True even when brew link fails."""
+        # Verify mock configuration
+        assert mock_find.return_value == '/usr/local/bin/brew'
+        # brew update succeeds, brew install succeeds, brew link fails
+        mock_run.side_effect = [
+            subprocess.CompletedProcess([], 0, '', ''),  # brew update
+            subprocess.CompletedProcess([], 0, '', ''),  # brew install node@22
+            subprocess.CompletedProcess([], 1, '', 'Warning: Already linked'),  # brew link
+        ]
         result = install_claude.install_nodejs_homebrew()
         assert result is True
 
@@ -640,6 +676,184 @@ class TestNodeJsInstallation:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
         result = install_claude.install_nodejs_apt()
         assert result is True
+
+
+class TestEnsureNodejsCheckClaudeCompat:
+    """Test ensure_nodejs check_claude_compat parameter behavior."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_check_claude_compat_false_accepts_v25(self, mock_compare, mock_version, mock_system):
+        """Node.js v25 accepted when check_claude_compat=False."""
+        # Verify mock configurations
+        assert mock_system.return_value == 'Linux'
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compare.return_value is True
+        result = install_claude.ensure_nodejs(check_claude_compat=False)
+        assert result is True
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=False)
+    def test_check_claude_compat_true_rejects_v25(self, mock_compat, mock_version, mock_system):
+        """Node.js v25 rejected when check_claude_compat=True (default)."""
+        # Verify mock configurations
+        assert mock_system.return_value == 'Linux'
+        assert mock_version.return_value == 'v25.5.0'
+        result = install_claude.ensure_nodejs(check_claude_compat=True)
+        assert result is False
+        mock_compat.assert_called_once()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=False)
+    def test_default_check_claude_compat_rejects_v25(self, mock_compat, mock_version, mock_system):
+        """Default behavior (check_claude_compat=True) preserved -- v25 rejected."""
+        # Verify mock configurations
+        assert mock_system.return_value == 'Linux'
+        assert mock_version.return_value == 'v25.5.0'
+        result = install_claude.ensure_nodejs()
+        assert result is False
+        mock_compat.assert_called_once()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.check_nodejs_compatibility')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_check_claude_compat_false_skips_compat_check(self, mock_compare, mock_compat, mock_version, mock_system):
+        """check_nodejs_compatibility() not called when check_claude_compat=False."""
+        # Verify mock configurations
+        assert mock_system.return_value == 'Linux'
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compare.return_value is True
+        result = install_claude.ensure_nodejs(check_claude_compat=False)
+        assert result is True
+        mock_compat.assert_not_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_node_version', return_value='v22.0.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_check_claude_compat_true_with_compatible_version(self, mock_compare, mock_compat, mock_version, mock_system):
+        """Compatible version passes with check_claude_compat=True."""
+        # Verify mock configurations
+        assert mock_system.return_value == 'Linux'
+        assert mock_version.return_value == 'v22.0.0'
+        assert mock_compat.return_value is True
+        assert mock_compare.return_value is True
+        result = install_claude.ensure_nodejs(check_claude_compat=True)
+        assert result is True
+
+
+class TestVerifyNodejsVersion:
+    """Test _verify_nodejs_version helper function."""
+
+    @patch('install_claude.get_node_version', return_value='v22.0.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_compatible_version_passes(self, mock_compare, mock_compat, mock_version):
+        """Compatible Node.js version passes all checks."""
+        # Verify mock configurations
+        assert mock_version.return_value == 'v22.0.0'
+        assert mock_compat.return_value is True
+        assert mock_compare.return_value is True
+        result = install_claude._verify_nodejs_version(check_claude_compat=True)
+        assert result is True
+        mock_compat.assert_called_once()
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=False)
+    def test_v25_rejected_with_compat_check(self, mock_compat, mock_version):
+        """Node.js v25 rejected when check_claude_compat=True."""
+        # Verify mock configurations
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compat.return_value is False
+        result = install_claude._verify_nodejs_version(check_claude_compat=True)
+        assert result is False
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_v25_accepted_without_compat_check(self, mock_compare, mock_version):
+        """Node.js v25 accepted when check_claude_compat=False."""
+        # Verify mock configurations
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compare.return_value is True
+        result = install_claude._verify_nodejs_version(check_claude_compat=False)
+        assert result is True
+
+    @patch('install_claude.get_node_version', return_value=None)
+    def test_no_node_returns_false(self, mock_version):
+        """Returns False when Node.js not found."""
+        # Verify mock configuration
+        assert mock_version.return_value is None
+        result = install_claude._verify_nodejs_version(check_claude_compat=True)
+        assert result is False
+
+    @patch('install_claude.get_node_version', return_value='v16.0.0')
+    @patch('install_claude.check_nodejs_compatibility', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    def test_below_minimum_version_rejected(self, mock_compare, mock_compat, mock_version):
+        """Node.js below minimum version rejected even with compatible v25 check."""
+        # Verify mock configurations
+        assert mock_version.return_value == 'v16.0.0'
+        assert mock_compat.return_value is True
+        assert mock_compare.return_value is False
+        result = install_claude._verify_nodejs_version(check_claude_compat=True)
+        assert result is False
+
+
+class TestCheckNodejsCompatibilityVersionAware:
+    """Test version-aware Node.js compatibility checking."""
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    def test_v25_rejected_when_no_fixed_version(self, mock_version):
+        """v25 rejected when CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION is None."""
+        assert mock_version.return_value == 'v25.5.0'
+        result = install_claude.check_nodejs_compatibility(claude_code_version='2.1.39')
+        assert result is False
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch.object(install_claude, 'CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION', '2.2.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_v25_accepted_when_claude_version_fixed(self, mock_compare, mock_version):
+        """v25 accepted when Claude Code version has SlowBuffer fix."""
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compare.return_value is True
+        result = install_claude.check_nodejs_compatibility(claude_code_version='2.3.0')
+        assert result is True
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch.object(install_claude, 'CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION', '2.2.0')
+    @patch('install_claude.compare_versions', return_value=False)
+    def test_v25_rejected_when_claude_version_too_old(self, mock_compare, mock_version):
+        """v25 rejected when Claude Code version is before the fix."""
+        assert mock_version.return_value == 'v25.5.0'
+        assert mock_compare.return_value is False
+        result = install_claude.check_nodejs_compatibility(claude_code_version='2.1.39')
+        assert result is False
+
+    @patch('install_claude.get_node_version', return_value='v25.5.0')
+    @patch.object(install_claude, 'CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION', '2.2.0')
+    def test_v25_rejected_when_no_claude_version_provided(self, mock_version):
+        """v25 rejected when claude_code_version is None (unknown version)."""
+        assert mock_version.return_value == 'v25.5.0'
+        result = install_claude.check_nodejs_compatibility(claude_code_version=None)
+        assert result is False
+
+    @patch('install_claude.get_node_version', return_value='v22.0.0')
+    def test_v22_always_compatible(self, mock_version):
+        """v22 is always compatible regardless of Claude Code version."""
+        assert mock_version.return_value == 'v22.0.0'
+        result = install_claude.check_nodejs_compatibility(claude_code_version=None)
+        assert result is True
+
+    @patch('install_claude.get_node_version', return_value='v16.0.0')
+    def test_v16_always_rejected(self, mock_version):
+        """v16 is always rejected (below minimum v18)."""
+        assert mock_version.return_value == 'v16.0.0'
+        result = install_claude.check_nodejs_compatibility(claude_code_version=None)
+        assert result is False
 
 
 class TestClaudeInstallation:
@@ -800,13 +1014,18 @@ class TestEnsureFunctions:
         assert mock_get_version.return_value is None
         assert mock_winget.return_value is False
         assert mock_install.return_value is True
-        with patch('install_claude.get_node_version') as mock_get_after:
+        with (
+            patch('install_claude.get_node_version') as mock_get_after,
+            patch('install_claude.compare_versions', return_value=True),
+            patch('install_claude.check_nodejs_compatibility', return_value=True),
+        ):
+            # _verify_nodejs_version calls get_node_version once;
+            # check_nodejs_compatibility is mocked and does not consume side_effect
             mock_get_after.side_effect = [None, 'v20.10.0']
-            with patch('install_claude.compare_versions', return_value=True):
-                result = install_claude.ensure_nodejs()
-                assert result is True
-                mock_install.assert_called_once()
-                mock_sleep.assert_called()
+            result = install_claude.ensure_nodejs()
+            assert result is True
+            mock_install.assert_called_once()
+            mock_sleep.assert_called()
 
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.get_latest_claude_version')

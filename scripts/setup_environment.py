@@ -3477,7 +3477,9 @@ def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
     # Late import to avoid circular dependency (install_claude imports from setup_environment)
     from install_claude import ensure_nodejs as _ensure_nodejs
 
-    if not _ensure_nodejs():
+    # Node.js is needed for general purposes (e.g., npx MCP servers),
+    # not for Claude Code's npm package itself.
+    if not _ensure_nodejs(check_claude_compat=False):
         error('Node.js installation failed')
         return False
 

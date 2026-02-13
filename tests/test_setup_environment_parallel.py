@@ -396,36 +396,70 @@ class TestDownloadsWithParallelExecution:
 
 
 class TestParallelExecutionPerformance:
-    """Test that parallel execution actually improves performance."""
+    """Test that parallel execution actually runs tasks concurrently."""
 
-    def test_parallel_faster_than_sequential(self) -> None:
-        """Test that parallel execution is faster for I/O-bound tasks."""
+    def test_parallel_executes_concurrently(self) -> None:
+        """Verify that parallel mode runs tasks in separate threads simultaneously.
 
-        def slow_task(x: int) -> int:
-            time.sleep(0.05)  # 50ms delay
+        Uses a threading.Barrier to verify that multiple tasks execute at the
+        same time. If tasks ran sequentially, they could never reach the barrier
+        simultaneously, causing a timeout.
+        """
+        import threading
+
+        worker_count = 2
+        barrier = threading.Barrier(worker_count, timeout=5)
+        concurrent_detected = threading.Event()
+
+        def barrier_task(x: int) -> int:
+            try:
+                barrier.wait()
+                # Both tasks were running simultaneously
+                concurrent_detected.set()
+            except threading.BrokenBarrierError:
+                pass
             return x * 2
 
-        items = [1, 2, 3, 4, 5]
+        items = [1, 2]
 
-        # Measure sequential time
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
-            start = time.time()
-            execute_parallel(items, slow_task)
-            sequential_time = time.time() - start
-
-        # Measure parallel time
         with patch.dict(os.environ, {}, clear=True):
             os.environ.pop('CLAUDE_SEQUENTIAL_MODE', None)
-            start = time.time()
-            execute_parallel(items, slow_task)
-            parallel_time = time.time() - start
+            result = execute_parallel(items, barrier_task, max_workers=worker_count)
 
-        # Parallel should be significantly faster (at least 2x for 5 items)
-        # Being conservative with 1.5x to account for thread overhead
-        assert parallel_time < sequential_time * 0.7, (
-            f'Parallel ({parallel_time:.3f}s) should be significantly faster '
-            f'than sequential ({sequential_time:.3f}s)'
+        assert concurrent_detected.is_set(), (
+            'Parallel execution did not run tasks concurrently'
         )
+        assert result == [2, 4]
+
+    def test_sequential_mode_does_not_execute_concurrently(self) -> None:
+        """Verify that sequential mode processes items one at a time.
+
+        Uses a threading.Barrier to verify that tasks do NOT execute at the
+        same time. In sequential mode, only one task runs at a time, so the
+        barrier will timeout and raise BrokenBarrierError.
+        """
+        import threading
+
+        barrier = threading.Barrier(2, timeout=0.1)
+        barrier_reached_simultaneously = threading.Event()
+
+        def barrier_task(x: int) -> int:
+            try:
+                barrier.wait()
+                barrier_reached_simultaneously.set()
+            except threading.BrokenBarrierError:
+                pass
+            return x * 2
+
+        items = [1, 2]
+
+        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+            result = execute_parallel(items, barrier_task)
+
+        assert not barrier_reached_simultaneously.is_set(), (
+            'Sequential mode should not run tasks concurrently'
+        )
+        assert result == [2, 4]
 
 
 class TestSkillsWithParallelExecution:

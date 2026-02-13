@@ -1962,12 +1962,12 @@ class TestInstallNodejsIfRequested:
 
     @patch('install_claude.ensure_nodejs')
     def test_true_calls_ensure_nodejs(self, mock_ensure):
-        """Test that function calls ensure_nodejs when install-nodejs is True."""
+        """Test that function calls ensure_nodejs with check_claude_compat=False."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
-        mock_ensure.assert_called_once()
+        mock_ensure.assert_called_once_with(check_claude_compat=False)
 
     @patch('install_claude.ensure_nodejs')
     def test_installation_failure_returns_false(self, mock_ensure):
@@ -1998,6 +1998,16 @@ class TestInstallNodejsIfRequested:
         config = {'install-nodejs': True}
         setup_environment.install_nodejs_if_requested(config)
         mock_refresh.assert_not_called()
+
+    @patch('install_claude.ensure_nodejs')
+    def test_nodejs_v25_accepted_via_install_nodejs_flag(self, mock_ensure):
+        """Node.js v25 is accepted when install-nodejs: true (general purpose)."""
+        mock_ensure.return_value = True
+        config = {'install-nodejs': True}
+        result = setup_environment.install_nodejs_if_requested(config)
+        assert result is True
+        # Verify check_claude_compat=False was passed (v25 would be accepted)
+        mock_ensure.assert_called_once_with(check_claude_compat=False)
 
 
 class TestFetchUrlWithAuth:
