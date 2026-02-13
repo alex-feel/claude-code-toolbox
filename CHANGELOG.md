@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.28.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.3...v4.28.0) (2026-02-13)
+
+
+### Features
+
+* add Node.js version check fixes for native Claude Code installation ([6f7c3b2](https://github.com/alex-feel/claude-code-toolbox/commit/6f7c3b2cc0219b2a6eea89cb552ed1947246c937))
+
 ## [4.27.3](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.2...v4.27.3) (2026-02-12)
 
 
