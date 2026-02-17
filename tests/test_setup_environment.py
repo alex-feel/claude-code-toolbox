@@ -2188,10 +2188,10 @@ class TestConfigureMCPServer:
         assert '--header' in bash_cmd
         assert 'client_id=123' in bash_cmd
         assert 'scope=read' in bash_cmd
-        # Verify options precede positional arguments (name and url)
+        # Verify variadic --header comes after positional arguments (name and url)
         header_pos = bash_cmd.index('--header')
-        name_pos = bash_cmd.index('auth-api')
-        assert header_pos < name_pos, '--header option must precede server name positional argument'
+        url_pos = bash_cmd.index('https://api.example.com')
+        assert header_pos > url_pos, '--header must come after url positional argument (variadic option)'
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
@@ -2200,11 +2200,11 @@ class TestConfigureMCPServer:
     def test_configure_mcp_server_http_with_header_windows_argument_order(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
-        """Test Windows HTTP transport with --header places options before positional args.
+        """Test Windows HTTP transport with --header places variadic option after positional args.
 
-        The Claude CLI uses Commander.js which requires all options (--transport, --header)
-        to precede positional arguments (name, url). The --header option is variadic and
-        can consume subsequent arguments if placed before the URL positional argument.
+        The Claude CLI uses Commander.js where variadic --header can greedily consume
+        subsequent arguments. Placing --header AFTER positional arguments (name, url)
+        prevents Commander.js from consuming positionals as additional header values.
         """
         del mock_system  # Unused but required for patch
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
@@ -2231,21 +2231,21 @@ class TestConfigureMCPServer:
         assert '--header' in bash_cmd
         assert 'youtrack-mcp-server-official' in bash_cmd
 
-        # Options must appear before the server name in the command
+        # Non-variadic options must appear before the server name
         transport_pos = bash_cmd.index('--transport')
         header_pos = bash_cmd.index('--header')
         name_pos = bash_cmd.index('youtrack-mcp-server-official')
         url_pos = bash_cmd.index('https://youtrack-mcp-server.dev.example.com/mcp/')
 
         assert transport_pos < name_pos, '--transport must precede server name'
-        assert header_pos < name_pos, '--header must precede server name'
         assert name_pos < url_pos, 'server name must precede url'
+        assert header_pos > url_pos, '--header must come after url (variadic option prevents greedy consumption)'
 
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command_robust')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_env_and_header_argument_order(self, mock_run, mock_find, mock_bash):
-        """Test HTTP transport with both env vars and header places all options before positional args."""
+        """Test HTTP transport with both env vars and header places variadic --header after positional args."""
         mock_find.return_value = 'claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
         mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -2265,11 +2265,54 @@ class TestConfigureMCPServer:
         assert result is True
         bash_cmd = mock_bash.call_args[0][0]
 
-        # All options (--env, --transport, --header) must precede name and url
+        # Non-variadic options (--env, --transport) must precede name and url
         name_pos = bash_cmd.index('test-server')
+        url_pos = bash_cmd.index('https://api.example.com/mcp/')
         assert bash_cmd.index('--env') < name_pos, '--env must precede server name'
         assert bash_cmd.index('--transport') < name_pos, '--transport must precede server name'
-        assert bash_cmd.index('--header') < name_pos, '--header must precede server name'
+        assert name_pos < url_pos, 'server name must precede url'
+        # Variadic --header must come AFTER positional arguments
+        assert bash_cmd.index('--header') > url_pos, (
+            '--header must come after url (variadic option prevents greedy consumption)'
+        )
+
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_header_env_var_expansion_unix(self, mock_run, mock_find, mock_bash):
+        """Test Unix HTTP transport wraps header in double quotes to allow ${VAR} expansion.
+
+        Single quotes (from shlex.quote) prevent bash variable expansion.
+        Header values containing ${VAR} patterns must use double quotes so
+        bash resolves environment variables at runtime.
+        """
+        mock_find.return_value = '/usr/local/bin/claude'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'env-header-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/mcp',
+            'header': 'Authorization:${MY_AUTH_TOKEN}',
+        }
+
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash.call_args[0][0]
+
+        # Header must be wrapped in double quotes (not single quotes)
+        # to allow bash ${VAR} expansion at runtime
+        assert '--header "Authorization:${MY_AUTH_TOKEN}"' in bash_cmd, (
+            f'Header must use double quotes for ${{VAR}} expansion, got: {bash_cmd}'
+        )
+        # Verify single quotes are NOT used around the header value
+        assert "--header 'Authorization:${MY_AUTH_TOKEN}'" not in bash_cmd, (
+            'Header must NOT use single quotes (blocks ${VAR} expansion)'
+        )
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
