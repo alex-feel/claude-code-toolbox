@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.28.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.1...v4.28.2) (2026-02-17)
+
+
+### Bug Fixes
+
+* place variadic --header after positionals and use double quotes on Unix ([d5e27d5](https://github.com/alex-feel/claude-code-toolbox/commit/d5e27d5503a07b80c5d7862cad418c3e12d69d36))
+
 ## [4.28.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.0...v4.28.1) (2026-02-17)
 
 
