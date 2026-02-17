@@ -4632,15 +4632,16 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         # Handle different transport types
         if transport and url:
             # HTTP or SSE transport
-            # All options must precede positional arguments per Claude CLI syntax:
-            # claude mcp add [OPTIONS] <name> <commandOrUrl>
+            # Non-variadic options precede positional arguments per Claude CLI syntax.
+            # EXCEPTION: Variadic --header MUST come AFTER positional arguments (name, url)
+            # to prevent Commander.js from consuming positionals as additional header values.
+            # See: https://github.com/anthropics/claude-code/issues/2341
             for env_var in env_list:
                 base_cmd.extend(['--env', env_var])
             base_cmd.extend(['--transport', transport])
+            base_cmd.extend((name, url))
             if header:
                 base_cmd.extend(['--header', header])
-            # Positional arguments last: name then url
-            base_cmd.extend((name, url))
 
             # Windows HTTP transport - use bash for consistent cross-platform behavior
             # This eliminates PowerShell's exit code quirks and CMD escaping issues
@@ -4675,7 +4676,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 bash_cmd = (
                     f'export PATH="{unix_explicit_path}:$PATH" && '
                     f'"{unix_claude_cmd}" mcp add --scope {scope}{env_part} '
-                    f'--transport {transport}{header_part} {name} "{url}"'
+                    f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
                 bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
@@ -4687,7 +4688,15 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             else:
                 # On Unix, use bash with updated PATH (consistent with Windows)
                 parent_dir = Path(claude_cmd).parent
-                bash_cmd = f'export PATH="{parent_dir}:$PATH" && ' + ' '.join(shlex.quote(str(arg)) for arg in base_cmd)
+                env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
+                env_part = f' {env_flags}' if env_flags else ''
+                # Use double quotes for header to allow ${VAR} expansion in bash
+                header_part = f' --header "{header}"' if header else ''
+                bash_cmd = (
+                    f'export PATH="{parent_dir}:$PATH" && '
+                    f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)}{env_part} '
+                    f'--transport {shlex.quote(transport)} {shlex.quote(name)} {shlex.quote(url)}{header_part}'
+                )
                 result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
         elif command:
             # Stdio transport (command)

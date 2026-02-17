@@ -1,12 +1,13 @@
 """E2E tests for MCP server CLI argument ordering.
 
 Tests verify that configure_all_mcp_servers() generates CLI commands
-with correct argument ordering: all options (--transport, --header, --env)
-must precede positional arguments (name, url) per Claude CLI syntax.
+with correct argument ordering per Claude CLI (Commander.js) syntax:
+- Non-variadic options (--transport, --env) precede positional arguments (name, url)
+- Variadic --header option comes AFTER positional arguments (name, url)
 
-This prevents the --header variadic option from consuming the URL as
-an additional header value, which causes 'error: missing required argument
-commandOrUrl' failures.
+Placing --header after positionals prevents Commander.js from greedily
+consuming positional arguments as additional header values, which causes
+'error: missing required argument name' failures.
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ class TestMCPArgumentOrdering:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify HTTP transport with --header places all options before positional args on Unix."""
+        """Verify HTTP transport places variadic --header after positional args on Unix."""
         mock_bash = MagicMock(
             return_value=subprocess.CompletedProcess([], 0, '', ''),
         )
@@ -75,7 +76,7 @@ class TestMCPArgumentOrdering:
             'No mcp add command found for e2e-http-server in run_bash_command calls'
         )
 
-        # Verify all options precede positional arguments
+        # Verify non-variadic options precede positional arguments
         transport_pos = bash_cmd.index('--transport')
         header_pos = bash_cmd.index('--header')
         name_pos = bash_cmd.index('e2e-http-server')
@@ -84,11 +85,12 @@ class TestMCPArgumentOrdering:
         assert transport_pos < name_pos, (
             '--transport must precede server name positional argument'
         )
-        assert header_pos < name_pos, (
-            '--header must precede server name positional argument'
-        )
         assert name_pos < url_pos, (
             'server name must precede url positional argument'
+        )
+        # Variadic --header must come AFTER positional arguments
+        assert header_pos > url_pos, (
+            '--header must come after url (variadic option prevents greedy consumption)'
         )
 
     def test_http_with_header_options_precede_positionals_windows(
@@ -96,7 +98,7 @@ class TestMCPArgumentOrdering:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify HTTP transport with --header places all options before positional args on Windows."""
+        """Verify HTTP transport places variadic --header after positional args on Windows."""
         mock_bash = MagicMock(
             return_value=subprocess.CompletedProcess([], 0, '', ''),
         )
@@ -126,7 +128,7 @@ class TestMCPArgumentOrdering:
             'No mcp add command found for e2e-http-server in run_bash_command calls'
         )
 
-        # Verify all options precede positional arguments in bash_cmd string
+        # Verify non-variadic options precede positional arguments in bash_cmd string
         transport_pos = bash_cmd.index('--transport')
         header_pos = bash_cmd.index('--header')
         name_pos = bash_cmd.index('e2e-http-server')
@@ -135,11 +137,12 @@ class TestMCPArgumentOrdering:
         assert transport_pos < name_pos, (
             '--transport must precede server name positional argument on Windows'
         )
-        assert header_pos < name_pos, (
-            '--header must precede server name positional argument on Windows'
-        )
         assert name_pos < url_pos, (
             'server name must precede url positional argument on Windows'
+        )
+        # Variadic --header must come AFTER positional arguments
+        assert header_pos > url_pos, (
+            '--header must come after url on Windows (variadic option prevents greedy consumption)'
         )
 
     def test_http_with_env_and_header_all_options_precede_positionals(
@@ -147,7 +150,7 @@ class TestMCPArgumentOrdering:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify HTTP transport with both --env and --header places all options before name and url."""
+        """Verify HTTP transport with --env and --header: non-variadic before positionals, variadic after."""
         mock_bash = MagicMock(
             return_value=subprocess.CompletedProcess([], 0, '', ''),
         )
@@ -176,16 +179,21 @@ class TestMCPArgumentOrdering:
             'No mcp add command found for e2e-http-server in run_bash_command calls'
         )
 
-        # All options (--env, --transport, --header) must precede name and url
+        # Non-variadic options (--env, --transport) must precede name and url
         name_pos = bash_cmd.index('e2e-http-server')
+        url_pos = bash_cmd.index('http://localhost:3000/api')
         assert bash_cmd.index('--env') < name_pos, (
             '--env must precede server name positional argument'
         )
         assert bash_cmd.index('--transport') < name_pos, (
             '--transport must precede server name positional argument'
         )
-        assert bash_cmd.index('--header') < name_pos, (
-            '--header must precede server name positional argument'
+        assert name_pos < url_pos, (
+            'server name must precede url positional argument'
+        )
+        # Variadic --header must come AFTER positional arguments
+        assert bash_cmd.index('--header') > url_pos, (
+            '--header must come after url (variadic option prevents greedy consumption)'
         )
 
     def test_http_without_header_argument_order_unchanged(
@@ -237,6 +245,58 @@ class TestMCPArgumentOrdering:
         # --header should NOT be present in this command
         assert '--header' not in bash_cmd, (
             'SSE server without header config should not have --header option'
+        )
+
+
+class TestMCPHeaderEnvVarExpansion:
+    """E2E tests for header environment variable expansion using double quotes."""
+
+    def test_http_header_with_env_var_uses_double_quotes_unix(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify Unix HTTP transport wraps header in double quotes for ${VAR} expansion.
+
+        Single quotes (from shlex.quote) prevent bash variable expansion.
+        Header values containing ${VAR} patterns must use double quotes so
+        bash resolves environment variables at runtime.
+        """
+        mock_bash = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                setup_environment, 'find_command_robust',
+                return_value='/usr/local/bin/claude',
+            ),
+            patch.object(setup_environment, 'run_bash_command', mock_bash),
+            patch.object(setup_environment, 'run_command', mock_run),
+        ):
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            configure_all_mcp_servers(
+                servers=golden_config.get('mcp-servers', []),
+                profile_mcp_config_path=profile_mcp_path,
+            )
+
+        # e2e-http-server has header "X-API-Key: test-key"
+        bash_cmd = _find_mcp_add_call(mock_bash.call_args_list, 'e2e-http-server')
+        assert bash_cmd is not None, (
+            'No mcp add command found for e2e-http-server in run_bash_command calls'
+        )
+
+        # Header must be wrapped in double quotes (not single quotes)
+        assert '--header "' in bash_cmd, (
+            f'Header must use double quotes for ${{VAR}} expansion, got: {bash_cmd}'
+        )
+        # Verify single quotes are NOT used around the header value
+        assert "--header '" not in bash_cmd, (
+            'Header must NOT use single quotes (blocks ${VAR} expansion)'
         )
 
 
