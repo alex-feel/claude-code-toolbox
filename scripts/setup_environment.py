@@ -4629,18 +4629,18 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         if scope:
             base_cmd.extend(['--scope', scope])
 
-        # Note: Don't add name here - it must be added after options for correct argument order
-
         # Handle different transport types
         if transport and url:
             # HTTP or SSE transport
-            base_cmd.append(name)  # Add name here for HTTP/SSE transport
-            # Add all environment variables
+            # All options must precede positional arguments per Claude CLI syntax:
+            # claude mcp add [OPTIONS] <name> <commandOrUrl>
             for env_var in env_list:
                 base_cmd.extend(['--env', env_var])
-            base_cmd.extend(['--transport', transport, url])
+            base_cmd.extend(['--transport', transport])
             if header:
                 base_cmd.extend(['--header', header])
+            # Positional arguments last: name then url
+            base_cmd.extend((name, url))
 
             # Windows HTTP transport - use bash for consistent cross-platform behavior
             # This eliminates PowerShell's exit code quirks and CMD escaping issues
@@ -4674,8 +4674,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 
                 bash_cmd = (
                     f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
-                    f'--transport {transport}{header_part} "{url}"'
+                    f'"{unix_claude_cmd}" mcp add --scope {scope}{env_part} '
+                    f'--transport {transport}{header_part} {name} "{url}"'
                 )
 
                 bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd

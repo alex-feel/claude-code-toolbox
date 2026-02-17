@@ -2188,6 +2188,88 @@ class TestConfigureMCPServer:
         assert '--header' in bash_cmd
         assert 'client_id=123' in bash_cmd
         assert 'scope=read' in bash_cmd
+        # Verify options precede positional arguments (name and url)
+        header_pos = bash_cmd.index('--header')
+        name_pos = bash_cmd.index('auth-api')
+        assert header_pos < name_pos, '--header option must precede server name positional argument'
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command_robust')
+    def test_configure_mcp_server_http_with_header_windows_argument_order(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
+    ):
+        """Test Windows HTTP transport with --header places options before positional args.
+
+        The Claude CLI uses Commander.js which requires all options (--transport, --header)
+        to precede positional arguments (name, url). The --header option is variadic and
+        can consume subsequent arguments if placed before the URL positional argument.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'youtrack-mcp-server-official',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://youtrack-mcp-server.dev.example.com/mcp/',
+            'header': 'Authorization:${YOUTRACK_AUTH_HEADER}',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # Verify bash was used for the add operation
+        assert mock_bash_cmd.called
+        bash_cmd = mock_bash_cmd.call_args[0][0]
+
+        # Verify all options precede positional arguments
+        assert '--transport http' in bash_cmd
+        assert '--header' in bash_cmd
+        assert 'youtrack-mcp-server-official' in bash_cmd
+
+        # Options must appear before the server name in the command
+        transport_pos = bash_cmd.index('--transport')
+        header_pos = bash_cmd.index('--header')
+        name_pos = bash_cmd.index('youtrack-mcp-server-official')
+        url_pos = bash_cmd.index('https://youtrack-mcp-server.dev.example.com/mcp/')
+
+        assert transport_pos < name_pos, '--transport must precede server name'
+        assert header_pos < name_pos, '--header must precede server name'
+        assert name_pos < url_pos, 'server name must precede url'
+
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.run_command')
+    def test_configure_mcp_server_http_with_env_and_header_argument_order(self, mock_run, mock_find, mock_bash):
+        """Test HTTP transport with both env vars and header places all options before positional args."""
+        mock_find.return_value = 'claude'
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/mcp/',
+            'header': 'Authorization: Bearer token',
+            'env': ['API_KEY=key123', 'REGION=us-east'],
+        }
+
+        with patch('platform.system', return_value='Linux'):
+            result = setup_environment.configure_mcp_server(server)
+
+        assert result is True
+        bash_cmd = mock_bash.call_args[0][0]
+
+        # All options (--env, --transport, --header) must precede name and url
+        name_pos = bash_cmd.index('test-server')
+        assert bash_cmd.index('--env') < name_pos, '--env must precede server name'
+        assert bash_cmd.index('--transport') < name_pos, '--transport must precede server name'
+        assert bash_cmd.index('--header') < name_pos, '--header must precede server name'
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
