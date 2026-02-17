@@ -260,6 +260,22 @@ def _validate_mcp_server_config(name: str, server: dict[str, Any]) -> list[str]:
                     "This indicates a cross-platform bug in MCP server configuration.",
                 )
 
+    # Validate headers field for HTTP/SSE servers in profile config
+    # When created by create_mcp_config_file(), headers are stored as a dict
+    if 'headers' in server:
+        headers = server['headers']
+        if not isinstance(headers, dict):
+            errors.append(
+                f"Server '{name}': 'headers' must be a dict, got {type(headers).__name__}",
+            )
+        else:
+            for hdr_key, hdr_value in headers.items():
+                if not isinstance(hdr_key, str) or not isinstance(hdr_value, str):
+                    errors.append(
+                        f"Server '{name}': header key/value must be strings: "
+                        f'{hdr_key!r}={hdr_value!r}',
+                    )
+
     # Validate transport-specific fields
     server_type = server.get('type', '')
     if server_type in ('http', 'sse') and 'url' not in server:
