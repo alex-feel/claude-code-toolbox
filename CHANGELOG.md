@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.28.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.0...v4.28.1) (2026-02-17)
+
+
+### Bug Fixes
+
+* correct --header argument ordering in configure_mcp_server for HTTP transport ([00f1b44](https://github.com/alex-feel/claude-code-toolbox/commit/00f1b44ebf9ce84d79585b3eb586a00d179d80fa))
+
 ## [4.28.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.27.3...v4.28.0) (2026-02-13)
 
 
