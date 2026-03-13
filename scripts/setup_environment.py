@@ -84,6 +84,7 @@ ROOT_TO_USER_SETTINGS_KEY_MAP: dict[str, str] = {
     'always-thinking-enabled': 'alwaysThinkingEnabled',
     'company-announcements': 'companyAnnouncements',
     'env-variables': 'env',                     # Different names
+    'effort-level': 'effortLevel',              # Adaptive reasoning effort
 }
 
 
@@ -5050,6 +5051,7 @@ def create_additional_settings(
     company_announcements: list[str] | None = None,
     attribution: dict[str, str] | None = None,
     status_line: dict[str, Any] | None = None,
+    effort_level: str | None = None,
 ) -> bool:
     """Create {command_name}-additional-settings.json with environment-specific settings.
 
@@ -5073,6 +5075,9 @@ def create_additional_settings(
             'padding' key, and optional 'config' key for config file reference.
             Both the script and config file are downloaded to ~/.claude/hooks/ and
             the config path is appended as a command line argument.
+        effort_level: Optional effort level for adaptive reasoning.
+            Valid values: 'low', 'medium', 'high'. Controls how much thinking
+            is allocated based on task complexity.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -5129,6 +5134,11 @@ def create_additional_settings(
     if always_thinking_enabled is not None:
         settings['alwaysThinkingEnabled'] = always_thinking_enabled
         info(f'Setting alwaysThinkingEnabled: {always_thinking_enabled}')
+
+    # Add effortLevel if explicitly set (None means not configured, leave as default)
+    if effort_level is not None:
+        settings['effortLevel'] = effort_level
+        info(f'Setting effortLevel: {effort_level}')
 
     # Add companyAnnouncements if explicitly set (None means not configured, leave as default)
     if company_announcements is not None:
@@ -6244,6 +6254,17 @@ def main() -> None:
         # Extract status_line configuration
         status_line = config.get('status-line')
 
+        # Extract and validate effort_level configuration
+        effort_level = config.get('effort-level')
+        if effort_level is not None:
+            valid_effort_levels = ('low', 'medium', 'high')
+            if effort_level not in valid_effort_levels:
+                warning(
+                    f'Invalid effort-level value: {effort_level!r}. '
+                    f'Valid values: {", ".join(valid_effort_levels)}. Skipping.',
+                )
+                effort_level = None
+
         # Extract user-settings configuration (global user-level settings)
         user_settings = config.get('user-settings')
 
@@ -6501,6 +6522,7 @@ def main() -> None:
                 company_announcements,
                 attribution,
                 status_line_arg,
+                effort_level,
             )
 
             # Step 15: Create launcher script
@@ -6613,6 +6635,8 @@ def main() -> None:
             print(f'   * Environment variables: {len(env_variables)} configured')
         if company_announcements:
             print(f'   * Company announcements: {len(company_announcements)} configured')
+        if effort_level:
+            print(f'   * Effort level: {effort_level}')
         if status_line and isinstance(status_line, dict):
             status_line_dict = cast(dict[str, Any], status_line)
             status_line_file_val = status_line_dict.get('file', '')

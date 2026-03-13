@@ -42,6 +42,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'
@@ -89,6 +90,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'
@@ -131,6 +133,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'
@@ -173,6 +176,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'
@@ -227,6 +231,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'
@@ -282,6 +287,7 @@ class TestJavaScriptHooks:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         settings_path = claude_dir / f'{cmd}-additional-settings.json'

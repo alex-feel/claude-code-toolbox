@@ -176,6 +176,9 @@ user-settings:
 # Always-thinking mode
 always-thinking-enabled: true
 
+# Effort level for adaptive reasoning
+effort-level: "low"
+
 # Company announcements
 company-announcements:
   - "Welcome to E2E Testing Environment"

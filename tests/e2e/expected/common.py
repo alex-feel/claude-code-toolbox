@@ -30,6 +30,7 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'companyAnnouncements',
         'attribution',
         'statusLine',
+        'effortLevel',
     ],
     'mcp-config': [
         'mcpServers',
