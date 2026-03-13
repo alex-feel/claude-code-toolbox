@@ -227,7 +227,7 @@ The golden config includes:
 - Hooks: `hooks` (files and events with command/prompt types)
 - MCP Servers: `mcp-servers` (http, sse, stdio transports)
 - Settings: `model`, `permissions`, `env-variables`, `os-env-variables`
-- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`
+- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`, `effort-level`
 - Extras: `company-announcements`, `attribution`, `status-line`
 
 #### Key Design Principles

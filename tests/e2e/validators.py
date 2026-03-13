@@ -300,6 +300,7 @@ def validate_additional_settings(path: Path, config: dict[str, Any]) -> list[str
     - Hooks structure is correct if present
     - Environment variables are present
     - alwaysThinkingEnabled matches config if specified
+    - effortLevel matches config if specified
     - companyAnnouncements are present if specified
     - statusLine structure is correct if specified
 
@@ -358,6 +359,15 @@ def validate_additional_settings(path: Path, config: dict[str, Any]) -> list[str
         if actual != expected:
             errors.append(
                 f'alwaysThinkingEnabled: expected {expected!r}, got {actual!r}',
+            )
+
+    # effortLevel
+    if 'effort-level' in config:
+        expected = config['effort-level']
+        actual = data.get('effortLevel')
+        if actual != expected:
+            errors.append(
+                f'effortLevel: expected {expected!r}, got {actual!r}',
             )
 
     # companyAnnouncements

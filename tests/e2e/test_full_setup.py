@@ -97,6 +97,7 @@ class TestE2EFullSetup:
             company_announcements=golden_config.get('company-announcements'),
             attribution=golden_config.get('attribution'),
             status_line=golden_config.get('status-line'),
+            effort_level=golden_config.get('effort-level'),
         )
 
         # Create MCP config file (use configure_all_mcp_servers to get profile servers)
@@ -168,6 +169,7 @@ class TestE2EFullSetup:
             company_announcements=golden_config.get('company-announcements'),
             attribution=golden_config.get('attribution'),
             status_line=golden_config.get('status-line'),
+            effort_level=golden_config.get('effort-level'),
         )
 
         # Verify additional-settings file exists (written to claude_user_dir)

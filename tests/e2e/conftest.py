@@ -161,6 +161,7 @@ def golden_config() -> dict[str, Any]:
     - command-defaults: System prompt and mode
     - user-settings: User settings to merge
     - always-thinking-enabled: Thinking mode flag
+    - effort-level: Adaptive reasoning effort level
     - company-announcements: Announcement messages
     - attribution: Commit and PR attribution settings
     - status-line: Status line configuration

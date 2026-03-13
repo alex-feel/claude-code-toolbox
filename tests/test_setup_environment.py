@@ -3305,6 +3305,81 @@ class TestCreateAdditionalSettings:
 
             assert 'alwaysThinkingEnabled' not in settings
 
+    def test_create_additional_settings_effort_level_low(self):
+        """Test effortLevel set to low."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level='low',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'low'
+
+    def test_create_additional_settings_effort_level_medium(self):
+        """Test effortLevel set to medium."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level='medium',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'medium'
+
+    def test_create_additional_settings_effort_level_high(self):
+        """Test effortLevel set to high."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level='high',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'high'
+
+    def test_create_additional_settings_effort_level_none_not_included(self):
+        """Test effortLevel not included when None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level=None,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' not in settings
+
     def test_create_additional_settings_company_announcements(self):
         """Test companyAnnouncements set with multiple items."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4086,6 +4161,67 @@ class TestMainFunction:
         ):
             setup_environment.main()
             mock_exit.assert_not_called()
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('pathlib.Path.mkdir')
+    def test_main_invalid_effort_level_warns_and_skips(
+        self,
+        mock_mkdir: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() warns and skips invalid effort-level value (non-fatal)."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        mock_load.return_value = (
+            {
+                'name': 'Effort Level Test',
+                'command-names': ['test-cmd'],
+                'effort-level': 'extreme',  # Invalid value
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = Path('/tmp/launcher.sh')
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'Invalid effort-level value' in captured.out
+        assert "'extreme'" in captured.out
+
+        # Verify create_additional_settings was called with effort_level=None
+        # (the invalid value should have been reset to None)
+        mock_settings.assert_called_once()
+        call_args = mock_settings.call_args
+        # effort_level is the 12th positional argument (0-indexed: position 11)
+        assert call_args[0][11] is None
 
 
 class TestDownloadFailureTracking:
@@ -5423,6 +5559,14 @@ class TestDetectSettingsConflicts:
         result = setup_environment.detect_settings_conflicts(user_settings, root_config)
         assert len(result) == 1
         assert result[0] == ('env', {'FOO': 'bar'}, {'FOO': 'baz'})
+
+    def test_effort_level_mapping_conflict(self) -> None:
+        """effort-level root key maps to effortLevel user-settings key."""
+        user_settings = {'effortLevel': 'high'}
+        root_config = {'effort-level': 'low'}
+        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
+        assert len(result) == 1
+        assert result[0] == ('effortLevel', 'high', 'low')
 
     def test_multiple_conflicts_detected(self) -> None:
         """Multiple conflicts are all detected."""
@@ -7193,6 +7337,7 @@ class TestDetectSettingsConflictsComplete:
             ('always-thinking-enabled', 'alwaysThinkingEnabled'),
             ('company-announcements', 'companyAnnouncements'),
             ('env-variables', 'env'),
+            ('effort-level', 'effortLevel'),
         ],
     )
     def test_conflict_all_mapped_keys_exhaustive(

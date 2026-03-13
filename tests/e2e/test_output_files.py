@@ -53,6 +53,7 @@ class TestOutputFiles:
             company_announcements=golden_config.get('company-announcements'),
             attribution=golden_config.get('attribution'),
             status_line=golden_config.get('status-line'),
+            effort_level=golden_config.get('effort-level'),
         )
 
         # File is written to claude_user_dir (= claude_dir)
@@ -88,6 +89,7 @@ class TestOutputFiles:
             company_announcements=golden_config.get('company-announcements'),
             attribution=golden_config.get('attribution'),
             status_line=golden_config.get('status-line'),
+            effort_level=golden_config.get('effort-level'),
         )
 
         # File is written to claude_user_dir (= claude_dir)
@@ -211,6 +213,7 @@ class TestOutputFiles:
             company_announcements=None,
             attribution=None,
             status_line=None,
+            effort_level=None,
         )
 
         # File is written to claude_user_dir (= claude_dir)
