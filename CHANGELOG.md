@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.29.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.2...v4.29.0) (2026-03-13)
+
+
+### Features
+
+* add effortLevel support to environment configurations ([e9af0da](https://github.com/alex-feel/claude-code-toolbox/commit/e9af0da25b06d5b1c933b2e99e79120236500de6))
+
 ## [4.28.2](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.1...v4.28.2) (2026-02-17)
 
 
