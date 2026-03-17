@@ -433,14 +433,16 @@ This pattern is applied consistently to both npm install and npm uninstall opera
 
 ### Download Retry Configuration
 
-The setup scripts include robust retry logic for handling GitHub API rate limiting during file downloads:
+The setup scripts include robust retry logic for handling GitHub API rate limiting:
 
-- **Retry attempts:** 10 (with exponential backoff)
-- **Initial delay:** 2 seconds, doubling each retry
-- **Maximum delay cap:** 60 seconds per retry
-- **Jitter:** Random 0-25% added to prevent synchronized retries
+- **Retry attempts:** 10 (with linear additive backoff)
+- **Base delay:** 1 second for the first retry
+- **Additive increment:** +2 seconds per subsequent attempt (sequence: 1s, 3s, 5s, 7s, ...)
+- **Maximum delay cap:** 60 seconds per retry (before jitter)
+- **Jitter:** Random 0-25% added to all retries to prevent synchronized requests
 - **Stagger delay:** 0.5 second delay between launching concurrent download threads
-- **Total worst-case wait:** ~6 minutes per file (covers extended rate limit windows)
+- **Cross-thread coordination:** `RateLimitCoordinator` shares rate-limit state across threads
+- **Header respect:** `Retry-After` and `x-ratelimit-reset` headers used as minimum floor
 
 ### Hooks Configuration Structure
 

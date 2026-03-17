@@ -16,6 +16,7 @@ import glob as glob_module
 import json
 import os
 import platform
+import random
 import re
 import shlex
 import shutil
@@ -23,6 +24,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -3619,35 +3621,80 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     return True
 
 
+class RateLimitCoordinator:
+    """Thread-safe coordinator for cross-thread rate-limit state.
+
+    Maintains a global earliest-retry-time that any thread can update
+    when receiving a rate-limit response. Uses time.monotonic() for
+    clock-jump immunity.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._earliest_retry_time: float = 0.0
+
+    def report_rate_limit(self, wait_seconds: float) -> None:
+        """Update global rate-limit floor.
+
+        Args:
+            wait_seconds: Duration in seconds to wait from now.
+        """
+        with self._lock:
+            new_earliest = time.monotonic() + wait_seconds
+            self._earliest_retry_time = max(self._earliest_retry_time, new_earliest)
+
+    def get_wait_time(self) -> float:
+        """Return seconds to wait before next request.
+
+        Returns:
+            Non-negative float: remaining wait time.
+        """
+        with self._lock:
+            remaining = self._earliest_retry_time - time.monotonic()
+            return max(0.0, remaining)
+
+
 def fetch_with_retry[T](
     request_func: Callable[[], T],
     url: str,
     max_retries: int = 10,
-    initial_backoff: float = 2.0,
+    base_delay: float = 1.0,
+    additive_increment: float = 2.0,
+    max_delay: float = 60.0,
+    rate_limiter: RateLimitCoordinator | None = None,
 ) -> T:
     """Execute a fetch operation with retry logic for rate limiting.
 
-    Implements exponential backoff with jitter as recommended by GitHub API documentation.
-    Respects Retry-After and x-ratelimit-reset headers when available.
+    Implements linear additive backoff with jitter. Respects Retry-After and
+    x-ratelimit-reset headers as a minimum floor (never overrides a larger
+    calculated backoff). A shared RateLimitCoordinator propagates rate-limit
+    state across concurrent download threads.
 
     Args:
-        request_func: Function that performs the actual request and returns result
-        url: URL being fetched (for logging purposes)
-        max_retries: Maximum number of retry attempts (default: 10)
-        initial_backoff: Initial backoff time in seconds (default: 2.0)
+        request_func: Function that performs the actual request and returns result.
+        url: URL being fetched (for logging purposes).
+        max_retries: Maximum number of retry attempts (default: 10).
+        base_delay: Base delay in seconds for the first retry (default: 1.0).
+        additive_increment: Seconds added per subsequent attempt (default: 2.0).
+        max_delay: Maximum delay cap in seconds before jitter (default: 60.0).
+        rate_limiter: Optional coordinator sharing rate-limit state across threads.
 
     Returns:
-        Result from request_func
+        Result from request_func.
 
     Raises:
-        HTTPError: If all retry attempts fail
-        RuntimeError: If an unexpected state is reached (should never occur)
+        HTTPError: If all retry attempts fail.
+        RuntimeError: If an unexpected state is reached (should never occur).
     """
-    import random
-
     last_exception: urllib.error.HTTPError | None = None
 
     for attempt in range(max_retries + 1):
+        # Respect cross-thread rate-limit floor before each request
+        if rate_limiter is not None:
+            coord_wait = rate_limiter.get_wait_time()
+            if coord_wait > 0:
+                time.sleep(coord_wait)
+
         try:
             return request_func()
         except urllib.error.HTTPError as e:
@@ -3663,19 +3710,30 @@ def fetch_with_retry[T](
                     raise
 
                 if attempt < max_retries:
-                    # Calculate wait time
-                    if retry_after:
-                        wait_time = float(retry_after)
-                    elif reset_time:
-                        wait_time = max(0, int(reset_time) - int(time.time()))
-                    else:
-                        # Exponential backoff with jitter
-                        wait_time = initial_backoff * (2**attempt)
-                        # Add jitter (0-25% of wait time)
-                        wait_time += random.uniform(0, wait_time * 0.25)
+                    # Per-thread linear additive backoff
+                    per_thread_delay = base_delay + (attempt * additive_increment)
 
-                    # Cap wait time at 60 seconds
-                    wait_time = min(wait_time, 60)
+                    # Parse header value as floor (not override)
+                    header_wait: float | None = None
+                    if retry_after:
+                        with contextlib.suppress(ValueError):
+                            header_wait = float(retry_after)
+                    elif reset_time:
+                        with contextlib.suppress(ValueError):
+                            header_wait = max(0.0, int(reset_time) - time.time())
+
+                    # Header is a floor: use the larger of header and calculated backoff
+                    wait_time = max(header_wait, per_thread_delay) if header_wait is not None else per_thread_delay
+
+                    # Cap before jitter
+                    wait_time = min(wait_time, max_delay)
+
+                    # Add jitter to all retries (0-25% of wait time)
+                    wait_time += random.uniform(0, wait_time * 0.25)
+
+                    # Report to coordinator so other threads respect this floor
+                    if rate_limiter is not None:
+                        rate_limiter.report_rate_limit(wait_time)
 
                     filename = url.split('/')[-1].split('?')[0]
                     info(f'Rate limited, retrying {filename} in {wait_time:.1f}s (attempt {attempt + 1}/{max_retries})')
@@ -3693,10 +3751,15 @@ def fetch_with_retry[T](
     raise RuntimeError(msg)
 
 
-def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, auth_param: str | None = None) -> str:
+def fetch_url_with_auth(
+    url: str,
+    auth_headers: dict[str, str] | None = None,
+    auth_param: str | None = None,
+    rate_limiter: RateLimitCoordinator | None = None,
+) -> str:
     """Fetch URL content, trying without auth first, then with auth if needed.
 
-    Includes retry logic with exponential backoff for rate limiting (HTTP 429).
+    Includes retry logic with linear additive backoff for rate limiting (HTTP 429).
     May raise HTTPError if the request fails after authentication and retry attempts,
     or URLError if there's a network error (including SSL issues).
 
@@ -3704,6 +3767,7 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
         url: URL to fetch
         auth_headers: Optional pre-computed auth headers
         auth_param: Optional auth parameter for getting headers
+        rate_limiter: Optional coordinator sharing rate-limit state across threads
 
     Returns:
         str: Content of the URL
@@ -3726,12 +3790,31 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
 
     def _do_fetch() -> str:
         """Internal fetch logic wrapped for retry."""
-        # First try without auth (for public repos)
+        # Skip unauthenticated attempt when auth headers are already known
+        if auth_state['headers']:
+            try:
+                request = Request(url)
+                for header, value in auth_state['headers'].items():
+                    request.add_header(header, value)
+                return str(urlopen(request).read().decode('utf-8'))
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    warning('SSL certificate verification failed, trying with unverified context')
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+
+                    request = Request(url)
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+                    return str(urlopen(request, context=ctx).read().decode('utf-8'))
+                raise
+
+        # Try without auth first (for public repos)
         try:
             request = Request(url)
             response = urlopen(request)
-            content: str = response.read().decode('utf-8')
-            return content
+            return str(response.read().decode('utf-8'))
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404):
                 # Authentication might be needed
@@ -3784,19 +3867,20 @@ def fetch_url_with_auth(url: str, auth_headers: dict[str, str] | None = None, au
             raise
 
     # Wrap with retry logic for rate limiting
-    return fetch_with_retry(_do_fetch, url)
+    return fetch_with_retry(_do_fetch, url, rate_limiter=rate_limiter)
 
 
 def fetch_url_bytes_with_auth(
     url: str,
     auth_headers: dict[str, str] | None = None,
     auth_param: str | None = None,
+    rate_limiter: RateLimitCoordinator | None = None,
 ) -> bytes:
     """Fetch URL content as bytes, trying without auth first, then with auth if needed.
 
     Similar to fetch_url_with_auth but returns raw bytes without decoding.
     Use this for binary files like .tar.gz, .zip, images, etc.
-    Includes retry logic with exponential backoff for rate limiting (HTTP 429).
+    Includes retry logic with linear additive backoff for rate limiting (HTTP 429).
     May raise HTTPError if the request fails after authentication and retry attempts,
     or URLError if there's a network error (including SSL issues).
 
@@ -3804,6 +3888,7 @@ def fetch_url_bytes_with_auth(
         url: URL to fetch
         auth_headers: Optional pre-computed auth headers
         auth_param: Optional auth parameter for getting headers
+        rate_limiter: Optional coordinator sharing rate-limit state across threads
 
     Returns:
         bytes: Raw content of the URL
@@ -3826,12 +3911,31 @@ def fetch_url_bytes_with_auth(
 
     def _do_fetch() -> bytes:
         """Internal fetch logic wrapped for retry."""
-        # First try without auth (for public repos)
+        # Skip unauthenticated attempt when auth headers are already known
+        if auth_state['headers']:
+            try:
+                request = Request(url)
+                for header, value in auth_state['headers'].items():
+                    request.add_header(header, value)
+                return bytes(urlopen(request).read())
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    warning('SSL certificate verification failed, trying with unverified context')
+                    ctx = ssl.create_default_context()
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+
+                    request = Request(url)
+                    for header, value in auth_state['headers'].items():
+                        request.add_header(header, value)
+                    return bytes(urlopen(request, context=ctx).read())
+                raise
+
+        # Try without auth first (for public repos)
         try:
             request = Request(url)
             response = urlopen(request)
-            content: bytes = response.read()
-            return content
+            return bytes(response.read())
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404):
                 # Authentication might be needed
@@ -3880,7 +3984,7 @@ def fetch_url_bytes_with_auth(
             raise
 
     # Wrap with retry logic for rate limiting
-    return fetch_with_retry(_do_fetch, url)
+    return fetch_with_retry(_do_fetch, url, rate_limiter=rate_limiter)
 
 
 def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
@@ -3927,6 +4031,7 @@ def handle_resource(
     config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
+    rate_limiter: RateLimitCoordinator | None = None,
 ) -> bool:
     """Handle a resource - either download from URL or copy from local path.
 
@@ -3936,6 +4041,7 @@ def handle_resource(
         config_source: Where the config was loaded from
         base_url: Optional base URL from config
         auth_param: Optional auth parameter for private repos
+        rate_limiter: Optional coordinator sharing rate-limit state across threads
 
     Returns:
         bool: True if successful, False otherwise
@@ -3955,11 +4061,11 @@ def handle_resource(
             # Download from URL
             if is_binary_file(resolved_path):
                 # Binary file - fetch as bytes and write bytes
-                content_bytes = fetch_url_bytes_with_auth(resolved_path, auth_param=auth_param)
+                content_bytes = fetch_url_bytes_with_auth(resolved_path, auth_param=auth_param, rate_limiter=rate_limiter)
                 destination.write_bytes(content_bytes)
             else:
                 # Text file - fetch as text and write text
-                content = fetch_url_with_auth(resolved_path, auth_param=auth_param)
+                content = fetch_url_with_auth(resolved_path, auth_param=auth_param, rate_limiter=rate_limiter)
                 destination.write_text(content, encoding='utf-8')
             success(f'Downloaded: {filename}')
         else:
@@ -4017,10 +4123,13 @@ def process_resources(
         destination = destination_dir / filename
         download_tasks.append((resource, destination))
 
+    # Per-batch coordinator shares rate-limit state across download threads
+    rate_limiter = RateLimitCoordinator()
+
     def download_single_resource(task: tuple[str, Path]) -> bool:
         """Download a single resource and return success status."""
         resource, destination = task
-        return handle_resource(resource, destination, config_source, base_url, auth_param)
+        return handle_resource(resource, destination, config_source, base_url, auth_param, rate_limiter)
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(download_tasks, download_single_resource, False, stagger_delay=0.5)
@@ -4098,10 +4207,13 @@ def process_file_downloads(
 
         valid_downloads.append((str(source), dest_path))
 
+    # Per-batch coordinator shares rate-limit state across download threads
+    rate_limiter = RateLimitCoordinator()
+
     def download_single_file(download_info: tuple[str, Path]) -> bool:
         """Download a single file and return success status."""
         source, dest_path = download_info
-        return handle_resource(source, dest_path, config_source, base_url, auth_param)
+        return handle_resource(source, dest_path, config_source, base_url, auth_param, rate_limiter)
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     if valid_downloads:
@@ -4127,6 +4239,7 @@ def process_skill(
     skills_dir: Path,
     config_source: str,
     auth_param: str | None = None,
+    rate_limiter: RateLimitCoordinator | None = None,
 ) -> bool:
     """Process and install a single skill.
 
@@ -4138,6 +4251,7 @@ def process_skill(
         skills_dir: Base skills directory (.claude/skills/)
         config_source: Where the config was loaded from
         auth_param: Optional authentication parameter for private repos
+        rate_limiter: Optional coordinator sharing rate-limit state across threads
 
     Returns:
         bool: True if skill installed successfully, False otherwise
@@ -4182,11 +4296,11 @@ def process_skill(
             try:
                 if is_binary_file(file_path):
                     # Binary file - fetch as bytes and write bytes
-                    content_bytes = fetch_url_bytes_with_auth(source_url, auth_param=auth_param)
+                    content_bytes = fetch_url_bytes_with_auth(source_url, auth_param=auth_param, rate_limiter=rate_limiter)
                     destination.write_bytes(content_bytes)
                 else:
                     # Text file - fetch as text and write text
-                    content = fetch_url_with_auth(source_url, auth_param=auth_param)
+                    content = fetch_url_with_auth(source_url, auth_param=auth_param, rate_limiter=rate_limiter)
                     destination.write_text(content, encoding='utf-8')
                 success(f'  Downloaded: {file_path}')
                 success_count += 1
@@ -4244,9 +4358,12 @@ def process_skills(
 
     info(f'Processing {len(skills_config)} skill(s)...')
 
+    # Per-batch coordinator shares rate-limit state across skill download threads
+    rate_limiter = RateLimitCoordinator()
+
     def install_single_skill(skill_config: dict[str, Any]) -> bool:
         """Install a single skill and return success status."""
-        return process_skill(skill_config, skills_dir, config_source, auth_param)
+        return process_skill(skill_config, skills_dir, config_source, auth_param, rate_limiter)
 
     # Execute skill installations in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(skills_config, install_single_skill, False, stagger_delay=0.5)
@@ -5029,10 +5146,13 @@ def download_hook_files(
         destination = hooks_dir / filename
         download_tasks.append((file, destination))
 
+    # Per-batch coordinator shares rate-limit state across download threads
+    rate_limiter = RateLimitCoordinator()
+
     def download_single_hook(task: tuple[str, Path]) -> bool:
         """Download a single hook file and return success status."""
         file, destination = task
-        return handle_resource(file, destination, config_source, base_url, auth_param)
+        return handle_resource(file, destination, config_source, base_url, auth_param, rate_limiter)
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(download_tasks, download_single_hook, False, stagger_delay=0.5)

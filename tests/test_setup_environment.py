@@ -6531,7 +6531,7 @@ class TestMCPServerNeedsNodejsDetection:
 
 
 class TestFetchWithRetry:
-    """Test fetch retry logic for rate limiting."""
+    """Test fetch retry logic for rate limiting with linear additive backoff."""
 
     @patch('setup_environment.time.sleep')
     def test_fetch_with_retry_success_first_attempt(self, mock_sleep: MagicMock) -> None:
@@ -6567,8 +6567,8 @@ class TestFetchWithRetry:
         mock_sleep.assert_called_once()
 
     @patch('setup_environment.time.sleep')
-    def test_fetch_with_retry_respects_retry_after_header(self, mock_sleep: MagicMock) -> None:
-        """Test that Retry-After header is respected."""
+    def test_fetch_with_retry_respects_retry_after_header_as_floor(self, mock_sleep: MagicMock) -> None:
+        """Test that Retry-After header is used as floor, not override."""
         call_count = 0
 
         def request_func() -> str:
@@ -6583,8 +6583,7 @@ class TestFetchWithRetry:
 
         result = setup_environment.fetch_with_retry(request_func, 'https://example.com/file')
         assert result == 'content'
-        # Verify wait time was 5 seconds (from header)
-        assert mock_sleep.call_args[0][0] == 5.0
+        assert mock_sleep.call_args[0][0] >= 5.0
 
     @patch('setup_environment.time.sleep')
     def test_fetch_with_retry_max_retries_exceeded(self, mock_sleep: MagicMock) -> None:
@@ -6598,7 +6597,7 @@ class TestFetchWithRetry:
             setup_environment.fetch_with_retry(request_func, 'https://example.com/file', max_retries=2)
 
         assert exc_info.value.code == 429
-        assert mock_sleep.call_count == 2  # Retried twice
+        assert mock_sleep.call_count == 2
 
     @patch('setup_environment.time.sleep')
     def test_fetch_with_retry_non_rate_limit_error_not_retried(self, mock_sleep: MagicMock) -> None:
@@ -6650,9 +6649,10 @@ class TestFetchWithRetry:
         assert exc_info.value.code == 403
         mock_sleep.assert_not_called()
 
+    @patch('setup_environment.random.uniform', return_value=0.0)
     @patch('setup_environment.time.sleep')
-    def test_fetch_with_retry_exponential_backoff(self, mock_sleep: MagicMock) -> None:
-        """Test that exponential backoff is applied."""
+    def test_fetch_with_retry_linear_additive_backoff(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that linear additive backoff is applied."""
         call_count = 0
 
         def request_func() -> str:
@@ -6665,24 +6665,19 @@ class TestFetchWithRetry:
 
         result = setup_environment.fetch_with_retry(
             request_func, 'https://example.com/file',
-            max_retries=3, initial_backoff=1.0,
+            max_retries=3, base_delay=1.0, additive_increment=2.0,
         )
         assert result == 'content'
-        assert call_count == 4  # Initial + 3 retries
+        assert call_count == 4
         assert mock_sleep.call_count == 3
+        assert mock_random.called
 
-        # Verify backoff pattern (with jitter, times should be within range)
         sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
-        # First retry: ~1s (1 * 2^0 + jitter)
-        assert 1.0 <= sleep_times[0] <= 1.25
-        # Second retry: ~2s (1 * 2^1 + jitter)
-        assert 2.0 <= sleep_times[1] <= 2.5
-        # Third retry: ~4s (1 * 2^2 + jitter)
-        assert 4.0 <= sleep_times[2] <= 5.0
+        assert sleep_times == [1.0, 3.0, 5.0]
 
 
 class TestFetchWithRetryNewDefaults:
-    """Test fetch retry logic with new default parameters."""
+    """Test fetch retry default parameters for linear additive backoff."""
 
     def test_default_max_retries_is_10(self) -> None:
         """Test that default max_retries is 10."""
@@ -6691,16 +6686,25 @@ class TestFetchWithRetryNewDefaults:
         sig = inspect.signature(setup_environment.fetch_with_retry)
         assert sig.parameters['max_retries'].default == 10
 
-    def test_default_initial_backoff_is_2(self) -> None:
-        """Test that default initial_backoff is 2.0."""
+    def test_default_base_delay_is_1(self) -> None:
+        """Test that default base_delay is 1.0."""
         import inspect
 
         sig = inspect.signature(setup_environment.fetch_with_retry)
-        assert sig.parameters['initial_backoff'].default == 2.0
+        assert sig.parameters['base_delay'].default == 1.0
 
+    def test_default_additive_increment_is_2(self) -> None:
+        """Test that default additive_increment is 2.0."""
+        import inspect
+
+        sig = inspect.signature(setup_environment.fetch_with_retry)
+        assert sig.parameters['additive_increment'].default == 2.0
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
     @patch('setup_environment.time.sleep')
-    def test_backoff_sequence_with_new_defaults(self, mock_sleep: MagicMock) -> None:
-        """Test exponential backoff sequence with default parameters."""
+    def test_backoff_sequence_with_defaults(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test linear additive backoff sequence with default parameters."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
         call_count = 0
 
         def request_func() -> str:
@@ -6713,20 +6717,17 @@ class TestFetchWithRetryNewDefaults:
             return 'content'
 
         result = setup_environment.fetch_with_retry(
-            request_func, 'https://example.com/file', max_retries=3, initial_backoff=2.0,
+            request_func, 'https://example.com/file', max_retries=3,
         )
         assert result == 'content'
         sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
-        # First retry: ~2s (2 * 2^0 + jitter)
-        assert 2.0 <= sleep_times[0] <= 2.5
-        # Second retry: ~4s (2 * 2^1 + jitter)
-        assert 4.0 <= sleep_times[1] <= 5.0
-        # Third retry: ~8s (2 * 2^2 + jitter)
-        assert 8.0 <= sleep_times[2] <= 10.0
+        assert sleep_times == [1.0, 3.0, 5.0]
 
+    @patch('setup_environment.random.uniform', return_value=0.0)
     @patch('setup_environment.time.sleep')
-    def test_backoff_capped_at_60_seconds(self, mock_sleep: MagicMock) -> None:
-        """Test that backoff never exceeds 60 seconds."""
+    def test_backoff_capped_at_max_delay(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that backoff never exceeds max_delay (before jitter)."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
         call_count = 0
 
         def request_func() -> str:
@@ -6740,13 +6741,379 @@ class TestFetchWithRetryNewDefaults:
 
         result = setup_environment.fetch_with_retry(
             request_func, 'https://example.com/file',
-            max_retries=10, initial_backoff=2.0,
+            max_retries=10, base_delay=1.0, additive_increment=10.0, max_delay=30.0,
         )
         assert result == 'content'
         sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
-        # After attempt 5+, backoff should be capped at 60s (with jitter up to 75s max)
-        for sleep_time in sleep_times[5:]:
-            assert sleep_time <= 75.0  # 60s + 25% jitter
+        for sleep_time in sleep_times:
+            assert sleep_time <= 30.0  # 60s + 25% jitter
+
+
+class TestRateLimitCoordinator:
+    """Test the RateLimitCoordinator thread-safe rate-limit state manager."""
+
+    def test_initial_state_no_wait(self) -> None:
+        """Test that a fresh coordinator reports zero wait time."""
+        coordinator = setup_environment.RateLimitCoordinator()
+        assert coordinator.get_wait_time() == 0.0
+
+    @patch('setup_environment.time.monotonic')
+    def test_report_sets_wait_time(self, mock_monotonic: MagicMock) -> None:
+        """Test that reporting a rate limit sets a positive wait time."""
+        mock_monotonic.return_value = 100.0
+        coordinator = setup_environment.RateLimitCoordinator()
+        coordinator.report_rate_limit(5.0)
+        assert coordinator.get_wait_time() == 5.0
+
+    @patch('setup_environment.time.monotonic')
+    def test_report_advances_floor_only(self, mock_monotonic: MagicMock) -> None:
+        """Test that a shorter wait does not regress the floor."""
+        mock_monotonic.return_value = 100.0
+        coordinator = setup_environment.RateLimitCoordinator()
+        coordinator.report_rate_limit(10.0)
+        coordinator.report_rate_limit(3.0)
+        assert coordinator.get_wait_time() == 10.0
+
+    @patch('setup_environment.time.monotonic')
+    def test_report_extends_floor(self, mock_monotonic: MagicMock) -> None:
+        """Test that a longer wait advances the floor."""
+        mock_monotonic.return_value = 100.0
+        coordinator = setup_environment.RateLimitCoordinator()
+        coordinator.report_rate_limit(5.0)
+        coordinator.report_rate_limit(15.0)
+        assert coordinator.get_wait_time() == 15.0
+
+    @patch('setup_environment.time.monotonic')
+    def test_wait_decreases_over_time(self, mock_monotonic: MagicMock) -> None:
+        """Test that wait time decreases as monotonic time advances."""
+        mock_monotonic.return_value = 100.0
+        coordinator = setup_environment.RateLimitCoordinator()
+        coordinator.report_rate_limit(10.0)
+        mock_monotonic.return_value = 107.0
+        assert coordinator.get_wait_time() == pytest.approx(3.0)
+        mock_monotonic.return_value = 111.0
+        assert coordinator.get_wait_time() == 0.0
+
+    def test_thread_safety_concurrent_reports(self) -> None:
+        """Test that concurrent reports do not corrupt coordinator state."""
+        import threading
+
+        coordinator = setup_environment.RateLimitCoordinator()
+        errors: list[str] = []
+
+        def reporter(wait: float) -> None:
+            try:
+                for _ in range(100):
+                    coordinator.report_rate_limit(wait)
+                    coordinator.get_wait_time()
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=reporter, args=(float(i),)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f'Thread safety errors: {errors}'
+        assert coordinator.get_wait_time() >= 0.0
+
+
+class TestFetchWithRetryCoordinatorIntegration:
+    """Integration tests for fetch_with_retry with RateLimitCoordinator."""
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_coordinator_floor_respected_before_request(
+        self, mock_sleep: MagicMock, mock_random: MagicMock,
+    ) -> None:
+        """Test that coordinator wait is applied before making a request."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        coordinator = setup_environment.RateLimitCoordinator()
+        coordinator.report_rate_limit(3.0)
+
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file', rate_limiter=coordinator,
+        )
+        assert result == 'content'
+        assert call_count == 1
+        assert mock_sleep.call_count >= 1
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_429_reports_to_coordinator(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that 429 response updates the coordinator."""
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        coordinator = setup_environment.RateLimitCoordinator()
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file', rate_limiter=coordinator,
+        )
+        assert call_count == 2
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_no_coordinator_still_works(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that fetch_with_retry works without a coordinator."""
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+            return 'content'
+
+        result = setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file', rate_limiter=None,
+        )
+        assert result == 'content'
+        assert call_count == 2
+
+
+class TestLinearAdditiveBackoffSequence:
+    """Test the linear additive backoff formula in detail."""
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_exact_sequence_1_3_5_7_9(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test deterministic sequence with jitter disabled: 1, 3, 5, 7, 9."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 5:
+                raise urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=5, base_delay=1.0, additive_increment=2.0,
+        )
+
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        assert sleep_times == [1.0, 3.0, 5.0, 7.0, 9.0]
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_header_as_floor_not_override(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that header is floor: calculated backoff wins when larger."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {'retry-after': '1'}, None,
+                )
+            if call_count == 2:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {'retry-after': '1'}, None,
+                )
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=3, base_delay=1.0, additive_increment=2.0,
+        )
+
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        assert sleep_times[0] == 1.0
+        assert sleep_times[1] == 3.0
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_header_wins_when_larger(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that header wins when it exceeds calculated backoff."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests', {'retry-after': '30'}, None,
+                )
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=3, base_delay=1.0, additive_increment=2.0,
+        )
+
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        assert sleep_times[0] == 30.0
+
+    @patch('setup_environment.time.sleep')
+    def test_jitter_applied_to_all_retries(self, mock_sleep: MagicMock) -> None:
+        """Test that jitter is applied and within expected bounds."""
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                raise urllib.error.HTTPError('https://example.com', 429, 'Too Many Requests', {}, None)
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=3, base_delay=1.0, additive_increment=2.0,
+        )
+
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        expected_bases = [1.0, 3.0, 5.0]
+        for i, (actual, base) in enumerate(zip(sleep_times, expected_bases, strict=True)):
+            assert actual >= base, f'Retry {i}: {actual} < {base}'
+            assert actual <= base * 1.25, f'Retry {i}: {actual} > {base * 1.25}'
+
+
+class TestDoFetchAuthSkipOptimization:
+    """Test auth-skip optimization in _do_fetch internal functions."""
+
+    @patch('setup_environment.urlopen')
+    def test_skips_unauth_when_headers_known(self, mock_urlopen: MagicMock) -> None:
+        """Test that only one urlopen call is made when auth headers are pre-set."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'content'
+        mock_urlopen.return_value = mock_response
+
+        def call_first_arg(func, *_args, **_kwargs):
+            return func()
+
+        with patch('setup_environment.detect_repo_type', return_value='github'), \
+             patch('setup_environment.fetch_with_retry', side_effect=call_first_arg):
+            result = setup_environment.fetch_url_with_auth(
+                'https://api.github.com/repos/test/file',
+                auth_headers={'Authorization': 'token abc123'},
+            )
+
+        assert result == 'content'
+        assert mock_urlopen.call_count == 1
+
+    @patch('setup_environment.urlopen')
+    def test_tries_unauth_first_when_no_headers(self, mock_urlopen: MagicMock) -> None:
+        """Test normal unauthenticated-first flow when no auth headers provided."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'content'
+        mock_urlopen.return_value = mock_response
+
+        def call_first_arg(func, *_args, **_kwargs):
+            return func()
+
+        with patch('setup_environment.detect_repo_type', return_value='other'), \
+             patch('setup_environment.fetch_with_retry', side_effect=call_first_arg):
+            result = setup_environment.fetch_url_with_auth(
+                'https://example.com/file',
+            )
+
+        assert result == 'content'
+        assert mock_urlopen.call_count == 1
+
+
+class TestRateLimitCoordinatorMultiThread:
+    """Integration test for RateLimitCoordinator with parallel fetch."""
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.sleep')
+    def test_parallel_fetch_shares_coordinator(self, mock_sleep: MagicMock, mock_random: MagicMock) -> None:
+        """Test that two threads sharing a coordinator both respect rate limits."""
+        import threading
+
+        assert mock_sleep is not None  # Ensures time.sleep is mocked
+        assert mock_random is not None  # Ensures random.uniform is mocked
+
+        coordinator = setup_environment.RateLimitCoordinator()
+        results: list[str] = []
+        errors: list[str] = []
+
+        def fetch_worker(worker_id: int) -> None:
+            try:
+                call_count = 0
+
+                def request_func() -> str:
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        raise urllib.error.HTTPError(
+                            'https://example.com', 429, 'Too Many Requests', {}, None,
+                        )
+                    return f'content-{worker_id}'
+
+                result = setup_environment.fetch_with_retry(
+                    request_func, f'https://example.com/file{worker_id}',
+                    rate_limiter=coordinator,
+                )
+                results.append(result)
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=fetch_worker, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f'Thread errors: {errors}'
+        assert len(results) == 2
+        assert 'content-0' in results
+        assert 'content-1' in results
+
+
+class TestFetchWithRetryXRateLimitReset:
+    """Test x-ratelimit-reset header parsing and floor behavior."""
+
+    @patch('setup_environment.random.uniform', return_value=0.0)
+    @patch('setup_environment.time.time')
+    @patch('setup_environment.time.sleep')
+    def test_x_ratelimit_reset_as_floor(
+        self, mock_sleep: MagicMock, mock_time: MagicMock, mock_random: MagicMock,
+    ) -> None:
+        """Test epoch timestamp conversion and floor behavior for x-ratelimit-reset."""
+        assert mock_random is not None  # Ensures random.uniform is mocked
+        mock_time.return_value = 1000.0
+        call_count = 0
+
+        def request_func() -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise urllib.error.HTTPError(
+                    'https://example.com', 429, 'Too Many Requests',
+                    {'x-ratelimit-reset': '1020'}, None,
+                )
+            return 'content'
+
+        setup_environment.fetch_with_retry(
+            request_func, 'https://example.com/file',
+            max_retries=3, base_delay=1.0, additive_increment=2.0,
+        )
+
+        sleep_times = [call[0][0] for call in mock_sleep.call_args_list]
+        assert sleep_times[0] == 20.0
 
 
 class TestParallelWorkersConfiguration:
