@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.29.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.29.0...v4.29.1) (2026-03-17)
+
+
+### Bug Fixes
+
+* replace broken backoff with linear additive strategy and cross-thread coordination ([5d2b134](https://github.com/alex-feel/claude-code-toolbox/commit/5d2b134b30d821fca4c4292c45d5197ba8d569d0))
+
 ## [4.29.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.28.2...v4.29.0) (2026-03-13)
 
 
