@@ -7368,9 +7368,9 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 13-16 skipped
+        # Verify output shows Steps 13-17 skipped
         captured = capsys.readouterr()
-        assert 'Steps 13-16: Skipping command creation' in captured.out
+        assert 'Steps 13-17: Skipping command creation' in captured.out
         assert 'Step 12: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -7435,13 +7435,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 12 and Steps 13-16
+        # Verify output shows Step 12 and Steps 13-17
         captured = capsys.readouterr()
         assert 'Step 12: Writing user settings' in captured.out
         assert 'Step 13: Downloading hooks' in captured.out
         assert 'Step 14: Configuring settings' in captured.out
-        assert 'Step 15: Creating launcher script' in captured.out
-        assert 'Step 16: Registering global' in captured.out
+        assert 'Step 16: Creating launcher script' in captured.out
+        assert 'Step 17: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(

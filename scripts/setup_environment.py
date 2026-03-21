@@ -29,6 +29,8 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Callable
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
@@ -2715,6 +2717,54 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         if 'Configuration not found' not in str(e):
             error(f'Failed to load repository configuration: {e}')
         raise
+
+
+def classify_config_source(config_source: str) -> str:
+    """Classify the configuration source type.
+
+    Determines how the configuration was loaded based on the source string
+    returned by load_config_from_source().
+
+    Args:
+        config_source: The source path/URL returned by load_config_from_source()
+
+    Returns:
+        One of: "url", "local", "repo"
+    """
+    if config_source.startswith(('http://', 'https://')):
+        return 'url'
+    # Local files are resolved to absolute paths by load_config_from_source()
+    if os.path.isabs(config_source) or os.sep in config_source or '/' in config_source:
+        return 'local'
+    return 'repo'
+
+
+def resolve_config_source_url(config_source: str, config_source_type: str) -> str | None:
+    """Resolve the fetch URL for a configuration source.
+
+    For remote sources, returns the URL that can be used to re-fetch the config.
+    For local sources, returns None (no remote to check against).
+
+    Args:
+        config_source: The source path/URL from load_config_from_source()
+        config_source_type: The classified type ("url", "local", "repo")
+
+    Returns:
+        The fetchable URL, or None for local sources.
+    """
+    if config_source_type == 'url':
+        return config_source
+    if config_source_type == 'repo':
+        # Reconstruct the GitHub raw URL (same logic as load_config_from_source)
+        name = config_source
+        if not name.endswith('.yaml'):
+            name += '.yaml'
+        return (
+            f'https://raw.githubusercontent.com/alex-feel/'
+            f'claude-code-toolbox/main/environments/library/{name}'
+        )
+    # Local sources have no remote URL
+    return None
 
 
 def _normalize_source_for_comparison(source: str) -> str:
@@ -5484,6 +5534,96 @@ def create_additional_settings(
         return False
 
 
+def write_manifest(
+    claude_user_dir: Path,
+    command_name: str,
+    config_version: str | None,
+    config_source: str,
+    config_source_type: str,
+    config_source_url: str | None,
+    command_names: list[str],
+) -> bool:
+    """Write installation manifest for the environment configuration.
+
+    Creates {command_name}-manifest.json containing metadata about the installed
+    configuration. Used by version checking hooks to determine if updates are available.
+
+    Args:
+        claude_user_dir: Path to ~/.claude directory
+        command_name: Primary command name
+        config_version: Optional semantic version from config (e.g., "1.3.0")
+        config_source: Raw config source as provided by user
+        config_source_type: Classified source type ("url", "local", "repo")
+        config_source_url: Resolved fetch URL, or None for local sources
+        command_names: List of all command names (primary + aliases)
+
+    Returns:
+        True if manifest was written successfully, False otherwise.
+    """
+    manifest_path = claude_user_dir / f'{command_name}-manifest.json'
+
+    manifest: dict[str, Any] = {
+        'name': command_name,
+        'version': config_version,
+        'config_source': config_source,
+        'config_source_url': config_source_url,
+        'config_source_type': config_source_type,
+        'installed_at': datetime.now(UTC).isoformat(),
+        'last_checked_at': None,
+        'command_names': command_names,
+    }
+
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        success(f'Created {command_name}-manifest.json')
+        return True
+    except Exception as e:
+        warning(f'Failed to write manifest: {e}')
+        return False
+
+
+def cleanup_stale_marker(claude_user_dir: Path, command_name: str) -> None:
+    """Remove stale update-available marker file during re-installation.
+
+    When setup_environment.py runs, any existing update marker is no longer valid
+    because the user is actively installing/updating the configuration.
+
+    Args:
+        claude_user_dir: Path to ~/.claude directory
+        command_name: Primary command name
+    """
+    marker_path = claude_user_dir / f'{command_name}-update-available.json'
+    if marker_path.exists():
+        try:
+            marker_path.unlink()
+            info(f'Removed stale update marker: {marker_path.name}')
+        except OSError as e:
+            warning(f'Failed to remove stale update marker: {e}')
+
+
+def _get_update_check_snippet(command_name: str) -> str:
+    """Generate bash snippet for configuration update notification.
+
+    Produces a shell script fragment that checks for the update marker file
+    and prints a colored warning if a new configuration version is available.
+
+    Args:
+        command_name: Command name for the marker file path
+
+    Returns:
+        Bash script snippet that checks for update marker file.
+    """
+    return f'''# Check for configuration update notification
+UPDATE_MARKER="$HOME/.claude/{command_name}-update-available.json"
+if [ -f "$UPDATE_MARKER" ]; then
+  echo -e "\\\\033[1;33m[UPDATE] A new version of the {command_name} configuration is available.\\\\033[0m"
+  echo -e "\\\\033[1;33m         Re-run the installer to update.\\\\033[0m"
+fi
+
+'''
+
+
 def create_launcher_script(
     claude_user_dir: Path,
     command_name: str,
@@ -5656,6 +5796,9 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
+                # Inject update check snippet before mode-specific logic
+                shared_sh_content += _get_update_check_snippet(command_name)
+
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -5726,6 +5869,7 @@ fi
 '''
             else:
                 # No system prompt, only settings
+                update_snippet = _get_update_check_snippet(command_name)
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
@@ -5741,7 +5885,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
 fi
 
-exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+{update_snippet}exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -5836,6 +5980,9 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
+                # Inject update check snippet before mode-specific logic
+                launcher_content += _get_update_check_snippet(command_name)
+
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -5913,6 +6060,7 @@ else
 fi
 '''
             else:
+                update_snippet_unix = _get_update_check_snippet(command_name)
                 launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
@@ -5927,7 +6075,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
 fi
 
-echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+{update_snippet_unix}echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
 claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
@@ -6388,6 +6536,16 @@ def main() -> None:
         # Extract user-settings configuration (global user-level settings)
         user_settings = config.get('user-settings')
 
+        # Extract version for manifest (optional field)
+        config_version: str | None = None
+        raw_version = config.get('version')
+        if raw_version is not None:
+            # Convert to string to handle YAML numeric interpretation (e.g., 1.0 -> "1.0")
+            version_str = str(raw_version).strip()
+            if version_str:
+                config_version = version_str
+                info(f'Configuration version: {config_version}')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -6645,9 +6803,25 @@ def main() -> None:
                 effort_level,
             )
 
-            # Step 15: Create launcher script
+            # Step 15: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 15: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 15: Writing installation manifest...{Colors.NC}')
+            cleanup_stale_marker(claude_user_dir, primary_command_name)
+            config_source_type = classify_config_source(config_source)
+            config_source_url = resolve_config_source_url(config_source, config_source_type)
+            write_manifest(
+                claude_user_dir=claude_user_dir,
+                command_name=primary_command_name,
+                config_version=config_version,
+                config_source=config_name,
+                config_source_type=config_source_type,
+                config_source_url=config_source_url,
+                command_names=command_names or [primary_command_name],
+            )
+
+            # Step 16: Create launcher script
+            print()
+            print(f'{Colors.CYAN}Step 16: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -6657,21 +6831,21 @@ def main() -> None:
                 claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 16: Register global command(s)
+            # Step 17: Register global command(s)
             if launcher_path:
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 16: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 17: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 16: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 17: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 13-16: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 13-17: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 

@@ -228,3 +228,132 @@ class TestOutputFiles:
             for key in expected_perm_keys:
                 if key in golden_config['permissions']:
                     assert key in data['permissions'], f'Missing permissions.{key}'
+
+
+class TestManifestFile:
+    """Test manifest file creation and content."""
+
+    def test_manifest_json_created(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify {cmd}-manifest.json is created with correct structure."""
+        from scripts.setup_environment import classify_config_source
+        from scripts.setup_environment import resolve_config_source_url
+        from scripts.setup_environment import write_manifest
+
+        paths = e2e_isolated_home
+        cmd = golden_config['command-names'][0]
+        claude_dir = paths['claude_dir']
+
+        config_source = 'e2e-test'
+        config_source_type = classify_config_source(config_source)
+        config_source_url = resolve_config_source_url(config_source, config_source_type)
+
+        write_manifest(
+            claude_user_dir=claude_dir,
+            command_name=cmd,
+            config_version=str(golden_config.get('version', '')).strip() or None,
+            config_source=config_source,
+            config_source_type=config_source_type,
+            config_source_url=config_source_url,
+            command_names=golden_config['command-names'],
+        )
+
+        manifest_path = claude_dir / f'{cmd}-manifest.json'
+
+        from tests.e2e.validators import validate_manifest
+
+        errors = validate_manifest(manifest_path, golden_config)
+        assert not errors, 'Manifest validation failed:\n' + '\n'.join(errors)
+
+    def test_manifest_has_all_required_fields(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify manifest contains all required fields."""
+        from scripts.setup_environment import write_manifest
+
+        paths = e2e_isolated_home
+        cmd = golden_config['command-names'][0]
+        claude_dir = paths['claude_dir']
+
+        write_manifest(
+            claude_user_dir=claude_dir,
+            command_name=cmd,
+            config_version='1.0.0',
+            config_source='test-config',
+            config_source_type='repo',
+            config_source_url='https://example.com/config.yaml',
+            command_names=[cmd],
+        )
+
+        manifest_path = claude_dir / f'{cmd}-manifest.json'
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+
+        required_fields = [
+            'name', 'version', 'config_source', 'config_source_url',
+            'config_source_type', 'installed_at', 'last_checked_at', 'command_names',
+        ]
+        missing = [f for f in required_fields if f not in data]
+        assert not missing, f'Missing fields in manifest: {missing}'
+
+    def test_manifest_source_classification(
+        self,
+    ) -> None:
+        """Verify config source classification logic."""
+        from scripts.setup_environment import classify_config_source
+
+        # URL sources
+        assert classify_config_source('https://example.com/config.yaml') == 'url'
+        assert classify_config_source('http://example.com/config.yaml') == 'url'
+
+        # Repo sources (bare names)
+        assert classify_config_source('python.yaml') == 'repo'
+        assert classify_config_source('python') == 'repo'
+        assert classify_config_source('my-env') == 'repo'
+
+        # Local sources (paths)
+        assert classify_config_source('/home/user/config.yaml') == 'local'
+        assert classify_config_source('./config.yaml') == 'local'
+        assert classify_config_source('../configs/env.yaml') == 'local'
+
+    def test_manifest_overwrites_on_reinstall(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify manifest is overwritten when setup runs again."""
+        from scripts.setup_environment import write_manifest
+
+        paths = e2e_isolated_home
+        cmd = golden_config['command-names'][0]
+        claude_dir = paths['claude_dir']
+
+        # Write manifest with version 1.0.0
+        write_manifest(
+            claude_user_dir=claude_dir,
+            command_name=cmd,
+            config_version='1.0.0',
+            config_source='test',
+            config_source_type='repo',
+            config_source_url=None,
+            command_names=[cmd],
+        )
+
+        # Write manifest again with version 2.0.0
+        write_manifest(
+            claude_user_dir=claude_dir,
+            command_name=cmd,
+            config_version='2.0.0',
+            config_source='test',
+            config_source_type='repo',
+            config_source_url=None,
+            command_names=[cmd],
+        )
+
+        manifest_path = claude_dir / f'{cmd}-manifest.json'
+        data = json.loads(manifest_path.read_text(encoding='utf-8'))
+        assert data['version'] == '2.0.0', 'Manifest was not overwritten on reinstall'

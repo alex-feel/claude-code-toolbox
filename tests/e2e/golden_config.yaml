@@ -4,6 +4,9 @@
 
 name: "E2E Test Environment"
 
+# Configuration version for update checking
+version: "1.0.0"
+
 # Command names (PRIMARY format - array)
 command-names:
   - "e2e-test-cmd"
