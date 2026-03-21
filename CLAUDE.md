@@ -514,6 +514,21 @@ Step comments and print statements in `main()` (e.g., `# Step N:`, `Step N: ...`
 - Release Please automatically manages versioning based on conventional commits
 - Version bumps happen when release PRs are merged
 
+### SECURITY.md Maintenance
+
+When creating any commit that triggers a major version bump, SECURITY.md **must** be updated in the same PR:
+- Any commit type with `!` suffix: `feat!:`, `fix!:`, `refactor!:`, `chore!:`, etc.
+- Any commit with `BREAKING CHANGE:` in the body or footer
+
+Update the "Supported Versions" table to reflect the new major version as the only supported version:
+
+```markdown
+| Version | Supported          |
+|---------|--------------------|
+| X.x     | :white_check_mark: |
+| < X.0   | :x:                |
+```
+
 ## Security Considerations
 
 When loading environment configurations:
@@ -521,6 +536,30 @@ When loading environment configurations:
 - Local files are under user control (can contain API keys)
 - Remote URLs show warning messages (verify source first)
 - Never commit configurations with sensitive data to the repo
+
+### GitHub Actions Security Policy
+
+When adding or updating GitHub Actions in workflow files (`.github/workflows/*.yml`):
+
+1. **NEVER use mutable branch references** (`@main`, `@master`, `@develop`) for third-party actions
+   - Mutable references allow upstream supply chain attacks (e.g., the [trivy-action incident of March 2026](https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack))
+   - Always pin to immutable version tags: `@v5`, `@v0.35.0`, etc.
+   - First-party GitHub actions (`actions/*`, `github/*`) and composite/docker actions may use major version tags (`@v5`)
+
+2. **Version tag pinning** is the project standard (not SHA pinning)
+   - Version tags balance security with maintainability
+   - SHA pinning is disproportionate overhead for this project's threat model
+
+3. **Verify action runtimes** before updating to ensure Node.js 24 compatibility:
+   ```bash
+   # Check the runtime of an action at a specific tag
+   gh api repos/{owner}/{repo}/contents/action.yml?ref={tag} \
+     --jq '.content' | base64 -d | grep -A1 "^runs:"
+   ```
+   - `node24` -- compatible, preferred
+   - `composite` or `docker` -- node-agnostic, always compatible
+   - `node20` -- deprecated, will stop working after June 2, 2026
+   - Note: some actions use `action.yaml` instead of `action.yml`
 
 ## Windows PATH Management Architecture
 
