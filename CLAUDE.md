@@ -474,6 +474,15 @@ command-defaults:
 
 **Important:** If `mode` is not specified, it defaults to `"replace"` for a clean slate experience.
 
+### Step Numbering Convention
+
+Step comments and print statements in `main()` (e.g., `# Step N:`, `Step N: ...`) **MUST** use only whole integers. The sequence must be continuous with no gaps: Step 1, Step 2, ..., Step N.
+
+**Rules:**
+- Fractional/decimal step numbers (e.g., `Step 14.5`, `Step 3.1`) are **PROHIBITED**
+- When inserting a new step between existing steps, **renumber all subsequent steps** to maintain a continuous integer sequence
+- Update ALL references to renumbered steps (comments, print statements, test assertions, skip-range messages like `Steps 13-17`)
+
 ## Testing Workflows
 
 ### When modifying setup_environment.py
