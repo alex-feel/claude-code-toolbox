@@ -98,6 +98,19 @@ elif [ -n "${REPO_TOKEN:-}" ]; then
     AUTH_ARGS="--auth $REPO_TOKEN"
 fi
 
+# Collect extra flags to forward to Python script
+EXTRA_ARGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y)
+            EXTRA_ARGS="$EXTRA_ARGS --yes"
+            ;;
+        --dry-run)
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+            ;;
+    esac
+done
+
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)
 TEMP_DIR=$(mktemp -d /tmp/claude_setup.XXXXXX)
@@ -109,9 +122,9 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
     if [ -n "$AUTH_ARGS" ]; then
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS $EXTRA_ARGS
     else
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG"
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $EXTRA_ARGS
     fi
     EXIT_CODE=$?
 else

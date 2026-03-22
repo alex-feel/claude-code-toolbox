@@ -150,7 +150,7 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1'}),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),
@@ -209,7 +209,7 @@ class TestRootGuardSetupEnvironment:
         with (
             patch('platform.system', return_value='Windows'),
             patch.object(setup_environment, 'is_admin', return_value=False),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),

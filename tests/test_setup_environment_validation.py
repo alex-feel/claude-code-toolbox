@@ -810,6 +810,9 @@ class TestMainFlowWithValidation:
             config='test',
             skip_install=True,
             auth=None,
+            yes=True,
+            dry_run=False,
+            no_admin=False,
         )
         mock_load.return_value = (
             {
@@ -861,6 +864,9 @@ class TestMainFlowWithValidation:
             config='test',
             skip_install=True,
             auth=None,
+            yes=True,
+            dry_run=False,
+            no_admin=False,
         )
         mock_load.return_value = (
             {

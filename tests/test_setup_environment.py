@@ -4050,7 +4050,7 @@ class TestMainFunction:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
 
         assert exc_info.value.code == 1
@@ -4109,7 +4109,7 @@ class TestMainFunction:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -4131,7 +4131,7 @@ class TestMainFunction:
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
         mock_install.return_value = False
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -4153,7 +4153,7 @@ class TestMainFunction:
         mock_find.return_value = 'claude'
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']),
+            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install', '--yes']),
             patch('setup_environment.create_additional_settings', return_value=True),
             patch('setup_environment.create_launcher_script', return_value=Path('/tmp/launcher')),
             patch('setup_environment.register_global_command', return_value=True),
@@ -4208,7 +4208,7 @@ class TestMainFunction:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -4286,7 +4286,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -4348,7 +4348,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # sys.exit should NOT be called with 1 when everything succeeds
             mock_exit.assert_not_called()
@@ -4415,7 +4415,7 @@ class TestDownloadFailureTracking:
         mock_register.return_value = True
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'test']),
+            patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
             patch('builtins.print') as mock_print,
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -4486,7 +4486,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit'):
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit'):
             setup_environment.main()
             # MCP servers should still be configured despite download failures
             mock_mcp.assert_called_once()
@@ -5680,7 +5680,7 @@ class TestConfigInheritance:
     def test_no_inheritance_returns_config_unchanged(self):
         """Test that config without 'inherit' key is returned as-is."""
         config = {'name': 'Test', 'model': 'claude-3'}
-        result = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(config, 'test.yaml')
         assert result == config
 
     def test_inherit_key_removed_from_result(self):
@@ -5688,7 +5688,7 @@ class TestConfigInheritance:
         with patch.object(setup_environment, 'load_config_from_source') as mock_load:
             mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
             config = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-            result = setup_environment.resolve_config_inheritance(config, 'child.yaml')
+            result, _chain = setup_environment.resolve_config_inheritance(config, 'child.yaml')
             assert 'inherit' not in result
 
     @patch.object(setup_environment, 'load_config_from_source')
@@ -5699,7 +5699,7 @@ class TestConfigInheritance:
             'parent.yaml',
         )
         child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         assert result['name'] == 'Parent'  # Inherited from parent
         assert result['model'] == 'claude-3'  # Overridden by child
@@ -5716,7 +5716,7 @@ class TestConfigInheritance:
             'inherit': 'parent.yaml',
             'dependencies': {'linux': ['apt']},  # Completely replaces
         }
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         # Child's dependencies should COMPLETELY replace parent's
         assert result['dependencies'] == {'linux': ['apt']}
@@ -5737,7 +5737,7 @@ class TestConfigInheritance:
         mock_load.side_effect = load_side_effect
 
         child = {'inherit': 'parent.yaml', 'c': 30, 'd': 4}
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         assert result['name'] == 'Grandparent'  # From grandparent
         assert result['a'] == 1  # From grandparent
@@ -5852,7 +5852,7 @@ class TestConfigInheritance:
         """Test inheriting from full URL."""
         mock_load.return_value = ({'name': 'Remote'}, 'https://example.com/base.yaml')
         config = {'inherit': 'https://example.com/base.yaml', 'model': 'test'}
-        result = setup_environment.resolve_config_inheritance(config, './local.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(config, './local.yaml')
 
         assert result['name'] == 'Remote'
         mock_load.assert_called_once_with('https://example.com/base.yaml', None)
@@ -5950,7 +5950,7 @@ agents:
 
             # Load and resolve
             config, source = setup_environment.load_config_from_source(str(child))
-            resolved = setup_environment.resolve_config_inheritance(config, source)
+            resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
             # Verify inheritance
             assert resolved['name'] == 'Grandparent Config'  # From grandparent
@@ -6014,7 +6014,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6073,7 +6073,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6133,7 +6133,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6199,7 +6199,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6223,7 +6223,7 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -6238,7 +6238,7 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -7359,7 +7359,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7425,7 +7425,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7460,7 +7460,7 @@ class TestMainFunctionUserSettings:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -7521,7 +7521,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7579,7 +7579,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7630,7 +7630,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7678,7 +7678,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = False  # Simulate write failure
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # Should NOT exit with error - write failure is non-fatal
             mock_exit.assert_not_called()
@@ -8140,7 +8140,7 @@ class TestUserSettingsErrorRecovery:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = False  # Write fails
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # Should NOT exit - write failure is non-fatal
             mock_exit.assert_not_called()
@@ -8166,7 +8166,7 @@ class TestUserSettingsErrorRecovery:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
 
         assert exc_info.value.code == 1
@@ -8255,7 +8255,7 @@ model: claude-sonnet-4
         # Load child config
         config, source = setup_environment.load_config_from_source(str(child_file))
         # Resolve inheritance chain
-        resolved = setup_environment.resolve_config_inheritance(config, source)
+        resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
         # Child inherits parent's user-settings
         assert 'user-settings' in resolved
@@ -8283,7 +8283,7 @@ user-settings:
         # Load child config
         config, source = setup_environment.load_config_from_source(str(child_file))
         # Resolve inheritance chain
-        resolved = setup_environment.resolve_config_inheritance(config, source)
+        resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
         # Child has user-settings, parent did not
         assert 'user-settings' in resolved
@@ -8313,7 +8313,7 @@ class TestRootGuard:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1'}),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),
@@ -8325,7 +8325,7 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Windows'),
             patch.object(setup_environment, 'is_admin', return_value=False),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),
@@ -8377,3 +8377,480 @@ class TestRootGuard:
             setup_environment.main()
         # Should exit from root guard (code 1), NOT from argparse error (code 2)
         assert exc_info.value.code == 1
+
+
+class TestCollectInstallationPlan:
+    """Test collect_installation_plan() data extraction from config."""
+
+    def _make_args(self, skip_install: bool = False) -> MagicMock:
+        args = MagicMock()
+        args.skip_install = skip_install
+        return args
+
+    def test_collect_plan_basic_config(self) -> None:
+        """Minimal config produces correct plan with defaults."""
+        config: dict[str, Any] = {'name': 'test-env'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_name == 'test-env'
+        assert plan.config_source_type == 'repo'
+        assert plan.agents == []
+        assert plan.slash_commands == []
+        assert plan.total_resources == 0
+
+    def test_collect_plan_full_config(self) -> None:
+        """Config with all resource types produces correct plan."""
+        config: dict[str, Any] = {
+            'name': 'full-env',
+            'version': '2.0.0',
+            'agents': ['agent1.md', 'agent2.md'],
+            'slash-commands': ['cmd1.md'],
+            'skills': [{'name': 'skill1', 'files': ['s.md']}],
+            'files-to-download': [{'source': 'f.txt', 'dest': '~/.claude/f.txt'}],
+            'hooks': {
+                'files': ['hook.py'],
+                'events': [{'event': 'PostToolUse', 'type': 'command', 'command': 'hook.py'}],
+            },
+            'mcp-servers': [{'name': 'srv', 'transport': 'http', 'url': 'http://localhost'}],
+            'model': 'sonnet',
+            'dependencies': {
+                'common': ['pip install flask'],
+                'windows': ['winget install Git'],
+            },
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='full', source_type='local', name='full-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='/path/to/full.yaml',
+            config_name='full',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert len(plan.agents) == 2
+        assert len(plan.slash_commands) == 1
+        assert len(plan.skills) == 1
+        assert len(plan.files_to_download) == 1
+        assert len(plan.hooks_files) == 1
+        assert len(plan.hooks_events) == 1
+        assert len(plan.mcp_servers) == 1
+        assert plan.model == 'sonnet'
+        assert plan.config_version == '2.0.0'
+
+    def test_collect_plan_unknown_keys(self) -> None:
+        """Extra keys are detected in plan.unknown_keys."""
+        config: dict[str, Any] = {
+            'name': 'test',
+            'my-typo-key': 'oops',
+            'future-feature': True,
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert 'future-feature' in plan.unknown_keys
+        assert 'my-typo-key' in plan.unknown_keys
+        assert 'name' not in plan.unknown_keys
+
+    def test_collect_plan_sensitive_paths(self) -> None:
+        """Sensitive dest paths are detected in plan.sensitive_paths."""
+        config: dict[str, Any] = {
+            'files-to-download': [
+                {'source': 'key.pub', 'dest': '~/.ssh/authorized_keys'},
+                {'source': 'safe.txt', 'dest': '~/.claude/data/safe.txt'},
+            ],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert '~/.ssh/authorized_keys' in plan.sensitive_paths
+        assert '~/.claude/data/safe.txt' not in plan.sensitive_paths
+
+    def test_collect_plan_dependency_commands(self) -> None:
+        """All platform dependency commands are collected."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['pip install requests'],
+                'linux': ['apt-get install -y curl'],
+                'macos': ['brew install wget'],
+            },
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert 'common' in plan.dependency_commands
+        assert 'linux' in plan.dependency_commands
+        assert 'macos' in plan.dependency_commands
+        assert 'windows' not in plan.dependency_commands
+        assert plan.dependency_commands['common'] == ['pip install requests']
+
+    def test_collect_plan_total_resources(self) -> None:
+        """total_resources property returns correct aggregate count."""
+        config: dict[str, Any] = {
+            'agents': ['a1.md', 'a2.md'],
+            'slash-commands': ['c1.md'],
+            'mcp-servers': [{'name': 's1'}, {'name': 's2'}, {'name': 's3'}],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.total_resources == 6  # 2 agents + 1 cmd + 3 servers
+
+    def test_collect_plan_has_security_concerns(self) -> None:
+        """has_security_concerns property returns True when concerns exist."""
+        config_clean: dict[str, Any] = {'name': 'clean'}
+        config_deps: dict[str, Any] = {
+            'dependencies': {'common': ['pip install x']},
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = self._make_args()
+
+        plan_clean = setup_environment.collect_installation_plan(
+            config=config_clean, config_source='test',
+            config_name='test', inheritance_chain=chain, args=args,
+        )
+        plan_deps = setup_environment.collect_installation_plan(
+            config=config_deps, config_source='test',
+            config_name='test', inheritance_chain=chain, args=args,
+        )
+        assert plan_clean.has_security_concerns is False
+        assert plan_deps.has_security_concerns is True
+
+
+class TestDisplayInstallationSummary:
+    """Test display_installation_summary() output formatting."""
+
+    def _make_plan(self, **kwargs: Any) -> setup_environment.InstallationPlan:
+        defaults: dict[str, Any] = {
+            'config_name': 'test-env',
+            'config_source': 'test',
+            'config_source_type': 'repo',
+            'config_version': '1.0',
+        }
+        defaults.update(kwargs)
+        return setup_environment.InstallationPlan(**defaults)
+
+    def test_display_basic_summary(self) -> None:
+        """Basic plan renders without errors."""
+        plan = self._make_plan()
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Installation Summary' in output
+        assert 'test-env' in output
+
+    def test_display_summary_with_inheritance(self) -> None:
+        """Inheritance chain is displayed when multiple entries exist."""
+        chain = [
+            setup_environment.InheritanceChainEntry('base.yaml', 'repo', 'base'),
+            setup_environment.InheritanceChainEntry('child.yaml', 'local', 'child'),
+        ]
+        plan = self._make_plan(inheritance_chain=chain)
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Inheritance Chain' in output
+        assert 'base' in output
+        assert '<-- current' in output
+
+    def test_display_summary_with_attention(self) -> None:
+        """Attention markers shown for sensitive paths and unknown keys."""
+        plan = self._make_plan(
+            sensitive_paths=['~/.ssh/config'],
+            unknown_keys=['my-typo'],
+        )
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[!] ATTENTION' in output
+        assert '~/.ssh/config' in output
+        assert 'my-typo' in output
+
+    def test_display_summary_stderr_when_piped(self) -> None:
+        """Output goes to stderr when stdout is not a TTY."""
+        plan = self._make_plan()
+        import io
+        with patch('sys.stdout') as mock_stdout:
+            mock_stdout.isatty.return_value = False
+            # When output=None, function should auto-select stderr
+            stderr_buf = io.StringIO()
+            with patch('sys.stderr', stderr_buf):
+                setup_environment.display_installation_summary(plan, output=None)
+            assert 'Installation Summary' in stderr_buf.getvalue()
+
+    def test_display_dependency_commands_verbatim(self) -> None:
+        """Full dependency commands are shown, not just counts."""
+        plan = self._make_plan(
+            dependency_commands={
+                'common': ['pip install flask', 'npm install -g typescript'],
+            },
+        )
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '$ pip install flask' in output
+        assert '$ npm install -g typescript' in output
+
+
+class TestConfirmInstallation:
+    """Test confirm_installation() flow control."""
+
+    def _make_plan(self) -> setup_environment.InstallationPlan:
+        return setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version='1.0',
+        )
+
+    def test_confirm_dry_run_returns_false(self) -> None:
+        """--dry-run returns False without prompting."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=False, dry_run=True,
+            )
+        assert result is False
+
+    def test_confirm_auto_yes_returns_true(self) -> None:
+        """--yes returns True without prompting."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=True, dry_run=False,
+            )
+        assert result is True
+
+    def test_confirm_interactive_yes(self) -> None:
+        """User types 'y' at interactive prompt -> True."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value='y'),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is True
+
+    def test_confirm_interactive_no(self) -> None:
+        """User types 'n' at interactive prompt -> False."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value='n'),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_interactive_empty(self) -> None:
+        """User presses Enter (empty input) -> False (default deny)."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_non_interactive_returns_false(self) -> None:
+        """Non-interactive mode (no TTY, no /dev/tty) returns False."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_dev_tty_available', return_value=False),
+        ):
+            mock_stdin.isatty.return_value = False
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_env_var_auto_confirm(self) -> None:
+        """CLAUDE_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            # The env var is resolved by the caller (main) and passed as auto_confirm
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=True, dry_run=False,
+            )
+        assert result is True
+
+
+class TestGetUserConfirmation:
+    """Test _get_user_confirmation() input handling."""
+
+    def test_stdin_tty_input(self) -> None:
+        """Standard TTY input returns user response."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', return_value='  y  '),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == 'y'
+
+    def test_stdin_not_tty_devtty_fallback(self) -> None:
+        """When stdin is not TTY, /dev/tty fallback is attempted on Unix."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('sys.platform', 'linux'),
+            patch('builtins.open', create=True) as mock_open,
+            patch('sys.stderr'),
+        ):
+            mock_stdin.isatty.return_value = False
+            mock_tty = MagicMock()
+            mock_tty.__enter__ = MagicMock(return_value=mock_tty)
+            mock_tty.__exit__ = MagicMock(return_value=False)
+            mock_tty.readline.return_value = '  yes  '
+            mock_open.return_value = mock_tty
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == 'yes'
+
+    def test_stdin_not_tty_no_devtty(self) -> None:
+        """When no TTY and no /dev/tty, returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('sys.platform', 'linux'),
+            patch('builtins.open', side_effect=OSError('No /dev/tty')),
+        ):
+            mock_stdin.isatty.return_value = False
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+    def test_eof_error_returns_empty(self) -> None:
+        """EOFError on stdin returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', side_effect=EOFError),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+    def test_keyboard_interrupt_returns_empty(self) -> None:
+        """KeyboardInterrupt on stdin returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', side_effect=KeyboardInterrupt),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+
+class TestUnknownKeyDetection:
+    """Test unknown config key detection against KNOWN_CONFIG_KEYS."""
+
+    def test_known_keys_covers_golden_config(self) -> None:
+        """All golden config keys are present in KNOWN_CONFIG_KEYS."""
+        import yaml
+        golden_path = Path(__file__).parent / 'e2e' / 'golden_config.yaml'
+        with golden_path.open('r', encoding='utf-8') as f:
+            golden: dict[str, Any] = yaml.safe_load(f)
+        missing = [
+            k for k in golden
+            if k not in setup_environment.KNOWN_CONFIG_KEYS
+        ]
+        assert missing == [], (
+            f'Golden config keys missing from KNOWN_CONFIG_KEYS: {missing}'
+        )
+
+    def test_unknown_key_flagged(self) -> None:
+        """An extra key not in KNOWN_CONFIG_KEYS is flagged as unknown."""
+        config: dict[str, Any] = {
+            'name': 'test',
+            'my-typo': 'oops',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config, config_source='test',
+            config_name='test', inheritance_chain=chain,
+            args=MagicMock(skip_install=False),
+        )
+        assert 'my-typo' in plan.unknown_keys
+
+    def test_inherit_key_not_flagged(self) -> None:
+        """The 'inherit' key is in KNOWN_CONFIG_KEYS and not flagged."""
+        assert 'inherit' in setup_environment.KNOWN_CONFIG_KEYS
+
+
+class TestSensitivePathDetection:
+    """Test sensitive filesystem path detection in files-to-download."""
+
+    def _detect_paths(self, dest: str) -> list[str]:
+        config: dict[str, Any] = {
+            'files-to-download': [{'source': 'file.txt', 'dest': dest}],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config, config_source='test',
+            config_name='test', inheritance_chain=chain,
+            args=MagicMock(skip_install=False),
+        )
+        return plan.sensitive_paths
+
+    def test_ssh_path_detected(self) -> None:
+        """~/.ssh/config is flagged as sensitive."""
+        assert '~/.ssh/config' in self._detect_paths('~/.ssh/config')
+
+    def test_gnupg_path_detected(self) -> None:
+        """~/.gnupg/keys is flagged as sensitive."""
+        assert '~/.gnupg/keys' in self._detect_paths('~/.gnupg/keys')
+
+    def test_bashrc_detected(self) -> None:
+        """~/.bashrc is flagged as sensitive."""
+        assert '~/.bashrc' in self._detect_paths('~/.bashrc')
+
+    def test_safe_path_not_flagged(self) -> None:
+        """~/.claude/data/file.txt is not flagged as sensitive."""
+        assert self._detect_paths('~/.claude/data/file.txt') == []

@@ -29,11 +29,14 @@ import time
 import urllib.error
 import urllib.parse
 from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import field
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import TextIO
 from typing import TypeVar
 from typing import cast
 from urllib.request import Request
@@ -49,6 +52,48 @@ if sys.platform != 'win32':
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
+
+# All valid top-level configuration keys for unknown key detection
+KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
+    'name',
+    'version',
+    'inherit',
+    'command-names',
+    'command-name',
+    'base-url',
+    'claude-code-version',
+    'install-nodejs',
+    'dependencies',
+    'agents',
+    'slash-commands',
+    'skills',
+    'files-to-download',
+    'hooks',
+    'mcp-servers',
+    'model',
+    'permissions',
+    'env-variables',
+    'os-env-variables',
+    'command-defaults',
+    'user-settings',
+    'always-thinking-enabled',
+    'effort-level',
+    'company-announcements',
+    'include-co-authored-by',
+    'attribution',
+    'status-line',
+})
+
+# Path prefixes indicating sensitive filesystem destinations
+SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
+    '~/.ssh/',
+    '~/.gnupg/',
+    '~/.bashrc',
+    '~/.bash_profile',
+    '~/.profile',
+    '~/.zshrc',
+    '~/.config/',
+)
 
 # OS environment variables constants
 OS_ENV_VARIABLES_KEY = 'os-env-variables'
@@ -443,6 +488,101 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
 
 
 # ANSI color codes for pretty output
+
+
+@dataclass(frozen=True)
+class InheritanceChainEntry:
+    """Single entry in the configuration inheritance chain."""
+
+    source: str
+    source_type: str  # 'url', 'local', 'repo'
+    name: str
+
+
+@dataclass
+class InstallationPlan:
+    """Structured representation of what the setup will install.
+
+    Separates data collection from display logic, enabling testability
+    and reuse between pre-install summary and post-install report.
+    """
+
+    # Config metadata
+    config_name: str
+    config_source: str
+    config_source_type: str  # 'url', 'local', 'repo'
+    config_version: str | None
+
+    # Inheritance chain (root ancestor first, current config last)
+    inheritance_chain: list[InheritanceChainEntry] = field(
+        default_factory=lambda: list[InheritanceChainEntry](),
+    )
+
+    # Resources by category
+    agents: list[str] = field(default_factory=lambda: list[str]())
+    slash_commands: list[str] = field(default_factory=lambda: list[str]())
+    skills: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
+    files_to_download: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+    hooks_files: list[str] = field(default_factory=lambda: list[str]())
+    hooks_events: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+    mcp_servers: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+
+    # Dependency commands by platform
+    dependency_commands: dict[str, list[str]] = field(
+        default_factory=lambda: dict[str, list[str]](),
+    )
+
+    # Settings
+    model: str | None = None
+    system_prompt: str | None = None
+    system_prompt_mode: str = 'replace'
+    command_names: list[str] = field(default_factory=lambda: list[str]())
+    claude_code_version: str | None = None
+    install_nodejs: bool = False
+    skip_install: bool = False
+    permissions: dict[str, Any] | None = None
+    env_variables: dict[str, str] | None = None
+    os_env_variables: dict[str, Any] | None = None
+    user_settings: dict[str, Any] | None = None
+    always_thinking_enabled: bool | None = None
+    effort_level: str | None = None
+    company_announcements: list[str] | None = None
+    attribution: dict[str, str] | None = None
+    status_line: dict[str, Any] | None = None
+
+    # Security analysis
+    unknown_keys: list[str] = field(default_factory=lambda: list[str]())
+    sensitive_paths: list[str] = field(default_factory=lambda: list[str]())
+
+    @property
+    def total_resources(self) -> int:
+        """Total count of downloadable resources."""
+        return (
+            len(self.agents)
+            + len(self.slash_commands)
+            + len(self.skills)
+            + len(self.files_to_download)
+            + len(self.hooks_files)
+            + len(self.mcp_servers)
+        )
+
+    @property
+    def has_security_concerns(self) -> bool:
+        """Whether any security attention items exist."""
+        return bool(
+            self.dependency_commands
+            or self.unknown_keys
+            or self.sensitive_paths
+            or self.hooks_events,
+        )
+
+
 class Colors:
     """ANSI color codes for terminal output."""
 
@@ -2854,7 +2994,8 @@ def resolve_config_inheritance(
     auth_param: str | None = None,
     visited: set[str] | None = None,
     depth: int = 0,
-) -> dict[str, Any]:
+    chain: list[InheritanceChainEntry] | None = None,
+) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
     """Resolve configuration inheritance by loading and merging parent configs.
 
     Implements top-level key override semantics: child config values completely
@@ -2875,10 +3016,13 @@ def resolve_config_inheritance(
             Used internally for recursion tracking. Callers should not provide this.
         depth: Current recursion depth for safety limits.
             Used internally. Callers should not provide this.
+        chain: Accumulator for the inheritance chain entries.
+            Used internally. Callers should not provide this.
 
     Returns:
-        dict[str, Any]: Merged configuration with inheritance resolved.
-            The 'inherit' key is removed from the result.
+        Tuple of (merged_config, inheritance_chain) where merged_config is the
+        configuration with inheritance resolved and inheritance_chain is the
+        list of InheritanceChainEntry from root ancestor to immediate parent.
 
     Raises:
         ValueError: If circular dependency is detected, maximum inheritance
@@ -2889,17 +3033,21 @@ def resolve_config_inheritance(
     Examples:
         >>> # Simple inheritance
         >>> child = {'inherit': 'base.yaml', 'name': 'Child'}
-        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
         >>> # resolved contains parent's keys + child's 'name' override
 
         >>> # Chain: grandparent -> parent -> child
         >>> child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
         >>> # resolved contains all ancestors' keys, child overrides take precedence
     """
     # Initialize visited set for circular dependency detection
     if visited is None:
         visited = set()
+
+    # Initialize chain accumulator
+    if chain is None:
+        chain = []
 
     # Check for maximum depth exceeded
     if depth > MAX_INHERITANCE_DEPTH:
@@ -2914,7 +3062,7 @@ def resolve_config_inheritance(
     inherit_value = config.get(INHERIT_KEY)
     if inherit_value is None:
         # No inheritance - return config as-is (without the inherit key if present)
-        return {k: v for k, v in config.items() if k != INHERIT_KEY}
+        return {k: v for k, v in config.items() if k != INHERIT_KEY}, chain
 
     # Validate inherit value is a string
     if not isinstance(inherit_value, str):
@@ -2966,21 +3114,392 @@ def resolve_config_inheritance(
         error(f'Error: {e}')
         raise
 
-    # Recursively resolve parent's inheritance
-    resolved_parent = resolve_config_inheritance(
+    # Recursively resolve parent's inheritance (chain accumulates ancestors)
+    resolved_parent, chain = resolve_config_inheritance(
         parent_config,
         actual_parent_source,
         auth_param=auth_param,
         visited=visited,
         depth=depth + 1,
+        chain=chain,
     )
+
+    # Append the parent entry to the chain after recursion resolves deeper ancestors
+    chain.append(InheritanceChainEntry(
+        source=actual_parent_source,
+        source_type=classify_config_source(actual_parent_source),
+        name=parent_config.get('name', inherit_value),
+    ))
 
     # Merge: parent first, then child overrides (top-level key override)
     merged = _merge_configs(resolved_parent, config)
 
     success(f'Inherited from: {inherit_value}')
 
-    return merged
+    return merged, chain
+
+
+def collect_installation_plan(
+    config: dict[str, Any],
+    config_source: str,
+    config_name: str,
+    inheritance_chain: list[InheritanceChainEntry],
+    args: argparse.Namespace,
+) -> InstallationPlan:
+    """Collect all installation artifacts into a structured plan.
+
+    Extracts resource lists, dependency commands, settings, and security
+    analysis from the fully resolved configuration without executing
+    any installation steps.
+
+    Args:
+        config: Fully resolved configuration dictionary (inheritance merged).
+        config_source: Source path/URL of the configuration.
+        config_name: Original config name as specified by user.
+        inheritance_chain: Resolved inheritance chain entries.
+        args: Parsed CLI arguments.
+
+    Returns:
+        InstallationPlan containing all artifacts to be installed.
+    """
+    config_source_type = classify_config_source(config_source)
+
+    # Extract resources
+    hooks_dict: dict[str, Any] = config.get('hooks') or {}
+    hooks_files: list[str] = hooks_dict.get('files') or []
+    hooks_events_list: list[Any] = hooks_dict.get('events') or []
+    hooks_events: list[dict[str, Any]] = [
+        cast(dict[str, Any], e) for e in hooks_events_list if isinstance(e, dict)
+    ]
+
+    # Extract files-to-download
+    ftd_raw: list[Any] = config.get('files-to-download') or []
+    files_to_download: list[dict[str, Any]] = [
+        cast(dict[str, Any], f) for f in ftd_raw if isinstance(f, dict)
+    ]
+
+    # Extract skills
+    skills_raw: list[Any] = config.get('skills') or []
+    skills_list: list[dict[str, Any]] = [
+        cast(dict[str, Any], s) for s in skills_raw if isinstance(s, dict)
+    ]
+
+    # Extract MCP servers
+    mcp_raw: list[Any] = config.get('mcp-servers') or []
+    mcp_servers: list[dict[str, Any]] = [
+        cast(dict[str, Any], s) for s in mcp_raw if isinstance(s, dict)
+    ]
+
+    # Extract dependency commands by platform
+    dependency_commands: dict[str, list[str]] = {}
+    deps_raw: dict[str, Any] = config.get('dependencies') or {}
+    for platform_key in ('common', 'windows', 'linux', 'macos'):
+        dep_cmds: list[Any] = deps_raw.get(platform_key) or []
+        if dep_cmds:
+            dependency_commands[platform_key] = [str(c) for c in dep_cmds]
+
+    # Extract command defaults
+    cmd_defaults: dict[str, Any] = config.get('command-defaults') or {}
+    system_prompt: str | None = cmd_defaults.get('system-prompt')
+    system_prompt_mode: str = cmd_defaults.get('mode') or 'replace'
+
+    # Extract command names
+    command_names_raw = config.get('command-names')
+    command_names: list[str] = []
+    if isinstance(command_names_raw, str):
+        command_names = [command_names_raw]
+    elif isinstance(command_names_raw, list):
+        command_names = [str(item) for item in cast(list[object], command_names_raw)]
+
+    # Unknown key detection
+    unknown_keys = sorted(k for k in config if k not in KNOWN_CONFIG_KEYS)
+
+    # Sensitive path detection
+    sensitive_paths: list[str] = []
+    for ftd in files_to_download:
+        dest = ftd.get('dest', '')
+        if isinstance(dest, str):
+            for prefix in SENSITIVE_PATH_PREFIXES:
+                if dest.startswith(prefix):
+                    sensitive_paths.append(dest)
+                    break
+
+    # Extract version
+    config_version: str | None = None
+    raw_version = config.get('version')
+    if raw_version is not None:
+        version_str = str(raw_version).strip()
+        if version_str:
+            config_version = version_str
+
+    return InstallationPlan(
+        config_name=config.get('name', config_name),
+        config_source=config_source,
+        config_source_type=config_source_type,
+        config_version=config_version,
+        inheritance_chain=inheritance_chain,
+        agents=config.get('agents', []) or [],
+        slash_commands=config.get('slash-commands', []) or [],
+        skills=skills_list,
+        files_to_download=files_to_download,
+        hooks_files=hooks_files,
+        hooks_events=hooks_events,
+        mcp_servers=mcp_servers,
+        dependency_commands=dependency_commands,
+        model=config.get('model'),
+        system_prompt=system_prompt,
+        system_prompt_mode=system_prompt_mode,
+        command_names=command_names,
+        claude_code_version=config.get('claude-code-version'),
+        install_nodejs=bool(config.get('install-nodejs')),
+        skip_install=args.skip_install,
+        permissions=config.get('permissions'),
+        env_variables=config.get('env-variables'),
+        os_env_variables=config.get('os-env-variables'),
+        user_settings=config.get('user-settings'),
+        always_thinking_enabled=config.get('always-thinking-enabled'),
+        effort_level=config.get('effort-level'),
+        company_announcements=config.get('company-announcements'),
+        attribution=config.get('attribution'),
+        status_line=config.get('status-line'),
+        unknown_keys=unknown_keys,
+        sensitive_paths=sensitive_paths,
+    )
+
+
+def display_installation_summary(
+    plan: InstallationPlan,
+    output: TextIO | None = None,
+) -> None:
+    """Display a human-readable installation summary.
+
+    Renders the installation plan as a formatted terminal summary with
+    color-coded sections. When stdout is piped, output goes to stderr
+    so users still see the summary.
+
+    Args:
+        plan: The installation plan to display.
+        output: Output stream. If None, uses stderr when stdout is piped,
+            otherwise stdout.
+    """
+    out = output if output is not None else (
+        sys.stderr if not sys.stdout.isatty() else sys.stdout
+    )
+
+    def _print(*args: object) -> None:
+        print(*args, file=out)
+
+    _print()
+    _print(f'{Colors.CYAN}========================================================================{Colors.NC}')
+    _print(f'{Colors.CYAN}                    Installation Summary{Colors.NC}')
+    _print(f'{Colors.CYAN}========================================================================{Colors.NC}')
+    _print()
+
+    # Config metadata
+    _print(f'{Colors.BOLD}Configuration:{Colors.NC} {plan.config_name}')
+    _print(f'{Colors.BOLD}Source:{Colors.NC} {plan.config_source} ({plan.config_source_type})')
+    _print(f'{Colors.BOLD}Version:{Colors.NC} {plan.config_version or "not specified"}')
+
+    # Inheritance chain
+    if len(plan.inheritance_chain) > 1:
+        _print()
+        _print(f'{Colors.BOLD}Inheritance Chain:{Colors.NC}')
+        for i, entry in enumerate(plan.inheritance_chain, 1):
+            marker = '  <-- current' if i == len(plan.inheritance_chain) else ''
+            _print(f'  {i}. {entry.name} ({entry.source_type}){marker}')
+
+    # Resources
+    _print()
+    _print(f'{Colors.BOLD}Resources:{Colors.NC}')
+    _print(f'  * Agents: {len(plan.agents)}')
+    _print(f'  * Slash commands: {len(plan.slash_commands)}')
+    _print(f'  * Skills: {len(plan.skills)}')
+    _print(f'  * Files to download: {len(plan.files_to_download)}')
+    _print(f'  * Hook files: {len(plan.hooks_files)}')
+    _print(f'  * Hook events: {len(plan.hooks_events)}')
+    _print(f'  * MCP servers: {len(plan.mcp_servers)}')
+
+    # Claude Code installation
+    _print()
+    if plan.skip_install:
+        _print('  * Claude Code: skip (--skip-install)')
+    else:
+        version_str = plan.claude_code_version or 'latest'
+        _print(f'  * Claude Code: install (version: {version_str})')
+    if plan.install_nodejs:
+        _print('  * Node.js: install if needed')
+
+    # Settings
+    settings_items: list[str] = []
+    if plan.model:
+        settings_items.append(f'Model: {plan.model}')
+    if plan.system_prompt:
+        settings_items.append(f'System prompt: {plan.system_prompt_mode}')
+    if plan.permissions:
+        perm_parts: list[str] = []
+        if 'defaultMode' in plan.permissions:
+            perm_parts.append(f"defaultMode={plan.permissions['defaultMode']}")
+        if 'allow' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['allow'])} allow")
+        if 'deny' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['deny'])} deny")
+        if 'ask' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['ask'])} ask")
+        settings_items.append(f"Permissions: {', '.join(perm_parts)}")
+    if plan.env_variables:
+        settings_items.append(f'Environment variables: {len(plan.env_variables)}')
+    if plan.os_env_variables:
+        settings_items.append(f'OS environment variables: {len(plan.os_env_variables)}')
+    if plan.effort_level:
+        settings_items.append(f'Effort level: {plan.effort_level}')
+    if plan.always_thinking_enabled is not None:
+        settings_items.append(f'Always thinking: {plan.always_thinking_enabled}')
+    if plan.user_settings:
+        settings_items.append('User settings: configured')
+    if plan.company_announcements:
+        settings_items.append(f'Company announcements: {len(plan.company_announcements)}')
+    if plan.command_names:
+        settings_items.append(f"Command names: {', '.join(plan.command_names)}")
+
+    if settings_items:
+        _print()
+        _print(f'{Colors.BOLD}Settings:{Colors.NC}')
+        for item in settings_items:
+            _print(f'  * {item}')
+
+    # Dependency commands (highlighted in yellow -- most dangerous)
+    if plan.dependency_commands:
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}Dependencies (shell commands):{Colors.NC}')
+        for platform_key, cmds in plan.dependency_commands.items():
+            _print(f'  {Colors.YELLOW}[{platform_key}]{Colors.NC}')
+            for cmd in cmds:
+                _print(f'    $ {cmd}')
+
+    # Attention section (red)
+    has_attention = plan.sensitive_paths or plan.unknown_keys
+    if has_attention:
+        _print()
+        _print(f'{Colors.RED}{Colors.BOLD}[!] ATTENTION:{Colors.NC}')
+        for path in plan.sensitive_paths:
+            _print(f'  {Colors.RED}[!] Sensitive path: {path}{Colors.NC}')
+        for key in plan.unknown_keys:
+            _print(f'  {Colors.YELLOW}[?] Unknown config key: {key!r}{Colors.NC}')
+
+
+def _dev_tty_available() -> bool:
+    """Check if /dev/tty is available for interactive input."""
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _get_user_confirmation(prompt: str) -> str:
+    """Get user input with /dev/tty fallback for piped stdin.
+
+    On Unix systems, when stdin is not a TTY (e.g., curl | bash),
+    attempts to read from /dev/tty as a best-effort fallback. This is
+    a standard pattern used by sudo, ssh, and gpg.
+
+    Args:
+        prompt: The prompt string to display.
+
+    Returns:
+        User's input string (stripped), or empty string on EOF/error.
+    """
+    # Try stdin first if it's a TTY
+    if sys.stdin.isatty():
+        try:
+            return input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ''
+
+    # Best-effort /dev/tty fallback (Unix only)
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty') as tty:
+                # Write prompt to stderr (stdout may be piped)
+                sys.stderr.write(prompt)
+                sys.stderr.flush()
+                return tty.readline().strip()
+        except (OSError, EOFError):
+            pass
+
+    # No interactive input available
+    return ''
+
+
+def confirm_installation(
+    plan: InstallationPlan,
+    auto_confirm: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Gate installation execution on explicit user consent.
+
+    Implements the confirmation flow:
+    1. --dry-run: display summary, return False (caller exits 0)
+    2. --yes or CLAUDE_CONFIRM_INSTALL=1: display summary, return True
+    3. Interactive TTY: prompt user with [y/N]
+    4. /dev/tty available: prompt via /dev/tty
+    5. Non-interactive: display summary + guidance, return False (caller exits 1)
+
+    Args:
+        plan: The installation plan to confirm.
+        auto_confirm: Whether to auto-confirm (--yes flag or env var).
+        dry_run: Whether this is a dry-run (show plan, do not install).
+
+    Returns:
+        True if installation should proceed, False otherwise.
+    """
+    # Always display summary (audit trail for auto-confirm, info for dry-run)
+    display_installation_summary(plan)
+
+    # Dry run: show summary and signal caller to exit 0
+    if dry_run:
+        print()
+        info('Dry run complete. No changes were made.')
+        return False
+
+    # Auto-confirm: show summary, proceed
+    if auto_confirm:
+        print()
+        info('Auto-confirmed via --yes flag or CLAUDE_CONFIRM_INSTALL=1')
+        return True
+
+    # Check if ANY interactive input is possible
+    can_interact = sys.stdin.isatty()
+
+    # Try /dev/tty fallback on Unix when stdin is piped
+    can_tty_fallback = False
+    if not can_interact and sys.platform != 'win32':
+        can_tty_fallback = _dev_tty_available()
+
+    if not can_interact and not can_tty_fallback:
+        # Non-interactive mode: refuse with guidance
+        print()
+        error('Cannot proceed: no interactive terminal available')
+        print()
+        info('To auto-confirm in non-interactive mode, use one of:')
+        info('  1. Pass --yes flag: setup_environment.py <config> --yes')
+        info('  2. Set environment variable: CLAUDE_CONFIRM_INSTALL=1')
+        info('  3. Preview only: setup_environment.py <config> --dry-run')
+        return False
+
+    # Interactive confirmation
+    print()
+    response = _get_user_confirmation(
+        f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}',
+    )
+
+    if response.lower() in ('y', 'yes'):
+        return True
+
+    info('Installation cancelled by user.')
+    return False
 
 
 def get_real_user_home() -> Path:
@@ -6364,6 +6883,16 @@ def main() -> None:
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
     parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
     parser.add_argument('--no-admin', action='store_true', help='Do not request admin elevation even if needed')
+    parser.add_argument(
+        '--yes', '-y',
+        action='store_true',
+        help='Auto-confirm installation (skip interactive confirmation)',
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show installation plan and exit without installing',
+    )
     args = parser.parse_args()
 
     # Get configuration from args or environment
@@ -6396,10 +6925,25 @@ def main() -> None:
         config, config_source = load_config_from_source(config_name, args.auth)
 
         # Resolve configuration inheritance if present
+        inheritance_chain: list[InheritanceChainEntry] = []
         if INHERIT_KEY in config:
             info('Configuration uses inheritance, resolving parent configs...')
-            config = resolve_config_inheritance(config, config_source, auth_param=args.auth)
+            config, inheritance_chain = resolve_config_inheritance(
+                config, config_source, auth_param=args.auth,
+            )
+            # Append current config as the last entry in the chain
+            inheritance_chain.append(InheritanceChainEntry(
+                source=config_source,
+                source_type=classify_config_source(config_source),
+                name=config.get('name', config_name),
+            ))
             success('Configuration inheritance resolved successfully')
+        else:
+            inheritance_chain = [InheritanceChainEntry(
+                source=config_source,
+                source_type=classify_config_source(config_source),
+                name=config.get('name', config_name),
+            )]
 
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
@@ -6607,6 +7151,34 @@ def main() -> None:
             sys.exit(1)
         else:
             success('All configuration files validated successfully!')
+
+        # Collect installation plan and confirm
+        plan = collect_installation_plan(
+            config=config,
+            config_source=config_source,
+            config_name=config_name,
+            inheritance_chain=inheritance_chain,
+            args=args,
+        )
+
+        # Determine auto-confirm from --yes flag or environment variable
+        auto_confirm = args.yes or os.environ.get('CLAUDE_CONFIRM_INSTALL') == '1'
+
+        # Confirmation gate
+        confirmed = confirm_installation(
+            plan=plan,
+            auto_confirm=auto_confirm,
+            dry_run=args.dry_run,
+        )
+
+        if not confirmed:
+            if args.dry_run:
+                sys.exit(0)
+            # Interactive cancellation: exit 0 (user's deliberate choice)
+            # Non-interactive refusal: exit 1 (missing prerequisite)
+            if sys.stdin.isatty() or _dev_tty_available():
+                sys.exit(0)
+            sys.exit(1)
 
         # Set up directories
         home = Path.home()

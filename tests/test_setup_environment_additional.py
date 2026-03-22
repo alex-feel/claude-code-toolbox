@@ -1320,7 +1320,7 @@ class TestMainFunctionErrorPaths:
         """Test main with config loading exception."""
         mock_load.side_effect = Exception('Config load failed')
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -1331,7 +1331,10 @@ class TestMainFunctionErrorPaths:
         del mock_find  # Unused but required for patch
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
 
-        with patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']), pytest.raises(SystemExit) as exc_info:
+        with (
+            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install', '--yes']),
+            pytest.raises(SystemExit) as exc_info,
+        ):
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -1384,7 +1387,7 @@ class TestMainFunctionErrorPaths:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()  # Should continue despite launcher failure
 
@@ -1428,7 +1431,7 @@ class TestMainFunctionErrorPaths:
         mock_launcher.return_value = Path('/tmp/launcher')
 
         with (
-            patch('sys.argv', ['setup_environment.py']),  # No config argument
+            patch('sys.argv', ['setup_environment.py', '--yes']),  # No config argument, uses env var
             patch('sys.exit') as mock_exit,
         ):
             setup_environment.main()
@@ -1518,7 +1521,7 @@ class TestMainFunctionErrorPaths:
         mock_launcher.return_value = Path('/tmp/launcher')
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123']),
+            patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123', '--yes']),
             patch('sys.exit') as mock_exit,
         ):
             setup_environment.main()

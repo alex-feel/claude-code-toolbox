@@ -98,15 +98,22 @@ try {
         $authArgs = @('--auth', $env:REPO_TOKEN)
     }
 
+    # Collect extra flags to forward to Python script
+    $extraArgs = @()
+    foreach ($arg in $args) {
+        if ($arg -eq '--yes' -or $arg -eq '-y') {
+            $extraArgs += '--yes'
+        } elseif ($arg -eq '--dry-run') {
+            $extraArgs += '--dry-run'
+        }
+    }
+
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location so Python can resolve module imports
     Push-Location $toolboxDir
     try {
-        if ($authArgs.Count -gt 0) {
-            & uv run --no-project --python 3.12 setup_environment.py $config @authArgs
-        } else {
-            & uv run --no-project --python 3.12 setup_environment.py $config
-        }
+        $allArgs = @($config) + $authArgs + $extraArgs
+        & uv run --no-project --python 3.12 setup_environment.py @allArgs
         $exitCode = $LASTEXITCODE
     } finally {
         Pop-Location
