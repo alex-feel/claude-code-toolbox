@@ -1,0 +1,38 @@
+name: Sync Model to Repos
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'scripts/models/environment_config.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run sync script
+        env:
+          GH_PAT: ${{ secrets.ARTIFACTS_REPO_PAT }}
+        run: uv run python .github/sync_to_repos.py .github/sync-config.yaml
