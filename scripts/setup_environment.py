@@ -3143,6 +3143,7 @@ def collect_installation_plan(
     config: dict[str, Any],
     config_source: str,
     config_name: str,
+    config_version: str | None,
     inheritance_chain: list[InheritanceChainEntry],
     args: argparse.Namespace,
 ) -> InstallationPlan:
@@ -3156,6 +3157,8 @@ def collect_installation_plan(
         config: Fully resolved configuration dictionary (inheritance merged).
         config_source: Source path/URL of the configuration.
         config_name: Original config name as specified by user.
+        config_version: Pre-extracted config version from the root config
+            (before inheritance resolution). None if root config has no version.
         inheritance_chain: Resolved inheritance chain entries.
         args: Parsed CLI arguments.
 
@@ -3223,14 +3226,6 @@ def collect_installation_plan(
                 if dest.startswith(prefix):
                     sensitive_paths.append(dest)
                     break
-
-    # Extract version
-    config_version: str | None = None
-    raw_version = config.get('version')
-    if raw_version is not None:
-        version_str = str(raw_version).strip()
-        if version_str:
-            config_version = version_str
 
     return InstallationPlan(
         config_name=config.get('name', config_name),
@@ -6924,6 +6919,17 @@ def main() -> None:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
 
+        # Extract version from root config BEFORE inheritance resolution.
+        # The version field identifies THIS specific config file's version,
+        # not a behavioral setting inherited from parent configs.
+        config_version: str | None = None
+        raw_version = config.get('version')
+        if raw_version is not None:
+            version_str = str(raw_version).strip()
+            if version_str:
+                config_version = version_str
+                info(f'Configuration version: {config_version}')
+
         # Resolve configuration inheritance if present
         inheritance_chain: list[InheritanceChainEntry] = []
         if INHERIT_KEY in config:
@@ -7080,16 +7086,6 @@ def main() -> None:
         # Extract user-settings configuration (global user-level settings)
         user_settings = config.get('user-settings')
 
-        # Extract version for manifest (optional field)
-        config_version: str | None = None
-        raw_version = config.get('version')
-        if raw_version is not None:
-            # Convert to string to handle YAML numeric interpretation (e.g., 1.0 -> "1.0")
-            version_str = str(raw_version).strip()
-            if version_str:
-                config_version = version_str
-                info(f'Configuration version: {config_version}')
-
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -7157,6 +7153,7 @@ def main() -> None:
             config=config,
             config_source=config_source,
             config_name=config_name,
+            config_version=config_version,
             inheritance_chain=inheritance_chain,
             args=args,
         )

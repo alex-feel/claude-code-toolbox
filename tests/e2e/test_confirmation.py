@@ -33,6 +33,7 @@ class TestConfirmationBlocking:
             config=golden_config,
             config_source='golden_config.yaml',
             config_name='golden',
+            config_version=golden_config.get('version'),
             inheritance_chain=chain,
             args=args,
         )
@@ -127,6 +128,7 @@ class TestConfirmationSummaryContent:
             config=golden_config,
             config_source='golden_config.yaml',
             config_name='golden',
+            config_version=golden_config.get('version'),
             inheritance_chain=chain,
             args=args,
         )

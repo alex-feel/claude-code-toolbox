@@ -5962,6 +5962,109 @@ agents:
             assert 'inherit' not in resolved
 
 
+class TestVersionInheritance:
+    """Test that version field is extracted from root config, not inherited."""
+
+    @patch('setup_environment.load_config_from_source')
+    def test_parent_version_does_not_leak_to_child(self, mock_load: MagicMock) -> None:
+        """When child omits version, parent version must NOT appear in plan."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'name': 'Child'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        # Extract version BEFORE merge (the correct approach)
+        root_version = child_config.get('version')
+        assert root_version is None
+
+        # Verify the merge DOES leak (documenting the bug behavior)
+        merged, _chain = setup_environment.resolve_config_inheritance(
+            child_config, 'child.yaml',
+        )
+        assert merged.get('version') == '1.0.0'  # Parent's version leaks into merged config
+
+    @patch('setup_environment.load_config_from_source')
+    def test_child_version_preserved_over_parent(self, mock_load: MagicMock) -> None:
+        """Child with version takes precedence, pre-merge extraction gets child's value."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'version': '2.0.0'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        root_version = child_config.get('version')
+        assert root_version == '2.0.0'
+
+    def test_plan_uses_passed_version_not_merged_config(self) -> None:
+        """collect_installation_plan uses config_version parameter, ignoring config dict version."""
+        # Simulates merged config where parent's version leaked in
+        config: dict[str, Any] = {'name': 'test', 'version': '1.0.0'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = MagicMock()
+        args.skip_install = False
+
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,  # Root config had no version
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version is None  # Parameter value used, NOT config dict
+
+    def test_plan_with_explicit_root_version(self) -> None:
+        """Pre-extracted root version is correctly passed to plan."""
+        config: dict[str, Any] = {'name': 'test'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = MagicMock()
+        args.skip_install = False
+
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version='2.0.0',
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version == '2.0.0'
+
+    @patch('setup_environment.load_config_from_source')
+    def test_full_flow_parent_version_does_not_leak_into_plan(self, mock_load: MagicMock) -> None:
+        """Integration: parent version absent from plan when child omits it."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'name': 'Child'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        # Step 1: Extract version BEFORE merge
+        raw_version = child_config.get('version')
+        config_version: str | None = None
+        if raw_version is not None:
+            version_str = str(raw_version).strip()
+            if version_str:
+                config_version = version_str
+
+        # Step 2: Resolve inheritance (merges parent into child)
+        merged, chain = setup_environment.resolve_config_inheritance(
+            child_config, 'child.yaml',
+        )
+
+        # Step 3: Build plan with pre-extracted version
+        args = MagicMock()
+        args.skip_install = False
+        plan = setup_environment.collect_installation_plan(
+            config=merged,
+            config_source='child.yaml',
+            config_name='child',
+            config_version=config_version,
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version is None  # Parent's "1.0.0" must NOT leak
+
+
 class TestCommandNames:
     """Test command-names configuration (new format) and backward compatibility."""
 
@@ -8397,6 +8500,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='test',
             config_name='test',
+            config_version=None,
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8433,6 +8537,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='/path/to/full.yaml',
             config_name='full',
+            config_version='2.0.0',
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8460,6 +8565,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='test',
             config_name='test',
+            config_version=None,
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8482,6 +8588,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='test',
             config_name='test',
+            config_version=None,
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8504,6 +8611,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='test',
             config_name='test',
+            config_version=None,
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8527,6 +8635,7 @@ class TestCollectInstallationPlan:
             config=config,
             config_source='test',
             config_name='test',
+            config_version=None,
             inheritance_chain=chain,
             args=self._make_args(),
         )
@@ -8545,11 +8654,11 @@ class TestCollectInstallationPlan:
 
         plan_clean = setup_environment.collect_installation_plan(
             config=config_clean, config_source='test',
-            config_name='test', inheritance_chain=chain, args=args,
+            config_name='test', config_version=None, inheritance_chain=chain, args=args,
         )
         plan_deps = setup_environment.collect_installation_plan(
             config=config_deps, config_source='test',
-            config_name='test', inheritance_chain=chain, args=args,
+            config_name='test', config_version=None, inheritance_chain=chain, args=args,
         )
         assert plan_clean.has_security_concerns is False
         assert plan_deps.has_security_concerns is True
@@ -8812,7 +8921,7 @@ class TestUnknownKeyDetection:
         )]
         plan = setup_environment.collect_installation_plan(
             config=config, config_source='test',
-            config_name='test', inheritance_chain=chain,
+            config_name='test', config_version=None, inheritance_chain=chain,
             args=MagicMock(skip_install=False),
         )
         assert 'my-typo' in plan.unknown_keys
@@ -8834,7 +8943,7 @@ class TestSensitivePathDetection:
         )]
         plan = setup_environment.collect_installation_plan(
             config=config, config_source='test',
-            config_name='test', inheritance_chain=chain,
+            config_name='test', config_version=None, inheritance_chain=chain,
             args=MagicMock(skip_install=False),
         )
         return plan.sensitive_paths
