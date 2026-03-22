@@ -192,9 +192,6 @@ attribution:
   commit: "E2E Test Attribution for Commits"
   pr: "E2E Test Attribution for Pull Requests"
 
-# DEPRECATED: include-co-authored-by (for backward compatibility testing)
-# include-co-authored-by: true
-
 # Status line configuration
 status-line:
   file: "hooks/e2e_statusline.py"

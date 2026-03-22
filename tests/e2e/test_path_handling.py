@@ -107,7 +107,7 @@ class TestTildeExpansion:
             model=golden_config.get('model'),
             permissions=golden_config.get('permissions'),
             env=golden_config.get('env-variables'),
-            include_co_authored_by=None,
+
             always_thinking_enabled=golden_config.get('always-thinking-enabled'),
             company_announcements=golden_config.get('company-announcements'),
             attribution=golden_config.get('attribution'),
@@ -233,7 +233,7 @@ class TestTildeExpansion:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -290,7 +290,7 @@ class TestTildeExpansion:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,

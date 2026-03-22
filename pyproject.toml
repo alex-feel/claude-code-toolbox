@@ -161,6 +161,13 @@ exclude = '''(?x)(
 module = ['migrations.*']
 ignore_errors = true
 
+# install_claude is a sibling standalone script, not a package module.
+# At runtime, both scripts are downloaded to a flat temp directory.
+# mypy cannot resolve this import because scripts/ is a Python package.
+[[tool.mypy.overrides]]
+module = ['install_claude']
+ignore_missing_imports = true
+
 [tool.pyright]
 include = ["scripts"]
 exclude = [".venv", "**/__pycache__"]
@@ -180,6 +187,7 @@ asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 norecursedirs = ["scripts"]
+pythonpath = ["."]
 timeout = 120
 filterwarnings = [
     "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",

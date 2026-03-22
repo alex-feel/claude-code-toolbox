@@ -3505,69 +3505,6 @@ class TestCreateAdditionalSettings:
 
             assert settings['attribution'] == {'commit': '', 'pr': ''}
 
-    def test_create_additional_settings_attribution_precedence_over_deprecated(self):
-        """Test attribution takes precedence over deprecated include_co_authored_by."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            attribution = {'commit': 'New format', 'pr': 'New format'}
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=False,  # This should be ignored
-                attribution=attribution,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'attribution' in settings
-            assert settings['attribution'] == attribution
-            assert 'includeCoAuthoredBy' not in settings
-
-    def test_create_additional_settings_deprecated_include_co_authored_by_false(self):
-        """Test deprecated include_co_authored_by=False converts to attribution."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=False,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            # Should be converted to new format
-            assert 'attribution' in settings
-            assert settings['attribution'] == {'commit': '', 'pr': ''}
-            assert 'includeCoAuthoredBy' not in settings
-
-    def test_create_additional_settings_deprecated_include_co_authored_by_true(self):
-        """Test deprecated include_co_authored_by=True does not override defaults."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=True,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            # true -> use defaults, so neither key should be set
-            assert 'attribution' not in settings
-            assert 'includeCoAuthoredBy' not in settings
-
     def test_create_additional_settings_attribution_none_not_included(self):
         """Test attribution not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -4087,7 +4024,7 @@ class TestMainFunction:
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
-                'command-name': 'test-env',
+                'command-names': ['test-env'],
                 'dependencies': {
                     'windows': ['npm install -g test'],
                 },
@@ -4220,8 +4157,8 @@ class TestMainFunction:
         # (the invalid value should have been reset to None)
         mock_settings.assert_called_once()
         call_args = mock_settings.call_args
-        # effort_level is the 12th positional argument (0-indexed: position 11)
-        assert call_args[0][11] is None
+        # effort_level is the 11th positional argument (0-indexed: position 10)
+        assert call_args[0][10] is None
 
 
 class TestDownloadFailureTracking:
@@ -5934,7 +5871,8 @@ dependencies:
             parent = Path(tmpdir) / 'parent.yaml'
             parent.write_text(f'''
 inherit: {grandparent}
-command-name: my-env
+command-names:
+  - my-env
 mcp-servers:
   - name: server1
 ''')
@@ -5955,7 +5893,7 @@ agents:
             # Verify inheritance
             assert resolved['name'] == 'Grandparent Config'  # From grandparent
             assert resolved['model'] == 'claude-3'  # Overridden by child
-            assert resolved['command-name'] == 'my-env'  # From parent
+            assert resolved['command-names'] == ['my-env']  # From parent
             assert resolved['mcp-servers'] == [{'name': 'server1'}]  # From parent
             assert resolved['agents'] == ['my-agent.md']  # From child
             assert resolved['dependencies'] == {'common': ['pip install base']}  # From grandparent
@@ -6185,135 +6123,6 @@ class TestCommandNames:
         call_args = mock_register.call_args
         assert call_args[0][1] == 'aegis'  # Primary command name
         assert call_args[0][2] == ['claude-dev', 'myenv']  # Additional names
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_command_name_deprecated_shows_warning(
-        self,
-        mock_mkdir,
-        mock_is_admin,
-        mock_register,
-        mock_launcher,
-        mock_settings,
-        mock_mcp,
-        mock_download,
-        mock_deps,
-        mock_install,
-        mock_validate,
-        mock_load,
-        capsys,
-    ):
-        """Test deprecated command-name shows deprecation warning."""
-        # Verify mocks are properly configured
-        assert mock_mkdir is not None
-        assert mock_is_admin.return_value is True
-        mock_load.return_value = (
-            {
-                'name': 'Test Environment',
-                'command-name': 'old-style',  # Deprecated format
-                'dependencies': {},
-                'agents': [],
-                'slash-commands': [],
-                'mcp-servers': [],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_deps.return_value = True
-        mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = Path('/tmp/launcher.sh')
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        # Verify deprecation warning was shown
-        captured = capsys.readouterr()
-        assert 'deprecated' in captured.out.lower()
-        assert 'command-names' in captured.out
-
-        # Verify register_global_command was still called with the name
-        mock_register.assert_called_once()
-        call_args = mock_register.call_args
-        assert call_args[0][1] == 'old-style'  # Primary command name
-        assert call_args[0][2] is None  # No additional names
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_command_names_takes_precedence_over_deprecated(
-        self,
-        mock_mkdir,
-        mock_is_admin,
-        mock_register,
-        mock_launcher,
-        mock_settings,
-        mock_mcp,
-        mock_download,
-        mock_deps,
-        mock_install,
-        mock_validate,
-        mock_load,
-        capsys,
-    ):
-        """Test command-names takes precedence when both are specified."""
-        # Verify mocks are properly configured
-        assert mock_mkdir is not None
-        assert mock_is_admin.return_value is True
-        mock_load.return_value = (
-            {
-                'name': 'Test Environment',
-                'command-names': ['new-style'],  # New format
-                'command-name': 'old-style',  # Deprecated format (should be ignored)
-                'dependencies': {},
-                'agents': [],
-                'slash-commands': [],
-                'mcp-servers': [],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_deps.return_value = True
-        mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = Path('/tmp/launcher.sh')
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        # Verify warning about both being specified
-        captured = capsys.readouterr()
-        assert 'both' in captured.out.lower() or 'Both' in captured.out
-
-        # Verify register_global_command was called with new format
-        mock_register.assert_called_once()
-        call_args = mock_register.call_args
-        assert call_args[0][1] == 'new-style'  # New format takes precedence
 
     @patch('setup_environment.load_config_from_source')
     def test_command_names_validation_empty_name(self, mock_load):

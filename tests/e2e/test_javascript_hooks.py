@@ -37,7 +37,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -85,7 +85,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -128,7 +128,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -171,7 +171,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -226,7 +226,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,
@@ -282,7 +282,7 @@ class TestJavaScriptHooks:
             model=None,
             permissions=None,
             env=None,
-            include_co_authored_by=None,
+
             always_thinking_enabled=None,
             company_announcements=None,
             attribution=None,

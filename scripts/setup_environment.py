@@ -59,7 +59,6 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'version',
     'inherit',
     'command-names',
-    'command-name',
     'base-url',
     'claude-code-version',
     'install-nodejs',
@@ -79,7 +78,6 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'always-thinking-enabled',
     'effort-level',
     'company-announcements',
-    'include-co-authored-by',
     'attribution',
     'status-line',
 })
@@ -5730,7 +5728,6 @@ def create_additional_settings(
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
-    include_co_authored_by: bool | None = None,
     always_thinking_enabled: bool | None = None,
     company_announcements: list[str] | None = None,
     attribution: dict[str, str] | None = None,
@@ -5749,12 +5746,10 @@ def create_additional_settings(
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
-        include_co_authored_by: DEPRECATED - Optional flag to include co-authored-by in commits.
-            Use 'attribution' parameter instead.
         always_thinking_enabled: Optional flag to enable always-on thinking mode
         company_announcements: Optional list of company announcement strings
         attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
-            Empty strings hide attribution. Takes precedence over include_co_authored_by.
+            Empty strings hide attribution.
         status_line: Optional dict with 'file' key for status line script path, optional
             'padding' key, and optional 'config' key for config file reference.
             Both the script and config file are downloaded to ~/.claude/hooks/ and
@@ -5795,24 +5790,12 @@ def create_additional_settings(
         for key in env:
             info(f'  - {key}')
 
-    # Handle attribution settings (new format takes precedence)
+    # Handle attribution settings
     if attribution is not None:
         settings['attribution'] = attribution
         commit_preview = repr(attribution.get('commit', ''))[:30]
         pr_preview = repr(attribution.get('pr', ''))[:30]
         info(f'Setting attribution: commit={commit_preview}, pr={pr_preview}')
-        if include_co_authored_by is not None:
-            warning('Both "attribution" and deprecated "include-co-authored-by" specified. Using "attribution".')
-    elif include_co_authored_by is not None:
-        # DEPRECATED: Convert to new format
-        warning('Config key "include-co-authored-by" is deprecated. Use "attribution" instead.')
-        if include_co_authored_by is False:
-            # false -> hide attribution
-            settings['attribution'] = {'commit': '', 'pr': ''}
-            info('Setting attribution: hiding all (converted from include-co-authored-by: false)')
-        # Note: true -> don't set anything, let Claude Code use defaults
-        else:
-            info('include-co-authored-by: true -> using Claude Code defaults (no attribution override)')
 
     # Add alwaysThinkingEnabled if explicitly set (None means not configured, leave as default)
     if always_thinking_enabled is not None:
@@ -6994,16 +6977,12 @@ def main() -> None:
 
         environment_name = config.get('name', 'Development')
 
-        # Extract command-names (new format, array)
+        # Extract command-names
         command_names_raw = config.get('command-names')
 
-        # Handle deprecated command-name (singular)
-        command_name_deprecated = config.get('command-name')
-
-        # Normalize to list and handle deprecation
+        # Normalize to list
         command_names: list[str] | None = None
         if command_names_raw is not None:
-            # New format: ensure it's a list
             if isinstance(command_names_raw, str):
                 command_names = [command_names_raw]
             elif isinstance(command_names_raw, list):
@@ -7012,12 +6991,6 @@ def main() -> None:
             else:
                 error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
                 sys.exit(1)
-            if command_name_deprecated is not None:
-                warning('Both "command-names" and deprecated "command-name" specified. Using "command-names".')
-        elif command_name_deprecated is not None:
-            # DEPRECATED: Convert singular to list
-            warning('Config key "command-name" is deprecated. Use "command-names" (array) instead.')
-            command_names = [str(command_name_deprecated)]
 
         # Validate command names
         if command_names:
@@ -7057,16 +7030,13 @@ def main() -> None:
         # Extract OS-level environment variables configuration
         os_env_variables = config.get('os-env-variables')
 
-        # Extract include_co_authored_by configuration
-        include_co_authored_by = config.get('include-co-authored-by')
-
         # Extract always_thinking_enabled configuration
         always_thinking_enabled = config.get('always-thinking-enabled')
 
         # Extract company_announcements configuration
         company_announcements = config.get('company-announcements')
 
-        # Extract attribution configuration (new format, takes precedence over include-co-authored-by)
+        # Extract attribution configuration
         attribution = config.get('attribution')
 
         # Extract status_line configuration
@@ -7364,7 +7334,6 @@ def main() -> None:
                 model,
                 permissions,
                 env_variables,
-                include_co_authored_by,
                 always_thinking_enabled,
                 company_announcements,
                 attribution,

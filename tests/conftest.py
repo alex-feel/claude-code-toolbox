@@ -41,7 +41,7 @@ def sample_environment_config() -> dict[str, Any]:
     """Return a sample environment configuration."""
     return {
         'name': 'Test Environment',
-        'command-name': 'claude-test',
+        'command-names': ['claude-test'],
         'base-url': 'https://example.com/repo',
         'dependencies': ['pytest', 'pyyaml'],
         'agents': ['agents/test-agent.md'],
@@ -93,7 +93,8 @@ def invalid_yaml_content() -> str:
     """Return invalid YAML content for testing."""
     return '''
 name: Test
-command-name: invalid name with spaces
+command-names:
+  - "invalid name with spaces"
 '''
 
 
@@ -194,7 +195,8 @@ def environment_yaml_files(temp_dir: Path) -> dict[str, Path]:
     valid_env = env_dir / 'python.yaml'
     valid_env.write_text('''
 name: Python Development
-command-name: claude-python
+command-names:
+  - claude-python
 dependencies:
   - uv
   - pytest
@@ -207,7 +209,8 @@ agents:
     invalid_env = env_dir / 'invalid.yaml'
     invalid_env.write_text('''
 name: Invalid
-command-name: invalid name
+command-names:
+  - "invalid name"
 ''')
     files['invalid'] = invalid_env
 

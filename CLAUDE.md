@@ -167,9 +167,45 @@ The setup creates global commands (e.g., `claude-python`) that work across all W
 - CMD wrapper (`~/.local/bin/{command}.cmd`)
 - Git Bash wrapper (`~/.local/bin/{command}`)
 
+### Validation Models
+
+The repository includes a Pydantic validation model for environment YAML configurations.
+
+**Model location:** `scripts/models/environment_config.py`
+
+**Purpose:** Provides a Pydantic schema (`EnvironmentConfig`) that defines the complete structure and types for environment YAML configurations. The model validates field names, types, and constraints for all supported configuration keys.
+
+**Canonical source:** This repository (claude-code-toolbox) is the authoritative home for the model. Changes to the model are made here and synced to downstream repositories via the sync mechanism described below.
+
+**Maintenance rule:** When adding new config keys to `setup_environment.py` (by extending `KNOWN_CONFIG_KEYS`), the `EnvironmentConfig` model in `scripts/models/environment_config.py` MUST be updated simultaneously with the corresponding field definition (and vice versa). The parity test enforces this at CI time.
+
+**KNOWN_CONFIG_KEYS alignment:** The test `tests/scripts/models/test_known_config_keys_parity.py` enforces a STRICT BIDIRECTIONAL match between `KNOWN_CONFIG_KEYS` in `setup_environment.py` and `EnvironmentConfig.model_fields`. There are ZERO exceptions -- every key must exist in both places, and every model field must have a corresponding `KNOWN_CONFIG_KEYS` entry.
+
+**Deprecated keys policy:** Deprecated configuration keys must be DELETED from both `KNOWN_CONFIG_KEYS` and the model, not kept with exceptions or backward compatibility shims. The parity test will fail if a key exists in one place but not the other.
+
+**Test location:** `tests/scripts/models/` contains:
+
+- `test_environment_config.py` -- model field validation, type checking, edge cases
+- `test_mcp_server_scope.py` -- MCP server configuration scope validation
+- `test_known_config_keys_parity.py` -- strict bidirectional parity enforcement
+
+**Sync mechanism:** The `.github/` directory contains the sync infrastructure:
+
+- `sync_to_repos.py` -- script that pushes model changes to target repositories
+- `sync_config.py` -- Pydantic model for sync configuration
+- `sync-config.yaml` -- configuration defining target repos and file mappings
+- The workflow `.github/workflows/sync-to-repos.yml` triggers on changes to `scripts/models/environment_config.py` and syncs to `alex-feel/claude-code-artifacts` and `alex-feel/claude-code-artifacts-public`, placing the model at `.github/environment_config.py` in each target
+
+**Runtime integration status:** The model is NOT imported or used at runtime in `setup_environment.py`. The `KNOWN_CONFIG_KEYS` frozenset is the active runtime mechanism for unknown-key detection. The model serves as a schema definition for CI validation and documentation, and the parity test ensures the two stay permanently synchronized.
+
+**UserSettings policy:** The `UserSettings` class is a free-form open model (`extra='allow'`) with ZERO hardcoded fields. It passes through all user-provided settings to `settings.json` without field-level validation. The only structural guard is a blocklist validator (`check_excluded_keys`) that prevents `hooks` and `statusLine` keys from appearing in user-settings (these are profile-specific and must be configured at the root level of the environment YAML).
+
 ## Development Commands
 
 ### Testing Commands
+
+**CRITICAL: ALWAYS run the full test suite after making ANY changes. All tests must pass (100% pass rate). Never skip the test suite.**
+
 ```bash
 # Run all tests
 uv run pytest
@@ -187,6 +223,13 @@ uv run pytest -k "test_colors"
 # Run tests with verbose output
 uv run pytest -v
 ```
+
+**Mandatory workflow after code changes:**
+1. Make your code changes
+2. Run `uv run pytest` to check all tests pass
+3. Fix any failing tests immediately
+4. Run `uv run pre-commit run --all-files` for code quality validation
+5. Only commit when ALL tests pass and all pre-commit hooks pass
 
 ### E2E Testing
 
@@ -224,6 +267,8 @@ tests/e2e/
 ├── test_confirmation.py     # Installation confirmation gate tests
 ├── test_env_variable_handling.py  # OS environment variable tests
 ├── test_javascript_hooks.py # JavaScript hook event tests
+├── test_manifest_lifecycle.py # Manifest creation and update tests
+├── test_mcp_argument_ordering.py # MCP server argument order tests
 ├── test_npm_fallback.py     # npm installation and sudo fallback tests
 ├── test_root_guard.py       # Root detection guard tests
 ├── test_upgrade_source_detection.py # Source-aware upgrade routing tests
@@ -255,7 +300,7 @@ The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that in
 3. **Documentation by example** - demonstrates the complete configuration schema
 
 The golden config includes:
-- Core settings: `name`, `command-names`, `base-url`, `claude-code-version`
+- Core settings: `name`, `version`, `command-names`, `base-url`, `claude-code-version`, `install-nodejs`
 - Dependencies: `dependencies` (with platform-specific variants)
 - Resources: `agents`, `slash-commands`, `skills`, `files-to-download`
 - Hooks: `hooks` (files and events with command/prompt types)
@@ -314,31 +359,6 @@ uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
 
 **Use pre-commit for all code quality validation:**
 - ✅ `uv run pre-commit run --all-files` - Correct approach
-
-## CRITICAL: Test Suite Requirements
-
-**ALWAYS run the full test suite after making ANY changes to the codebase:**
-
-```bash
-# Run the complete test suite
-uv run pytest
-
-# If any tests fail, they MUST be fixed before proceeding
-# The codebase must maintain 100% test pass rate at all times
-```
-
-**Testing workflow after code changes:**
-1. Make your code changes
-2. Run `uv run pytest` to check all tests pass
-3. Fix any failing tests immediately
-4. Run `uv run pre-commit run --all-files` for code quality validation
-5. Only commit when ALL tests pass and all pre-commit hooks pass
-
-**IMPORTANT:**
-- All tests must pass (100% pass rate)
-- Use ONLY `uv run pre-commit run --all-files` for code quality checks
-
-**Important:** Never skip the test suite. Even small changes can have unexpected impacts.
 
 ## E2E Testing Requirements for New Features
 
@@ -450,8 +470,8 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
 - `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
 - `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
-- `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running setup scripts as root on Linux/macOS. By default, all Linux/macOS scripts refuse to run as root to prevent configuration being created under `/root/` instead of the user's home directory. The installer will request `sudo` only when needed (e.g., for npm global installs). Use this override for Docker containers, CI/CD environments, or other legitimate root use cases.
-- `CLAUDE_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation in `setup_environment.py`. Only exact value `'1'` is accepted, consistent with `CLAUDE_ALLOW_ROOT`. Useful for CI/CD pipelines and automated deployments where interactive confirmation is not possible.
+- `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
+- `CLAUDE_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
 
 ### npm Sudo Handling (Non-Interactive Mode)
 
@@ -596,56 +616,27 @@ When adding or updating GitHub Actions in workflow files (`.github/workflows/*.y
    - `node20` -- deprecated, will stop working after June 2, 2026
    - Note: some actions use `action.yaml` instead of `action.yml`
 
-## Windows PATH Management Architecture
+## Platform-Specific Code Patterns (MyPy)
 
-### Critical Implementation Details
+**CRITICAL:** MyPy on Linux CI analyzes platform checks differently than on Windows locally. Negative checks with early returns cause "unreachable code" errors in CI even though the code runs fine on Windows. MyPy may pass locally but fail in CI on the same code.
 
-**Platform-Specific Patterns:**
-
-When writing Windows-specific functions that should no-op on other platforms:
+**Always use positive platform checks:**
 
 ```python
 # CORRECT: Use positive platform check (MyPy-friendly)
 def windows_specific_function() -> ReturnType:
     if sys.platform == 'win32':
-        # Main Windows-specific logic here
-        # ...
-        return result
+        # All Windows-specific logic inside this block
+        # (e.g., add_directory_to_windows_path(), cleanup_temp_paths_from_registry())
+        return windows_result
     # Non-Windows platforms
     return default_value
 
-# INCORRECT: Avoid negative checks with early returns (causes MyPy "unreachable" errors in CI)
+# INCORRECT: Causes MyPy "unreachable" errors on Linux CI
 def windows_specific_function() -> ReturnType:
     if sys.platform != 'win32':
         return default_value  # MyPy on Linux CI considers code after this unreachable
-    # This code becomes "unreachable" in MyPy's analysis on Linux
-    try:
-        # Windows logic
-        pass
-```
-
-**Why this matters:** MyPy on Linux CI (GitHub Actions) performs static analysis differently than on Windows. Using `if sys.platform != 'win32':` with early returns causes MyPy to conclude that subsequent code is unreachable, even though it's reachable on Windows. Always use positive platform checks with the main logic inside the conditional block.
-
-## MyPy Platform-Specific Behavior
-
-**CRITICAL:** MyPy's static analysis behaves differently across platforms when analyzing platform-specific code:
-
-- **Local Testing (Windows):** MyPy may pass locally even with negative platform checks
-- **CI Testing (Linux):** MyPy on Linux uses different control flow analysis and will fail on the same code
-
-**Best Practice:**
-- Always use positive platform checks: `if sys.platform == 'win32':`
-- Avoid early returns with negative checks: `if sys.platform != 'win32': return ...`
-- Test with `uv run mypy scripts/` before pushing
-- Expect CI to catch platform-specific analysis issues that local testing might miss
-
-**Pattern to Follow:**
-```python
-# In add_directory_to_windows_path(), cleanup_temp_paths_from_registry(), etc.
-if sys.platform == 'win32':
-    # All Windows-specific logic inside this block
     # ...
-    return windows_result
-# Fallback for other platforms
-return default_result
 ```
+
+Test with `uv run mypy scripts/` before pushing. Expect CI to catch issues local testing might miss.

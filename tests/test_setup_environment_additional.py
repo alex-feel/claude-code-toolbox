@@ -1479,7 +1479,7 @@ class TestMainFunctionErrorPaths:
         mock_load.return_value = (
             {
                 'name': 'Full Test',
-                'command-name': 'full-test',
+                'command-names': ['full-test'],
                 'base-url': 'https://example.com/base/{path}',
                 'model': 'claude-3-opus',
                 'permissions': {

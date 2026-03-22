@@ -817,7 +817,7 @@ class TestMainFlowWithValidation:
         mock_load.return_value = (
             {
                 'name': 'Test',
-                'command-name': 'test-cmd',
+                'command-names': ['test-cmd'],
                 'agents': ['bad.md'],
             },
             'https://example.com',
@@ -871,7 +871,7 @@ class TestMainFlowWithValidation:
         mock_load.return_value = (
             {
                 'name': 'Test',
-                'command-name': 'test-cmd',
+                'command-names': ['test-cmd'],
                 'agents': ['good.md'],
                 'dependencies': [],
             },
