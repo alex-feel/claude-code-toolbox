@@ -96,6 +96,39 @@ All Linux and macOS scripts (both bash bootstrap scripts and Python entry points
 - **Rationale:** Running as root creates configuration under `/root/` instead of the regular user's home directory, causing environment setup to target the wrong user
 - **When to use override:** Docker containers, CI/CD pipelines, or other legitimate root execution environments
 
+### Installation Confirmation
+
+The setup script requires explicit user confirmation before installing any resources. This prevents unintended installations from untrusted configurations.
+
+**CLI Flags:**
+
+- `--yes` / `-y`: Auto-confirm installation (skip interactive prompt)
+- `--dry-run`: Show installation plan and exit without installing
+
+**Environment Variable:**
+
+- `CLAUDE_CONFIRM_INSTALL=1`: Auto-confirm (only exact value `'1'` accepted)
+
+**Default Behavior:**
+
+- Interactive terminal: Prompts user with `[y/N]` (default deny)
+- Piped stdin with `/dev/tty` available: Prompts via `/dev/tty` (best-effort fallback)
+- Non-interactive without `/dev/tty`: Refuses with guidance, exits 1
+
+**Exit Codes:**
+
+- `0`: Successful installation, `--dry-run`, or interactive user cancellation
+- `1`: Errors or non-interactive refusal
+
+**Bootstrap Scripts:**
+All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes` and `--dry-run` flags to the Python script. The `CLAUDE_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
+
+**Known Config Keys:**
+The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
+
+**Sensitive Path Detection:**
+Files-to-download destinations are checked against `SENSITIVE_PATH_PREFIXES`. Sensitive paths (e.g., `~/.ssh/`, `~/.bashrc`) are flagged with `[!]` in the installation summary.
+
 ### Environment Configuration System
 
 YAML configurations define complete development environments including:
@@ -188,6 +221,7 @@ tests/e2e/
 ├── test_path_handling.py    # Tilde expansion and path format tests
 ├── test_path_normalization.py # Path separator consistency tests
 ├── test_cleanup.py          # Artifact cleanup verification
+├── test_confirmation.py     # Installation confirmation gate tests
 ├── test_env_variable_handling.py  # OS environment variable tests
 ├── test_javascript_hooks.py # JavaScript hook event tests
 ├── test_npm_fallback.py     # npm installation and sudo fallback tests
@@ -417,6 +451,7 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
 - `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
 - `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running setup scripts as root on Linux/macOS. By default, all Linux/macOS scripts refuse to run as root to prevent configuration being created under `/root/` instead of the user's home directory. The installer will request `sudo` only when needed (e.g., for npm global installs). Use this override for Docker containers, CI/CD environments, or other legitimate root use cases.
+- `CLAUDE_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation in `setup_environment.py`. Only exact value `'1'` is accepted, consistent with `CLAUDE_ALLOW_ROOT`. Useful for CI/CD pipelines and automated deployments where interactive confirmation is not possible.
 
 ### npm Sudo Handling (Non-Interactive Mode)
 
