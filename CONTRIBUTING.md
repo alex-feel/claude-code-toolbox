@@ -310,7 +310,7 @@ claude-code-toolbox/
 ├── tests/                           # Test suite
 │   ├── test_install_claude.py       # Tests for installer
 │   └── test_setup_environment.py    # Tests for environment setup
-├── technical-docs/                  # Technical documentation
+├── docs/                            # Technical documentation
 ├── .github/                         # GitHub workflows and templates
 │   └── workflows/
 │       ├── lint.yml                 # Linting and validation
@@ -348,7 +348,7 @@ claude-code-toolbox/
 ## Documentation Requirements
 
 - Update README.md for user-facing changes
-- Add/update technical-docs/ for detailed technical documentation
+- Add/update docs/ for detailed technical documentation
 - Include inline comments for complex logic
 - Update CLAUDE.md if changing development workflows
 
