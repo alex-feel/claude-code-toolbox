@@ -45,7 +45,7 @@ class TestSourceAwareUpgrade:
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -54,7 +54,7 @@ class TestSourceAwareUpgrade:
         mock_npm.assert_not_called()
 
     def test_npm_mode_triggers_npm_upgrade(self) -> None:
-        """When CLAUDE_INSTALL_METHOD=npm, npm is used directly for upgrade.
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm, npm is used directly for upgrade.
 
         Note: In auto mode with npm source, the migration block fires first
         and returns before reaching the upgrade path. This test uses explicit
@@ -80,7 +80,7 @@ class TestSourceAwareUpgrade:
             patch.object(
                 install_claude, 'install_claude_npm', return_value=True,
             ) as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -113,7 +113,7 @@ class TestSourceAwareUpgrade:
             patch.object(
                 install_claude, 'install_claude_npm', return_value=True,
             ) as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -128,7 +128,7 @@ class TestSourceAwareUpgrade:
         )
 
     def test_native_mode_no_npm_on_upgrade_failure(self) -> None:
-        """When CLAUDE_INSTALL_METHOD=native, npm is not used even if native upgrade fails."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native, npm is not used even if native upgrade fails."""
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
@@ -146,7 +146,7 @@ class TestSourceAwareUpgrade:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'native'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -155,7 +155,7 @@ class TestSourceAwareUpgrade:
         mock_npm.assert_not_called()
 
     def test_npm_mode_ignores_source(self) -> None:
-        """When CLAUDE_INSTALL_METHOD=npm, npm is used regardless of installation source."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm, npm is used regardless of installation source."""
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
@@ -176,7 +176,7 @@ class TestSourceAwareUpgrade:
             patch.object(
                 install_claude, 'install_claude_npm', return_value=True,
             ) as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -203,7 +203,7 @@ class TestSourceAwareUpgrade:
                 install_claude, 'install_claude_native_cross_platform',
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -293,7 +293,7 @@ class TestPathClassification:
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 

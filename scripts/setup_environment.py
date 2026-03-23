@@ -184,18 +184,18 @@ R = TypeVar('R')
 type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
 
 
-# Default number of parallel workers - can be overridden via CLAUDE_PARALLEL_WORKERS env var
+# Default number of parallel workers - can be overridden via CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS env var
 # Reduced from 5 to 2 to decrease likelihood of hitting GitHub secondary rate limits
-DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
 
 
 def is_parallel_mode_enabled() -> bool:
     """Check if parallel execution is enabled.
 
     Returns:
-        True if parallel mode is enabled (default), False if CLAUDE_SEQUENTIAL_MODE=1
+        True if parallel mode is enabled (default), False if CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1
     """
-    sequential_mode = os.environ.get('CLAUDE_SEQUENTIAL_MODE', '').lower()
+    sequential_mode = os.environ.get('CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE', '').lower()
     return sequential_mode not in ('1', 'true', 'yes')
 
 
@@ -208,7 +208,7 @@ def execute_parallel(
     """Execute a function on items in parallel with error isolation.
 
     Processes items using ThreadPoolExecutor when parallel mode is enabled,
-    or sequentially when CLAUDE_SEQUENTIAL_MODE=1.
+    or sequentially when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1.
 
     Args:
         items: List of items to process
@@ -357,11 +357,11 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         # Collect critical environment variables to pass to elevated process
         env_vars_to_pass: list[str] = []
         critical_env_vars = [
-            'CLAUDE_ENV_CONFIG',
+            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
             'GITHUB_TOKEN',
             'GITLAB_TOKEN',
             'REPO_TOKEN',
-            'CLAUDE_VERSION',
+            'CLAUDE_CODE_TOOLBOX_VERSION',
         ]
 
         for var_name in critical_env_vars:
@@ -801,9 +801,9 @@ def find_bash_windows() -> str | None:
     """
     debug_log('find_bash_windows() called')
 
-    # Check CLAUDE_CODE_GIT_BASH_PATH env var first
-    env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
-    debug_log(f'CLAUDE_CODE_GIT_BASH_PATH={env_path}')
+    # Check CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH env var first
+    env_path = os.environ.get('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH')
+    debug_log(f'CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH={env_path}')
     if env_path and Path(env_path).exists():
         debug_log(f'Found via env var: {env_path}')
         return str(Path(env_path).resolve())
@@ -1660,9 +1660,9 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             # Broadcast WM_SETTINGCHANGE to notify other processes
             # This is done via setx which broadcasts the change
             # We use a dummy variable to trigger the broadcast without modifying anything
-            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+            subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
             subprocess.run(
-                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                 capture_output=True,
                 check=False,
             )
@@ -1774,9 +1774,9 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
                 winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
 
                 # Broadcast WM_SETTINGCHANGE to notify other processes
-                subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+                subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
                 subprocess.run(
-                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                     capture_output=True,
                     check=False,
                 )
@@ -2188,7 +2188,7 @@ def validate_all_config_files(
         is_valid, method = validator.validate(resolved_path, is_remote)
         return (file_type, original_path, is_valid, method)
 
-    # Execute validation in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    # Execute validation in parallel (or sequential if CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1)
     results = execute_parallel(files_to_check, validate_single_file)
 
     # Process results and print status messages
@@ -3435,7 +3435,7 @@ def confirm_installation(
 
     Implements the confirmation flow:
     1. --dry-run: display summary, return False (caller exits 0)
-    2. --yes or CLAUDE_CONFIRM_INSTALL=1: display summary, return True
+    2. --yes or CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1: display summary, return True
     3. Interactive TTY: prompt user with [y/N]
     4. /dev/tty available: prompt via /dev/tty
     5. Non-interactive: display summary + guidance, return False (caller exits 1)
@@ -3460,7 +3460,7 @@ def confirm_installation(
     # Auto-confirm: show summary, proceed
     if auto_confirm:
         print()
-        info('Auto-confirmed via --yes flag or CLAUDE_CONFIRM_INSTALL=1')
+        info('Auto-confirmed via --yes flag or CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
         return True
 
     # Check if ANY interactive input is possible
@@ -3478,7 +3478,7 @@ def confirm_installation(
         print()
         info('To auto-confirm in non-interactive mode, use one of:')
         info('  1. Pass --yes flag: setup_environment.py <config> --yes')
-        info('  2. Set environment variable: CLAUDE_CONFIRM_INSTALL=1')
+        info('  2. Set environment variable: CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
         info('  3. Preview only: setup_environment.py <config> --dry-run')
         return False
 
@@ -4657,7 +4657,7 @@ def process_resources(
 ) -> bool:
     """Process resources (download from URL or copy from local) based on configuration.
 
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         resources: List of resource paths from config
@@ -4708,7 +4708,7 @@ def process_file_downloads(
 
     Downloads files from URLs or copies from local paths to specified destinations.
     Supports cross-platform path expansion using ~ and environment variables.
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         file_specs: List of file specifications with 'source' and 'dest' keys.
@@ -4903,7 +4903,7 @@ def process_skills(
     """Process all skills from configuration.
 
     Iterates through all skill configurations and installs each one to the
-    skills directory. Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    skills directory. Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         skills_config: List of skill configuration dictionaries
@@ -4966,7 +4966,7 @@ def install_claude(version: str | None = None) -> bool:
     if version:
         info(f'Installing Claude Code version {version}...')
         # Set environment variable for the installer scripts to use
-        os.environ['CLAUDE_VERSION'] = version
+        os.environ['CLAUDE_CODE_TOOLBOX_VERSION'] = version
     else:
         info('Installing Claude Code (latest version)...')
 
@@ -5674,7 +5674,7 @@ def download_hook_files(
 ) -> bool:
     """Download hook files from configuration.
 
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         hooks: Hooks configuration dictionary with 'files' key
@@ -6806,7 +6806,7 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
 
     if '--debug-elevation' in sys.argv:
         print(f'[DEBUG] Cleaned sys.argv: {remaining_args}')
-        print(f"[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
+        print(f"[DEBUG] CLAUDE_CODE_TOOLBOX_ENV_CONFIG: {os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'NOT SET')}")
         print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
     return remaining_args, was_elevated_via_uac
@@ -6828,7 +6828,7 @@ def main() -> None:
         if '--debug-elevation' in original_argv:
             print('[DEBUG] Elevated process started successfully')
             print(f'[DEBUG] Admin status: {is_admin()}')
-            print(f"[DEBUG] Config from env: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
+            print(f"[DEBUG] Config from env: {os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'NOT SET')}")
             print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
         # Show that we're running elevated (only if via UAC)
@@ -6842,7 +6842,7 @@ def main() -> None:
     # Refuse to run as root on Unix unless explicitly allowed
     if platform.system() != 'Windows':
         geteuid = getattr(os, 'geteuid', None)
-        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
             print()
             warning('Running as root creates configuration under /root/,')
@@ -6853,7 +6853,7 @@ def main() -> None:
                  'claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash')
             print()
             info('The installer will request sudo only when needed (e.g., npm).')
-            info('To force root execution: CLAUDE_ALLOW_ROOT=1 <command>')
+            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
             sys.exit(1)
 
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
@@ -6874,12 +6874,12 @@ def main() -> None:
     args = parser.parse_args()
 
     # Get configuration from args or environment
-    config_name = args.config or os.environ.get('CLAUDE_ENV_CONFIG')
+    config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')
 
     if not config_name:
         error('No configuration specified!')
         info('Usage: setup_environment.py <config_name>')
-        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup_environment.py')
+        info('   or: CLAUDE_CODE_TOOLBOX_ENV_CONFIG=<config_name> setup_environment.py')
         info('Example: setup_environment.py python')
         sys.exit(1)
 
@@ -7129,7 +7129,7 @@ def main() -> None:
         )
 
         # Determine auto-confirm from --yes flag or environment variable
-        auto_confirm = args.yes or os.environ.get('CLAUDE_CONFIRM_INSTALL') == '1'
+        auto_confirm = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
 
         # Confirmation gate
         confirmed = confirm_installation(

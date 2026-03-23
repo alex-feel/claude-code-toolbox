@@ -203,7 +203,7 @@ class TestAdminCheck:
 class TestWindowsGitBash:
     """Test Windows Git Bash detection and installation."""
 
-    @patch.dict('os.environ', {'CLAUDE_CODE_GIT_BASH_PATH': 'C:\\Git\\bash.exe'})
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH': 'C:\\Git\\bash.exe'})
     @patch('pathlib.Path.exists', return_value=True)
     def test_find_bash_windows_env_var(self, mock_exists):
         """Test finding bash via environment variable."""
@@ -1066,7 +1066,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
     using npm.
     """
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_npm')
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1095,7 +1095,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native.assert_called()
         mock_npm.assert_not_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
     @patch('install_claude.install_claude_native_cross_platform')
     @patch('install_claude.compare_versions', return_value=False)
@@ -1111,7 +1111,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native,
         mock_npm,
     ):
-        """When CLAUDE_INSTALL_METHOD=npm, upgrade should use npm directly."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm, upgrade should use npm directly."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
 
@@ -1124,7 +1124,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm.assert_called()
         mock_native.assert_not_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1153,7 +1153,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native.assert_called()
         mock_npm.assert_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'native'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}, clear=False)
     @patch('install_claude.install_claude_npm')
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1169,7 +1169,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native,
         mock_npm,
     ):
-        """When CLAUDE_INSTALL_METHOD=native, no npm fallback on upgrade failure."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native, no npm fallback on upgrade failure."""
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
 
         result = install_claude.ensure_claude()
@@ -1182,7 +1182,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native.assert_called()
         mock_npm.assert_not_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
     @patch('install_claude.install_claude_native_cross_platform')
     @patch('install_claude.compare_versions', return_value=False)
@@ -1198,7 +1198,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native,
         mock_npm,
     ):
-        """When CLAUDE_INSTALL_METHOD=npm, always use npm regardless of source."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm, always use npm regardless of source."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         # Source is native, but install_method is npm
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
@@ -1212,7 +1212,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm.assert_called()
         mock_native.assert_not_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_npm')
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1242,7 +1242,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         # npm should NOT be called since native succeeded
         mock_npm.assert_not_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1272,7 +1272,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         # npm should be called as fallback since native failed
         mock_npm.assert_called()
 
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
@@ -1331,7 +1331,7 @@ class TestMainFunction:
         assert mock_claude.return_value is True
         assert mock_find.return_value is None
         # Force npm installation method to ensure Node.js is installed
-        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_not_called()
             mock_git.assert_called_once()
@@ -1351,7 +1351,7 @@ class TestMainFunction:
         assert mock_node.return_value is True
         assert mock_claude.return_value is True
         # Force npm installation method to ensure Node.js is installed
-        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
             mock_exit.assert_not_called()
             mock_node.assert_called_once()
@@ -1376,7 +1376,7 @@ class TestMainFunction:
         assert mock_system.return_value == 'Darwin'
         assert mock_node.return_value is False
         # Force npm installation method to ensure Node.js is required
-        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), pytest.raises(SystemExit) as exc_info:
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}), pytest.raises(SystemExit) as exc_info:
             install_claude.main()
         assert exc_info.value.code == 1
 
@@ -2763,8 +2763,8 @@ class TestRootGuard:
     """Test root detection guard in install_claude.py main()."""
 
     def test_root_guard_exits_when_root_without_override(self) -> None:
-        """Running as root without CLAUDE_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -2775,11 +2775,11 @@ class TestRootGuard:
         assert exc_info.value.code == 1
 
     def test_root_guard_allows_when_override_set(self) -> None:
-        """CLAUDE_ALLOW_ROOT=1 allows root execution to proceed past the guard."""
+        """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed past the guard."""
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1', 'CLAUDE_INSTALL_METHOD': 'npm'}),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1', 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
             patch.object(install_claude, 'ensure_nodejs', return_value=True),
             patch.object(install_claude, 'ensure_claude', return_value=True),
             contextlib.suppress(SystemExit),
@@ -2796,7 +2796,7 @@ class TestRootGuard:
             patch.object(install_claude, 'update_path'),
             patch.object(install_claude, 'find_command', return_value=None),
             patch.object(install_claude, 'set_windows_env_var'),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'native'}),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}),
             contextlib.suppress(SystemExit),
         ):
             install_claude.main()
@@ -2806,7 +2806,7 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=1000),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
             patch.object(install_claude, 'ensure_nodejs', return_value=True),
             patch.object(install_claude, 'ensure_claude', return_value=True),
             contextlib.suppress(SystemExit),
@@ -2817,7 +2817,7 @@ class TestRootGuard:
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -2828,11 +2828,11 @@ class TestRootGuard:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
-        assert 'CLAUDE_ALLOW_ROOT' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
     def test_root_guard_works_on_macos(self) -> None:
         """Root guard activates on macOS (Darwin) the same as Linux."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
@@ -3061,7 +3061,7 @@ class TestInstallClaudeNpmSudo:
             assert (
                 'sudo npm install' in combined.lower()
                 or 'npm config set prefix' in combined.lower()
-                or 'CLAUDE_INSTALL_METHOD' in combined
+                or 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined
             )
 
     @patch('platform.system', return_value='Linux')
@@ -3330,7 +3330,7 @@ class TestEnsureClaudeErrorMessaging:
     @patch('install_claude.get_claude_version', return_value=None)
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.install_claude_npm', return_value=False)
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     def test_all_methods_failed_shows_troubleshooting_unix(
         self, mock_npm, mock_native, mock_version, mock_system, capsys,
     ):
@@ -3348,13 +3348,13 @@ class TestEnsureClaudeErrorMessaging:
         assert 'troubleshooting' in combined.lower()
         assert 'sudo' in combined
         assert 'npm config set prefix' in combined
-        assert 'CLAUDE_INSTALL_METHOD' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined
 
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.get_claude_version', return_value=None)
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.install_claude_npm', return_value=False)
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     def test_all_methods_failed_shows_troubleshooting_windows(
         self, mock_npm, mock_native, mock_version, mock_system, capsys,
     ):
@@ -3369,18 +3369,18 @@ class TestEnsureClaudeErrorMessaging:
         assert result is False
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert 'CLAUDE_INSTALL_METHOD' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined
         assert 'irm' in combined
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.get_claude_version', return_value=None)
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.install_claude_npm', return_value=False)
-    @patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     def test_native_fallback_suggests_method_override(
         self, mock_npm, mock_native, mock_version, mock_system, capsys,
     ):
-        """When native fails and falls back to npm, suggest CLAUDE_INSTALL_METHOD."""
+        """When native fails and falls back to npm, suggest CLAUDE_CODE_TOOLBOX_INSTALL_METHOD."""
         assert mock_system.return_value == 'Linux'
         assert mock_version.return_value is None
         assert mock_native.return_value is False
@@ -3390,4 +3390,4 @@ class TestEnsureClaudeErrorMessaging:
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined or 'CLAUDE_INSTALL_METHOD' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined or 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined

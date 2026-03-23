@@ -1392,7 +1392,7 @@ class TestMainFunctionErrorPaths:
             mock_exit.assert_not_called()  # Should continue despite launcher failure
 
     @patch('setup_environment.is_admin', return_value=True)
-    @patch.dict('os.environ', {'CLAUDE_ENV_CONFIG': 'env-config'})
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'env-config'})
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
@@ -1418,7 +1418,7 @@ class TestMainFunctionErrorPaths:
         mock_load,
         mock_is_admin,
     ):
-        """Test main using CLAUDE_ENV_CONFIG environment variable."""
+        """Test main using CLAUDE_CODE_TOOLBOX_ENV_CONFIG environment variable."""
         assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
         del mock_register  # Unused but required for patch

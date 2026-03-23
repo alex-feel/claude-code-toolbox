@@ -35,9 +35,9 @@ The installer uses a native-first approach with automatic npm fallback:
 - `ensure_claude()` - Main orchestrator with native-first logic
 
 **Environment Variables:**
-- `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
-- `CLAUDE_VERSION` - Forces specific version via npm (native installers don't support version selection)
-- `CLAUDE_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
+- `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
+- `CLAUDE_CODE_TOOLBOX_VERSION` - Forces specific version via npm (native installers don't support version selection)
+- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
 
 **Native Path Detection (Non-Windows):**
 
@@ -91,7 +91,7 @@ The check works as follows:
 All Linux and macOS scripts (both bash bootstrap scripts and Python entry points) refuse to run as root/sudo by default:
 
 - **Detection:** Checks `id -u == 0` (shell scripts) or `os.geteuid() == 0` (Python scripts)
-- **Override:** Set `CLAUDE_ALLOW_ROOT=1` to bypass the guard (only exact value `1` is accepted; `true`, `yes`, or empty strings do NOT work)
+- **Override:** Set `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1` to bypass the guard (only exact value `1` is accepted; `true`, `yes`, or empty strings do NOT work)
 - **Scope:** Applies to all 6 entry points: `install-claude-linux.sh`, `setup-environment.sh` (both Linux and macOS), `install_claude.py`, and `setup_environment.py`
 - **Rationale:** Running as root creates configuration under `/root/` instead of the regular user's home directory, causing environment setup to target the wrong user
 - **When to use override:** Docker containers, CI/CD pipelines, or other legitimate root execution environments
@@ -107,7 +107,7 @@ The setup script requires explicit user confirmation before installing any resou
 
 **Environment Variable:**
 
-- `CLAUDE_CONFIRM_INSTALL=1`: Auto-confirm (only exact value `'1'` accepted)
+- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1`: Auto-confirm (only exact value `'1'` accepted)
 
 **Default Behavior:**
 
@@ -121,7 +121,7 @@ The setup script requires explicit user confirmation before installing any resou
 - `1`: Errors or non-interactive refusal
 
 **Bootstrap Scripts:**
-All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes` and `--dry-run` flags to the Python script. The `CLAUDE_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
+All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes` and `--dry-run` flags to the Python script. The `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
 
 **Known Config Keys:**
 The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
@@ -467,11 +467,11 @@ When configuring MCP servers, permissions are automatically added to `additional
 The setup scripts support these environment variables for debugging and customization:
 
 - `CLAUDE_CODE_TOOLBOX_DEBUG`: Set to `1`, `true`, or `yes` to enable verbose debug logging during MCP server configuration and other operations
-- `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
-- `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
-- `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
-- `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
-- `CLAUDE_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
+- `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
+- `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
+- `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
+- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
+- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
 
 ### npm Sudo Handling (Non-Interactive Mode)
 

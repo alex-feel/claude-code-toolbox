@@ -7041,25 +7041,25 @@ class TestParallelWorkersConfiguration:
         assert setup_environment.DEFAULT_PARALLEL_WORKERS == 2
 
     def test_parallel_workers_env_parsing_logic(self) -> None:
-        """Test that CLAUDE_PARALLEL_WORKERS parsing logic works correctly."""
+        """Test that CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS parsing logic works correctly."""
         # Test the parsing logic that the module uses at load time
-        # The module uses: int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        # The module uses: int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
 
         # Test with env var set
-        os.environ['CLAUDE_PARALLEL_WORKERS'] = '2'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '2'
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 2
 
         # Test with higher value
-        os.environ['CLAUDE_PARALLEL_WORKERS'] = '10'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '10'
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 10
 
         # Clean up
-        os.environ.pop('CLAUDE_PARALLEL_WORKERS', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', None)
 
         # Test fallback to default
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 2
 
 
@@ -8208,8 +8208,8 @@ class TestRootGuard:
     """Test root detection guard in setup_environment.py main()."""
 
     def test_root_guard_exits_when_root_without_override(self) -> None:
-        """Running as root without CLAUDE_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8220,11 +8220,11 @@ class TestRootGuard:
         assert exc_info.value.code == 1
 
     def test_root_guard_allows_when_override_set(self) -> None:
-        """CLAUDE_ALLOW_ROOT=1 allows root execution to proceed."""
+        """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed."""
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1'}),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1'}),
             patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
@@ -8248,7 +8248,7 @@ class TestRootGuard:
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8259,11 +8259,11 @@ class TestRootGuard:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
-        assert 'CLAUDE_ALLOW_ROOT' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
     def test_root_guard_works_on_macos(self) -> None:
         """Root guard activates on macOS the same as Linux."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8278,7 +8278,7 @@ class TestRootGuard:
 
         The root guard MUST run before argparse to catch all invocations.
         """
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8630,7 +8630,7 @@ class TestConfirmInstallation:
         assert result is False
 
     def test_confirm_env_var_auto_confirm(self) -> None:
-        """CLAUDE_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
+        """CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
         plan = self._make_plan()
         with patch.object(setup_environment, 'display_installation_summary'):
             # The env var is resolved by the caller (main) and passed as auto_confirm

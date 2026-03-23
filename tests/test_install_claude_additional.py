@@ -412,7 +412,7 @@ class TestMainFlowAdditional:
         assert mock_node.return_value is False
 
         # Force npm installation method to ensure Node.js is required
-        with patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}), pytest.raises(SystemExit) as exc_info:
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}), pytest.raises(SystemExit) as exc_info:
             install_claude.main()
         assert exc_info.value.code == 1
 

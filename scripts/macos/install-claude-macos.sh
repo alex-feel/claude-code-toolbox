@@ -26,7 +26,7 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
 fi
 
 # Refuse to run as root unless explicitly allowed
-if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_ALLOW_ROOT:-}" != "1" ]; then
+if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_CODE_TOOLBOX_ALLOW_ROOT:-}" != "1" ]; then
     echo -e "${RED}[FAIL]${NC} This script should NOT be run as root or with sudo"
     echo ""
     echo -e "${YELLOW}[WARN]${NC} Running as root creates configuration under /root/,"
@@ -36,7 +36,7 @@ if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_ALLOW_ROOT:-}" != "1" ]; then
     echo -e "${CYAN}[INFO]${NC}   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash"
     echo ""
     echo -e "${CYAN}[INFO]${NC} The installer will request sudo only when needed (e.g., npm)."
-    echo -e "${CYAN}[INFO]${NC} To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>"
+    echo -e "${CYAN}[INFO]${NC} To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 bash <script>"
     exit 1
 fi
 

@@ -64,7 +64,7 @@ The environment setup scripts provide complete development environments based on
 .\scripts\windows\setup-environment.ps1 python
 
 # Or using environment variable
-$env:CLAUDE_ENV_CONFIG='python'; .\scripts\windows\setup-environment.ps1
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; .\scripts\windows\setup-environment.ps1
 ```
 
 #### Linux
@@ -73,7 +73,7 @@ $env:CLAUDE_ENV_CONFIG='python'; .\scripts\windows\setup-environment.ps1
 bash scripts/linux/setup-environment.sh python
 
 # Or using environment variable
-CLAUDE_ENV_CONFIG=python bash scripts/linux/setup-environment.sh
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python bash scripts/linux/setup-environment.sh
 ```
 
 #### macOS
@@ -82,7 +82,7 @@ CLAUDE_ENV_CONFIG=python bash scripts/linux/setup-environment.sh
 bash scripts/macos/setup-environment.sh python
 
 # Or using environment variable
-CLAUDE_ENV_CONFIG=python bash scripts/macos/setup-environment.sh
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python bash scripts/macos/setup-environment.sh
 ```
 
 ### Standard Installation
@@ -116,9 +116,9 @@ Comprehensive Claude Code installer that:
   - Linux: Shell installer from `https://claude.ai/install.sh`
 - **Automatic Fallback**: Falls back to npm installation if native method fails
 - **Node.js Management**: Only installs Node.js LTS (>= 18.0.0) if npm method is needed
-- **Environment Variables**: Supports `CLAUDE_INSTALL_METHOD` and `CLAUDE_VERSION` for installation control
+- **Environment Variables**: Supports `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` and `CLAUDE_CODE_TOOLBOX_VERSION` for installation control
 - Configures PowerShell execution policy (Windows)
-- Sets up environment variables (PATH, CLAUDE_CODE_GIT_BASH_PATH)
+- Sets up environment variables (PATH, CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH)
 - Handles SSL certificate issues in corporate environments
 - Provides multiple fallback installation methods
 
@@ -154,7 +154,7 @@ python setup_environment.py python
 python setup_environment.py python --skip-install
 
 # Use environment variable
-CLAUDE_ENV_CONFIG=python python setup_environment.py --skip-install
+CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python python setup_environment.py --skip-install
 ```
 
 ### Bootstrap Scripts
@@ -247,29 +247,29 @@ Scripts respect these environment variables:
 
 ```bash
 # Installation method control
-CLAUDE_INSTALL_METHOD=auto     # auto (default), native, or npm
-CLAUDE_VERSION=1.0.128         # Specific version to install (forces npm method)
+CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=auto     # auto (default), native, or npm
+CLAUDE_CODE_TOOLBOX_VERSION=1.0.128         # Specific version to install (forces npm method)
 
 # Proxy settings (all platforms)
 HTTP_PROXY=http://proxy:port
 HTTPS_PROXY=http://proxy:port
 
 # Custom Git Bash path (Windows only)
-CLAUDE_CODE_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe
+CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH=C:\Program Files\Git\bin\bash.exe
 
 # Terminal session detection (Windows)
 WT_SESSION=1  # Windows Terminal detection for ANSI colors
 ```
 
-**CLAUDE_INSTALL_METHOD Options:**
+**CLAUDE_CODE_TOOLBOX_INSTALL_METHOD Options:**
 - `auto` (default) - Try native installation first, fall back to npm if needed
 - `native` - Use only native installation, no npm fallback
 - `npm` - Use only npm installation method
 
-**CLAUDE_VERSION:**
+**CLAUDE_CODE_TOOLBOX_VERSION:**
 - Specify a particular Claude Code version to install
 - Forces npm installation method (native installers don't support version selection)
-- Example: `CLAUDE_VERSION=1.0.128`
+- Example: `CLAUDE_CODE_TOOLBOX_VERSION=1.0.128`
 
 ### Configuration Files
 

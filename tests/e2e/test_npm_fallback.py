@@ -101,7 +101,7 @@ class TestNpmSudoFallback:
         assert 'curl | bash' in combined or 'curl' in combined.lower(), (
             'Should mention pipe scenario'
         )
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
             'Should suggest native installer alternative'
         )
 
@@ -186,7 +186,7 @@ class TestNpmSudoFallback:
         assert 'npm config set prefix' in combined, (
             'Should suggest npm prefix configuration'
         )
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
             'Should suggest native installer alternative'
         )
         assert 'claude.ai/install.sh' in combined, (
@@ -365,7 +365,7 @@ class TestNpmSudoGatingE2E:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         # Should not crash - should produce error guidance
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
             'Should suggest native installer when sudo unavailable'
         )
 
@@ -751,7 +751,7 @@ class TestEnsureClaudeTroubleshooting:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ),
             patch.object(install_claude, 'install_claude_npm', return_value=False),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -767,10 +767,10 @@ class TestEnsureClaudeTroubleshooting:
         assert 'npm config set prefix' in combined, (
             'Should suggest npm prefix configuration'
         )
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
             'Should suggest method override'
         )
-        assert 'CLAUDE_INSTALL_METHOD=npm' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm' in combined, (
             'Should suggest npm-only override'
         )
 
@@ -785,7 +785,7 @@ class TestEnsureClaudeTroubleshooting:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ),
             patch.object(install_claude, 'install_claude_npm', return_value=False),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -793,7 +793,7 @@ class TestEnsureClaudeTroubleshooting:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'irm' in combined, 'Should mention PowerShell irm command'
-        assert '$env:CLAUDE_INSTALL_METHOD' in combined, (
+        assert '$env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined, (
             'Should use PowerShell env var syntax'
         )
 
@@ -808,14 +808,14 @@ class TestEnsureClaudeTroubleshooting:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ),
             patch.object(install_claude, 'install_claude_npm', return_value=False),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             install_claude.ensure_claude()
 
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
-            'Should suggest CLAUDE_INSTALL_METHOD=native at fallback point'
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
+            'Should suggest CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native at fallback point'
         )
 
 
@@ -920,7 +920,7 @@ class TestEnsureClaudeFullFlow:
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ),
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -936,7 +936,7 @@ class TestEnsureClaudeFullFlow:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ),
             patch.object(install_claude, 'install_claude_npm', return_value=False),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -946,7 +946,7 @@ class TestEnsureClaudeFullFlow:
         assert 'falling back to npm' in combined.lower(), (
             'Should show npm fallback diagnostic message'
         )
-        assert 'CLAUDE_INSTALL_METHOD=native' in combined, (
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined, (
             'Should suggest method override at fallback point'
         )
 
@@ -959,7 +959,7 @@ class TestEnsureClaudeFullFlow:
                 install_claude, 'install_claude_native_cross_platform', return_value=False,
             ),
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'native'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -982,7 +982,7 @@ class TestEnsureClaudeFullFlow:
             patch.object(install_claude, 'install_claude_npm', return_value=True),
             patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/claude'),
             patch.object(install_claude, 'get_claude_version', return_value='1.0.130'),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'npm'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -1000,7 +1000,7 @@ class TestEnsureClaudeFullFlow:
                 install_claude, 'verify_claude_installation',
                 return_value=(True, '/usr/local/bin/claude', 'native'),
             ),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'auto'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 
@@ -1009,14 +1009,14 @@ class TestEnsureClaudeFullFlow:
     def test_invalid_install_method_defaults_to_auto(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """When CLAUDE_INSTALL_METHOD is invalid, falls back to 'auto' with warning."""
+        """When CLAUDE_CODE_TOOLBOX_INSTALL_METHOD is invalid, falls back to 'auto' with warning."""
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(install_claude, 'get_claude_version', return_value=None),
             patch.object(
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ),
-            patch.dict('os.environ', {'CLAUDE_INSTALL_METHOD': 'invalid'}, clear=False),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'invalid'}, clear=False),
         ):
             result = install_claude.ensure_claude()
 

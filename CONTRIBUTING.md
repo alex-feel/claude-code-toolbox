@@ -88,7 +88,7 @@ feat: add automatic Git Bash installation for Windows
 
 - Detect existing Git installation
 - Install via winget or direct download
-- Configure CLAUDE_CODE_GIT_BASH_PATH environment variable
+- Configure CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH environment variable
 - Verify installation with claude doctor
 ```
 

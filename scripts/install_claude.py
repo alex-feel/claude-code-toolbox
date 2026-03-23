@@ -488,8 +488,8 @@ def find_bash_windows() -> str | None:
         Prioritizes Git Bash locations over PATH search to avoid
         accidentally finding WSL's bash.exe at C:\\Windows\\System32.
     """
-    # Check CLAUDE_CODE_GIT_BASH_PATH env var first
-    env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    # Check CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH env var first
+    env_path = os.environ.get('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH')
     if env_path and Path(env_path).exists():
         return str(Path(env_path).resolve())
 
@@ -849,7 +849,7 @@ def install_git_windows_download() -> bool:
         info('Manual installation options:')
         info('  1. Install winget: https://learn.microsoft.com/windows/package-manager/winget/')
         info('  2. Download Git manually: https://gitforwindows.org/')
-        info('  3. Set CLAUDE_CODE_GIT_BASH_PATH to existing Git installation')
+        info('  3. Set CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH to existing Git installation')
         return False
 
 
@@ -1631,7 +1631,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
             info('Options:')
             info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
-            info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+            info('  3. Force native installer: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
         else:
             if will_need_sudo:
                 warning('Global npm directory requires elevated permissions - attempting sudo...')
@@ -1673,7 +1673,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
                 info('Options:')
                 info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
                 info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
-                info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+                info('  3. Force native installer: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
 
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     info('Manual installation options:')
@@ -1682,7 +1682,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     info('       npm config set prefix ~/.npm-global')
     info('       export PATH=~/.npm-global/bin:$PATH')
     info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  3. Force native installer only: CLAUDE_INSTALL_METHOD=native')
+    info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
     info('  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash')
     return False
 
@@ -2633,12 +2633,12 @@ def install_claude_native_cross_platform(version: str | None = None) -> bool:
 def ensure_claude() -> bool:
     """Ensure Claude Code is installed (native-first, npm fallback).
 
-    Installation method can be controlled via CLAUDE_INSTALL_METHOD environment variable:
+    Installation method can be controlled via CLAUDE_CODE_TOOLBOX_INSTALL_METHOD environment variable:
     - 'auto' (default): Try native first, fall back to npm if needed
     - 'native': Only use native installer, no npm fallback
     - 'npm': Only use npm installer
 
-    Specific versions can only be installed via npm (set CLAUDE_VERSION environment variable).
+    Specific versions can only be installed via npm (set CLAUDE_CODE_TOOLBOX_VERSION environment variable).
 
     Returns:
         True if Claude Code is installed successfully, False otherwise.
@@ -2646,13 +2646,13 @@ def ensure_claude() -> bool:
     info('Checking Claude Code CLI...')
 
     # Check installation method preference
-    install_method = os.environ.get('CLAUDE_INSTALL_METHOD', 'auto').lower()
+    install_method = os.environ.get('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto').lower()
     if install_method not in ['auto', 'native', 'npm']:
-        warning(f'Invalid CLAUDE_INSTALL_METHOD "{install_method}", using "auto"')
+        warning(f'Invalid CLAUDE_CODE_TOOLBOX_INSTALL_METHOD "{install_method}", using "auto"')
         install_method = 'auto'
 
     # Check if a specific version is requested
-    requested_version = os.environ.get('CLAUDE_VERSION')
+    requested_version = os.environ.get('CLAUDE_CODE_TOOLBOX_VERSION')
 
     # Check if already installed
     current_version = get_claude_version()
@@ -2690,7 +2690,10 @@ def ensure_claude() -> bool:
                     return True
 
                 warning('Native installation failed, falling back to npm...')
-                info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
+                info(
+                    'If this is unexpected, set CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native'
+                    ' to see only native installer output',
+                )
                 if install_claude_npm(upgrade=False, version=requested_version):
                     new_version = get_claude_version()
                     if new_version:
@@ -2891,7 +2894,7 @@ def ensure_claude() -> bool:
             return True
 
         error('Native installation failed and npm fallback is disabled (method: native)')
-        info('To enable npm fallback, use: export CLAUDE_INSTALL_METHOD=auto')
+        info('To enable npm fallback, use: export CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=auto')
         return False
 
     # auto mode (default) - try native first, npm fallback
@@ -2900,7 +2903,10 @@ def ensure_claude() -> bool:
         return True
 
     warning('Native installation failed, falling back to npm...')
-    info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
+    info(
+        'If this is unexpected, set CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native'
+        ' to see only native installer output',
+    )
     if install_claude_npm(upgrade=False, version=requested_version):
         # Verify with retries to handle PATH synchronization delays
         for attempt in range(3):
@@ -2922,8 +2928,8 @@ def ensure_claude() -> bool:
         info(f'  1. Try native installer directly: irm {CLAUDE_INSTALLER_URL} | iex')
         info(f'  2. Try npm: npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  3. Force specific method:')
-        info('       $env:CLAUDE_INSTALL_METHOD="native"  (skip npm)')
-        info('       $env:CLAUDE_INSTALL_METHOD="npm"     (skip native)')
+        info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"  (skip npm)')
+        info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="npm"     (skip native)')
     else:
         info('  1. Try native installer directly:')
         info('     curl -fsSL https://claude.ai/install.sh | bash')
@@ -2934,8 +2940,8 @@ def ensure_claude() -> bool:
         info('     export PATH=~/.npm-global/bin:$PATH')
         info(f'     npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  4. Force specific method:')
-        info('     CLAUDE_INSTALL_METHOD=native  (skip npm)')
-        info('     CLAUDE_INSTALL_METHOD=npm     (skip native)')
+        info('     CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native  (skip npm)')
+        info('     CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm     (skip native)')
 
     return False
 
@@ -3007,9 +3013,9 @@ def ensure_local_bin_in_path_windows() -> bool:
 
                     # Broadcast WM_SETTINGCHANGE to notify other processes
                     # Use setx with a temporary variable to trigger the broadcast
-                    run_command(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True)
+                    run_command(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True)
                     run_command(
-                        ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                        ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                         capture_output=True,
                     )
 
@@ -3036,7 +3042,7 @@ def main() -> None:
     # Refuse to run as root on Unix unless explicitly allowed
     if platform.system() != 'Windows':
         geteuid = getattr(os, 'geteuid', None)
-        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
             print()
             warning('Running as root creates configuration under /root/,')
@@ -3047,7 +3053,7 @@ def main() -> None:
                  'claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash')
             print()
             info('The installer will request sudo only when needed (e.g., npm).')
-            info('To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>')
+            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 bash <script>')
             sys.exit(1)
 
     system = platform.system()
@@ -3060,17 +3066,17 @@ def main() -> None:
             if not bash_path:
                 raise Exception('Git Bash unavailable after installation attempts')
 
-            # Set CLAUDE_CODE_GIT_BASH_PATH if bash not in PATH
+            # Set CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH if bash not in PATH
             if not find_command('bash.exe'):
-                info('bash.exe is not on PATH, configuring CLAUDE_CODE_GIT_BASH_PATH...')
-                set_windows_env_var('CLAUDE_CODE_GIT_BASH_PATH', bash_path)
+                info('bash.exe is not on PATH, configuring CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH...')
+                set_windows_env_var('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH', bash_path)
 
         # Step 2: Check/Install Node.js (only if npm method will be used)
         step_num = '2/4' if system == 'Windows' else '1/3'
         info(f'Step {step_num}: Checking Node.js...')
 
         # Determine if we'll need Node.js based on installation method
-        install_method = os.environ.get('CLAUDE_INSTALL_METHOD', 'auto').lower()
+        install_method = os.environ.get('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto').lower()
         will_need_nodejs = install_method == 'npm'
 
         if will_need_nodejs:

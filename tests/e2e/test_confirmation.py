@@ -77,7 +77,7 @@ class TestConfirmationBlocking:
     def test_env_var_auto_confirms(
         self, golden_config: dict[str, Any],
     ) -> None:
-        """CLAUDE_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
+        """CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
         plan = self._make_plan_from_golden(golden_config)
         # main() resolves env var to auto_confirm=True
         with patch.object(setup_environment, 'display_installation_summary'):
@@ -89,9 +89,9 @@ class TestConfirmationBlocking:
     def test_env_var_wrong_value_does_not_confirm(
         self, golden_config: dict[str, Any],
     ) -> None:
-        """CLAUDE_CONFIRM_INSTALL=true does NOT auto-confirm (only '1' works).
+        """CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=true does NOT auto-confirm (only '1' works).
 
-        The env var check in main() uses ``os.environ.get('CLAUDE_CONFIRM_INSTALL') == '1'``,
+        The env var check in main() uses ``os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'``,
         so values like 'true', 'yes', or empty strings do not trigger auto-confirm.
         When auto_confirm is False and no interactive terminal is available,
         confirm_installation returns False.

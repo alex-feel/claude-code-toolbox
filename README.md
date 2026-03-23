@@ -34,13 +34,13 @@ Set up your custom environment with specialized configurations:
 > **Note:** Replace `https://raw.githubusercontent.com/org/repo/main/config.yaml` with your actual configuration URL. The command sets your configuration source and runs the installer in one line.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 #### Option 2: Using local configuration (for sensitive configs)
 ```powershell
 # Use a local file containing API keys or other sensitive data
-$env:CLAUDE_ENV_CONFIG='./my-custom-env.yaml'
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='./my-custom-env.yaml'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
@@ -49,10 +49,10 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 **For Private GitLab Repositories (One-liner recommended):**
 ```powershell
 # One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
 # Alternative: Two-step approach (if already in PowerShell)
-$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
 $env:GITLAB_TOKEN='glpat-<your-token>'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
@@ -60,10 +60,10 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 **For Private GitHub Repositories (One-liner recommended):**
 ```powershell
 # One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 
 # Alternative: Two-step approach (if already in PowerShell)
-$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
 $env:GITHUB_TOKEN='ghp_<your-token>'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
@@ -77,34 +77,34 @@ iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/s
 ### macOS
 ```bash
 # Public repository config
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Local config file
-export CLAUDE_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Private GitLab repository
-export CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 # Private GitHub repository
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
 ### Linux
 ```bash
 # Public repository config
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Local config file
-export CLAUDE_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Private GitLab repository
-export CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 
 # Private GitHub repository
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
-> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed. Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
+> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed. Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1`.
 
 **✅ After setup, use the simple command:**
 ```bash
@@ -151,7 +151,7 @@ For configurations stored in private repositories, you need to provide authentic
 
 **Additional Options:**
 - `REPO_TOKEN` - Generic token that auto-detects repository type
-- `CLAUDE_ENV_AUTH` - Custom header format: `Header-Name:token-value`
+- `CLAUDE_CODE_TOOLBOX_ENV_AUTH` - Custom header format: `Header-Name:token-value`
 
 #### Pro Tips
 
@@ -189,7 +189,7 @@ The Windows installer automatically:
 - ✅ Installs Node.js LTS (v18+) only if needed for npm method
 - ✅ Handles dependencies (Microsoft.UI.Xaml) for winget if needed
 - ✅ Falls back to direct downloads if winget is unavailable
-- ✅ Configures `CLAUDE_CODE_GIT_BASH_PATH` if bash.exe is not on PATH
+- ✅ Configures `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH` if bash.exe is not on PATH
 - ✅ Installs Claude Code CLI using native installer (with npm fallback)
 
 **Reliability Features:**
@@ -221,24 +221,24 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 
 The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
 
-> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed (e.g., for npm global installs). Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
+> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed (e.g., for npm global installs). Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1`.
 
 ### Environment Variables
 
 Control the installation behavior with these environment variables:
 
-#### CLAUDE_INSTALL_METHOD
+#### CLAUDE_CODE_TOOLBOX_INSTALL_METHOD
 
 - `auto` (default) - Try native installation first, fall back to npm if needed
 - `native` - Use only native installation, no npm fallback
 - `npm` - Use only npm installation method
 
-#### CLAUDE_VERSION
+#### CLAUDE_CODE_TOOLBOX_VERSION
 
 - Specify a particular version to install (e.g., `1.0.128`)
 - Forces npm installation method (native installers don't support version selection)
 
-#### CLAUDE_ALLOW_ROOT
+#### CLAUDE_CODE_TOOLBOX_ALLOW_ROOT
 
 - Set to `1` to allow running as root on Linux/macOS (default: scripts refuse to run as root)
 - Only the exact value `1` is accepted (`true`, `yes`, or empty strings do not bypass the guard)
@@ -248,19 +248,19 @@ Control the installation behavior with these environment variables:
 
 ```powershell
 # Windows - Force npm installation
-$env:CLAUDE_INSTALL_METHOD='npm'
+$env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD='npm'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
 
 # Windows - Install specific version
-$env:CLAUDE_VERSION='1.0.128'
+$env:CLAUDE_CODE_TOOLBOX_VERSION='1.0.128'
 iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
 
 # Linux/macOS - Force native installation only
-export CLAUDE_INSTALL_METHOD=native
+export CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
 
 # Linux/macOS - Install specific version
-export CLAUDE_VERSION=1.0.128
+export CLAUDE_CODE_TOOLBOX_VERSION=1.0.128
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
 ```
 
@@ -294,7 +294,7 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 
 - This is intentional - running as root creates configuration under `/root/` instead of your home directory
 - Run as your regular user instead (the script requests sudo only when needed)
-- For Docker/CI: set `CLAUDE_ALLOW_ROOT=1` before running the script
+- For Docker/CI: set `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1` before running the script
 
 ## 🤝 Contributing
 

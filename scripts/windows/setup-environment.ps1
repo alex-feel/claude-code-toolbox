@@ -6,10 +6,10 @@
 
     To specify configuration:
       # In PowerShell:
-      $env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+      $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 
       # One-liner from CMD or external PowerShell:
-      powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+      powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]
@@ -71,12 +71,12 @@ try {
     Invoke-WebRequest -Uri $installScriptUrl -OutFile $installScript -UseBasicParsing
 
     # Check if configuration is specified
-    $config = if ($env:CLAUDE_ENV_CONFIG) { $env:CLAUDE_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
+    $config = if ($env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG) { $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
 
     if (-not $config) {
         Write-Host "[ERROR] No configuration specified!" -ForegroundColor Red
         Write-Host "Usage: setup-environment.ps1 <config_name>" -ForegroundColor Yellow
-        Write-Host "   or: Set-Item Env:CLAUDE_ENV_CONFIG 'python'; ./setup-environment.ps1" -ForegroundColor Yellow
+        Write-Host "   or: Set-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG 'python'; ./setup-environment.ps1" -ForegroundColor Yellow
         Write-Host ""
         Write-Host "Available configurations:" -ForegroundColor Cyan
         Write-Host "  - python    : Python development environment" -ForegroundColor Gray
@@ -88,11 +88,11 @@ try {
 
     # Build auth arguments
     # GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-    # Only pass --auth for explicit override (CLAUDE_ENV_AUTH) or generic token (REPO_TOKEN)
+    # Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
     $authArgs = @()
-    if ($env:CLAUDE_ENV_AUTH) {
+    if ($env:CLAUDE_CODE_TOOLBOX_ENV_AUTH) {
         Write-Host "[INFO] Using provided authentication" -ForegroundColor Cyan
-        $authArgs = @('--auth', $env:CLAUDE_ENV_AUTH)
+        $authArgs = @('--auth', $env:CLAUDE_CODE_TOOLBOX_ENV_AUTH)
     } elseif ($env:REPO_TOKEN) {
         Write-Host "[INFO] Generic repo token found, will use for authentication" -ForegroundColor Cyan
         $authArgs = @('--auth', $env:REPO_TOKEN)
