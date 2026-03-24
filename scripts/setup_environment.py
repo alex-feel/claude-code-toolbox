@@ -2511,7 +2511,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
             return url  # Unexpected format
 
         project_path = parts[0]  # e.g., "ai/claude-code-configs"
-        remainder = parts[1]  # e.g., "main/environments/library/file.yaml"
+        remainder = parts[1]  # e.g., "main/configs/my-config.yaml"
 
         # Split remainder into branch and file path
         # The branch is the first part before /
@@ -2928,7 +2928,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     if not config_spec.endswith('.yaml'):
         config_spec += '.yaml'
 
-    config_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/environments/library/{config_spec}'
+    config_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/{config_spec}'
     info(f'Loading configuration from repository: {config_spec}')
 
     try:
@@ -2940,11 +2940,11 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     except urllib.error.HTTPError as e:
         if e.code == 404:
             error(f'Configuration not found in repository: {config_spec}')
-            info('Available configurations:')
-            info('  - python: Python development environment')
+            info('Configuration not found in the configurations repository.')
+            info('Browse available configurations at:')
+            info('  https://github.com/alex-feel/claude-code-artifacts-public')
             info('')
             info('You can also:')
-            info('  - Create custom configs in environments/library/')
             info('  - Use a local file: ./my-config.yaml')
             info('  - Use a URL: https://example.com/config.yaml')
             raise Exception(f'Configuration not found: {config_spec}') from None
@@ -2998,7 +2998,7 @@ def resolve_config_source_url(config_source: str, config_source_type: str) -> st
             name += '.yaml'
         return (
             f'https://raw.githubusercontent.com/alex-feel/'
-            f'claude-code-toolbox/main/environments/library/{name}'
+            f'claude-code-artifacts-public/main/{name}'
         )
     # Local sources have no remote URL
     return None
@@ -5857,8 +5857,8 @@ def create_additional_settings(
             Both the script and config file are downloaded to ~/.claude/hooks/ and
             the config path is appended as a command line argument.
         effort_level: Optional effort level for adaptive reasoning.
-            Valid values: 'low', 'medium', 'high'. Controls how much thinking
-            is allocated based on task complexity.
+            Valid values: 'low', 'medium', 'high', 'max'. The 'max' level is
+            only available for Opus models.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -7147,7 +7147,7 @@ def main() -> None:
         # Extract and validate effort_level configuration
         effort_level = config.get('effort-level')
         if effort_level is not None:
-            valid_effort_levels = ('low', 'medium', 'high')
+            valid_effort_levels = ('low', 'medium', 'high', 'max')
             if effort_level not in valid_effort_levels:
                 warning(
                     f'Invalid effort-level value: {effort_level!r}. '

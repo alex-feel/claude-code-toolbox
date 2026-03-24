@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD028 -->
+
 # Cross-Shell Launcher Architecture for Claude Code
 
 This document consolidates the technical documentation for launching Claude Code with custom system prompts and settings across all shells (PowerShell, CMD, Git Bash on Windows; bash/zsh on Linux/macOS). It covers the primary shared POSIX script architecture used by `setup_environment.py`, as well as the standalone one-liner approaches for PowerShell and CMD that informed the design.
@@ -305,31 +307,30 @@ The `setup_environment.py` script is invoked via the platform-specific bootstrap
 **Linux/macOS:**
 
 ```bash
-# Via bootstrap script (recommended)
+# Via bootstrap script with a configuration URL (recommended)
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'
 curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-# With config specified via environment variable:
-export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-# Or with config as argument:
-bash setup-environment.sh python
+
+# Or with a local config file as argument:
+bash setup-environment.sh ./my-config.yaml
 
 # Direct invocation from repository clone:
-uv run --no-project --python 3.12 scripts/setup_environment.py python
+uv run --no-project --python 3.12 scripts/setup_environment.py ./my-config.yaml
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-# Via bootstrap script (recommended)
-$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+# Via bootstrap script with a configuration URL (recommended)
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-The `python` argument is a configuration name (resolved to `python.yaml`), not a subcommand. Any valid configuration name, local file path, or URL can be used.
+Any configuration URL, local file path, or configuration name can be used as the argument. See the [Environment Configuration Guide](environment-configuration-guide.md) for details.
 
-Then can use:
+The `command-names` key in the configuration determines the global command name. For example, if your configuration specifies `command-names: ["my-env"]`, then you can use:
 
 ```bash
-claude-python  # Works in PowerShell, CMD, or Git Bash
+claude-my-env  # Works in PowerShell, CMD, or Git Bash
 ```
 
 ### Troubleshooting
@@ -339,7 +340,7 @@ claude-python  # Works in PowerShell, CMD, or Git Bash
 Verify the settings file is being loaded:
 
 ```bash
-claude-python --debug 2>&1 | grep -i settings
+claude-my-env --debug 2>&1 | grep -i settings
 ```
 
 #### Path Issues

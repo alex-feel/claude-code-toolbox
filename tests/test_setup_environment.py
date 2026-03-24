@@ -3362,6 +3362,25 @@ class TestCreateAdditionalSettings:
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'high'
 
+    def test_create_additional_settings_effort_level_max(self):
+        """Test effortLevel set to max."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level='max',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'max'
+
     def test_create_additional_settings_effort_level_none_not_included(self):
         """Test effortLevel not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
