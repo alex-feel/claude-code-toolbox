@@ -213,6 +213,31 @@ The repository includes a Pydantic validation model for environment YAML configu
 
 **UserSettings policy:** The `UserSettings` class is a free-form open model (`extra='allow'`) with ZERO hardcoded fields. It passes through all user-provided settings to `settings.json` without field-level validation. The only structural guard is a blocklist validator (`check_excluded_keys`) that prevents `hooks` and `statusLine` keys from appearing in user-settings (these are profile-specific and must be configured at the root level of the environment YAML).
 
+## Documentation Maintenance
+
+When changing validation models or other core functionality, review and update the relevant documentation:
+
+- **`docs/environment-configuration-guide.md`** -- Update when:
+  - `KNOWN_CONFIG_KEYS` or `EnvironmentConfig` model changes (new, renamed, or removed config keys)
+  - MCP server transport types, scope options, or permission behavior changes
+  - Hooks structure, event types, or file consistency rules change
+  - `command-defaults` modes or system prompt behavior changes
+  - Environment variable handling or authentication flow changes
+
+- **`docs/installing-claude-code.md`** -- Update when:
+  - Installation methods or upgrade behavior changes
+  - `install_claude.py` functions or environment variables change
+  - Node.js compatibility checks or version detection changes
+  - Root guard behavior or sudo handling changes
+
+**Trigger review checklist:**
+1. Did you add/remove/rename any config keys in `setup_environment.py`?
+2. Did you modify `scripts/models/environment_config.py`?
+3. Did you change how `install_claude.py` detects installation sources or handles upgrades?
+4. Did you add new environment variables or change their behavior?
+
+If any answer is yes, check the corresponding doc file and update it before committing.
+
 ## Development Commands
 
 ### Testing Commands
