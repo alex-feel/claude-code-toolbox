@@ -176,6 +176,13 @@ user-settings:
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
 
+# Global config (merged into ~/.claude.json)
+global-config:
+  autoConnectIde: true
+  editorMode: "vim"
+  showTurnDuration: true
+  terminalProgressBarEnabled: false
+
 # Always-thinking mode
 always-thinking-enabled: true
 

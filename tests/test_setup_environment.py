@@ -5458,6 +5458,274 @@ class TestValidateUserSettings:
             assert key in result[0]
 
 
+class TestWriteMergedJson:
+    """Tests for _write_merged_json helper function."""
+
+    def test_creates_new_file(self, tmp_path: Path) -> None:
+        """Creates new file when none exists."""
+        target = tmp_path / 'output.json'
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert merged == {'key': 'value'}
+        assert target.exists()
+        written = json.loads(target.read_text(encoding='utf-8'))
+        assert written == {'key': 'value'}
+
+    def test_merges_into_existing(self, tmp_path: Path) -> None:
+        """Merges new settings into existing file."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'existing': 'val', 'key': 'old'}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'new', 'added': True})
+
+        assert ok is True
+        assert merged['existing'] == 'val'
+        assert merged['key'] == 'new'
+        assert merged['added'] is True
+
+    def test_handles_invalid_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handles invalid JSON gracefully."""
+        target = tmp_path / 'output.json'
+        target.write_text('{ broken json !!!', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        captured = capsys.readouterr()
+        assert 'Invalid JSON' in captured.out
+        assert merged == {'key': 'value'}
+
+    def test_handles_non_dict_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handles non-dict JSON gracefully."""
+        target = tmp_path / 'output.json'
+        target.write_text('["array", "not", "dict"]', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        captured = capsys.readouterr()
+        assert 'not a dict' in captured.out
+        assert merged == {'key': 'value'}
+
+    def test_handles_empty_file(self, tmp_path: Path) -> None:
+        """Handles empty file as empty dict."""
+        target = tmp_path / 'output.json'
+        target.write_text('', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert merged == {'key': 'value'}
+
+    def test_custom_array_union_keys(self, tmp_path: Path) -> None:
+        """Custom array_union_keys are used."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(
+            target, {'list': [2, 3]}, array_union_keys={'list'},
+        )
+
+        assert ok is True
+        assert set(merged['list']) == {1, 2, 3}
+
+    def test_empty_array_union_keys(self, tmp_path: Path) -> None:
+        """Empty set() disables array union."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(
+            target, {'list': [3, 4]}, array_union_keys=set(),
+        )
+
+        assert ok is True
+        assert merged['list'] == [3, 4]
+
+    def test_creates_parent_directories(self, tmp_path: Path) -> None:
+        """Creates parent directories when ensure_parent=True."""
+        target = tmp_path / 'subdir' / 'nested' / 'output.json'
+
+        ok, _ = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert target.exists()
+
+    def test_returns_false_on_write_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns False on write failure."""
+        target = tmp_path / 'output.json'
+
+        def mock_write_text(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError('Permission denied')
+
+        monkeypatch.setattr(Path, 'write_text', mock_write_text)
+
+        ok, _ = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is False
+
+    def test_preserves_existing_keys(self, tmp_path: Path) -> None:
+        """Keys not in update are preserved."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'a': 1, 'b': 2}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'c': 3})
+
+        assert ok is True
+        assert merged == {'a': 1, 'b': 2, 'c': 3}
+
+    def test_file_ends_with_newline(self, tmp_path: Path) -> None:
+        """Written file ends with newline."""
+        target = tmp_path / 'output.json'
+
+        setup_environment._write_merged_json(target, {'key': 'value'})
+
+        content = target.read_text(encoding='utf-8')
+        assert content.endswith('\n')
+
+
+class TestValidateGlobalConfig:
+    """Tests for validate_global_config function."""
+
+    def test_valid_config_returns_empty(self) -> None:
+        """Valid global config returns empty error list."""
+        result = setup_environment.validate_global_config({
+            'autoConnectIde': True,
+            'editorMode': 'vim',
+        })
+        assert result == []
+
+    def test_oauth_session_rejected(self) -> None:
+        """oauthSession key is rejected."""
+        result = setup_environment.validate_global_config({'oauthSession': 'token'})
+        assert len(result) == 1
+        assert 'oauthSession' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_oauth_account_rejected(self) -> None:
+        """oauthAccount key is rejected."""
+        result = setup_environment.validate_global_config({'oauthAccount': 'account'})
+        assert len(result) == 1
+        assert 'oauthAccount' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_both_oauth_keys_rejected(self) -> None:
+        """Both OAuth keys are reported."""
+        result = setup_environment.validate_global_config({
+            'oauthSession': 'token',
+            'oauthAccount': 'account',
+        })
+        assert len(result) == 2
+
+    def test_empty_config_passes(self) -> None:
+        """Empty config passes validation."""
+        result = setup_environment.validate_global_config({})
+        assert result == []
+
+    def test_excluded_keys_constant_used(self) -> None:
+        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant."""
+        for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
+            result = setup_environment.validate_global_config({key: 'test_value'})
+            assert len(result) == 1
+            assert key in result[0]
+
+
+class TestWriteGlobalConfig:
+    """Tests for write_global_config function."""
+
+    def test_creates_claude_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Creates ~/.claude.json when it does not exist."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        assert not config_file.exists()
+
+        result = setup_environment.write_global_config({'autoConnectIde': True})
+
+        assert result is True
+        assert config_file.exists()
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written == {'autoConnectIde': True}
+
+    def test_merges_into_existing_claude_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Deep merges into existing ~/.claude.json."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'existingKey': 'value'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'autoConnectIde': True})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['existingKey'] == 'value'
+        assert written['autoConnectIde'] is True
+
+    def test_preserves_install_method(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Preserves installMethod key written by install_claude.py."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'installMethod': 'native'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'editorMode': 'vim'})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['installMethod'] == 'native'
+        assert written['editorMode'] == 'vim'
+
+    def test_mcp_servers_deep_merge(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mcpServers dict-of-dicts merges correctly."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        existing = {'mcpServers': {'server1': {'url': 'http://old'}}}
+        config_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        result = setup_environment.write_global_config({
+            'mcpServers': {'server2': {'url': 'http://new'}},
+        })
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert 'server1' in written['mcpServers']
+        assert 'server2' in written['mcpServers']
+
+    def test_scalar_overwrite(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scalar values are overwritten."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'editorMode': 'emacs'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'editorMode': 'vim'})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['editorMode'] == 'vim'
+
+    def test_no_array_union(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Arrays are NOT unioned (replaced instead)."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'items': [1, 2]}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'items': [3, 4]})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['items'] == [3, 4]
+
+    def test_returns_false_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns False on write failure."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+
+        def mock_write_text(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError('Permission denied')
+
+        monkeypatch.setattr(Path, 'write_text', mock_write_text)
+
+        result = setup_environment.write_global_config({'key': 'value'})
+
+        assert result is False
+
+
 class TestDetectSettingsConflicts:
     """Test the detect_settings_conflicts function."""
 
@@ -7280,9 +7548,9 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 13-17 skipped
+        # Verify output shows Steps 14-18 skipped
         captured = capsys.readouterr()
-        assert 'Steps 13-17: Skipping command creation' in captured.out
+        assert 'Steps 14-18: Skipping command creation' in captured.out
         assert 'Step 12: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -7347,13 +7615,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 12 and Steps 13-17
+        # Verify output shows Step 12 and Steps 14-18
         captured = capsys.readouterr()
         assert 'Step 12: Writing user settings' in captured.out
-        assert 'Step 13: Downloading hooks' in captured.out
-        assert 'Step 14: Configuring settings' in captured.out
-        assert 'Step 16: Creating launcher script' in captured.out
-        assert 'Step 17: Registering global' in captured.out
+        assert 'Step 14: Downloading hooks' in captured.out
+        assert 'Step 15: Configuring settings' in captured.out
+        assert 'Step 17: Creating launcher script' in captured.out
+        assert 'Step 18: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(

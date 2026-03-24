@@ -357,3 +357,56 @@ class TestManifestFile:
         manifest_path = claude_dir / f'{cmd}-manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
         assert data['version'] == '2.0.0', 'Manifest was not overwritten on reinstall'
+
+
+class TestGlobalConfigOutput:
+    """Test global-config output to ~/.claude.json."""
+
+    def test_global_config_written_to_claude_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify global-config values are written to ~/.claude.json."""
+        from scripts.setup_environment import write_global_config
+        from tests.e2e.validators import validate_global_config_output
+
+        paths = e2e_isolated_home
+        home = paths['home']
+
+        global_config = golden_config.get('global-config')
+        if not global_config:
+            pytest.skip('No global-config in golden_config')
+
+        # Path.home() is already patched by e2e_isolated_home fixture
+        write_global_config(global_config)
+
+        errors = validate_global_config_output(home, golden_config)
+        assert not errors, 'global-config output validation failed:\n' + '\n'.join(errors)
+
+    def test_global_config_preserves_existing_keys(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify global-config preserves existing keys in ~/.claude.json."""
+        from scripts.setup_environment import write_global_config
+
+        paths = e2e_isolated_home
+        home = paths['home']
+
+        # Pre-populate with installMethod
+        claude_json = home / '.claude.json'
+        claude_json.write_text(json.dumps({'installMethod': 'native'}), encoding='utf-8')
+
+        global_config = golden_config.get('global-config', {})
+        if not global_config:
+            pytest.skip('No global-config in golden_config')
+
+        # Path.home() is already patched by e2e_isolated_home fixture
+        write_global_config(global_config)
+
+        data = json.loads(claude_json.read_text(encoding='utf-8'))
+        assert data['installMethod'] == 'native', 'installMethod was lost during merge'
+        for key, expected in global_config.items():
+            assert data.get(key) == expected, f'Key {key!r}: expected {expected!r}, got {data.get(key)!r}'

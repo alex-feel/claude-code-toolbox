@@ -138,6 +138,19 @@ YAML configurations define complete development environments including:
 - Slash commands
 - System prompts (with configurable mode: append or replace)
 - Hooks (event-driven scripts)
+- Global config (`~/.claude.json` settings via deep merge)
+
+### Global Config (`global-config`)
+
+The `global-config` YAML key writes settings to `~/.claude.json` (the Claude Code global configuration file at `Path.home() / '.claude.json'`).
+
+**Merge strategy:** Uses `deep_merge_settings()` with `array_union_keys=set()` (no array union -- arrays are replaced, not unioned). This differs from `user-settings` which uses the default `DEFAULT_ARRAY_UNION_KEYS` for `permissions.allow/deny/ask` union behavior.
+
+**Excluded keys:** Only `oauthSession` and `oauthAccount` are blocked (via `GLOBAL_CONFIG_EXCLUDED_KEYS`). These OAuth credential keys must not appear in version-controlled YAML configuration files.
+
+**Relationship with `install_claude.py`:** The `update_install_method_config()` function in `install_claude.py` also writes to `~/.claude.json`. Both functions use a resilient read-merge-write pattern that preserves existing keys, ensuring they coexist without data loss. The `install_claude.py` function does not import from `setup_environment.py` (standalone script with different dependency chain).
+
+**DRY infrastructure:** Both `write_user_settings()` and `write_global_config()` delegate to the shared `_write_merged_json()` helper that implements the READ-MERGE-WRITE pattern. This eliminates the previous code duplication.
 
 ### Platform-Conditional Tilde Expansion in Settings
 
@@ -235,45 +248,13 @@ uv run pytest -v
 
 The project includes a comprehensive End-to-End (E2E) testing framework that verifies the complete setup workflow on all platforms.
 
-#### Directory Structure
+#### Key Files
 
-```text
-tests/e2e/
-├── __init__.py
-├── conftest.py              # E2E fixtures (isolated_home, golden_config, mock_repo_path)
-├── golden_config.yaml       # Comprehensive config with ALL supported YAML keys
-├── validators.py            # Composable validation functions
-├── expected/                # Platform-specific expected outputs
-│   ├── __init__.py
-│   ├── common.py            # Shared expected values
-│   ├── linux.py             # Linux expectations
-│   ├── macos.py             # macOS expectations
-│   └── windows.py           # Windows expectations
-├── fixtures/
-│   ├── __init__.py
-│   └── mock_repo/           # Mock source files for testing
-│       ├── configs/         # Mock YAML configurations
-│       ├── hooks/           # Mock hook scripts
-│       ├── agents/
-│       ├── commands/
-│       ├── prompts/
-│       └── skills/
-├── test_full_setup.py       # Main E2E workflow tests
-├── test_output_files.py     # JSON file content verification
-├── test_launcher_scripts.py # Platform-specific launcher tests
-├── test_path_handling.py    # Tilde expansion and path format tests
-├── test_path_normalization.py # Path separator consistency tests
-├── test_cleanup.py          # Artifact cleanup verification
-├── test_confirmation.py     # Installation confirmation gate tests
-├── test_env_variable_handling.py  # OS environment variable tests
-├── test_javascript_hooks.py # JavaScript hook event tests
-├── test_manifest_lifecycle.py # Manifest creation and update tests
-├── test_mcp_argument_ordering.py # MCP server argument order tests
-├── test_npm_fallback.py     # npm installation and sudo fallback tests
-├── test_root_guard.py       # Root detection guard tests
-├── test_upgrade_source_detection.py # Source-aware upgrade routing tests
-└── test_version_detection.py # Claude Code version detection tests
-```
+- `tests/e2e/conftest.py` -- E2E fixtures (`isolated_home`, `golden_config`, `mock_repo_path`)
+- `tests/e2e/golden_config.yaml` -- Comprehensive config exercising ALL supported YAML keys
+- `tests/e2e/validators.py` -- Composable validation functions
+- `tests/e2e/expected/` -- Platform-specific expected outputs (linux, macOS, windows)
+- `tests/e2e/fixtures/mock_repo/` -- Mock source files (agents, commands, hooks, prompts, skills)
 
 #### Running E2E Tests
 
@@ -293,21 +274,7 @@ uv run pytest tests/e2e/ -k "test_launcher" -v
 
 #### Golden Configuration Purpose
 
-The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as:
-
-1. **Single source of truth** for testing - exercises every configuration option
-2. **Regression prevention** - ensures all config keys work correctly on all platforms
-3. **Documentation by example** - demonstrates the complete configuration schema
-
-The golden config includes:
-- Core settings: `name`, `version`, `command-names`, `base-url`, `claude-code-version`, `install-nodejs`
-- Dependencies: `dependencies` (with platform-specific variants)
-- Resources: `agents`, `slash-commands`, `skills`, `files-to-download`
-- Hooks: `hooks` (files and events with command/prompt types)
-- MCP Servers: `mcp-servers` (http, sse, stdio transports)
-- Settings: `model`, `permissions`, `env-variables`, `os-env-variables`
-- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`, `effort-level`
-- Extras: `company-announcements`, `attribution`, `status-line`
+The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as the single source of truth for testing (exercises every option), regression prevention (all platforms), and documentation by example. Open the file directly to see all supported configuration keys.
 
 #### Key Design Principles
 
@@ -316,14 +283,6 @@ The golden config includes:
 - **Composable validators**: Return all errors, not just the first
 - **Platform-specific expectations**: Separate modules for Linux, macOS, Windows
 - **CI cleanup verification**: Dedicated step verifies no artifacts leak to real home
-
-#### CI Integration
-
-E2E tests run as a dedicated job in GitHub Actions with:
-- **Platform matrix**: Ubuntu, Windows, macOS
-- **Independent execution**: `fail-fast: false` - each platform runs to completion
-- **Artifact upload**: Debug artifacts on failure for troubleshooting
-- **Cleanup verification**: Post-test check for leaked artifacts
 
 ### Code Quality & Linting
 
@@ -352,13 +311,6 @@ uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
 - End-of-file and trailing whitespace fixes
 - Markdown linting
 - Commitizen for commit message validation
-
-**DO NOT use these commands directly:**
-- ❌ `uv run ruff format` - Not part of pre-commit configuration
-- ❌ `uv run ruff check --fix` - Use pre-commit instead
-
-**Use pre-commit for all code quality validation:**
-- ✅ `uv run pre-commit run --all-files` - Correct approach
 
 ## E2E Testing Requirements for New Features
 

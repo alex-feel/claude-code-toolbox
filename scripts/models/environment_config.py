@@ -26,6 +26,13 @@ USER_SETTINGS_EXCLUDED_KEYS: frozenset[str] = frozenset({
     'statusLine',  # Path resolution issues; profile-specific display config
 })
 
+# Keys that are NOT allowed in global-config section
+# OAuth credentials must not appear in version-controlled YAML files
+GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    'oauthSession',
+    'oauthAccount',
+})
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -162,6 +169,34 @@ class UserSettings(BaseModel):
                 raise ValueError(
                     f"Key '{key}' is not allowed in user-settings (profile-specific only). "
                     'Configure this in the root level of your environment YAML instead.',
+                )
+        return data
+
+
+class GlobalConfig(BaseModel):
+    """Global configuration for ~/.claude.json.
+
+    Free-form model that accepts any keys supported by Claude Code's
+    global configuration schema. No specific keys are hardcoded -- the model
+    passes through all provided settings without field-level validation.
+
+    The only structural guard is the exclusion of OAuth credential keys
+    (oauthSession, oauthAccount) to prevent accidental credential exposure
+    in version-controlled YAML configuration files.
+    """
+
+    model_config = ConfigDict(extra='allow')
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_excluded_keys(cls, data: dict[str, object]) -> dict[str, object]:
+        """Validate that excluded keys are not present."""
+        for key in GLOBAL_CONFIG_EXCLUDED_KEYS:
+            if key in data:
+                raise ValueError(
+                    f"Key '{key}' is not allowed in global-config (OAuth credentials). "
+                    'OAuth credentials are managed by Claude Code and must not appear '
+                    'in environment configuration files.',
                 )
         return data
 
@@ -582,6 +617,12 @@ class EnvironmentConfig(BaseModel):
         alias='user-settings',
         description='User-level settings written to ~/.claude/settings.json. '
         'These settings apply across all sessions.',
+    )
+    global_config: GlobalConfig | None = Field(
+        None,
+        alias='global-config',
+        description='Global configuration written to ~/.claude.json. '
+        'These settings apply to Claude Code globally across all profiles.',
     )
 
     @field_validator('command_names')

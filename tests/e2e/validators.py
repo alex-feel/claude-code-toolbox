@@ -1017,3 +1017,49 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         )
 
     return errors
+
+
+def validate_global_config_output(
+    home_dir: Path,
+    golden_config: dict[str, Any],
+) -> list[str]:
+    """Validate ~/.claude.json contains merged global-config values.
+
+    Validates:
+    - File exists and is valid JSON
+    - All global-config keys from golden config are present
+    - Values match expected values
+
+    Args:
+        home_dir: Path to the home directory (e.g., tmp_path)
+        golden_config: Golden configuration dictionary
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+    claude_json = home_dir / '.claude.json'
+
+    global_config = golden_config.get('global-config')
+    if not global_config:
+        return errors
+
+    if not claude_json.exists():
+        errors.append(f'Expected {claude_json} to exist')
+        return errors
+
+    try:
+        content = json.loads(claude_json.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        errors.append(f'Invalid JSON in {claude_json}: {e}')
+        return errors
+
+    for key, expected_value in global_config.items():
+        if key not in content:
+            errors.append(f'Missing key {key!r} in ~/.claude.json')
+        elif content[key] != expected_value:
+            errors.append(
+                f'Key {key!r}: expected {expected_value!r}, got {content[key]!r}',
+            )
+
+    return errors

@@ -67,6 +67,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'slash-commands',
     'skills',
     'files-to-download',
+    'global-config',
     'hooks',
     'mcp-servers',
     'model',
@@ -120,6 +121,13 @@ USER_SETTINGS_EXCLUDED_KEYS: set[str] = {
     'hooks',       # Path resolution issues; profile-specific event handlers
     'statusLine',  # Path resolution issues; profile-specific display config
 }
+
+# Keys that are NOT allowed in the global-config section
+# OAuth credentials must not appear in version-controlled YAML files
+GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    'oauthSession',
+    'oauthAccount',
+})
 
 # Mapping from root-level YAML keys to their user-settings equivalents
 # Used for conflict detection between profile settings and user settings
@@ -548,6 +556,7 @@ class InstallationPlan:
     env_variables: dict[str, str] | None = None
     os_env_variables: dict[str, Any] | None = None
     user_settings: dict[str, Any] | None = None
+    global_config: dict[str, Any] | None = None
     always_thinking_enabled: bool | None = None
     effort_level: str | None = None
     company_announcements: list[str] | None = None
@@ -1299,13 +1308,72 @@ def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _write_merged_json(
+    target_file: Path,
+    new_settings: dict[str, Any],
+    array_union_keys: set[str] | None = None,
+    *,
+    ensure_parent: bool = True,
+) -> tuple[bool, dict[str, Any]]:
+    """Read-merge-write JSON file with deep merge.
+
+    Implements the three-step merge process:
+    1. READ existing JSON file (or empty dict if not exists/invalid)
+    2. DEEP MERGE new settings into existing
+    3. WRITE merged result back to file
+
+    Args:
+        target_file: Path to the JSON file to update.
+        new_settings: New settings to deep-merge into existing content.
+        array_union_keys: Key paths where arrays should be unioned.
+            Defaults to DEFAULT_ARRAY_UNION_KEYS if None.
+            Pass set() to disable array union behavior.
+        ensure_parent: If True, create parent directories if needed.
+
+    Returns:
+        Tuple of (success, merged_dict). success is True if settings were
+        written successfully, False on write failure. merged_dict contains
+        the merged content (useful for post-write checks).
+    """
+    # Step 1: READ existing settings
+    existing: dict[str, Any] = {}
+    if target_file.exists():
+        try:
+            file_content = target_file.read_text(encoding='utf-8')
+            if file_content.strip():
+                parsed = json.loads(file_content)
+                if isinstance(parsed, dict):
+                    existing = cast(dict[str, Any], parsed)
+                else:
+                    warning(f'Existing {target_file} is not a dict, starting fresh')
+        except json.JSONDecodeError as e:
+            warning(f'Invalid JSON in {target_file}: {e}, starting fresh')
+
+    # Step 2: DEEP MERGE new settings into existing
+    merged = deep_merge_settings(existing, new_settings, array_union_keys=array_union_keys)
+
+    # Step 3: WRITE merged result back to file
+    try:
+        if ensure_parent:
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+
+        target_file.write_text(
+            json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
+        return True, merged
+    except OSError as e:
+        warning(f'Failed to write to {target_file}: {e}')
+        return False, merged
+
+
 def write_user_settings(
     settings: dict[str, Any],
     claude_user_dir: Path,
 ) -> bool:
     """Write user settings to ~/.claude/settings.json with deep merge.
 
-    Implements the three-step merge process:
+    Implements the three-step merge process via _write_merged_json():
     1. READ existing ~/.claude/settings.json (or empty dict if not exists)
     2. DEEP MERGE new settings values into existing
     3. WRITE merged result back to file
@@ -1326,33 +1394,11 @@ def write_user_settings(
     # Step 0: Platform-conditional tilde handling in command keys
     expanded_settings = _expand_tilde_keys_in_settings(settings)
 
-    # Step 1: READ existing settings
-    existing: dict[str, Any] = {}
-    if settings_file.exists():
-        try:
-            file_content = settings_file.read_text(encoding='utf-8')
-            if file_content.strip():  # Only parse non-empty files
-                parsed = json.loads(file_content)
-                if isinstance(parsed, dict):
-                    existing = cast(dict[str, Any], parsed)
-                else:
-                    warning(f'Existing {settings_file} is not a dict, starting fresh')
-        except json.JSONDecodeError as e:
-            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
+    # Delegate to shared READ-MERGE-WRITE helper
+    # Uses default array_union_keys (permissions.allow/deny/ask)
+    ok, merged = _write_merged_json(settings_file, expanded_settings)
 
-    # Step 2: DEEP MERGE new settings into existing
-    merged = deep_merge_settings(existing, expanded_settings)
-
-    # Step 3: WRITE merged result back to file
-    try:
-        # Ensure directory exists
-        claude_user_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write with pretty formatting
-        settings_file.write_text(
-            json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
-            encoding='utf-8',
-        )
+    if ok:
         success(f'Wrote user settings to {settings_file}')
 
         # Warn about potential WSL path issues
@@ -1361,18 +1407,17 @@ def write_user_settings(
                 if key in merged and isinstance(merged[key], str):
                     value = merged[key]
                     # Check for Windows path patterns (e.g., C:\, D:\)
-                    if re.search(r'[A-Za-z]:\\', value):
+                    if re.search(r'[A-Za-z]:\\\\', value):
                         warning(
                             f'WSL detected: {key} contains Windows-style path: {value}. '
                             'This may not work in the Linux environment. '
                             'Consider re-running setup from within WSL.',
                         )
                         break
+    else:
+        warning(f'Failed to write user settings to {settings_file}')
 
-        return True
-    except OSError as e:
-        warning(f'Failed to write user settings to {settings_file}: {e}')
-        return False
+    return ok
 
 
 def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
@@ -1403,6 +1448,60 @@ def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
         for key in user_settings
         if key in USER_SETTINGS_EXCLUDED_KEYS
     ]
+
+
+def validate_global_config(global_config: dict[str, Any]) -> list[str]:
+    """Validate global-config section for excluded keys.
+
+    Checks that the global-config section does not contain OAuth credential
+    keys that should never appear in YAML configuration files.
+
+    Args:
+        global_config: Dict from YAML global-config section.
+
+    Returns:
+        List of error messages. Empty list if validation passes.
+    """
+    return [
+        f"Key '{key}' is not allowed in global-config (OAuth credentials)"
+        for key in global_config
+        if key in GLOBAL_CONFIG_EXCLUDED_KEYS
+    ]
+
+
+def write_global_config(
+    global_config: dict[str, Any],
+) -> bool:
+    """Write global configuration to ~/.claude.json with deep merge.
+
+    Implements the three-step merge process via _write_merged_json():
+    1. READ existing ~/.claude.json (or empty dict if not exists)
+    2. DEEP MERGE new config values into existing (no array union)
+    3. WRITE merged result back to file
+
+    Uses array_union_keys=set() because ~/.claude.json has no
+    permissions.allow/deny/ask paths (those are settings.json-specific).
+
+    Args:
+        global_config: Global config dict from YAML global-config section.
+
+    Returns:
+        True if config was written successfully, False on write failure.
+    """
+    config_file = Path.home() / '.claude.json'
+
+    ok, _ = _write_merged_json(
+        config_file,
+        global_config,
+        array_union_keys=set(),
+    )
+
+    if ok:
+        success(f'Wrote global config to {config_file}')
+    else:
+        warning(f'Failed to write global config to {config_file}')
+
+    return ok
 
 
 def detect_settings_conflicts(
@@ -3250,6 +3349,7 @@ def collect_installation_plan(
         env_variables=config.get('env-variables'),
         os_env_variables=config.get('os-env-variables'),
         user_settings=config.get('user-settings'),
+        global_config=config.get('global-config'),
         always_thinking_enabled=config.get('always-thinking-enabled'),
         effort_level=config.get('effort-level'),
         company_announcements=config.get('company-announcements'),
@@ -3349,6 +3449,8 @@ def display_installation_summary(
         settings_items.append(f'Always thinking: {plan.always_thinking_enabled}')
     if plan.user_settings:
         settings_items.append('User settings: configured')
+    if plan.global_config:
+        settings_items.append('Global config: configured')
     if plan.company_announcements:
         settings_items.append(f'Company announcements: {len(plan.company_announcements)}')
     if plan.command_names:
@@ -7056,6 +7158,9 @@ def main() -> None:
         # Extract user-settings configuration (global user-level settings)
         user_settings = config.get('user-settings')
 
+        # Extract global-config configuration (global Claude Code settings)
+        global_config = config.get('global-config')
+
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
         claude_code_version_normalized = None  # Default to latest
@@ -7082,6 +7187,14 @@ def main() -> None:
             user_settings_errors = validate_user_settings(user_settings)
             if user_settings_errors:
                 for err in user_settings_errors:
+                    error(err)
+                sys.exit(1)
+
+        # Validate global-config section for excluded keys
+        if global_config:
+            global_config_errors = validate_global_config(global_config)
+            if global_config_errors:
+                for err in global_config_errors:
                     error(err)
                 sys.exit(1)
 
@@ -7310,18 +7423,29 @@ def main() -> None:
         else:
             info('No user settings to configure')
 
+        # Step 13: Write global config
+        print()
+        print(f'{Colors.CYAN}Step 13: Writing global config...{Colors.NC}')
+        if global_config:
+            if write_global_config(global_config):
+                success('Global config written successfully')
+            else:
+                warning('Failed to write global config (non-fatal)')
+        else:
+            info('No global config to write')
+
         # Check if command creation is needed
         if primary_command_name:
-            # Step 13: Download hooks
+            # Step 14: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 13: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 14: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth):
                 download_failures.append('hook files')
 
-            # Step 14: Configure settings
+            # Step 15: Configure settings
             print()
-            print(f'{Colors.CYAN}Step 14: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 15: Configuring settings...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -7341,9 +7465,9 @@ def main() -> None:
                 effort_level,
             )
 
-            # Step 15: Write installation manifest
+            # Step 16: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 15: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Writing installation manifest...{Colors.NC}')
             cleanup_stale_marker(claude_user_dir, primary_command_name)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -7357,9 +7481,9 @@ def main() -> None:
                 command_names=command_names or [primary_command_name],
             )
 
-            # Step 16: Create launcher script
+            # Step 17: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 16: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 17: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -7369,21 +7493,21 @@ def main() -> None:
                 claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 17: Register global command(s)
+            # Step 18: Register global command(s)
             if launcher_path:
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 17: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 18: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 17: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 18: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 13-17: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 14-18: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -7487,6 +7611,8 @@ def main() -> None:
                 print(f'   * OS environment variables: {del_vars} deleted')
         if user_settings:
             print('   * User settings: configured in ~/.claude/settings.json')
+        if global_config:
+            print('   * Global config: configured in ~/.claude.json')
         # Only show hooks count if command was specified (hooks was defined)
         if command_names:
             hooks = config.get('hooks', {})

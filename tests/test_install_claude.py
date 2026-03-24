@@ -2653,14 +2653,17 @@ class TestUpdateInstallMethodConfig:
     def test_update_config_corrupted_file(
         self, tmp_path: Path,
     ) -> None:
-        """Test update_install_method_config handles corrupted config file."""
+        """Test update_install_method_config handles corrupted config file gracefully."""
         config_file = tmp_path / '.claude.json'
         config_file.write_text('not valid json {{{')
 
         with patch('install_claude.Path.home', return_value=tmp_path):
             result = install_claude.update_install_method_config('native')
 
-        assert result is False
+        # Resilient handling: starts fresh and still writes successfully
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config == {'installMethod': 'native'}
 
     def test_update_config_permission_denied(
         self, tmp_path: Path,
@@ -2671,7 +2674,7 @@ class TestUpdateInstallMethodConfig:
 
         with (
             patch('install_claude.Path.home', return_value=tmp_path),
-            patch('builtins.open', side_effect=PermissionError('Permission denied')),
+            patch.object(Path, 'write_text', side_effect=PermissionError('Permission denied')),
         ):
             result = install_claude.update_install_method_config('native')
 
@@ -2711,6 +2714,100 @@ class TestUpdateInstallMethodConfig:
         assert result is True
         config = json.loads(config_file.read_text())
         assert config['installMethod'] == 'npm-global'
+
+
+class TestUpdateInstallMethodConfigDeepMerge:
+    """Test update_install_method_config deep-merge-compatible behavior."""
+
+    def test_handles_non_dict_json(self, tmp_path: Path) -> None:
+        """Non-dict JSON starts fresh with warning."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('["array", "not", "dict"]')
+
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config == {'installMethod': 'native'}
+
+    def test_handles_empty_file(self, tmp_path: Path) -> None:
+        """Empty file is treated as empty dict."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('')
+
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config == {'installMethod': 'native'}
+
+    def test_preserves_all_existing_keys(self, tmp_path: Path) -> None:
+        """Preserves all existing keys including complex structures."""
+        config_file = tmp_path / '.claude.json'
+        existing = {
+            'autoConnectIde': True,
+            'editorMode': 'vim',
+            'mcpServers': {'server1': {'url': 'http://localhost:3000'}},
+            'showTurnDuration': True,
+        }
+        config_file.write_text(json.dumps(existing))
+
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            result = install_claude.update_install_method_config('native')
+
+        assert result is True
+        config = json.loads(config_file.read_text())
+        assert config['installMethod'] == 'native'
+        assert config['autoConnectIde'] is True
+        assert config['editorMode'] == 'vim'
+        assert config['mcpServers'] == existing['mcpServers']
+        assert config['showTurnDuration'] is True
+
+    def test_file_ends_with_newline(self, tmp_path: Path) -> None:
+        """Written file ends with newline for consistency."""
+        config_file = tmp_path / '.claude.json'
+
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            install_claude.update_install_method_config('native')
+
+        content = config_file.read_text()
+        assert content.endswith('\n')
+
+    def test_coexistence_install_then_global_config(self, tmp_path: Path) -> None:
+        """install_method then global_config preserves both."""
+        config_file = tmp_path / '.claude.json'
+
+        # First: install_claude writes installMethod
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            install_claude.update_install_method_config('native')
+
+        # Second: setup_environment writes global config
+        with patch.object(Path, 'home', return_value=tmp_path):
+            import scripts.setup_environment as setup_env
+            setup_env.write_global_config({'autoConnectIde': True})
+
+        config = json.loads(config_file.read_text())
+        assert config['installMethod'] == 'native'
+        assert config['autoConnectIde'] is True
+
+    def test_coexistence_global_config_then_install(self, tmp_path: Path) -> None:
+        """global_config then install_method preserves both."""
+        config_file = tmp_path / '.claude.json'
+
+        # First: setup_environment writes global config
+        with patch.object(Path, 'home', return_value=tmp_path):
+            import scripts.setup_environment as setup_env
+            setup_env.write_global_config({'editorMode': 'vim'})
+
+        # Second: install_claude writes installMethod
+        with patch('install_claude.Path.home', return_value=tmp_path):
+            install_claude.update_install_method_config('native')
+
+        config = json.loads(config_file.read_text())
+        assert config['editorMode'] == 'vim'
+        assert config['installMethod'] == 'native'
 
 
 class TestNativeInstallCallsConfigUpdate:

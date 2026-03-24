@@ -593,6 +593,133 @@ class TestUserSettingsInEnvironmentConfig:
         assert network['socksProxyPort'] == 1080
 
 
+class TestGlobalConfig:
+    """Test GlobalConfig model validation."""
+
+    def test_global_config_accepts_arbitrary_keys(self) -> None:
+        """GlobalConfig allows any keys via model_extra."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({
+            'autoConnectIde': True,
+            'editorMode': 'vim',
+            'showTurnDuration': True,
+        })
+        assert config.model_extra is not None
+        assert config.model_extra.get('autoConnectIde') is True
+        assert config.model_extra.get('editorMode') == 'vim'
+        assert config.model_extra.get('showTurnDuration') is True
+
+    def test_global_config_rejects_oauth_session(self) -> None:
+        """GlobalConfig with 'oauthSession' key raises ValueError."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({'oauthSession': 'token123'})
+        assert 'oauthSession' in str(exc_info.value)
+        assert 'not allowed in global-config' in str(exc_info.value)
+
+    def test_global_config_rejects_oauth_account(self) -> None:
+        """GlobalConfig with 'oauthAccount' key raises ValueError."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({'oauthAccount': 'account123'})
+        assert 'oauthAccount' in str(exc_info.value)
+        assert 'not allowed in global-config' in str(exc_info.value)
+
+    def test_global_config_rejects_both_oauth_keys(self) -> None:
+        """GlobalConfig with both OAuth keys raises ValueError."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError):
+            GlobalConfig.model_validate({
+                'oauthSession': 'token',
+                'oauthAccount': 'account',
+            })
+
+    def test_global_config_accepts_mcp_servers(self) -> None:
+        """GlobalConfig allows mcpServers dict-of-dicts."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({
+            'mcpServers': {
+                'server1': {'url': 'http://localhost:3000'},
+                'server2': {'command': 'npx some-server'},
+            },
+        })
+        assert config.model_extra is not None
+        assert isinstance(config.model_extra['mcpServers'], dict)
+        assert 'server1' in config.model_extra['mcpServers']
+
+    def test_global_config_empty(self) -> None:
+        """Empty GlobalConfig is valid."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({})
+        assert config.model_extra is None or config.model_extra == {}
+
+    def test_global_config_nested_dicts(self) -> None:
+        """Nested dicts are preserved as-is."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({
+            'projects': {
+                '/home/user/project': {
+                    'allowedTools': ['Read', 'Write'],
+                },
+            },
+        })
+        assert config.model_extra is not None
+        assert isinstance(config.model_extra['projects'], dict)
+
+
+class TestGlobalConfigInEnvironmentConfig:
+    """Test GlobalConfig integration with EnvironmentConfig."""
+
+    def test_environment_config_with_global_config(self) -> None:
+        """EnvironmentConfig with global-config validates correctly."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test Environment',
+            'global-config': {
+                'autoConnectIde': True,
+                'editorMode': 'vim',
+            },
+        })
+        assert config.global_config is not None
+        extras = config.global_config.model_extra
+        assert extras is not None
+        assert extras.get('autoConnectIde') is True
+        assert extras.get('editorMode') == 'vim'
+
+    def test_environment_config_without_global_config(self) -> None:
+        """EnvironmentConfig without global-config validates correctly."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test Environment',
+        })
+        assert config.global_config is None
+
+    def test_environment_config_global_config_oauth_rejected(self) -> None:
+        """EnvironmentConfig rejects oauthSession in global-config."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'global-config': {
+                    'autoConnectIde': True,
+                    'oauthSession': 'token',
+                },
+            })
+        assert 'oauthSession' in str(exc_info.value)
+        assert 'not allowed in global-config' in str(exc_info.value)
+
+    def test_environment_config_with_both_settings_types(self) -> None:
+        """EnvironmentConfig with both user-settings and global-config."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'user-settings': {'language': 'english'},
+            'global-config': {'autoConnectIde': True},
+        })
+        assert config.user_settings is not None
+        assert config.global_config is not None
+        assert config.user_settings.model_extra is not None
+        assert config.user_settings.model_extra.get('language') == 'english'
+        assert config.global_config.model_extra is not None
+        assert config.global_config.model_extra.get('autoConnectIde') is True
+
+
 class TestEffortLevel:
     """Test effort-level field validation on EnvironmentConfig."""
 

@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from typing import cast
 from urllib.request import urlopen
 from urllib.request import urlretrieve
 
@@ -402,15 +403,41 @@ def remove_npm_claude() -> bool:
     return False
 
 
+def _read_json_dict(path: Path) -> dict[str, Any]:
+    """Read a JSON file and return its content as a dict.
+
+    Handles missing files, empty files, invalid JSON, and non-dict JSON
+    gracefully by returning an empty dict with a warning.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        Parsed dict content, or empty dict if file is missing/invalid.
+    """
+    if not path.exists():
+        return {}
+    try:
+        file_content = path.read_text(encoding='utf-8')
+        if not file_content.strip():
+            return {}
+        result = json.loads(file_content)
+        if not isinstance(result, dict):
+            warning(f'Existing {path} is not a dict, starting fresh')
+            return {}
+        return cast(dict[str, Any], result)
+    except json.JSONDecodeError as e:
+        warning(f'Invalid JSON in {path}: {e}, starting fresh')
+        return {}
+
+
 def update_install_method_config(method: str = 'native') -> bool:
-    """Update installMethod in Claude configuration via direct file modification.
+    """Update installMethod in Claude global configuration.
 
-    Directly modifies ~/.claude.json to set the installMethod value.
-    This eliminates System Diagnostics warnings about config mismatch.
-
-    The `claude config` CLI command was deprecated in v1.0.7 and removed
-    in v2.0.0. Direct file modification is the only supported method
-    for updating configuration in Claude Code v2.x.
+    Reads the existing ~/.claude.json, merges the installMethod value,
+    and writes the result back. This approach preserves all other keys
+    in the file (including those written by setup_environment.py's
+    write_global_config function).
 
     Args:
         method: Installation method to set. Valid values:
@@ -429,22 +456,21 @@ def update_install_method_config(method: str = 'native') -> bool:
     """
     config_path = Path.home() / '.claude.json'
     try:
-        config: dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, encoding='utf-8') as f:
-                config = json.load(f)
+        # READ existing config (preserves all existing keys)
+        config: dict[str, Any] = _read_json_dict(config_path)
 
+        # MERGE: update the single key
         config['installMethod'] = method
 
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
+        # WRITE merged result back
+        config_path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
 
         success(f'Updated installMethod to "{method}" in ~/.claude.json')
         return True
 
-    except json.JSONDecodeError as e:
-        warning(f'Could not parse existing config: {e}')
-        return False
     except PermissionError as e:
         warning(f'Permission denied updating config: {e}')
         return False
