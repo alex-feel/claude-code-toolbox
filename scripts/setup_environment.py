@@ -3293,7 +3293,7 @@ def collect_installation_plan(
     # Extract dependency commands by platform
     dependency_commands: dict[str, list[str]] = {}
     deps_raw: dict[str, Any] = config.get('dependencies') or {}
-    for platform_key in ('common', 'windows', 'linux', 'macos'):
+    for platform_key in ('common', 'windows', 'linux', 'mac'):
         dep_cmds: list[Any] = deps_raw.get(platform_key) or []
         if dep_cmds:
             dependency_commands[platform_key] = [str(c) for c in dep_cmds]

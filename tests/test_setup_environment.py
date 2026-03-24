@@ -8678,7 +8678,7 @@ class TestCollectInstallationPlan:
             'dependencies': {
                 'common': ['pip install requests'],
                 'linux': ['apt-get install -y curl'],
-                'macos': ['brew install wget'],
+                'mac': ['brew install wget'],
             },
         }
         chain = [setup_environment.InheritanceChainEntry(
@@ -8694,7 +8694,7 @@ class TestCollectInstallationPlan:
         )
         assert 'common' in plan.dependency_commands
         assert 'linux' in plan.dependency_commands
-        assert 'macos' in plan.dependency_commands
+        assert 'mac' in plan.dependency_commands
         assert 'windows' not in plan.dependency_commands
         assert plan.dependency_commands['common'] == ['pip install requests']
 
