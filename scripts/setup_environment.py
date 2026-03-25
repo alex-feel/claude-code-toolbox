@@ -3333,7 +3333,7 @@ def collect_installation_plan(
     # Extract dependency commands by platform
     dependency_commands: dict[str, list[str]] = {}
     deps_raw: dict[str, Any] = config.get('dependencies') or {}
-    for platform_key in ('common', 'windows', 'linux', 'mac'):
+    for platform_key in ('common', 'windows', 'linux', 'macos'):
         dep_cmds: list[Any] = deps_raw.get(platform_key) or []
         if dep_cmds:
             dependency_commands[platform_key] = [str(c) for c in dep_cmds]
@@ -4611,7 +4611,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     # Platform mapping: platform.system() returns -> config key
     platform_map = {
         'Windows': 'windows',
-        'Darwin': 'mac',  # macOS
+        'Darwin': 'macos',
         'Linux': 'linux',
     }
 
@@ -5966,7 +5966,7 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 info(f'Configuring stdio MCP server {name}...')
 
                 # Apply tilde expansion to command (same as Windows path)
-                # This ensures ~/ paths in MCP server commands work on Mac/Linux
+                # This ensures ~/ paths in MCP server commands work on macOS/Linux
                 if command:
                     expanded_command = expand_tildes_in_command(command)
                     # Rebuild base_cmd with expanded command if tilde was expanded

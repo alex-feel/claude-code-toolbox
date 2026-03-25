@@ -1822,7 +1822,7 @@ class TestInstallDependencies:
 
         # Commands should be executed as-is (with tilde expansion)
         result = setup_environment.install_dependencies({
-            'mac': [
+            'macos': [
                 'echo "export FOO=bar" >> ~/.zshrc',
                 'brew install tool',
             ],
@@ -1928,7 +1928,7 @@ class TestInstallDependencies:
         mock_expand.return_value = f'uv tool install --force {home}/.local/tools/custom-tool'
 
         result = setup_environment.install_dependencies({
-            'mac': ['uv tool install ~/.local/tools/custom-tool'],
+            'macos': ['uv tool install ~/.local/tools/custom-tool'],
         })
 
         assert result is True
@@ -2737,7 +2737,7 @@ class TestMCPTildeExpansionWindows:
 
 
 class TestMCPTildeExpansionUnix:
-    """Test tilde expansion in STDIO MCP commands on Mac/Linux.
+    """Test tilde expansion in STDIO MCP commands on macOS/Linux.
 
     P2 fix: Ensures tilde paths in MCP server commands are expanded
     on Unix systems, matching the Windows behavior.
@@ -8903,7 +8903,7 @@ class TestCollectInstallationPlan:
             'dependencies': {
                 'common': ['pip install requests'],
                 'linux': ['apt-get install -y curl'],
-                'mac': ['brew install wget'],
+                'macos': ['brew install wget'],
             },
         }
         chain = [setup_environment.InheritanceChainEntry(
@@ -8919,7 +8919,7 @@ class TestCollectInstallationPlan:
         )
         assert 'common' in plan.dependency_commands
         assert 'linux' in plan.dependency_commands
-        assert 'mac' in plan.dependency_commands
+        assert 'macos' in plan.dependency_commands
         assert 'windows' not in plan.dependency_commands
         assert plan.dependency_commands['common'] == ['pip install requests']
 

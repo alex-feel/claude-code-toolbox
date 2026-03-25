@@ -522,7 +522,7 @@ class EnvironmentConfig(BaseModel):
         default_factory=lambda: {
             'common': list[str](),
             'windows': list[str](),
-            'mac': list[str](),
+            'macos': list[str](),
             'linux': list[str](),
         },
         description='Platform-specific dependency commands',
@@ -647,7 +647,7 @@ class EnvironmentConfig(BaseModel):
     def validate_dependencies_structure(cls, v: object) -> dict[str, list[str]]:
         """Validate dependencies have correct structure."""
         if v is None:
-            return {'common': [], 'windows': [], 'mac': [], 'linux': []}
+            return {'common': [], 'windows': [], 'macos': [], 'linux': []}
 
         if not isinstance(v, dict):
             raise ValueError('dependencies must be a dictionary')
@@ -655,7 +655,7 @@ class EnvironmentConfig(BaseModel):
         # Cast to dict for type checking
         deps_dict = cast(dict[str, object], v)
 
-        valid_keys = {'common', 'windows', 'mac', 'linux'}
+        valid_keys = {'common', 'windows', 'macos', 'linux'}
         invalid_keys = set(deps_dict.keys()) - valid_keys
 
         if invalid_keys:

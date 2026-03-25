@@ -258,8 +258,7 @@ Platform-specific shell commands to execute during setup.
 
 - **Type:** `dict[str, list[str]]`
 - **Default:** `{}`
-- **Valid platform keys:** `common`, `windows`, `mac`, `linux`
-- **Note:** The platform key is `mac`, **not** `macos`
+- **Valid platform keys:** `common`, `windows`, `macos`, `linux`
 - **Behavior:**
   - `common` runs on all platforms
   - Platform-specific keys run only on the matching platform
@@ -273,7 +272,7 @@ dependencies:
     - "uv tool install mypy"
   windows:
     - "winget install --id Git.Git --scope machine --accept-package-agreements --accept-source-agreements"
-  mac:
+  macos:
     - "brew install shellcheck"
   linux:
     - "sudo apt-get install -y shellcheck"
@@ -888,7 +887,7 @@ dependencies:
     - "uv tool install mypy"
   windows:
     - "winget install --id Git.Git --scope machine --accept-package-agreements --accept-source-agreements"
-  mac:
+  macos:
     - "brew install shellcheck"
   linux:
     - "sudo apt-get install -y shellcheck"
@@ -1044,11 +1043,11 @@ effort-level: "max"
 
 ### Invalid platform keys in dependencies
 
-Use `mac` as the platform key, **not** `macos`:
+Use `macos` as the platform key:
 
 ```yaml
 dependencies:
-  mac:  # Correct
+  macos:  # Correct
     - "brew install wget"
 ```
 

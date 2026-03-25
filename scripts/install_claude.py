@@ -1398,7 +1398,7 @@ def check_nodejs_compatibility(claude_code_version: str | None = None) -> bool:
         error('Node.js v25+ removed the SlowBuffer API that Claude Code depends on')
         info('Please downgrade to Node.js v22 or v20 (LTS)')
         if platform.system() == 'Darwin':
-            info('On Mac: brew uninstall node && brew install node@22 && brew link --force --overwrite node@22')
+            info('On macOS: brew uninstall node && brew install node@22 && brew link --force --overwrite node@22')
         elif platform.system() == 'Linux':
             info('On Linux: Use nvm or n to install Node.js 22')
             info('  nvm install 22 && nvm use 22')

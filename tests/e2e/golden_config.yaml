@@ -29,8 +29,8 @@ dependencies:
     - "echo 'windows-dependency-installed'"
   linux:
     - "echo 'linux-dependency-installed'"
-  mac:
-    - "echo 'mac-dependency-installed'"
+  macos:
+    - "echo 'macos-dependency-installed'"
 
 # Agent markdown files
 agents:
