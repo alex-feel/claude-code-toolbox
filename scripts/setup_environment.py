@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
 from typing import TextIO
 from typing import TypeVar
 from typing import cast
@@ -1588,6 +1589,25 @@ def build_platform_aware_command(command: str) -> list[str]:
         return ['cmd', '/c', executable] + args
 
     return [executable] + args
+
+
+def _command_starts_with_npx(command: str) -> bool:
+    """Check if a command's first token is 'npx'.
+
+    Uses shell-aware tokenization to avoid false positives from
+    substring matching (e.g., 'run_npx_wrapper.py' does not match).
+
+    Args:
+        command: MCP server command string.
+
+    Returns:
+        True if the first executable token is 'npx'.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    return bool(tokens) and tokens[0] == 'npx'
 
 
 def parse_mcp_command(command_str: str) -> dict[str, Any]:
@@ -5151,17 +5171,21 @@ def install_claude(version: str | None = None) -> bool:
         return False
 
 
-def verify_nodejs_available() -> bool:
+def verify_nodejs_available() -> str | None:
     """Verify Node.js is available before MCP configuration.
 
     Uses shutil.which() to find Node.js in PATH, supporting all installation methods
     (official installer, nvm, fnm, volta, scoop, chocolatey, etc.).
 
     Returns:
-        True if Node.js is available, False otherwise.
+        Parent directory of the verified Node.js executable, or None if not found.
     """
     if platform.system() != 'Windows':
-        return True  # Assume available on Unix
+        node_path = shutil.which('node')
+        if node_path:
+            return str(Path(node_path).parent)
+        warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
+        return None
 
     # Primary: Use shutil.which for proper PATH-based detection
     node_path = shutil.which('node')
@@ -5176,7 +5200,7 @@ def verify_nodejs_available() -> bool:
             )
             if result.returncode == 0:
                 success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return True
+                return str(Path(node_path).parent)
         except (subprocess.TimeoutExpired, OSError):
             pass
 
@@ -5199,12 +5223,12 @@ def verify_nodejs_available() -> bool:
                     os.environ['PATH'] = f'{node_dir};{current_path}'
                     info(f'Added {node_dir} to PATH')
                 success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return True
+                return str(Path(node_path).parent)
         except (subprocess.TimeoutExpired, OSError):
             pass
 
     error('Node.js not found in PATH')
-    return False
+    return None
 
 
 def validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
@@ -5321,7 +5345,50 @@ def normalize_scope(scope_value: str | list[str] | None) -> list[str]:
     return result
 
 
-def configure_mcp_server(server: dict[str, Any]) -> bool:
+class _WindowsBashEnv(NamedTuple):
+    """Pre-computed Windows Git Bash environment for MCP server configuration.
+
+    Encapsulates PATH construction with Node.js injection and Claude command
+    resolution for Git Bash execution.
+    """
+
+    unix_explicit_path: str
+    unix_claude_cmd: str
+
+
+def _prepare_windows_bash_env(
+    claude_cmd: str | Path,
+    nodejs_dir: str | None,
+) -> _WindowsBashEnv:
+    """Prepare Windows Git Bash environment for MCP server subprocess execution.
+
+    Builds a Unix-style PATH with Node.js directory prepended (if available)
+    and resolves the Claude command to a Git Bash-compatible path.
+
+    Args:
+        claude_cmd: Path to the Claude CLI executable.
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
+
+    Returns:
+        _WindowsBashEnv with unix_explicit_path and unix_claude_cmd.
+    """
+    current_path = os.environ.get('PATH', '')
+    if nodejs_dir and Path(nodejs_dir).exists() and nodejs_dir not in current_path:
+        windows_explicit_path = f'{nodejs_dir};{current_path}'
+    else:
+        windows_explicit_path = current_path
+
+    unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+    bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
+    unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
+
+    return _WindowsBashEnv(
+        unix_explicit_path=unix_explicit_path,
+        unix_claude_cmd=unix_claude_cmd,
+    )
+
+
+def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
@@ -5374,22 +5441,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             # Windows: Use bash execution for consistency with add operation
             # This ensures removal uses the same environment (PATH, shell, MSYS settings)
             # as the add operation, preventing "not found" errors due to asymmetric execution
-            nodejs_path = r'C:\Program Files\nodejs'
-            current_path = os.environ.get('PATH', '')
-
-            if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                windows_explicit_path = f'{nodejs_path};{current_path}'
-            else:
-                windows_explicit_path = current_path
-
-            unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-            bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-            unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
+            env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
 
             for remove_scope in ['user', 'local', 'project']:
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
                 )
                 # Best-effort: ignore exit code, server may not exist in this scope
                 run_bash_command(bash_cmd, capture_output=True, login_shell=True)
@@ -5431,24 +5488,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 debug_log(f'=== MCP Server Configuration: {name} ===')
                 debug_log(f'claude_cmd: {claude_cmd}')
 
-                # Build explicit PATH including Node.js location
-                nodejs_path = r'C:\Program Files\nodejs'
-                current_path = os.environ.get('PATH', '')
-
-                # Build Windows PATH first, then convert to Unix format
-                if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    windows_explicit_path = f'{nodejs_path};{current_path}'
-                else:
-                    windows_explicit_path = current_path
-
-                # Convert Windows paths to Git Bash Unix-style paths
-                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
-                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
-
-                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
-                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
+                debug_log(f'unix_claude_cmd: {env.unix_claude_cmd}')
+                explicit_path = env.unix_explicit_path
+                path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
@@ -5456,8 +5499,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 header_part = f' --header "{header}"' if header else ''
 
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp add --scope {scope}{env_part} '
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
                     f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
@@ -5499,24 +5542,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 debug_log(f'=== MCP Server Configuration (STDIO): {name} ===')
                 debug_log(f'claude_cmd: {claude_cmd}')
 
-                # Build explicit PATH including Node.js location
-                nodejs_path = r'C:\Program Files\nodejs'
-                current_path = os.environ.get('PATH', '')
-
-                # Build Windows PATH first, then convert to Unix format
-                if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    windows_explicit_path = f'{nodejs_path};{current_path}'
-                else:
-                    windows_explicit_path = current_path
-
-                # Convert Windows paths to Git Bash Unix-style paths
-                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
-                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
-
-                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
-                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
+                debug_log(f'unix_claude_cmd: {env.unix_claude_cmd}')
+                explicit_path = env.unix_explicit_path
+                path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
@@ -5530,8 +5559,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
                     f'-- {command_str}'
                 )
 
@@ -5592,6 +5621,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
+    nodejs_dir: str | None = None,
 ) -> tuple[bool, list[dict[str, Any]], dict[str, int]]:
     """Configure all MCP servers from configuration.
 
@@ -5603,6 +5633,7 @@ def configure_all_mcp_servers(
     Args:
         servers: List of MCP server configurations from YAML
         profile_mcp_config_path: Path for profile-scoped servers JSON file
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
 
     Returns:
         Tuple of (success: bool, profile_servers: list, stats: dict)
@@ -5658,13 +5689,13 @@ def configure_all_mcp_servers(
             if not has_global:
                 server_copy = server.copy()
                 server_copy['scope'] = 'profile'
-                configure_mcp_server(server_copy)
+                configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
 
         # Configure for each non-profile scope via claude mcp add
         for scope in non_profile_scopes:
             server_copy = server.copy()
             server_copy['scope'] = scope
-            configure_mcp_server(server_copy)
+            configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
 
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:
@@ -7394,22 +7425,27 @@ def main() -> None:
         # Check if any MCP server needs Node.js (npx-based stdio transport)
         # HTTP/SSE transport servers do NOT require Node.js
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            _command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
 
-        if needs_nodejs and platform.system() == 'Windows' and not verify_nodejs_available():
-            warning('Node.js not available - npx-based MCP servers may fail')
-            warning('Please ensure Node.js is installed and in PATH')
-            # Don't fail hard, let user see the issue
+        nodejs_dir: str | None = None
+        if needs_nodejs:
+            nodejs_dir = verify_nodejs_available()
+            if not nodejs_dir:
+                warning('Node.js not available - npx-based MCP servers may fail')
+                warning('Please ensure Node.js is installed and in PATH')
+                # Don't fail hard, let user see the issue
 
         # Calculate profile MCP config path for profile-scoped servers
         profile_mcp_config_path: Path | None = None
         if primary_command_name:
             profile_mcp_config_path = claude_user_dir / f'{primary_command_name}-mcp.json'
 
-        _, profile_servers, mcp_stats = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
+        _, profile_servers, mcp_stats = configure_all_mcp_servers(
+            mcp_servers, profile_mcp_config_path, nodejs_dir=nodejs_dir,
+        )
         has_profile_mcp_servers = len(profile_servers) > 0
 
         # Step 12: Write user settings

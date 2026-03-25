@@ -4592,3 +4592,66 @@ class TestMcpServersSummaryDisplay:
         captured = capsys.readouterr()
         assert '3 global' in captured.out
         assert '5 profile-only' in captured.out
+
+
+class TestNodejsDirThreading:
+    """Test nodejs_dir parameter threading through MCP server configuration."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment._prepare_windows_bash_env')
+    def test_configure_mcp_server_passes_nodejs_dir_to_prepare_env(
+        self,
+        mock_prepare: MagicMock,
+        mock_bash: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that configure_mcp_server passes nodejs_dir to _prepare_windows_bash_env."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+        mock_prepare.return_value = setup_environment._WindowsBashEnv(
+            unix_explicit_path='/usr/bin:/c/Windows',
+            unix_claude_cmd='/c/Users/test/.local/bin/claude',
+        )
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+        }
+
+        setup_environment.configure_mcp_server(server, nodejs_dir=r'C:\Program Files\nodejs')
+
+        # Verify _prepare_windows_bash_env was called with the nodejs_dir
+        assert mock_prepare.call_count >= 1
+        for call in mock_prepare.call_args_list:
+            assert call[0][1] == r'C:\Program Files\nodejs'
+
+    @patch('setup_environment.configure_mcp_server')
+    @patch('setup_environment.create_mcp_config_file')
+    def test_configure_all_mcp_servers_threads_nodejs_dir(
+        self,
+        mock_create_config: MagicMock,
+        mock_configure: MagicMock,
+    ) -> None:
+        """Test that configure_all_mcp_servers passes nodejs_dir to configure_mcp_server."""
+        del mock_create_config  # Unused but required for patch
+        mock_configure.return_value = True
+
+        servers = [
+            {'name': 'server-a', 'command': 'uvx server-a'},
+            {'name': 'server-b', 'command': 'uvx server-b'},
+        ]
+
+        setup_environment.configure_all_mcp_servers(
+            servers,
+            profile_mcp_config_path=None,
+            nodejs_dir=r'C:\custom\nodejs',
+        )
+
+        # Both configure_mcp_server calls must receive the nodejs_dir
+        assert mock_configure.call_count == 2
+        for call in mock_configure.call_args_list:
+            assert call[1]['nodejs_dir'] == r'C:\custom\nodejs'

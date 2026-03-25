@@ -6526,12 +6526,24 @@ class TestVerifyNodejsAvailable:
     """Test verify_nodejs_available function with various Node.js installation methods."""
 
     @patch('platform.system', return_value='Linux')
-    def test_non_windows_returns_true(self, mock_system):
-        """Test that non-Windows platforms always return True."""
-        # Verify mock is properly configured for Linux platform
+    @patch('shutil.which', return_value='/usr/bin/node')
+    def test_non_windows_returns_node_dir(self, mock_which, mock_system):
+        """Test that non-Windows platforms return the node parent directory."""
         assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value == '/usr/bin/node'
         result = setup_environment.verify_nodejs_available()
-        assert result is True
+        assert result == str(Path('/usr/bin/node').parent)
+
+    @patch('platform.system', return_value='Linux')
+    @patch('shutil.which', return_value=None)
+    def test_unix_node_not_found_returns_none(self, mock_which, mock_system, capsys):
+        """Test that Unix returns None with warning when node is not found."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value is None
+        result = setup_environment.verify_nodejs_available()
+        assert result is None
+        captured = capsys.readouterr()
+        assert 'not found in PATH' in captured.out
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
@@ -6547,7 +6559,7 @@ class TestVerifyNodejsAvailable:
 
         result = setup_environment.verify_nodejs_available()
 
-        assert result is True
+        assert result == r'C:\Program Files\nodejs'
         mock_which.assert_called_with('node')
         captured = capsys.readouterr()
         assert 'Node.js verified' in captured.out
@@ -6574,7 +6586,7 @@ class TestVerifyNodejsAvailable:
         with patch.dict('os.environ', {'PATH': r'C:\Windows\System32'}):
             result = setup_environment.verify_nodejs_available()
 
-        assert result is True
+        assert result == r'C:\Users\test\AppData\Roaming\nvm\v20.10.0'
         captured = capsys.readouterr()
         assert 'Node.js verified' in captured.out
 
@@ -6590,7 +6602,7 @@ class TestVerifyNodejsAvailable:
 
         result = setup_environment.verify_nodejs_available()
 
-        assert result is False
+        assert result is None
         captured = capsys.readouterr()
         assert 'Node.js not found in PATH' in captured.err
 
@@ -6679,7 +6691,7 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6694,7 +6706,7 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6706,7 +6718,7 @@ class TestMCPServerNeedsNodejsDetection:
         mcp_servers: list[dict[str, str]] = []
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6721,12 +6733,167 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
 
         assert needs_nodejs is False
+
+    def test_npx_substring_does_not_match(self):
+        """Substring 'npx' inside a different command does not trigger."""
+        mcp_servers = [
+            {'name': 'wrapper', 'command': 'python run_npx_wrapper.py'},
+        ]
+
+        needs_nodejs = any(
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is False
+
+
+class TestCommandStartsWithNpx:
+    """Test _command_starts_with_npx helper."""
+
+    def test_npx_command(self):
+        assert setup_environment._command_starts_with_npx('npx -y @mcp/server') is True
+
+    def test_npx_bare(self):
+        assert setup_environment._command_starts_with_npx('npx') is True
+
+    def test_python_command(self):
+        assert setup_environment._command_starts_with_npx('python server.py') is False
+
+    def test_npx_in_path(self):
+        """npx as substring in path does not match."""
+        assert setup_environment._command_starts_with_npx('python run_npx_wrapper.py') is False
+
+    def test_npx_in_argument(self):
+        """npx as an argument (not first token) does not match."""
+        assert setup_environment._command_starts_with_npx('node --run npx') is False
+
+    def test_empty_command(self):
+        assert setup_environment._command_starts_with_npx('') is False
+
+    def test_malformed_quotes(self):
+        """Handles malformed quoting gracefully."""
+        assert setup_environment._command_starts_with_npx("npx -y 'unclosed") is True
+
+
+class TestPrepareWindowsBashEnv:
+    """Test _prepare_windows_bash_env helper."""
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_none_nodejs_dir_uses_current_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}):
+            env = setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude', None,
+            )
+            mock_convert.assert_called_once_with(r'C:\Windows')
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+            assert env.unix_explicit_path == '/mocked/path'
+            assert env.unix_claude_cmd == '/c/Users/test/.local/bin/claude'
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/nodejs/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_prepends_nodejs_dir_when_not_in_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}), patch('pathlib.Path.exists', return_value=True):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\Program Files\nodejs',
+            )
+            mock_convert.assert_called_once_with(
+                r'C:\Program Files\nodejs;C:\Windows',
+            )
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_does_not_duplicate_when_already_in_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Program Files\nodejs;C:\Windows'}):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\Program Files\nodejs',
+            )
+            mock_convert.assert_called_once_with(
+                r'C:\Program Files\nodejs;C:\Windows',
+            )
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_nonexistent_dir_uses_current_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}), patch('pathlib.Path.exists', return_value=False):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\nonexistent',
+            )
+            mock_convert.assert_called_once_with(r'C:\Windows')
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_returns_named_tuple(self, mock_unix, mock_bash, mock_convert):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}):
+            env = setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude', None,
+            )
+            assert mock_convert.called
+            assert mock_bash.called
+            assert mock_unix.called
+            assert hasattr(env, 'unix_explicit_path')
+            assert hasattr(env, 'unix_claude_cmd')
 
 
 class TestFetchWithRetry:
