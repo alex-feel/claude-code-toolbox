@@ -28,6 +28,7 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
@@ -42,6 +43,7 @@ from typing import TypeVar
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
+from urllib.request import urlretrieve
 
 import yaml
 
@@ -53,6 +55,10 @@ if sys.platform != 'win32':
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
+
+# Node.js installation constants (standalone -- no imports from install_claude.py)
+MIN_NODE_VERSION = '18.0.0'
+NODE_LTS_API = 'https://nodejs.org/dist/index.json'
 
 # All valid top-level configuration keys for unknown key detection
 KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
@@ -674,13 +680,12 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
         return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
 
 
-def find_command(cmd: str) -> str | None:
-    """Find a command in PATH."""
-    return shutil.which(cmd)
-
-
-def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
     """Find a command with robust platform-specific fallback search.
+
+    For the 'claude' command, checks the native installer target path first
+    to ensure the native binary is preferred over npm even when PATH ordering
+    would resolve to the npm binary first.
 
     Args:
         cmd: Command name to find (e.g., 'claude', 'node')
@@ -689,6 +694,20 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     Returns:
         Full path to command if found, None otherwise
     """
+    # For 'claude' command: check native installer target FIRST
+    # This ensures the native binary is preferred over npm even when
+    # PATH ordering would resolve to the npm binary first.
+    if cmd == 'claude':
+        if sys.platform == 'win32':
+            native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        else:
+            native_path = Path.home() / '.local' / 'bin' / 'claude'
+        try:
+            if native_path.exists() and native_path.stat().st_size > 1000:
+                return str(native_path)
+        except (OSError, ValueError, TypeError):
+            pass  # Path inaccessible or invalid
+
     # Primary: Use standard PATH search with retry for PATH synchronization
     for attempt in range(2):
         cmd_path = shutil.which(cmd)
@@ -750,6 +769,8 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
         # Unix-like systems
         if cmd == 'claude':
             common_paths = [
+                # Native installer target (checked first for correct precedence)
+                str(Path.home() / '.local' / 'bin' / 'claude'),
                 str(Path.home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
@@ -766,7 +787,6 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
 
     # Check common locations
-
     for path in common_paths:
         expanded = os.path.expandvars(path)
         expanded_path = Path(expanded)
@@ -838,7 +858,7 @@ def find_bash_windows() -> str | None:
             return str(Path(expanded).resolve())
 
     # Fall back to PATH search (may find Git Bash if installed elsewhere)
-    bash_path = find_command('bash.exe')
+    bash_path = shutil.which('bash.exe')
     debug_log(f'PATH search result: {bash_path}')
     if bash_path:
         # Skip WSL bash in System32/SysWOW64
@@ -4138,11 +4158,391 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     return failed_count == 0
 
 
+# --- Standalone Node.js installation functions ---
+# These functions provide Node.js installation capability without importing
+# from install_claude.py. Both scripts MUST be fully standalone.
+
+
+def _parse_node_version(version_str: str) -> tuple[int, int, int] | None:
+    """Parse version string to tuple."""
+    match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
+    if match:
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        patch = int(match.group(3))
+        return (major, minor, patch)
+    return None
+
+
+def _compare_node_versions(current: str, required: str) -> bool:
+    """Check if current version meets required version."""
+    current_tuple = _parse_node_version(current)
+    required_tuple = _parse_node_version(required)
+    if not current_tuple or not required_tuple:
+        return False
+    return current_tuple >= required_tuple
+
+
+def _get_node_version() -> str | None:
+    """Get installed Node.js version."""
+    node_path = shutil.which('node')
+    if not node_path:
+        return None
+
+    result = run_command([node_path, '--version'])
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def _check_winget_available() -> bool:
+    """Check if winget is available on Windows."""
+    return shutil.which('winget') is not None
+
+
+def _install_nodejs_winget(scope: str = 'user') -> bool:
+    """Install Node.js using winget on Windows."""
+    if not _check_winget_available():
+        return False
+
+    info(f'Installing Node.js LTS via winget, scope: {scope}')
+    result = run_command([
+        'winget',
+        'install',
+        '--id',
+        'OpenJS.NodeJS.LTS',
+        '-e',
+        '--source',
+        'winget',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity',
+        '--scope',
+        scope,
+    ])
+
+    if result.returncode == 0:
+        success('Node.js LTS installed via winget')
+        return True
+    warning(f'winget exited with code {result.returncode}')
+    return False
+
+
+def _install_nodejs_direct() -> bool:
+    """Install Node.js by direct download."""
+    try:
+        info('Downloading Node.js LTS installer...')
+
+        # Get LTS version info (with SSL fallback)
+        try:
+            with urlopen(NODE_LTS_API) as response:
+                versions = json.loads(response.read())
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(NODE_LTS_API, context=ctx) as response:
+                    versions = json.loads(response.read())
+            else:
+                raise
+
+        lts_version = None
+        for v in versions:
+            if v.get('lts'):
+                lts_version = v['version']
+                break
+
+        if not lts_version:
+            raise Exception('Could not determine LTS version')
+
+        # Determine installer URL based on OS
+        system = platform.system()
+        machine = platform.machine().lower()
+
+        if system == 'Windows':
+            ext = 'msi'
+            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'x86'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-{arch}.{ext}'
+        elif system == 'Darwin':  # macOS
+            arch = 'arm64' if machine == 'arm64' else 'x64'
+            ext = 'pkg'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-darwin-{arch}.{ext}'
+        else:  # Linux
+            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'armv7l'
+            ext = 'tar.xz'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-linux-{arch}.{ext}'
+
+        # Download installer
+        with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as tmp:
+            temp_path = tmp.name
+
+        info(f'Downloading {installer_url}')
+        try:
+            urlretrieve(installer_url, temp_path)
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                urllib.request.install_opener(opener)
+                urlretrieve(installer_url, temp_path)
+            else:
+                raise
+
+        # Install based on OS
+        if system == 'Windows':
+            # Create log directory for MSI installation
+            log_dir = Path(tempfile.gettempdir()) / 'claude-installer-logs'
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / f'nodejs-install-{int(time.time())}.log'
+
+            info('Installing Node.js silently...')
+
+            result = run_command([
+                'msiexec',
+                '/i',
+                temp_path,
+                '/qn',
+                '/norestart',
+                '/l*v',
+                str(log_file),
+            ])
+
+            # After MSI installation, add Node.js to PATH for current process
+            if result.returncode == 0:
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH for current session')
+            else:
+                error(f'Node.js installer exited with code {result.returncode}')
+
+                if log_file.exists():
+                    warning(f'Installation log available at: {log_file}')
+                    try:
+                        log_content = log_file.read_text(encoding='utf-16-le', errors='ignore')
+                        lines = log_content.splitlines()
+                        if lines:
+                            error_context = '\n'.join(lines[-50:])
+                            info('Last 50 lines of installation log:')
+                            print(error_context)
+                    except Exception as e:
+                        warning(f'Could not read log file: {e}')
+
+                info('Troubleshooting steps:')
+                info('1. Check if Node.js is already partially installed')
+                info('2. Remove Node.js from Control Panel if present')
+                info('3. Clear Node.js entries from registry (regedit)')
+                info('4. Remove Node.js from PATH environment variable')
+                info('5. Rerun installer as Administrator')
+
+                return False
+        elif system == 'Darwin':
+            info('Installing Node.js (may require password)...')
+            result = run_command(['sudo', 'installer', '-pkg', temp_path, '-target', '/'])
+        else:
+            error('Direct Linux installation not yet implemented - use package manager')
+            return False
+
+        # Clean up
+        with contextlib.suppress(Exception):
+            os.unlink(temp_path)
+
+        if result.returncode == 0:
+            success('Node.js installed via direct download')
+            return True
+        error(f'Node.js installer exited with code {result.returncode}')
+        return False
+
+    except Exception as e:
+        error(f'Failed to install Node.js by download: {e}')
+        return False
+
+
+def _install_nodejs_homebrew() -> bool:
+    """Install Node.js LTS using Homebrew on macOS."""
+    if not shutil.which('brew'):
+        info('Installing Homebrew first...')
+        result = run_command([
+            '/bin/bash',
+            '-c',
+            '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)',
+        ])
+        if result.returncode != 0:
+            return False
+
+    info('Installing Node.js LTS (v22) using Homebrew...')
+    run_command(['brew', 'update'])
+    result = run_command(['brew', 'install', 'node@22'])
+
+    if result.returncode != 0:
+        return False
+
+    # node@22 is keg-only; create symlinks so node is available in PATH
+    link_result = run_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    if link_result.returncode != 0:
+        warning('brew link failed for node@22; node may not be in PATH')
+
+    success('Node.js LTS installed via Homebrew')
+    return True
+
+
+def _install_nodejs_apt() -> bool:
+    """Install Node.js using apt on Debian/Ubuntu."""
+    info('Installing Node.js LTS for Debian/Ubuntu...')
+
+    # Update and install prerequisites
+    run_command(['sudo', 'apt-get', 'update'])
+    run_command(['sudo', 'apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'])
+
+    # Add NodeSource repository
+    result = run_command([
+        'bash',
+        '-c',
+        'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -',
+    ])
+
+    if result.returncode != 0:
+        return False
+
+    # Install Node.js
+    result = run_command(['sudo', 'apt-get', 'install', '-y', 'nodejs'])
+
+    if result.returncode == 0:
+        success('Node.js installed via NodeSource')
+        return True
+    return False
+
+
+def _verify_nodejs_version() -> bool:
+    """Verify installed Node.js meets minimum version requirements.
+
+    Returns:
+        True if Node.js version is acceptable, False otherwise.
+    """
+    node_version = _get_node_version()
+    if not node_version:
+        return False
+    return _compare_node_versions(node_version, MIN_NODE_VERSION)
+
+
+def _ensure_nodejs() -> bool:
+    """Ensure Node.js is installed and meets minimum version.
+
+    Provides standalone Node.js installation for general purposes
+    (e.g., npx-based MCP servers). Does not check Claude Code npm
+    compatibility since this script does not install Claude Code.
+
+    Returns:
+        True if Node.js is installed and meets requirements, False otherwise.
+    """
+    info('Checking Node.js installation...')
+
+    # On Windows, check standard installation location even if not in PATH
+    if platform.system() == 'Windows':
+        nodejs_path = r'C:\Program Files\nodejs'
+        if Path(nodejs_path).exists():
+            current_path = os.environ.get('PATH', '')
+            if nodejs_path not in current_path:
+                os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                info(f'Found Node.js at {nodejs_path}, adding to PATH')
+
+    current_version = _get_node_version()
+    if current_version:
+        info(f'Node.js {current_version} found')
+
+        if _compare_node_versions(current_version, MIN_NODE_VERSION):
+            success(f'Node.js version meets minimum requirement (>= {MIN_NODE_VERSION})')
+            return True
+        warning(f'Node.js {current_version} is below minimum required version {MIN_NODE_VERSION}')
+    else:
+        info('Node.js not found')
+
+    # Install Node.js based on OS
+    system = platform.system()
+
+    if system == 'Windows':
+        # Try winget first
+        if _check_winget_available():
+            if _install_nodejs_winget('user'):
+                time.sleep(2)
+                # Update PATH after winget installation
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
+                if _verify_nodejs_version():
+                    return True
+
+            if is_admin() and _install_nodejs_winget('machine'):
+                time.sleep(2)
+                # Update PATH after winget installation (machine scope)
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
+                if _verify_nodejs_version():
+                    return True
+
+        # Fallback to direct download
+        if _install_nodejs_direct():
+            time.sleep(2)
+            # After installation, check standard location on Windows
+            if platform.system() == 'Windows':
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after installation')
+
+            if _verify_nodejs_version():
+                return True
+
+    elif system == 'Darwin':
+        # Try Homebrew first
+        if _install_nodejs_homebrew() and _verify_nodejs_version():
+            return True
+
+        # Fallback to direct download
+        if _install_nodejs_direct():
+            time.sleep(2)
+            if _verify_nodejs_version():
+                return True
+
+    else:  # Linux
+        # Detect distro and use package manager
+        if (
+            Path('/etc/debian_version').exists()
+            and _install_nodejs_apt()
+            and _verify_nodejs_version()
+        ):
+            return True
+        warning('Unsupported Linux distribution - please install Node.js manually')
+        return False
+
+    error(f'Could not install Node.js >= {MIN_NODE_VERSION}')
+    return False
+
+
 def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
     """Install Node.js LTS if requested in configuration.
 
     Checks the 'install-nodejs' config parameter and installs Node.js
-    if set to True. Uses the existing ensure_nodejs() function which:
+    if set to True. Uses the standalone _ensure_nodejs() function which:
     - Checks if Node.js is already installed (prevents duplicate installation)
     - Tries multiple installation methods with fallbacks
     - Updates PATH after installation
@@ -4161,12 +4561,7 @@ def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
 
     info('Node.js installation requested (install-nodejs: true)')
 
-    # Late import to avoid circular dependency (install_claude imports from setup_environment)
-    from install_claude import ensure_nodejs as _ensure_nodejs
-
-    # Node.js is needed for general purposes (e.g., npx MCP servers),
-    # not for Claude Code's npm package itself.
-    if not _ensure_nodejs(check_claude_compat=False):
+    if not _ensure_nodejs():
         error('Node.js installation failed')
         return False
 
@@ -5204,8 +5599,8 @@ def verify_nodejs_available() -> str | None:
         except (subprocess.TimeoutExpired, OSError):
             pass
 
-    # Secondary: Try find_command_robust with common installation paths
-    node_path = find_command_robust('node')
+    # Secondary: Try find_command with common installation paths
+    node_path = find_command('node')
     if node_path:
         # Verify node actually works
         try:
@@ -5421,7 +5816,7 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
     claude_cmd = None
 
     # Use robust command discovery with built-in retry and fallback paths
-    claude_cmd = find_command_robust('claude')
+    claude_cmd = find_command('claude')
 
     if not claude_cmd:
         error('Claude command not accessible after installation!')
@@ -7309,7 +7704,7 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
 
             # Verify Claude Code is available
-            if not find_command_robust('claude'):
+            if not find_command('claude'):
                 error('Claude Code is not available in PATH')
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')

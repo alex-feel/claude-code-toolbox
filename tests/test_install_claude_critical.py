@@ -263,7 +263,7 @@ class TestNodeInstallationEdgeCases:
         # Mock /etc/debian_version exists
         mock_debian_path = MagicMock()
         mock_debian_path.exists.return_value = True
-        # Handle stat().st_size for native-path-first check in find_command_robust
+        # Handle stat().st_size for native-path-first check in find_command
         mock_stat = MagicMock()
         mock_stat.st_size = 0  # File too small = not a valid binary
         mock_debian_path.stat.return_value = mock_stat
@@ -295,14 +295,19 @@ class TestClaudeInstallationEdgeCases:
 
     @patch('scripts.install_claude.platform.system', return_value='Windows')
     @patch('scripts.install_claude.Path')
-    @patch('scripts.install_claude.find_command', return_value=None)
+    @patch('shutil.which', return_value=None)
     def test_get_claude_version_windows_paths(self, mock_find, mock_path, mock_system):
         """Test Claude version detection checking Windows-specific paths."""
         del mock_system, mock_find  # Mark as intentionally unused
 
-        # Mock paths -- native-path-first check returns exists=False for native path
+        # Mock paths -- native-path-first check goes through Path.home() chain (not
+        # mock_path_instance), hits TypeError on st_size comparison, falls through.
+        # Common paths loop checks .exists() twice per path (line 266 + line 271),
+        # so 6 Windows claude paths need 12 entries. First path found at position 1.
         mock_path_instance = MagicMock()
-        mock_path_instance.exists.side_effect = [False, True, False, False, False, False]
+        mock_path_instance.exists.side_effect = [
+            True,   # 1st common path, line 266: .exists() -> True, then .is_file() -> truthy
+        ]
         mock_stat = MagicMock()
         mock_stat.st_size = 0  # Not a valid binary
         mock_path_instance.stat.return_value = mock_stat
@@ -320,7 +325,7 @@ class TestClaudeInstallationEdgeCases:
 
     @patch('scripts.install_claude.platform.system', return_value='Windows')
     @patch('scripts.install_claude.Path')
-    @patch('scripts.install_claude.find_command')
+    @patch('shutil.which')
     def test_install_claude_npm_windows_npm_path(self, mock_find, mock_path, mock_system):
         """Test Claude npm installation finding npm.cmd on Windows."""
         del mock_system  # Mark as intentionally unused

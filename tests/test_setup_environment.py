@@ -199,12 +199,6 @@ class TestUtilityFunctions:
         # Verify shutil.which was NOT called for empty list
         mock_which.assert_not_called()
 
-    @patch('shutil.which')
-    def test_find_command(self, mock_which):
-        """Test finding command in PATH."""
-        mock_which.return_value = '/usr/bin/git'
-        assert setup_environment.find_command('git') == '/usr/bin/git'
-
 
 class TestConvertToUnixPath:
     """Tests for convert_to_unix_path function."""
@@ -1960,25 +1954,25 @@ class TestInstallNodejsIfRequested:
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_true_calls_ensure_nodejs(self, mock_ensure):
-        """Test that function calls ensure_nodejs with check_claude_compat=False."""
+        """Test that function calls _ensure_nodejs standalone."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
-        mock_ensure.assert_called_once_with(check_claude_compat=False)
+        mock_ensure.assert_called_once()
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_installation_failure_returns_false(self, mock_ensure):
-        """Test that function returns False when ensure_nodejs fails."""
+        """Test that function returns False when _ensure_nodejs fails."""
         mock_ensure.return_value = False
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is False
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     @patch('setup_environment.refresh_path_from_registry')
     def test_windows_refreshes_path(self, mock_refresh, mock_ensure):
         """Test that PATH is refreshed on Windows after installation."""
@@ -1988,7 +1982,7 @@ class TestInstallNodejsIfRequested:
         mock_refresh.assert_called_once()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     @patch('setup_environment.refresh_path_from_registry')
     def test_non_windows_skips_path_refresh(self, mock_refresh, mock_ensure, mock_system):
         """Test that PATH refresh is skipped on non-Windows platforms."""
@@ -1999,15 +1993,14 @@ class TestInstallNodejsIfRequested:
         setup_environment.install_nodejs_if_requested(config)
         mock_refresh.assert_not_called()
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_nodejs_v25_accepted_via_install_nodejs_flag(self, mock_ensure):
         """Node.js v25 is accepted when install-nodejs: true (general purpose)."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
-        # Verify check_claude_compat=False was passed (v25 would be accepted)
-        mock_ensure.assert_called_once_with(check_claude_compat=False)
+        mock_ensure.assert_called_once()
 
 
 class TestFetchUrlWithAuth:
@@ -2044,7 +2037,7 @@ class TestConfigureMCPServer:
     """Test MCP server configuration."""
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server on Unix."""
@@ -2072,7 +2065,7 @@ class TestConfigureMCPServer:
         assert 'mcp add' in bash_cmd
         assert 'test-server' in bash_cmd
 
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_stdio(self, mock_run, mock_find):
         """Test configuring stdio MCP server on Unix."""
@@ -2092,7 +2085,7 @@ class TestConfigureMCPServer:
         assert mock_run.call_count == 4
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_ampersand_in_url(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with URL containing ampersand on Unix.
@@ -2127,7 +2120,7 @@ class TestConfigureMCPServer:
         assert 'read_only=true' in bash_cmd
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_multiple_query_params(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with URL containing multiple special characters."""
@@ -2158,7 +2151,7 @@ class TestConfigureMCPServer:
         assert 'format=json' in bash_cmd
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_header_and_special_url(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with header and URL containing special characters."""
@@ -2196,7 +2189,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_http_with_header_windows_argument_order(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2242,7 +2235,7 @@ class TestConfigureMCPServer:
         assert header_pos > url_pos, '--header must come after url (variadic option prevents greedy consumption)'
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_env_and_header_argument_order(self, mock_run, mock_find, mock_bash):
         """Test HTTP transport with both env vars and header places variadic --header after positional args."""
@@ -2277,7 +2270,7 @@ class TestConfigureMCPServer:
         )
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_header_env_var_expansion_unix(self, mock_run, mock_find, mock_bash):
         """Test Unix HTTP transport wraps header in double quotes to allow ${VAR} expansion.
@@ -2317,7 +2310,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_windows_uses_bash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2358,7 +2351,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_uses_bash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2401,7 +2394,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_windows_prefers_shell_script_over_cmd(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system, tmp_path,
     ):
@@ -2419,7 +2412,7 @@ class TestConfigureMCPServer:
         cmd_file.write_text('@echo off\nnode %~dp0\\claude-code %*')
         extensionless_file.write_text('#!/bin/sh\nexec node "$basedir/claude-code" "$@"')
 
-        # find_command_robust returns the .cmd file (as Windows would typically find)
+        # find_command returns the .cmd file (as Windows would typically find)
         mock_find.return_value = str(cmd_file)
 
         # Commands succeed
@@ -2459,7 +2452,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_expands_tilde_in_command(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2498,7 +2491,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_npx_with_tilde_expands(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2533,7 +2526,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_no_tilde_unchanged(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2565,7 +2558,7 @@ class TestMCPTildeExpansionWindows:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_profile_scope_unchanged(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2600,7 +2593,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_multiple_tildes_expanded(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2640,7 +2633,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_backslash_to_forward_slash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2677,7 +2670,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_local_scope_stdio_with_tilde(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2712,7 +2705,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_combined_scope_with_tilde(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2753,7 +2746,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_macos_expands_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2783,7 +2776,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_linux_expands_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2813,7 +2806,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_unix_no_tilde_unchanged(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2839,7 +2832,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_linux_multiple_tildes_expanded(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2875,7 +2868,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_local_scope_macos_with_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -4092,7 +4085,7 @@ class TestMainFunction:
         assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.is_admin', return_value=True)
     def test_main_skip_install(self, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
@@ -6567,17 +6560,17 @@ class TestVerifyNodejsAvailable:
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('subprocess.run')
-    def test_windows_node_via_find_command_robust(
+    def test_windows_node_via_find_command(
         self, mock_run, mock_find_robust, mock_which, mock_system, capsys,
     ):
-        """Test finding Node.js via find_command_robust fallback on Windows."""
+        """Test finding Node.js via find_command fallback on Windows."""
         # Verify mock is properly configured for Windows platform
         assert mock_system.return_value == 'Windows'
         # shutil.which returns None (not in PATH)
         mock_which.return_value = None
-        # find_command_robust finds it in a version manager location
+        # find_command finds it in a version manager location
         mock_find_robust.return_value = r'C:\Users\test\AppData\Roaming\nvm\v20.10.0\node.exe'
         mock_run.return_value = subprocess.CompletedProcess(
             ['node', '--version'], 0, 'v20.10.0', '',
@@ -6592,7 +6585,7 @@ class TestVerifyNodejsAvailable:
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_windows_node_not_found(self, mock_find_robust, mock_which, mock_system, capsys):
         """Test when Node.js is not found on Windows."""
         # Verify mock is properly configured for Windows platform
@@ -6609,7 +6602,7 @@ class TestVerifyNodejsAvailable:
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
 class TestFindCommandRobustNodePaths:
-    """Test find_command_robust with various Node.js installation paths."""
+    """Test find_command with various Node.js installation paths."""
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value=None)  # Primary search fails
@@ -6628,7 +6621,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result
@@ -6650,7 +6643,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result
@@ -6674,7 +6667,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'APPDATA': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result

@@ -225,7 +225,7 @@ class TestPathClassification:
             patch('sys.platform', 'linux'),
             patch('pathlib.Path.exists', return_value=False),
             patch.object(
-                install_claude, 'find_command_robust',
+                install_claude, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
         ):
@@ -242,7 +242,7 @@ class TestPathClassification:
         with (
             patch('sys.platform', 'linux'),
             patch.object(
-                install_claude, 'find_command_robust',
+                install_claude, 'find_command',
                 return_value='/home/user/.claude/bin/claude',
             ),
         ):
@@ -259,7 +259,7 @@ class TestPathClassification:
         with (
             patch('sys.platform', 'linux'),
             patch.object(
-                install_claude, 'find_command_robust',
+                install_claude, 'find_command',
                 return_value='/home/user/.npm-global/bin/claude',
             ),
         ):

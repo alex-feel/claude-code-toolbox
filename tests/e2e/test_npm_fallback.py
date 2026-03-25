@@ -36,7 +36,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/local/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/local/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -68,7 +68,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -96,7 +96,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -117,7 +117,7 @@ class TestNpmSudoFallback:
         """Verify timeout is handled (helper returns None when all tiers fail)."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -140,7 +140,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -175,7 +175,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=True),
             patch.object(
                 install_claude, 'run_command',
@@ -200,7 +200,7 @@ class TestNpmSudoFallback:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -227,7 +227,7 @@ class TestNpmSudoGatingE2E:
         """Sudo is completely skipped when _run_with_sudo_fallback returns None."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=True),
             patch.object(
                 install_claude, 'run_command',
@@ -252,7 +252,7 @@ class TestNpmSudoGatingE2E:
 
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -276,7 +276,7 @@ class TestNpmSudoGatingE2E:
         """_run_with_sudo_fallback returning None is handled gracefully."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/npm'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
             patch.object(install_claude, 'needs_sudo_for_npm', return_value=False),
             patch.object(
                 install_claude, 'run_command',
@@ -306,7 +306,7 @@ class TestRemoveNpmClaudeSudoGatingE2E:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+                install_claude, 'find_command', return_value='/usr/bin/npm',
             ),
             patch.object(
                 install_claude, 'run_command',
@@ -334,7 +334,7 @@ class TestRemoveNpmClaudeSudoGatingE2E:
             patch('platform.system', return_value='Linux'),
             patch('sys.platform', 'linux'),
             patch.object(
-                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+                install_claude, 'find_command', return_value='/usr/bin/npm',
             ),
             patch.object(
                 install_claude, 'run_command',
@@ -363,7 +363,7 @@ class TestRemoveNpmClaudeSudoGatingE2E:
             patch('platform.system', return_value='Windows'),
             patch('sys.platform', 'win32'),
             patch.object(
-                install_claude, 'find_command_robust', return_value='/usr/bin/npm',
+                install_claude, 'find_command', return_value='/usr/bin/npm',
             ),
             patch.object(
                 install_claude, 'run_command',
@@ -884,7 +884,7 @@ class TestEnsureClaudeFullFlow:
                 install_claude, 'install_claude_native_cross_platform',
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm', return_value=True),
-            patch.object(install_claude, 'find_command_robust', return_value='/usr/bin/claude'),
+            patch.object(install_claude, 'find_command', return_value='/usr/bin/claude'),
             patch.object(install_claude, 'get_claude_version', return_value='1.0.130'),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False),
         ):

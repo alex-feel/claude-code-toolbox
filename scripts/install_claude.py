@@ -4,6 +4,7 @@ Handles Git Bash (Windows), Node.js, and Claude Code CLI installation.
 """
 
 import contextlib
+import glob as glob_module
 import json
 import os
 import platform
@@ -150,12 +151,7 @@ def is_admin() -> bool:
             return False
 
 
-def find_command(cmd: str) -> str | None:
-    """Find a command in PATH."""
-    return shutil.which(cmd)
-
-
-def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
     """Find a command with robust platform-specific fallback search.
 
     For the 'claude' command, checks the native installer target path first
@@ -169,8 +165,6 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     Returns:
         Full path to command if found, None otherwise
     """
-    import time
-
     # For 'claude' command: check native installer target FIRST
     # This ensures the native binary is preferred over npm even when
     # PATH ordering would resolve to the npm binary first.
@@ -221,8 +215,21 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
         elif cmd == 'node':
             common_paths = [
+                # Official installer paths
                 r'C:\Program Files\nodejs\node.exe',
                 r'C:\Program Files (x86)\nodejs\node.exe',
+                # nvm-windows: %APPDATA%\nvm\<version>\node.exe
+                os.path.expandvars(r'%APPDATA%\nvm'),
+                # fnm: %LOCALAPPDATA%\fnm_multishells\<id>\node.exe
+                os.path.expandvars(r'%LOCALAPPDATA%\fnm_multishells'),
+                # volta: %USERPROFILE%\.volta\bin\node.exe
+                os.path.expandvars(r'%USERPROFILE%\.volta\bin\node.exe'),
+                # scoop: %USERPROFILE%\scoop\apps\nodejs\current\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\apps\nodejs\current\node.exe'),
+                # scoop (alternative): %USERPROFILE%\scoop\shims\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\shims\node.exe'),
+                # chocolatey: C:\ProgramData\chocolatey\bin\node.exe
+                r'C:\ProgramData\chocolatey\bin\node.exe',
             ]
         elif cmd == 'npm':
             common_paths = [
@@ -253,8 +260,22 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     # Check common locations
     for path in common_paths:
         expanded = os.path.expandvars(path)
-        if Path(expanded).exists():
-            return str(Path(expanded).resolve())
+        expanded_path = Path(expanded)
+
+        # Direct file check
+        if expanded_path.exists() and expanded_path.is_file():
+            return str(expanded_path.resolve())
+
+        # Directory-based search for version managers (nvm, fnm)
+        # These store node.exe in subdirectories like: nvm/<version>/node.exe
+        if expanded_path.exists() and expanded_path.is_dir() and cmd == 'node':
+            # Search for node.exe in subdirectories (one level deep)
+            pattern = str(expanded_path / '*' / 'node.exe')
+            matches = glob_module.glob(pattern)
+            if matches:
+                # Return the most recently modified (likely active version)
+                matches.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                return str(Path(matches[0]).resolve())
 
     # Tertiary: Custom fallback paths
     if fallback_paths:
@@ -308,7 +329,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                         result = (True, str(winget_path), 'winget')
                     else:
                         # Fallback to PATH search (with source detection)
-                        claude_path = find_command_robust('claude')
+                        claude_path = find_command('claude')
                         if claude_path:
                             source = 'unknown'
                             claude_lower = claude_path.lower()
@@ -327,7 +348,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
         if native_path.exists() and native_path.stat().st_size > 1000:
             result = (True, str(native_path), 'native')
         else:
-            claude_path = find_command_robust('claude')
+            claude_path = find_command('claude')
             if claude_path:
                 if 'npm' in claude_path or '.npm-global' in claude_path:
                     result = (True, claude_path, 'npm')
@@ -497,7 +518,7 @@ def _check_npm_claude_installed() -> bool:
     Returns:
         True if @anthropic-ai/claude-code is installed via npm, False otherwise.
     """
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         return False
 
@@ -527,7 +548,7 @@ def remove_npm_claude() -> bool:
         Safe to call even if npm is not installed - returns True in that case.
         Permission failures are handled gracefully without user-facing errors.
     """
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         # No npm found - nothing to uninstall
         return True
@@ -739,7 +760,7 @@ def find_bash_windows() -> str | None:
             return str(Path(expanded).resolve())
 
     # Fall back to PATH search (may find Git Bash if installed elsewhere)
-    bash_path = find_command('bash.exe')
+    bash_path = shutil.which('bash.exe')
     if bash_path:
         # Skip WSL bash in System32/SysWOW64
         bash_lower = bash_path.lower()
@@ -752,7 +773,7 @@ def find_bash_windows() -> str | None:
 
 def check_winget() -> bool:
     """Check if winget is available on Windows."""
-    return find_command('winget') is not None
+    return shutil.which('winget') is not None
 
 
 def install_git_windows_winget(scope: str = 'user') -> bool:
@@ -1237,7 +1258,7 @@ def configure_powershell_policy() -> None:
 # Node.js functions
 def get_node_version() -> str | None:
     """Get installed Node.js version."""
-    node_path = find_command('node')
+    node_path = shutil.which('node')
     if not node_path:
         return None
 
@@ -1480,7 +1501,7 @@ def install_nodejs_direct() -> bool:
 
 def install_nodejs_homebrew() -> bool:
     """Install Node.js LTS using Homebrew on macOS."""
-    if not find_command('brew'):
+    if not shutil.which('brew'):
         info('Installing Homebrew first...')
         result = run_command([
             '/bin/bash',
@@ -1677,13 +1698,13 @@ def get_claude_version(claude_path: str | None = None) -> str | None:
 
     Args:
         claude_path: Explicit path to Claude executable. If None,
-                     uses find_command_robust() to locate it.
+                     uses find_command() to locate it.
 
     Returns:
         Version string (e.g., "2.0.14") if detected, None if not found.
     """
     if claude_path is None:
-        claude_path = find_command_robust('claude')
+        claude_path = find_command('claude')
     if not claude_path:
         return None
 
@@ -1705,7 +1726,7 @@ def get_latest_claude_version() -> str | None:
     Returns:
         Latest version string (e.g., "1.0.135") or None if cannot determine.
     """
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         return None
 
@@ -1729,7 +1750,7 @@ def needs_sudo_for_npm() -> bool:
     if platform.system() == 'Windows':
         return False
 
-    npm_path = find_command('npm')
+    npm_path = shutil.which('npm')
     if not npm_path:
         return False
 
@@ -1769,7 +1790,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         if npm_cmd.exists():
             info(f'Found npm.cmd at {npm_cmd}')
 
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         # On Windows, try to find npm.cmd explicitly
         if platform.system() == 'Windows':
@@ -3147,7 +3168,7 @@ def ensure_claude() -> bool:
         if install_claude_npm(upgrade=False, version=requested_version):
             # Verify with retries to handle PATH synchronization delays
             for attempt in range(3):
-                claude_path = find_command_robust('claude')
+                claude_path = find_command('claude')
                 if claude_path:
                     new_version = get_claude_version(claude_path)
                     if new_version:
@@ -3183,7 +3204,7 @@ def ensure_claude() -> bool:
     if install_claude_npm(upgrade=False, version=requested_version):
         # Verify with retries to handle PATH synchronization delays
         for attempt in range(3):
-            claude_path = find_command_robust('claude')
+            claude_path = find_command('claude')
             if claude_path:
                 new_version = get_claude_version(claude_path)
                 if new_version:
@@ -3340,7 +3361,7 @@ def main() -> None:
                 raise Exception('Git Bash unavailable after installation attempts')
 
             # Set CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH if bash not in PATH
-            if not find_command('bash.exe'):
+            if not shutil.which('bash.exe'):
                 info('bash.exe is not on PATH, configuring CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH...')
                 set_windows_env_var('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH', bash_path)
 

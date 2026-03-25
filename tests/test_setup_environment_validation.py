@@ -829,7 +829,7 @@ class TestMainFlowWithValidation:
 
         # Run main
         with (
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.error') as mock_error,
         ):
             setup_environment.main()
@@ -884,7 +884,7 @@ class TestMainFlowWithValidation:
 
         # Run main (will fail later but that's ok for this test)
         with (
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.Path.mkdir'),
             contextlib.suppress(Exception),  # Expected to fail at later steps
         ):

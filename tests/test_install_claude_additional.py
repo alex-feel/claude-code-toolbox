@@ -488,7 +488,7 @@ class TestWingetCheck:
         assert mock_find.return_value == 'C:\\Windows\\System32\\winget.exe'
         assert install_claude.check_winget() is True
 
-    @patch('install_claude.find_command', return_value=None)
+    @patch('shutil.which', return_value=None)
     def test_check_winget_not_found(self, mock_find):
         """Test winget check when not found."""
         # Verify mock configuration

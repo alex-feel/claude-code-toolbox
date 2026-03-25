@@ -142,13 +142,6 @@ class TestUtilityFunctions:
         assert result.returncode == 1
         assert 'Test error' in result.stderr
 
-    @patch('shutil.which')
-    def test_find_command(self, mock_which):
-        """Test finding command in PATH."""
-        mock_which.return_value = '/usr/bin/git'
-        assert install_claude.find_command('git') == '/usr/bin/git'
-        mock_which.assert_called_with('git')
-
 
 class TestAdminCheck:
     """Test admin/sudo privilege checking."""
@@ -248,7 +241,7 @@ class TestWindowsGitBash:
         assert mock_find.return_value == 'winget'
         assert install_claude.check_winget() is True
 
-    @patch('install_claude.find_command', return_value=None)
+    @patch('shutil.which', return_value=None)
     def test_check_winget_not_available(self, mock_find):
         """Test winget not available."""
         # Verify mock configuration
@@ -564,7 +557,7 @@ class TestNodeJsInstallation:
         version = install_claude.get_node_version()
         assert version == 'v18.17.0'
 
-    @patch('install_claude.find_command', return_value=None)
+    @patch('shutil.which', return_value=None)
     def test_get_node_version_not_found(self, mock_find):
         """Test getting Node.js version when not installed."""
         # Verify mock configuration
@@ -641,12 +634,12 @@ class TestNodeJsInstallation:
         assert any('link' in call for call in install_calls), \
             'brew link should be called for keg-only node@22 formula'
 
-    @patch('install_claude.find_command', return_value='/usr/local/bin/brew')
+    @patch('shutil.which', return_value='/usr/local/bin/brew')
     @patch('install_claude.run_command')
-    def test_install_nodejs_homebrew_install_fails(self, mock_run, mock_find):
+    def test_install_nodejs_homebrew_install_fails(self, mock_run, mock_which):
         """Homebrew returns False when brew install node@22 fails."""
         # Verify mock configuration
-        assert mock_find.return_value == '/usr/local/bin/brew'
+        assert mock_which.return_value == '/usr/local/bin/brew'
         # brew update succeeds, brew install node@22 fails
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 0, '', ''),  # brew update
@@ -655,12 +648,12 @@ class TestNodeJsInstallation:
         result = install_claude.install_nodejs_homebrew()
         assert result is False
 
-    @patch('install_claude.find_command', return_value='/usr/local/bin/brew')
+    @patch('shutil.which', return_value='/usr/local/bin/brew')
     @patch('install_claude.run_command')
-    def test_install_nodejs_homebrew_link_fails_still_succeeds(self, mock_run, mock_find):
+    def test_install_nodejs_homebrew_link_fails_still_succeeds(self, mock_run, mock_which):
         """Homebrew returns True even when brew link fails."""
-        # Verify mock configuration
-        assert mock_find.return_value == '/usr/local/bin/brew'
+        del mock_which  # Mark as intentionally unused (mock active via decorator)
+        # Verify shutil.which is properly mocked
         # brew update succeeds, brew install succeeds, brew link fails
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 0, '', ''),  # brew update
@@ -859,7 +852,7 @@ class TestCheckNodejsCompatibilityVersionAware:
 class TestClaudeInstallation:
     """Test Claude Code installation functions."""
 
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     @patch('platform.system', return_value='Windows')
     @patch('pathlib.Path.exists', return_value=True)
     def test_get_claude_version_windows(self, mock_exists, mock_system, mock_find):
@@ -873,7 +866,7 @@ class TestClaudeInstallation:
             version = install_claude.get_claude_version()
             assert version == '0.7.7'
 
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     @patch('install_claude.run_command')
     def test_get_claude_version_found(self, mock_run, mock_find):
         """Test getting Claude version when found in PATH."""
@@ -898,7 +891,7 @@ class TestClaudeInstallation:
         assert '@anthropic-ai/claude-code@latest' in mock_run.call_args[0][0]
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -1307,12 +1300,12 @@ class TestMainFunction:
     @patch('install_claude.ensure_claude', return_value=True)
     @patch('install_claude.configure_powershell_policy')
     @patch('install_claude.update_path')
-    @patch('install_claude.find_command', return_value=None)
+    @patch('install_claude.shutil.which', return_value=None)
     @patch('install_claude.set_windows_env_var')
     def test_main_windows_success(
         self,
         mock_set_env,
-        mock_find,
+        mock_which,
         mock_update,
         mock_ps,
         mock_claude,
@@ -1326,7 +1319,7 @@ class TestMainFunction:
         assert mock_git.return_value == 'C:\\Git\\bash.exe'
         assert mock_node.return_value is True
         assert mock_claude.return_value is True
-        assert mock_find.return_value is None
+        assert mock_which.return_value is None
         # Force npm installation method to ensure Node.js is installed
         with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}), patch('sys.exit') as mock_exit:
             install_claude.main()
@@ -1736,7 +1729,7 @@ class TestVerifyClaudeInstallation:
 
         mock_exists.side_effect = exists_side_effect
 
-        with patch('install_claude.find_command_robust', return_value=None):
+        with patch('install_claude.find_command', return_value=None):
             is_installed, path, source = install_claude.verify_claude_installation()
 
             # Should reject the small file and continue searching
@@ -1806,10 +1799,10 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_path_fallback_npm_detection(self, mock_find, mock_exists):
         """Test PATH fallback with npm source detection from path string."""
-        # Mock: no direct paths exist, but find_command_robust finds npm installation
+        # Mock: no direct paths exist, but find_command finds npm installation
         assert mock_exists.return_value is False
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.cmd'
 
@@ -1821,10 +1814,10 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_path_fallback_native_detection(self, mock_find, mock_exists):
         """Test PATH fallback with native source detection from path string."""
-        # Mock: no direct paths exist, but find_command_robust finds native location
+        # Mock: no direct paths exist, but find_command finds native location
         assert mock_exists.return_value is False
         mock_find.return_value = 'C:\\Users\\Test\\.local\\bin\\claude.exe'
 
@@ -1836,10 +1829,10 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_path_fallback_winget_detection(self, mock_find, mock_exists):
         """Test PATH fallback with winget source detection from path string."""
-        # Mock: no direct paths exist, but find_command_robust finds winget installation
+        # Mock: no direct paths exist, but find_command finds winget installation
         assert mock_exists.return_value is False
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Local\\Programs\\claude\\claude.exe'
 
@@ -1851,10 +1844,10 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_path_fallback_unknown(self, mock_find, mock_exists):
         """Test PATH fallback with unknown source (doesn't match patterns)."""
-        # Mock: find_command_robust finds claude but in unexpected location
+        # Mock: find_command finds claude but in unexpected location
         assert mock_exists.return_value is False
         mock_find.return_value = 'C:\\CustomPath\\claude.exe'
 
@@ -1866,10 +1859,10 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust', return_value=None)
+    @patch('install_claude.find_command', return_value=None)
     def test_verify_claude_installation_not_found(self, mock_find, mock_exists):
         """Test verification when Claude is not installed anywhere."""
-        # Mock: no paths exist, find_command_robust returns None
+        # Mock: no paths exist, find_command returns None
         assert mock_exists.return_value is False
         assert mock_find.return_value is None
 
@@ -1880,7 +1873,7 @@ class TestVerifyClaudeInstallation:
         assert source == 'none'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_npm(self, mock_find):
         """Test verification on Linux with npm installation."""
         mock_find.return_value = '/home/user/.npm-global/bin/claude'
@@ -1892,7 +1885,7 @@ class TestVerifyClaudeInstallation:
         assert '.npm-global' in path or 'npm' in path
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_unknown(self, mock_find):
         """Verify unrecognized path is classified as unknown on Linux."""
         mock_find.return_value = '/opt/custom/bin/claude'
@@ -1904,7 +1897,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/opt/custom/bin/claude'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust', return_value=None)
+    @patch('install_claude.find_command', return_value=None)
     def test_verify_claude_installation_linux_not_found(self, mock_find):
         """Test verification on Linux when not installed."""
         assert mock_find.return_value is None
@@ -1916,7 +1909,7 @@ class TestVerifyClaudeInstallation:
         assert source == 'none'
 
     @patch('sys.platform', 'darwin')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_macos_unknown(self, mock_find):
         """Verify unrecognized path is classified as unknown on macOS."""
         mock_find.return_value = '/opt/homebrew/custom/claude'
@@ -1928,7 +1921,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/opt/homebrew/custom/claude'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_native(self, mock_find):
         """Test verification on Linux with native installation at ~/.local/bin."""
         mock_find.return_value = '/home/user/.local/bin/claude'
@@ -1940,7 +1933,7 @@ class TestVerifyClaudeInstallation:
         assert '.local/bin' in path
 
     @patch('sys.platform', 'darwin')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_macos_native(self, mock_find):
         """Test verification on macOS with native installation at ~/.local/bin."""
         mock_find.return_value = '/Users/testuser/.local/bin/claude'
@@ -1953,7 +1946,7 @@ class TestVerifyClaudeInstallation:
 
     @patch('sys.platform', 'win32')
     @patch('pathlib.Path.exists', return_value=False)
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_false_positive_scenario(self, mock_find, mock_exists):
         """Test the exact false positive scenario from user report.
 
@@ -1975,7 +1968,7 @@ class TestVerifyClaudeInstallation:
         assert 'npm' in path.lower(), 'Should report actual npm location'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_usr_local_bin_unknown(self, mock_find):
         """/usr/local/bin/claude is classified as 'unknown' on Linux (could be npm or native)."""
         mock_find.return_value = '/usr/local/bin/claude'
@@ -1988,7 +1981,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/usr/local/bin/claude'
 
     @patch('sys.platform', 'darwin')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_macos_usr_local_bin_unknown(self, mock_find):
         """/usr/local/bin/claude is classified as 'unknown' on macOS (could be npm or native)."""
         mock_find.return_value = '/usr/local/bin/claude'
@@ -2001,7 +1994,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/usr/local/bin/claude'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_claude_bin_native(self, mock_find):
         """Verify ~/.claude/bin/claude is classified as native on Linux."""
         mock_find.return_value = '/home/user/.claude/bin/claude'
@@ -2013,7 +2006,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/home/user/.claude/bin/claude'
 
     @patch('sys.platform', 'darwin')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_macos_claude_bin_native(self, mock_find):
         """Verify ~/.claude/bin/claude is classified as native on macOS."""
         mock_find.return_value = '/Users/testuser/.claude/bin/claude'
@@ -2025,7 +2018,7 @@ class TestVerifyClaudeInstallation:
         assert path == '/Users/testuser/.claude/bin/claude'
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_verify_claude_installation_linux_usr_bin_unknown(self, mock_find):
         """Verify /usr/bin/claude is classified as unknown (system package territory)."""
         mock_find.return_value = '/usr/bin/claude'
@@ -2363,7 +2356,7 @@ class TestWindowsFileLockHandling:
 class TestRemoveNpmClaude:
     """Test remove_npm_claude() function for automatic npm removal."""
 
-    @patch('install_claude.find_command_robust', return_value=None)
+    @patch('install_claude.find_command', return_value=None)
     def test_remove_npm_claude_no_npm_installed(self, mock_find: MagicMock) -> None:
         """Test remove_npm_claude returns True when npm is not installed."""
         result = install_claude.remove_npm_claude()
@@ -2372,7 +2365,7 @@ class TestRemoveNpmClaude:
         mock_find.assert_called_once_with('npm')
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_npm_package_not_installed(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2391,7 +2384,7 @@ class TestRemoveNpmClaude:
         assert args == ['/usr/local/bin/npm', 'list', '-g', '@anthropic-ai/claude-code']
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_uninstall_success(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2416,7 +2409,7 @@ class TestRemoveNpmClaude:
 
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_uninstall_failure(
         self, mock_find: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
     ) -> None:
@@ -2436,7 +2429,7 @@ class TestRemoveNpmClaude:
         assert mock_run.call_count == 2
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_windows_npm_path(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2457,7 +2450,7 @@ class TestRemoveNpmClaude:
     @patch('platform.system', return_value='Linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_sudo_with_tty(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_sudo: MagicMock, mock_system: MagicMock,
@@ -2484,7 +2477,7 @@ class TestRemoveNpmClaude:
     @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_no_tty_no_cached_creds(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_sudo: MagicMock, mock_system: MagicMock,
@@ -2508,7 +2501,7 @@ class TestRemoveNpmClaude:
     @patch('platform.system', return_value='Linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_no_tty_cached_creds(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_sudo: MagicMock, mock_system: MagicMock,
@@ -2534,7 +2527,7 @@ class TestRemoveNpmClaude:
     @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_sudo_file_not_found(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_sudo: MagicMock, mock_system: MagicMock,
@@ -2558,7 +2551,7 @@ class TestRemoveNpmClaude:
     @patch('platform.system', return_value='Linux')
     @patch('subprocess.run')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_first_attempt_succeeds_no_sudo(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_subprocess: MagicMock, mock_system: MagicMock,
@@ -2580,7 +2573,7 @@ class TestRemoveNpmClaude:
     @patch('platform.system', return_value='Windows')
     @patch('subprocess.run')
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust')
+    @patch('install_claude.find_command')
     def test_remove_npm_claude_windows_no_sudo(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_subprocess: MagicMock, mock_system: MagicMock,
@@ -2761,7 +2754,7 @@ class TestCheckNpmClaudeInstalled:
     """Tests for _check_npm_claude_installed() helper."""
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust', return_value=None)
+    @patch('install_claude.find_command', return_value=None)
     def test_returns_false_when_npm_not_found(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2771,7 +2764,7 @@ class TestCheckNpmClaudeInstalled:
         mock_run.assert_not_called()
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     def test_returns_true_when_installed(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2781,7 +2774,7 @@ class TestCheckNpmClaudeInstalled:
         assert install_claude._check_npm_claude_installed() is True
 
     @patch('install_claude.run_command')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     def test_returns_false_when_not_installed(
         self, mock_find: MagicMock, mock_run: MagicMock,
     ) -> None:
@@ -2795,7 +2788,7 @@ class TestVerifyClaudeInstallationUsrLocalBin:
     """Tests for /usr/local/bin classification and native-path-first."""
 
     @patch('sys.platform', 'linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/local/bin/claude')
+    @patch('install_claude.find_command', return_value='/usr/local/bin/claude')
     def test_usr_local_bin_classified_as_unknown(self, mock_find: MagicMock) -> None:
         """/usr/local/bin/claude is classified as 'unknown', not 'native'."""
         del mock_find
@@ -2818,7 +2811,7 @@ class TestVerifyClaudeInstallationUsrLocalBin:
 
 
 class TestFindCommandRobustNativeFirst:
-    """Tests for native-path-first check in find_command_robust()."""
+    """Tests for native-path-first check in find_command()."""
 
     @patch('sys.platform', 'linux')
     def test_native_path_returned_first(self) -> None:
@@ -2828,7 +2821,7 @@ class TestFindCommandRobustNativeFirst:
         with patch('pathlib.Path.exists', return_value=True), \
              patch('pathlib.Path.stat', return_value=mock_stat), \
              patch('shutil.which', return_value='/usr/local/bin/claude'):
-            result = install_claude.find_command_robust('claude')
+            result = install_claude.find_command('claude')
         assert result is not None
         assert '.local' in result
 
@@ -2837,7 +2830,7 @@ class TestFindCommandRobustNativeFirst:
         """Falls through to shutil.which when native path does not exist."""
         with patch('pathlib.Path.exists', return_value=False), \
              patch('shutil.which', return_value='/usr/local/bin/claude'):
-            result = install_claude.find_command_robust('claude')
+            result = install_claude.find_command('claude')
         assert result == '/usr/local/bin/claude'
 
 
@@ -2852,12 +2845,12 @@ class TestGetClaudeVersionExplicitPath:
         assert result == '2.0.14'
         mock_run.assert_called_once_with(['/explicit/claude', '--version'])
 
-    @patch('install_claude.find_command_robust', return_value='/found/claude')
+    @patch('install_claude.find_command', return_value='/found/claude')
     @patch('install_claude.run_command')
     def test_falls_back_to_find_command(
         self, mock_run: MagicMock, mock_find: MagicMock,
     ) -> None:
-        """When called without path, uses find_command_robust()."""
+        """When called without path, uses find_command()."""
         mock_run.return_value = MagicMock(returncode=0, stdout='claude, version 1.0.0')
         result = install_claude.get_claude_version()
         assert result == '1.0.0'
@@ -3188,7 +3181,7 @@ class TestRootGuard:
             patch.object(install_claude, 'ensure_claude', return_value=True),
             patch.object(install_claude, 'configure_powershell_policy'),
             patch.object(install_claude, 'update_path'),
-            patch.object(install_claude, 'find_command', return_value=None),
+            patch('shutil.which', return_value=None),
             patch.object(install_claude, 'set_windows_env_var'),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}),
             contextlib.suppress(SystemExit),
@@ -3241,7 +3234,7 @@ class TestInstallClaudeNpmSudo:
     """Test sudo fallback behavior in install_claude_npm (via _run_with_sudo_fallback)."""
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3267,7 +3260,7 @@ class TestInstallClaudeNpmSudo:
             assert sudo_cmd[0] == '/usr/bin/npm'
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3293,7 +3286,7 @@ class TestInstallClaudeNpmSudo:
             assert 'cannot use sudo' in combined.lower()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=False)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3317,7 +3310,7 @@ class TestInstallClaudeNpmSudo:
             mock_sudo.assert_called_once()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3340,7 +3333,7 @@ class TestInstallClaudeNpmSudo:
             assert result is False
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3364,7 +3357,7 @@ class TestInstallClaudeNpmSudo:
             assert mock_sudo.call_args[1]['capture_output'] is True
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3389,7 +3382,7 @@ class TestInstallClaudeNpmSudo:
             assert 'elevated permissions' in combined.lower()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3414,7 +3407,7 @@ class TestInstallClaudeNpmSudo:
 
     @patch('platform.system', return_value='Linux')
     @patch('install_claude.set_disable_autoupdater')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3441,7 +3434,7 @@ class TestInstallClaudeNpmSudo:
             mock_set_autoupdater.assert_called_once()
 
     @patch('platform.system', return_value='Windows')
-    @patch('install_claude.find_command_robust', return_value=r'C:\Program Files\nodejs\npm.cmd')
+    @patch('install_claude.find_command', return_value=r'C:\Program Files\nodejs\npm.cmd')
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
     def test_no_sudo_attempt_on_windows(
@@ -3465,7 +3458,7 @@ class TestInstallClaudeNpmSudoGating:
     """Test pre-sudo TTY/credentials gating in install_claude_npm (via _run_with_sudo_fallback)."""
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3492,7 +3485,7 @@ class TestInstallClaudeNpmSudoGating:
             assert 'cannot use sudo' in combined.lower()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3518,7 +3511,7 @@ class TestInstallClaudeNpmSudoGating:
             assert sudo_cmd[0] == '/usr/bin/npm'
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=False)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3544,7 +3537,7 @@ class TestInstallClaudeNpmSudoGating:
             assert sudo_cmd[0] == '/usr/bin/npm'
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.find_command_robust', return_value='/usr/bin/npm')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
@@ -3579,7 +3572,7 @@ class TestNeedsSudoForNpm:
         """When npm is not installed, returns False."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command', return_value=None),
+            patch('shutil.which', return_value=None),
         ):
             assert install_claude.needs_sudo_for_npm() is False
 
@@ -3587,7 +3580,7 @@ class TestNeedsSudoForNpm:
         """Returns True when user cannot write to npm global directory."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
+            patch('shutil.which', return_value='/usr/bin/npm'),
             patch.object(
                 install_claude, 'run_command',
                 return_value=subprocess.CompletedProcess([], 0, '/usr/local\n', ''),
@@ -3600,7 +3593,7 @@ class TestNeedsSudoForNpm:
         """Returns False when user can write to npm global directory."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
+            patch('shutil.which', return_value='/usr/bin/npm'),
             patch.object(
                 install_claude, 'run_command',
                 return_value=subprocess.CompletedProcess([], 0, '/home/user/.npm-global\n', ''),
@@ -3613,7 +3606,7 @@ class TestNeedsSudoForNpm:
         """Returns False when npm config get prefix fails."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
+            patch('shutil.which', return_value='/usr/bin/npm'),
             patch.object(
                 install_claude, 'run_command',
                 return_value=subprocess.CompletedProcess([], 1, '', 'error'),
@@ -3625,7 +3618,7 @@ class TestNeedsSudoForNpm:
         """Returns False when os.access raises an exception."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch.object(install_claude, 'find_command', return_value='/usr/bin/npm'),
+            patch('shutil.which', return_value='/usr/bin/npm'),
             patch.object(
                 install_claude, 'run_command',
                 return_value=subprocess.CompletedProcess([], 0, '/usr/local\n', ''),

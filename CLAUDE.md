@@ -34,7 +34,21 @@ The installer uses a native-first approach with automatic npm fallback:
 - `install_claude_native_cross_platform()` - Platform dispatcher
 - `ensure_claude()` - Main orchestrator with native-first logic
 
-**Native Path Priority:** Both `find_command_robust()` and `verify_claude_installation()` check the native installer target path (`~/.local/bin/claude` on Unix, `~/.local/bin/claude.exe` on Windows) explicitly first, before falling back to PATH search via `shutil.which()`. This ensures the native binary is preferred over an npm binary even when PATH ordering would resolve to the npm binary first (e.g., `/usr/local/bin` preceding `~/.local/bin` on macOS). The check validates the file exists and has `st_size > 1000` to skip empty or corrupt files.
+### Standalone Script Policy
+
+`install_claude.py` and `setup_environment.py` MUST be fully standalone. They MUST NEVER import from each other. No cross-imports of any kind are permitted. Both scripts are downloaded and executed independently -- users may run either script without the other being present.
+
+**Identical Code Parts:** The following code elements MUST be kept identical between both scripts (CI tests in `tests/test_standalone_policy.py` enforce this):
+- `Colors` class -- ANSI color codes for terminal output
+- `find_command()` function -- comprehensive command discovery with PATHEXT normalization, retry logic, native-path-first, and platform-specific fallback paths
+
+**Intentionally Different Code:** The following functions exist in both scripts but are INTENTIONALLY different and MUST NOT be synchronized:
+- `info()`, `success()`, `warning()`, `error()` -- different output formatting per script
+- `run_command()` -- different encoding/error handling per script needs
+- `find_bash_windows()` -- setup_environment.py version has debug_log calls
+- `is_admin()` -- different implementations per script context
+
+**Native Path Priority:** Both `find_command()` and `verify_claude_installation()` check the native installer target path (`~/.local/bin/claude` on Unix, `~/.local/bin/claude.exe` on Windows) explicitly first, before falling back to PATH search via `shutil.which()`. This ensures the native binary is preferred over an npm binary even when PATH ordering would resolve to the npm binary first (e.g., `/usr/local/bin` preceding `~/.local/bin` on macOS). The check validates the file exists and has `st_size > 1000` to skip empty or corrupt files.
 
 **Environment Variables:**
 - `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
