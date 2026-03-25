@@ -3853,7 +3853,7 @@ class TestInstallClaude:
     """Test Claude installation."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('urllib.request.urlopen')
+    @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
     @patch('setup_environment.is_admin', return_value=True)
     def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system):

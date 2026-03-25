@@ -312,18 +312,25 @@ class TestWindowsGitBash:
         mock_retrieve.assert_called_once()
         mock_run.assert_called_once()
 
-    @patch('urllib.request.urlopen')
-    def test_install_git_windows_download_ssl_error(self, mock_urlopen):
+    @patch('install_claude.get_git_installer_with_retry', return_value=None)
+    @patch('install_claude.urlopen')
+    def test_install_git_windows_download_ssl_error(self, mock_urlopen, mock_github):
         """Test Git download with SSL error fallback."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'<a href="/git/Git-2.43.0-64-bit.exe">Download</a>'
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+
         mock_urlopen.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
-            MagicMock(read=lambda: b'<a href="/git/Git-2.43.0-64-bit.exe">Download</a>'),
+            mock_response,
         ]
 
-        with patch('urllib.request.urlretrieve'), patch('install_claude.run_command') as mock_run:
+        with patch('install_claude.urlretrieve'), patch('install_claude.run_command') as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
             result = install_claude.install_git_windows_download()
             assert result is False
+            mock_github.assert_called_once()
 
 
 class TestGitHubAPIDownload:
@@ -921,7 +928,7 @@ class TestClaudeInstallation:
             assert sudo_cmd[0] == '/usr/bin/npm'
 
     @patch('platform.system', return_value='Windows')
-    @patch('urllib.request.urlopen')
+    @patch('install_claude.urlopen')
     @patch('tempfile.NamedTemporaryFile')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
