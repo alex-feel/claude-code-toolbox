@@ -3696,3 +3696,223 @@ class TestEnsureClaudeErrorMessaging:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native' in combined or 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in combined
+
+
+class TestGetLatestClaudeVersionGitHub:
+    """Tests for _get_latest_claude_version_github() GitHub API fallback."""
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_success(self, mock_urlopen):
+        """Test successful version retrieval from GitHub API."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({'tag_name': 'v2.1.83'}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = install_claude._get_latest_claude_version_github()
+        assert result == '2.1.83'
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_strips_v_prefix(self, mock_urlopen):
+        """Test that 'v' prefix is stripped from tag_name."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({'tag_name': 'v3.0.0'}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = install_claude._get_latest_claude_version_github()
+        assert result == '3.0.0'
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_no_v_prefix(self, mock_urlopen):
+        """Test tag_name without 'v' prefix is returned as-is."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({'tag_name': '2.1.83'}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = install_claude._get_latest_claude_version_github()
+        assert result == '2.1.83'
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_network_error(self, mock_urlopen):
+        """Test that network errors return None."""
+        mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
+        result = install_claude._get_latest_claude_version_github()
+        assert result is None
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_empty_tag(self, mock_urlopen):
+        """Test that empty tag_name returns None."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({'tag_name': ''}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = install_claude._get_latest_claude_version_github()
+        assert result is None
+
+    @patch('install_claude.urllib.request.urlopen')
+    def test_github_version_missing_tag_name(self, mock_urlopen):
+        """Test that missing tag_name key returns None."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({'name': 'some release'}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        result = install_claude._get_latest_claude_version_github()
+        assert result is None
+
+
+class TestGetLatestClaudeVersionFallback:
+    """Tests for get_latest_claude_version() npm-first with GitHub fallback."""
+
+    @patch('install_claude._get_latest_claude_version_github', return_value='2.1.83')
+    @patch('install_claude.find_command', return_value=None)
+    def test_npm_unavailable_uses_github(self, mock_find, mock_github):
+        """Test that GitHub API is used when npm is not available."""
+        assert mock_find.return_value is None
+        result = install_claude.get_latest_claude_version()
+        assert result == '2.1.83'
+        mock_github.assert_called_once()
+
+    @patch('install_claude._get_latest_claude_version_github')
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
+    def test_npm_available_prefers_npm(self, mock_find, mock_run, mock_github):
+        """Test that npm result is used when npm is available."""
+        assert mock_find.return_value == '/usr/bin/npm'
+        mock_run.return_value = MagicMock(returncode=0, stdout='2.1.83')
+        result = install_claude.get_latest_claude_version()
+        assert result == '2.1.83'
+        mock_github.assert_not_called()
+
+    @patch('install_claude._get_latest_claude_version_github', return_value='2.1.83')
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command', return_value='/usr/bin/npm')
+    def test_npm_fails_falls_back_to_github(self, mock_find, mock_run, mock_github):
+        """Test that GitHub API is used when npm command fails."""
+        assert mock_find.return_value == '/usr/bin/npm'
+        mock_run.return_value = MagicMock(returncode=1, stdout='')
+        result = install_claude.get_latest_claude_version()
+        assert result == '2.1.83'
+        mock_github.assert_called_once()
+
+    @patch('install_claude._get_latest_claude_version_github', return_value=None)
+    @patch('install_claude.find_command', return_value=None)
+    def test_both_unavailable_returns_none(self, mock_find, mock_github):
+        """Test that None is returned when both npm and GitHub fail."""
+        assert mock_find.return_value is None
+        assert mock_github.return_value is None
+        result = install_claude.get_latest_claude_version()
+        assert result is None
+
+
+class TestVersionCheckFailureUX:
+    """Tests for version-check failure UX."""
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.get_latest_claude_version', return_value=None)
+    @patch('install_claude.verify_claude_installation', return_value=(True, '/usr/local/bin/claude', 'native'))
+    @patch('install_claude.get_claude_version', return_value='2.0.76')
+    def test_version_check_failure_shows_info(self, mock_ver, mock_verify, mock_latest, capsys):
+        """Test that version check failure shows single info message."""
+        assert mock_ver.return_value == '2.0.76'
+        assert mock_verify.return_value[0] is True
+        assert mock_latest.return_value is None
+        result = install_claude.ensure_claude()
+        assert result is True
+        captured = capsys.readouterr()
+        assert 'Claude Code version 2.0.76 is installed (could not check for updates)' in captured.out
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.get_latest_claude_version', return_value=None)
+    @patch('install_claude.verify_claude_installation', return_value=(True, '/usr/local/bin/claude', 'native'))
+    @patch('install_claude.get_claude_version', return_value='2.0.76')
+    def test_version_check_failure_no_warning_no_success(self, mock_ver, mock_verify, mock_latest, capsys):
+        """Test that no warning() or success() messages appear for version check failure."""
+        assert mock_ver.return_value == '2.0.76'
+        assert mock_verify.return_value[0] is True
+        assert mock_latest.return_value is None
+        install_claude.ensure_claude()
+        captured = capsys.readouterr()
+        assert 'Cannot determine latest version' not in captured.out
+        assert 'is already installed' not in captured.out
+
+
+class TestNodejsSkipMessageWording:
+    """Tests for rephrased Node.js skip message in main()."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.ensure_claude', return_value=True)
+    def test_auto_mode_shows_native_first_message(self, mock_claude, mock_system, capsys):
+        """Test auto mode shows 'native installer will be tried first' message."""
+        assert mock_claude.return_value is True
+        assert mock_system.return_value == 'Linux'
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False), \
+                patch('sys.exit'):
+            install_claude.main()
+        captured = capsys.readouterr()
+        assert 'Skipping Node.js pre-installation (native installer will be tried first)' in captured.out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.ensure_claude', return_value=True)
+    def test_native_mode_shows_native_only_message(self, mock_claude, mock_system, capsys):
+        """Test native mode shows 'native-only mode' message."""
+        assert mock_claude.return_value is True
+        assert mock_system.return_value == 'Linux'
+        with patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}, clear=False), \
+                patch('sys.exit'):
+            install_claude.main()
+        captured = capsys.readouterr()
+        assert 'Skipping Node.js installation (native-only mode)' in captured.out
+
+
+class TestNpmFallbackConfigUpdate:
+    """Tests for update_install_method_config('npm') after native->npm fallback."""
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_upgrade_fallback_updates_config(
+        self, mock_verify, mock_get_version, mock_latest, mock_compare,
+        mock_native, mock_npm, mock_config,
+    ):
+        """Test that native upgrade fallback to npm calls update_install_method_config('npm')."""
+        assert mock_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        assert mock_native.return_value is False
+        assert mock_npm.return_value is True
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('npm')
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_unknown_upgrade_fallback_updates_config(
+        self, mock_verify, mock_get_version, mock_latest, mock_compare,
+        mock_native, mock_npm, mock_config,
+    ):
+        """Test that unknown source upgrade fallback to npm calls update_install_method_config('npm')."""
+        assert mock_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        assert mock_native.return_value is False
+        assert mock_npm.return_value is True
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (True, '/opt/claude', 'unknown')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('npm')

@@ -64,6 +64,7 @@ GIT_WINDOWS_URL = 'https://git-scm.com/downloads/win'
 GIT_GITHUB_API = 'https://api.github.com/repos/git-for-windows/git/releases/latest'
 CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
+CLAUDE_GITHUB_RELEASES_API = 'https://api.github.com/repos/anthropics/claude-code/releases/latest'
 CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
 
 
@@ -1720,25 +1721,53 @@ def get_claude_version(claude_path: str | None = None) -> str | None:
     return None
 
 
-def get_latest_claude_version() -> str | None:
-    """Get the latest available Claude Code version from npm.
+def _get_latest_claude_version_github() -> str | None:
+    """Get the latest Claude Code version from GitHub Releases API.
+
+    This provides a version check channel that does not require npm.
+    Uses the same urllib approach as other GitHub API calls in this script.
 
     Returns:
-        Latest version string (e.g., "1.0.135") or None if cannot determine.
+        Latest version string (e.g., "2.1.83") or None if cannot determine.
     """
-    npm_path = find_command('npm')
-    if not npm_path:
+    try:
+        req = urllib.request.Request(
+            CLAUDE_GITHUB_RELEASES_API,
+            headers={'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'claude-code-toolbox'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            tag = data.get('tag_name', '')
+            # Strip 'v' prefix if present (e.g., "v2.1.83" -> "2.1.83")
+            return tag.lstrip('v') if tag else None
+    except Exception:
         return None
 
-    # Query npm for latest version
-    cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
-    result = run_command(cmd, capture_output=True)
 
-    if result.returncode == 0:
-        version = result.stdout.strip()
-        # Remove quotes if present
-        return version.strip("\"'")
-    return None
+def get_latest_claude_version() -> str | None:
+    """Get the latest available Claude Code version.
+
+    Tries npm registry first (faster, more reliable for npm users),
+    falls back to GitHub Releases API if npm is unavailable.
+
+    Returns:
+        Latest version string (e.g., "2.1.83") or None if cannot determine.
+    """
+    npm_path = find_command('npm')
+    if npm_path:
+        # Query npm for latest version
+        cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
+        result = run_command(cmd, capture_output=True)
+
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            # Remove quotes if present
+            version = version.strip("\"'")
+            if version:
+                return version
+
+    # npm unavailable or failed - try GitHub Releases API
+    return _get_latest_claude_version_github()
 
 
 def needs_sudo_for_npm() -> bool:
@@ -2984,6 +3013,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code version {new_version} installed successfully via npm fallback')
+                    update_install_method_config('npm')
                     return True
 
                 error(f'Failed to install specific version {requested_version} with all methods')
@@ -3012,6 +3042,13 @@ def ensure_claude() -> bool:
                         if post_install and post_source == 'native':
                             success('Successfully migrated from npm to native installation')
                             info(f'Version maintained: {requested_version}')
+                            # Verify the requested version was actually installed
+                            post_version = get_claude_version()
+                            if post_version and post_version != requested_version:
+                                warning(
+                                    f'Requested version {requested_version} but got {post_version} '
+                                    f'after migration',
+                                )
                             # Remove npm installation to prevent PATH conflicts
                             if not remove_npm_claude():
                                 _warn_npm_removal_failed()
@@ -3052,6 +3089,13 @@ def ensure_claude() -> bool:
                         info(f'Previous version: {pre_migration_version}')
                         new_version = get_claude_version()
                         info(f'Current version: {new_version}')
+                        # Verify migration installed a reasonable version
+                        if new_version and pre_migration_version and not compare_versions(new_version, pre_migration_version):
+                            warning(
+                                f'Post-migration version ({new_version}) is older than '
+                                f'pre-migration version ({pre_migration_version})',
+                            )
+                            info('The native installer may have installed an earlier stable release')
                         # Remove npm installation to prevent PATH conflicts
                         if not remove_npm_claude():
                             _warn_npm_removal_failed()
@@ -3118,6 +3162,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -3137,6 +3182,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -3144,7 +3190,18 @@ def ensure_claude() -> bool:
             # npm or winget source - use npm
             if upgrade_source in ('npm', 'winget'):
                 info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
-            info(f'Upgrading to {latest_version} via npm...')
+                info(f'Upgrading to {latest_version} via npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version}')
+                    return True
+                warning('Upgrade failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            # Unexpected source - handle gracefully
+            warning(f'Unexpected installation source: {upgrade_source}')
+            info(f'Attempting npm upgrade to {latest_version} as fallback...')
             if install_claude_npm(upgrade=True, version=latest_version):
                 new_version = get_claude_version()
                 if new_version:
@@ -3154,8 +3211,7 @@ def ensure_claude() -> bool:
             return True  # Don't fail the entire installation
 
         # Cannot determine latest version - keep current
-        warning('Cannot determine latest version from npm')
-        success(f'Claude Code version {current_version} is already installed')
+        info(f'Claude Code version {current_version} is installed (could not check for updates)')
         return True
 
     # Fresh installation - Claude not found
@@ -3209,6 +3265,7 @@ def ensure_claude() -> bool:
                 new_version = get_claude_version(claude_path)
                 if new_version:
                     success(f'Claude Code version {new_version} installed successfully via npm fallback')
+                update_install_method_config('npm')
                 return True
             if attempt < 2:
                 info(f'Waiting for PATH synchronization... (attempt {attempt + 1}/3)')
@@ -3379,7 +3436,11 @@ def main() -> None:
                 error('Node.js installation failed')
                 raise Exception(f'Node.js >= {MIN_NODE_VERSION} unavailable after installation attempts')
         else:
-            info('Skipping Node.js installation (native method will be used)')
+            if install_method == 'native':
+                info('Skipping Node.js installation (native-only mode)')
+            else:
+                # auto mode: native will be tried first, npm is a potential fallback
+                info('Skipping Node.js pre-installation (native installer will be tried first)')
 
         # Step 3: Configure environment (Windows only)
         if system == 'Windows':
