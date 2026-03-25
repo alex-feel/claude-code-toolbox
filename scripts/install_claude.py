@@ -249,8 +249,7 @@ def _is_env_var_line(config_file: Path, line: str, name: str) -> bool:
     Returns:
         bool: True if line sets the variable, False otherwise.
     """
-    # Check if this is a fish config file
-    is_fish = 'fish' in str(config_file)
+    is_fish = _is_fish_config(config_file)
 
     if is_fish:
         return _is_fish_set_line(line, name)
