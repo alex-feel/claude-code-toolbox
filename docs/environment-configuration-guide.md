@@ -1,5 +1,3 @@
-<!-- markdownlint-disable MD060 -->
-
 # Environment Configuration Guide
 
 This guide covers how to create YAML configuration files for setting up complete Claude Code environments using the Claude Code Toolbox. Environment configurations let you define custom development setups with agents, MCP servers, slash commands, hooks, skills, and more -- all installable with a single command.
@@ -96,10 +94,10 @@ export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/rep
 
 ### CLI Flags
 
-| Flag | Purpose |
-|------|---------|
+| Flag           | Purpose                                             |
+|----------------|-----------------------------------------------------|
 | `--yes` / `-y` | Auto-confirm installation (skip interactive prompt) |
-| `--dry-run` | Show installation plan and exit without installing |
+| `--dry-run`    | Show installation plan and exit without installing  |
 
 ## Ready-Made Configurations
 
@@ -131,34 +129,34 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 Quick-reference table of all 26 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
-| YAML Key | Type | Required | Default | Brief Description |
-|----------|------|----------|---------|-------------------|
-| [`name`](#name) | `str` | **Yes** | -- | Display name for the environment |
-| [`version`](#version) | `str` | No | `None` | Config version (semver) |
-| [`inherit`](#inherit) | `str` | No | `None` | Parent config URL/path/name |
-| [`command-names`](#command-names) | `list[str]` | No* | `[]` | Command names and aliases |
-| [`base-url`](#base-url) | `str` | No | `None` | Base URL for relative resource paths |
-| [`claude-code-version`](#claude-code-version) | `str` | No | `None` | Specific Claude Code version or `"latest"` |
-| [`install-nodejs`](#install-nodejs) | `bool` | No | `None` | Install Node.js LTS before dependencies |
-| [`dependencies`](#dependencies) | `dict` | No | `{}` | Platform-specific dependency commands |
-| [`agents`](#agents) | `list[str]` | No | `[]` | Agent markdown file paths |
-| [`slash-commands`](#slash-commands) | `list[str]` | No | `[]` | Slash command file paths |
-| [`skills`](#skills) | `list[Skill]` | No | `[]` | Skill configurations |
-| [`files-to-download`](#files-to-download) | `list[FileToDownload]` | No | `[]` | Files to download during setup |
-| [`global-config`](#global-config) | `GlobalConfig` | No | `None` | Settings for `~/.claude.json` |
-| [`hooks`](#hooks) | `Hooks` | No | `None` | Hook configurations (files and events) |
-| [`mcp-servers`](#mcp-servers) | `list[dict]` | No | `[]` | MCP server configurations |
-| [`model`](#model) | `str` | No | `None` | Model alias or custom model name |
-| [`permissions`](#permissions) | `Permissions` | No | `None` | Permission rules for tools |
-| [`env-variables`](#env-variables) | `dict[str, str]` | No | `None` | Claude-level environment variables |
-| [`os-env-variables`](#os-env-variables) | `dict` | No | `None` | OS-level persistent environment variables |
-| [`command-defaults`](#command-defaults) | `CommandDefaults` | No* | `None` | System prompt and mode |
-| [`user-settings`](#user-settings) | `UserSettings` | No | `None` | Merged into `settings.json` |
-| [`always-thinking-enabled`](#always-thinking-enabled) | `bool` | No | `None` | Enable always-on thinking mode |
-| [`effort-level`](#effort-level) | `str` | No | `None` | Adaptive reasoning effort level |
-| [`company-announcements`](#company-announcements) | `list[str]` | No | `None` | Announcement strings for users |
-| [`attribution`](#attribution) | `Attribution` | No | `None` | Commit and PR attribution strings |
-| [`status-line`](#status-line) | `StatusLine` | No | `None` | Status line script configuration |
+| YAML Key                                              | Type                   | Required | Default | Brief Description                          |
+|-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
+| [`name`](#name)                                       | `str`                  | **Yes**  | --      | Display name for the environment           |
+| [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
+| [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
+| [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
+| [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths       |
+| [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"` |
+| [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies    |
+| [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands      |
+| [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                  |
+| [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                   |
+| [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                       |
+| [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup             |
+| [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`              |
+| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)     |
+| [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                  |
+| [`model`](#model)                                     | `str`                  | No       | `None`  | Model alias or custom model name           |
+| [`permissions`](#permissions)                         | `Permissions`          | No       | `None`  | Permission rules for tools                 |
+| [`env-variables`](#env-variables)                     | `dict[str, str]`       | No       | `None`  | Claude-level environment variables         |
+| [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables  |
+| [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                     |
+| [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Merged into `settings.json`                |
+| [`always-thinking-enabled`](#always-thinking-enabled) | `bool`                 | No       | `None`  | Enable always-on thinking mode             |
+| [`effort-level`](#effort-level)                       | `str`                  | No       | `None`  | Adaptive reasoning effort level            |
+| [`company-announcements`](#company-announcements)     | `list[str]`            | No       | `None`  | Announcement strings for users             |
+| [`attribution`](#attribution)                         | `Attribution`          | No       | `None`  | Commit and PR attribution strings          |
+| [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration           |
 
 > `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
 
@@ -671,15 +669,15 @@ Event-driven scripts that run automatically during Claude Code sessions.
 
 #### Hook Event Fields
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `event` | `str` | Yes | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`) |
-| `matcher` | `str` | No | Regex pattern for matching (default: `""`) |
-| `type` | `str` | No | Hook type: `command` or `prompt` (default: `command`) |
-| `command` | `str` | For command hooks | Script filename (must exist in `hooks.files`) |
-| `config` | `str` | No | Config file reference (must exist in `hooks.files`) |
-| `prompt` | `str` | For prompt hooks | Prompt text for LLM evaluation |
-| `timeout` | `int` | No | Timeout in seconds (default: 30, prompt hooks only) |
+| Field     | Type  | Required          | Description                                                           |
+|-----------|-------|-------------------|-----------------------------------------------------------------------|
+| `event`   | `str` | Yes               | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`) |
+| `matcher` | `str` | No                | Regex pattern for matching (default: `""`)                            |
+| `type`    | `str` | No                | Hook type: `command` or `prompt` (default: `command`)                 |
+| `command` | `str` | For command hooks | Script filename (must exist in `hooks.files`)                         |
+| `config`  | `str` | No                | Config file reference (must exist in `hooks.files`)                   |
+| `prompt`  | `str` | For prompt hooks  | Prompt text for LLM evaluation                                        |
+| `timeout` | `int` | No                | Timeout in seconds (default: 30, prompt hooks only)                   |
 
 #### Command Hooks
 
@@ -808,12 +806,12 @@ Authentication is resolved in this order (highest priority first):
 
 #### Variable Scopes
 
-| Variable | Scope | Description |
-|----------|-------|-------------|
-| `GITHUB_TOKEN` | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope |
-| `GITLAB_TOKEN` | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope |
-| `REPO_TOKEN` | Shell-level (passed as `--auth`) | Generic token, auto-detects repo type |
-| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`) | Custom header format: `Header-Name:token-value` |
+| Variable                       | Scope                                 | Description                                     |
+|--------------------------------|---------------------------------------|-------------------------------------------------|
+| `GITHUB_TOKEN`                 | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope                    |
+| `GITLAB_TOKEN`                 | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope         |
+| `REPO_TOKEN`                   | Shell-level (passed as `--auth`)      | Generic token, auto-detects repo type           |
+| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`)      | Custom header format: `Header-Name:token-value` |
 
 #### URL Handling
 
@@ -987,39 +985,39 @@ hooks:
 
 ### Configuration
 
-| Variable | Purpose | Example |
-|----------|---------|---------|
+| Variable                         | Purpose                                   | Example                              |
+|----------------------------------|-------------------------------------------|--------------------------------------|
 | `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` | Configuration source (URL, path, or name) | `python`, `./my.yaml`, `https://...` |
 
 ### Debugging and Behavior
 
-| Variable | Purpose | Accepted Values |
-|----------|---------|-----------------|
-| `CLAUDE_CODE_TOOLBOX_DEBUG` | Enable verbose debug logging | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers | Integer (default: 2) |
-| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE` | Disable parallel downloads | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` | Allow running as root on Linux/macOS | Exact value `1` only |
-| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation | Exact value `1` only |
-| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH` | Override Git Bash executable path (Windows) | Path to `bash.exe` |
+| Variable                               | Purpose                                     | Accepted Values       |
+|----------------------------------------|---------------------------------------------|-----------------------|
+| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                | `1`, `true`, or `yes` |
+| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers        | Integer (default: 2)  |
+| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                  | `1`, `true`, or `yes` |
+| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS        | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation                   | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows) | Path to `bash.exe`    |
 
 ### Authentication
 
-| Variable | Scope | Purpose |
-|----------|-------|---------|
-| `GITHUB_TOKEN` | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope |
-| `GITLAB_TOKEN` | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope |
-| `REPO_TOKEN` | Shell-level (passed as `--auth`) | Generic token, auto-detects repo type |
-| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`) | Custom header: `Header-Name:token-value` |
+| Variable                       | Scope                                 | Purpose                                  |
+|--------------------------------|---------------------------------------|------------------------------------------|
+| `GITHUB_TOKEN`                 | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope             |
+| `GITLAB_TOKEN`                 | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope  |
+| `REPO_TOKEN`                   | Shell-level (passed as `--auth`)      | Generic token, auto-detects repo type    |
+| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`)      | Custom header: `Header-Name:token-value` |
 
 ### CLI Flags
 
-| Flag | Purpose |
-|------|---------|
-| `--yes` / `-y` | Auto-confirm installation (skip interactive prompt) |
-| `--dry-run` | Show installation plan and exit without installing |
-| `--auth` | Authentication parameter: `"token"` or `"header:value"` |
-| `--skip-install` | Skip Claude Code installation |
-| `--no-admin` | Do not request admin elevation on Windows |
+| Flag             | Purpose                                                 |
+|------------------|---------------------------------------------------------|
+| `--yes` / `-y`   | Auto-confirm installation (skip interactive prompt)     |
+| `--dry-run`      | Show installation plan and exit without installing      |
+| `--auth`         | Authentication parameter: `"token"` or `"header:value"` |
+| `--skip-install` | Skip Claude Code installation                           |
+| `--no-admin`     | Do not request admin elevation on Windows               |
 
 ## Troubleshooting
 

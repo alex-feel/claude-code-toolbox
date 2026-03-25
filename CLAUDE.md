@@ -34,6 +34,8 @@ The installer uses a native-first approach with automatic npm fallback:
 - `install_claude_native_cross_platform()` - Platform dispatcher
 - `ensure_claude()` - Main orchestrator with native-first logic
 
+**Native Path Priority:** Both `find_command_robust()` and `verify_claude_installation()` check the native installer target path (`~/.local/bin/claude` on Unix, `~/.local/bin/claude.exe` on Windows) explicitly first, before falling back to PATH search via `shutil.which()`. This ensures the native binary is preferred over an npm binary even when PATH ordering would resolve to the npm binary first (e.g., `/usr/local/bin` preceding `~/.local/bin` on macOS). The check validates the file exists and has `st_size > 1000` to skip empty or corrupt files.
+
 **Environment Variables:**
 - `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
 - `CLAUDE_CODE_TOOLBOX_VERSION` - Forces specific version via npm (native installers don't support version selection)
@@ -43,12 +45,13 @@ The installer uses a native-first approach with automatic npm fallback:
 
 The `verify_claude_installation()` function classifies the Claude binary location to determine the upgrade strategy:
 
-| Path Pattern | Detected Source | Upgrade Method |
-| ------------ | --------------- | -------------- |
-| Contains `npm` or `.npm-global` | `npm` | npm directly |
-| Contains `.local/bin`, `/usr/local/bin`, or `.claude/bin` | `native` | Native installer |
-| Any other path | `unknown` | Native-first, npm fallback |
-| Not found | `none` | Fresh install |
+| Path Pattern                           | Detected Source | Upgrade Method             |
+|----------------------------------------|-----------------|----------------------------|
+| Contains `npm` or `.npm-global`        | `npm`           | npm directly               |
+| Contains `.local/bin` or `.claude/bin` | `native`        | Native installer           |
+| Contains `/usr/local/bin`              | `unknown`       | Native-first, npm fallback |
+| Any other path                         | `unknown`       | Native-first, npm fallback |
+| Not found                              | `none`          | Fresh install              |
 
 In `auto` mode, both `native` and `unknown` sources attempt the native installer first. If native fails, npm is used as fallback. Only confirmed `npm` or `winget` sources go directly to npm.
 
@@ -450,18 +453,17 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
 - `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
 
-### npm Sudo Handling (Non-Interactive Mode)
+### npm Sudo Handling (Three-Tier Fallback)
 
-When `install_claude_npm()` or `remove_npm_claude()` needs elevated permissions for global npm operations, sudo attempts are gated on TTY availability and cached credentials BEFORE attempting sudo:
+When `install_claude_npm()` or `remove_npm_claude()` needs elevated permissions for global npm operations, both functions delegate to the shared `_run_with_sudo_fallback()` helper which implements a three-tier strategy:
 
-1. **Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password)
-2. **Non-interactive mode** (e.g., `curl | bash`):
-   - Runs `sudo -n true` to check for cached sudo credentials
-   - If cached credentials exist: sudo is attempted
-   - If no cached credentials: sudo is SKIPPED entirely, guidance is provided immediately
-3. **Missing sudo binary**: `FileNotFoundError` is caught gracefully
+1. **Tier 1 -- Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password via stdin)
+2. **Tier 2 -- Cached credentials** (non-interactive): Runs `sudo -n true` to check for cached sudo credentials. If cached credentials exist, sudo is attempted without prompting
+3. **Tier 3 -- `/dev/tty` fallback** (non-interactive with terminal): If Tiers 1 and 2 fail but `/dev/tty` is available (checked via `_dev_tty_sudo_available()`), sudo is invoked with stdin redirected from `/dev/tty`, allowing the user to type their password even in piped mode (`curl | bash`)
 
-This pattern is applied consistently to both npm install and npm uninstall operations, preventing visible EACCES permission errors and the 30-second timeout waste in `curl | bash` piped installations. The `remove_npm_claude()` function also captures npm output (no `capture_output=False`) to suppress noisy error stack traces from reaching the user's terminal.
+If all three tiers are exhausted, `_run_with_sudo_fallback()` returns `None` and the caller provides guidance text. `FileNotFoundError` (missing sudo binary) and `subprocess.TimeoutExpired` are caught gracefully at each tier. The `/dev/tty` tier uses a longer timeout (`tty_timeout=60`) to give the user time to type their password.
+
+This pattern is applied consistently to both `install_claude_npm()` and `remove_npm_claude()` via the shared helper, eliminating the previous code duplication. The `remove_npm_claude()` function also captures npm output to suppress noisy error stack traces from reaching the user's terminal.
 
 ### Download Retry Configuration
 

@@ -1,5 +1,3 @@
-<!-- markdownlint-disable MD060 -->
-
 # Installing Claude Code
 
 This guide covers installing Claude Code using the Claude Code Toolbox installer. The installer uses the official native Anthropic installer by default and automatically falls back to npm if needed. All dependencies (uv, Python, Node.js) are handled automatically -- you do not need to install anything beforehand.
@@ -46,11 +44,11 @@ In `auto` mode (the default), the installer tries native first. If native fails,
 
 Controls which installation method the installer uses.
 
-| Value | Behavior |
-|---|---|
+| Value            | Behavior                                                  |
+|------------------|-----------------------------------------------------------|
 | `auto` (default) | Try native installation first, fall back to npm if needed |
-| `native` | Use only native installer, no npm fallback |
-| `npm` | Use only npm installer, requires Node.js 18+ |
+| `native`         | Use only native installer, no npm fallback                |
+| `npm`            | Use only npm installer, requires Node.js 18+              |
 
 Invalid values default to `auto` with a warning.
 
@@ -115,19 +113,20 @@ When Claude Code is already installed, the installer checks for updates against 
 
 ### Auto-Migration from npm to Native
 
-In `auto` mode, when an npm installation is detected, the installer automatically attempts to migrate to the native installer for better stability. On successful migration, the old npm installation is removed to prevent PATH conflicts.
+In `auto` mode, when an npm installation is detected, the installer automatically attempts to migrate to the native installer for better stability. On successful migration, the old npm installation is removed to prevent PATH conflicts. If npm removal fails (due to permission issues in non-interactive mode), the installer displays a prominent warning with manual removal instructions but does not block the native installation.
 
 ### Source Detection
 
 The installer classifies the existing installation by examining the binary path.
 
-| Path Pattern | Detected Source | Upgrade Method |
-|---|---|---|
-| Contains `npm` or `.npm-global` | npm | npm directly |
-| Contains `.local/bin`, `/usr/local/bin`, or `.claude/bin` | native | Native installer |
-| Windows: contains `Programs\claude` | winget | npm |
-| Any other path | unknown | Native-first, npm fallback |
-| Not found | none | Fresh install |
+| Path Pattern                           | Detected Source | Upgrade Method             |
+|----------------------------------------|-----------------|----------------------------|
+| Contains `npm` or `.npm-global`        | npm             | npm directly               |
+| Contains `.local/bin` or `.claude/bin` | native          | Native installer           |
+| Contains `/usr/local/bin`              | unknown         | Native-first, npm fallback |
+| Windows: contains `Programs\claude`    | winget          | npm                        |
+| Any other path                         | unknown         | Native-first, npm fallback |
+| Not found                              | none            | Fresh install              |
 
 ### Switching from npm to Native
 
@@ -153,6 +152,26 @@ Node.js v25+ removed the SlowBuffer API that Claude Code's npm package depends o
 ### Root Guard
 
 The installer refuses to run as root by default because running as root creates configuration under `/root/` instead of your home directory. Run as your regular user -- the installer requests sudo only when needed (for npm global installs). Override with `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1` for Docker or CI environments.
+
+### npm Version Still Runs After Native Install
+
+If you installed the native version but `claude --version` still shows the old npm version, you may have both installations present and PATH ordering causes the npm binary to take precedence. The installer attempts automatic npm removal during native installation but it can fail silently in non-interactive environments (such as `curl | bash` without cached sudo credentials).
+
+**Symptoms:** A prominent boxed warning during installation stating "npm Claude Code installation was NOT removed", or `which claude` pointing to a path containing `npm` or `/usr/local/bin` instead of `~/.local/bin`.
+
+**Fix:** Remove the npm installation manually and restart your terminal:
+
+```bash
+sudo npm uninstall -g @anthropic-ai/claude-code
+```
+
+On Windows (run as Administrator):
+
+```powershell
+npm uninstall -g @anthropic-ai/claude-code
+```
+
+After removal, restart your terminal session so that `claude` resolves to the native binary at `~/.local/bin/claude`.
 
 ### Claude Command Not Found After Install
 

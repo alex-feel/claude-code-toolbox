@@ -219,10 +219,11 @@ class TestPathClassification:
     classified as 'native', 'npm', or 'unknown' source types.
     """
 
-    def test_usr_local_bin_classified_as_native(self) -> None:
-        """Verify /usr/local/bin/claude is classified as native."""
+    def test_usr_local_bin_classified_as_unknown(self) -> None:
+        """/usr/local/bin/claude is classified as unknown (could be npm or native)."""
         with (
             patch('sys.platform', 'linux'),
+            patch('pathlib.Path.exists', return_value=False),
             patch.object(
                 install_claude, 'find_command_robust',
                 return_value='/usr/local/bin/claude',
@@ -232,8 +233,8 @@ class TestPathClassification:
 
         assert installed is True
         assert path == '/usr/local/bin/claude'
-        assert source == 'native', (
-            f'/usr/local/bin/claude should be classified as native, got {source!r}'
+        assert source == 'unknown', (
+            f'/usr/local/bin/claude should be classified as unknown, got {source!r}'
         )
 
     def test_claude_bin_classified_as_native(self) -> None:

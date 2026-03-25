@@ -158,6 +158,10 @@ def find_command(cmd: str) -> str | None:
 def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
     """Find a command with robust platform-specific fallback search.
 
+    For the 'claude' command, checks the native installer target path first
+    to ensure the native binary is preferred over npm even when PATH ordering
+    would resolve to the npm binary first.
+
     Args:
         cmd: Command name to find (e.g., 'claude', 'node')
         fallback_paths: Optional list of additional paths to check
@@ -166,6 +170,20 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
         Full path to command if found, None otherwise
     """
     import time
+
+    # For 'claude' command: check native installer target FIRST
+    # This ensures the native binary is preferred over npm even when
+    # PATH ordering would resolve to the npm binary first.
+    if cmd == 'claude':
+        if sys.platform == 'win32':
+            native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        else:
+            native_path = Path.home() / '.local' / 'bin' / 'claude'
+        try:
+            if native_path.exists() and native_path.stat().st_size > 1000:
+                return str(native_path)
+        except (OSError, ValueError, TypeError):
+            pass  # Path inaccessible or invalid
 
     # Primary: Use standard PATH search with retry for PATH synchronization
     for attempt in range(2):
@@ -215,6 +233,8 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
         # Unix-like systems
         if cmd == 'claude':
             common_paths = [
+                # Native installer target (checked first for correct precedence)
+                str(Path.home() / '.local' / 'bin' / 'claude'),
                 str(Path.home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
@@ -252,6 +272,9 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
     This function performs robust verification by checking actual file existence,
     not just PATH availability. It distinguishes between different installation sources
     to prevent false positives when native installer fails but npm installation exists.
+
+    Both Windows and Unix branches check the native installer path explicitly first,
+    before falling back to PATH search.
 
     Returns:
         Tuple of (is_installed, path, source) where:
@@ -299,19 +322,187 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                         else:
                             result = (False, None, 'none')
     else:
-        # Non-Windows platforms
-        claude_path = find_command_robust('claude')
-        if claude_path:
-            if 'npm' in claude_path or '.npm-global' in claude_path:
-                result = (True, claude_path, 'npm')
-            elif '.local/bin' in claude_path or '/usr/local/bin' in claude_path or '.claude/bin' in claude_path:
-                result = (True, claude_path, 'native')
-            else:
-                result = (True, claude_path, 'unknown')
+        # Non-Windows platforms: check native path explicitly first (mirrors Windows branch)
+        native_path = Path.home() / '.local' / 'bin' / 'claude'
+        if native_path.exists() and native_path.stat().st_size > 1000:
+            result = (True, str(native_path), 'native')
         else:
-            result = (False, None, 'none')
+            claude_path = find_command_robust('claude')
+            if claude_path:
+                if 'npm' in claude_path or '.npm-global' in claude_path:
+                    result = (True, claude_path, 'npm')
+                elif '.local/bin' in claude_path or '.claude/bin' in claude_path:
+                    result = (True, claude_path, 'native')
+                elif '/usr/local/bin' in claude_path:
+                    # /usr/local/bin could be npm or native -- classify as unknown
+                    # to trigger proper detection via npm list -g
+                    result = (True, claude_path, 'unknown')
+                else:
+                    result = (True, claude_path, 'unknown')
+            else:
+                result = (False, None, 'none')
 
     return result
+
+
+def _dev_tty_sudo_available() -> bool:
+    """Check if sudo can acquire credentials via /dev/tty in non-interactive mode.
+
+    When stdin is piped (e.g., curl | bash), sudo cannot prompt via stdin.
+    However, if /dev/tty is available, sudo can be invoked with stdin
+    redirected from /dev/tty to prompt the user directly on the terminal.
+
+    Returns:
+        True if /dev/tty is available and sudo can be used through it,
+        False otherwise.
+    """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _run_with_sudo_fallback(
+    cmd: list[str],
+    *,
+    capture_output: bool = True,
+    timeout: int = 30,
+    tty_timeout: int = 60,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a command with sudo, using a three-tier fallback strategy.
+
+    Tier 1: Interactive mode (stdin is a TTY) -- sudo prompts directly.
+    Tier 2: Cached credentials (sudo -n true succeeds) -- sudo without prompt.
+    Tier 3: /dev/tty available -- sudo with stdin redirected from /dev/tty.
+
+    If all tiers fail, returns None without running the command.
+
+    Args:
+        cmd: Command to execute with sudo prepended
+             (e.g., ['npm', 'uninstall', '-g', 'pkg']).
+        capture_output: Whether to capture stdout/stderr.
+        timeout: Timeout in seconds for Tier 1 and Tier 2 attempts.
+        tty_timeout: Timeout for Tier 3 (/dev/tty) attempt. Longer because
+                     the user may need time to type their password.
+
+    Returns:
+        CompletedProcess if sudo was attempted (check returncode for success),
+        None if no sudo mechanism was available.
+    """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
+    if sys.platform != 'win32':
+        sudo_cmd = ['sudo'] + cmd
+
+        # Tier 1: Interactive mode -- user can enter password at stdin
+        if sys.stdin.isatty():
+            try:
+                return subprocess.run(
+                    sudo_cmd,
+                    capture_output=capture_output,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                warning(f'Sudo command timed out after {timeout} seconds')
+                return None
+            except FileNotFoundError:
+                warning('sudo command not found')
+                return None
+
+        # Tier 2: Non-interactive with cached credentials
+        try:
+            cred_check = subprocess.run(
+                ['sudo', '-n', 'true'],
+                capture_output=True,
+                timeout=5,
+            )
+            if cred_check.returncode == 0:
+                try:
+                    return subprocess.run(
+                        sudo_cmd,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    warning(f'Sudo command timed out after {timeout} seconds')
+                    return None
+                except FileNotFoundError:
+                    return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
+        if _dev_tty_sudo_available():
+            info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
+            try:
+                with open('/dev/tty') as tty:
+                    return subprocess.run(
+                        sudo_cmd,
+                        stdin=tty,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=tty_timeout,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+    # Windows or all tiers exhausted
+    return None
+
+
+def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
+    """Display a prominent warning when npm Claude Code removal fails.
+
+    Provides clear manual removal instructions that are impossible to miss
+    in terminal output. Called by callers of remove_npm_claude() when
+    it returns False.
+
+    Args:
+        npm_path: Path to npm executable for the manual command.
+                  If None, uses 'npm' as default.
+    """
+    npm_cmd = npm_path or 'npm'
+    print()
+    warning('=' * 70)
+    warning('  WARNING: npm Claude Code installation was NOT removed')
+    warning('  This may cause the OLD npm version to run instead of the')
+    warning('  new native version due to PATH precedence.')
+    warning('')
+    warning('  To fix manually, run:')
+    if sys.platform == 'win32':
+        warning(f'    {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
+    else:
+        warning(f'    sudo {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
+    warning('')
+    warning('  After removal, restart your terminal to use the native version.')
+    warning('=' * 70)
+    print()
+
+
+def _check_npm_claude_installed() -> bool:
+    """Check if Claude Code is installed via npm global packages.
+
+    Uses ``npm list -g`` to directly query the npm registry, bypassing
+    PATH-based detection which can miss installations at non-standard
+    locations or when PATH ordering creates shadows.
+
+    Returns:
+        True if @anthropic-ai/claude-code is installed via npm, False otherwise.
+    """
+    npm_path = find_command_robust('npm')
+    if not npm_path:
+        return False
+
+    result = run_command([npm_path, 'list', '-g', CLAUDE_NPM_PACKAGE])
+    return result.returncode == 0
 
 
 def remove_npm_claude() -> bool:
@@ -321,10 +512,10 @@ def remove_npm_claude() -> bool:
     standard npm uninstall command. This eliminates PATH precedence issues
     where npm version shadows native installation.
 
-    On Unix systems, if direct uninstall fails with permission errors, attempts
-    sudo with the same TTY/cached-credentials gating logic used by
-    install_claude_npm(). In non-interactive mode without cached credentials,
-    silently skips the removal and provides guidance.
+    On Unix systems, if direct uninstall fails with permission errors, uses
+    the three-tier sudo fallback strategy (interactive, cached credentials,
+    /dev/tty). As a last resort, attempts direct file removal of the npm
+    claude binary.
 
     Should only be called AFTER verify_claude_installation() confirms
     native installation success (source == 'native').
@@ -360,41 +551,53 @@ def remove_npm_claude() -> bool:
 
     # Non-sudo uninstall failed - try with sudo on Unix systems
     if platform.system() != 'Windows':
-        # Apply same TTY/credential gating as install_claude_npm()
-        can_sudo = False
-        if sys.stdin.isatty():
-            can_sudo = True  # Interactive mode - user can enter password
-        else:
-            # Non-interactive mode: check for cached sudo credentials
-            try:
-                cred_check = subprocess.run(
-                    ['sudo', '-n', 'true'],
-                    capture_output=True,
-                    timeout=5,
-                )
-                can_sudo = cred_check.returncode == 0
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                can_sudo = False
+        sudo_result = _run_with_sudo_fallback(
+            [npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
+            capture_output=True,
+            timeout=30,
+            tty_timeout=60,
+        )
 
-        if can_sudo:
-            info('Retrying npm uninstall with elevated permissions...')
-            try:
-                sudo_result = subprocess.run(
-                    ['sudo', npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
-                    capture_output=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                warning('Sudo npm uninstall timed out')
-                sudo_result = None
-            except FileNotFoundError:
-                sudo_result = None
+        if sudo_result is not None and sudo_result.returncode == 0:
+            success('Removed npm Claude installation successfully')
+            return True
 
-            if sudo_result is not None and sudo_result.returncode == 0:
-                success('Removed npm Claude installation successfully')
-                return True
+        if sudo_result is None:
+            # No sudo mechanism available -- provide guidance
+            warning('Cannot use sudo (non-interactive mode, no terminal available)')
+            info('When running via curl | bash, sudo cannot prompt for a password.')
+            info(f'Manual removal may be needed: sudo {npm_path} uninstall -g {CLAUDE_NPM_PACKAGE}')
+
+    # Direct file removal as last resort
+    # Most effective on Windows where npm globals are user-writable
+    if sys.platform == 'win32':
+        npm_binary_paths = [
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude.cmd')),
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude')),
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude.ps1')),
+        ]
+    else:
+        npm_binary_paths = [
+            Path('/usr/local/bin/claude'),
+            Path.home() / '.npm-global' / 'bin' / 'claude',
+        ]
+
+    removed_any = False
+    for binary_path in npm_binary_paths:
+        if binary_path.exists():
+            try:
+                binary_path.unlink()
+                info(f'Removed: {binary_path}')
+                removed_any = True
+            except PermissionError:
+                pass  # Expected on macOS/Linux for /usr/local/bin
+            except OSError:
+                pass
+
+    if removed_any:
+        info('Direct file removal partially successful')
+        info('Note: npm registry may still list the package, but the binary is gone')
+        return True
 
     # All attempts failed - provide guidance
     warning('Could not remove npm installation automatically')
@@ -1469,9 +1672,18 @@ def ensure_nodejs(check_claude_compat: bool = True) -> bool:
 
 
 # Claude Code installation
-def get_claude_version() -> str | None:
-    """Get installed Claude Code version."""
-    claude_path = find_command_robust('claude')
+def get_claude_version(claude_path: str | None = None) -> str | None:
+    """Get installed Claude Code version.
+
+    Args:
+        claude_path: Explicit path to Claude executable. If None,
+                     uses find_command_robust() to locate it.
+
+    Returns:
+        Version string (e.g., "2.0.14") if detected, None if not found.
+    """
+    if claude_path is None:
+        claude_path = find_command_robust('claude')
     if not claude_path:
         return None
 
@@ -1633,69 +1845,46 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
         return True
 
-    # Try with sudo on Unix systems
+    # Try with sudo on Unix systems using the three-tier fallback strategy
     if platform.system() != 'Windows':
-        # Check if sudo is viable BEFORE attempting
-        can_sudo = False
-        if sys.stdin.isatty():
-            can_sudo = True  # Interactive mode - user can enter password
+        if will_need_sudo:
+            warning('Global npm directory requires elevated permissions - attempting sudo...')
         else:
-            # Non-interactive mode: check for cached sudo credentials
-            try:
-                cred_check = subprocess.run(
-                    ['sudo', '-n', 'true'],
-                    capture_output=True,
-                    timeout=5,
-                )
-                can_sudo = cred_check.returncode == 0
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                can_sudo = False
+            warning('Non-sudo install failed, attempting with sudo...')
 
-        if not can_sudo:
-            warning('Cannot use sudo (non-interactive mode, no cached credentials)')
-            info('When running via curl | bash, sudo cannot prompt for a password.')
+        sudo_result = _run_with_sudo_fallback(
+            [npm_path, 'install', '-g', package_spec],
+            capture_output=True,
+            timeout=30,
+            tty_timeout=60,
+        )
+
+        if sudo_result is not None and sudo_result.returncode == 0:
+            success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
+
+            # If specific version was installed, set DISABLE_AUTOUPDATER
+            if version:
+                set_disable_autoupdater()
+
+            return True
+
+        if sudo_result is None:
+            # No sudo mechanism available
+            warning('Cannot use sudo (non-interactive mode, no terminal available)')
+            info('When running via curl | bash without /dev/tty, sudo cannot prompt.')
             info('Options:')
             info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
             info('  3. Force native installer: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
         else:
-            if will_need_sudo:
-                warning('Global npm directory requires elevated permissions - attempting sudo...')
-            else:
-                warning('Non-sudo install failed, attempting with sudo...')
-
-            try:
-                sudo_result = subprocess.run(
-                    ['sudo', npm_path, 'install', '-g', package_spec],
-                    capture_output=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                warning('Sudo attempt timed out after 30 seconds')
-                sudo_result = None
-            except FileNotFoundError:
-                warning('sudo command not found')
-                sudo_result = None
-
-            if sudo_result is not None and sudo_result.returncode == 0:
-                success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
-
-                # If specific version was installed, set DISABLE_AUTOUPDATER
-                if version:
-                    set_disable_autoupdater()
-
-                return True
-
-            # Sudo was attempted but failed - provide context-aware guidance
+            # Sudo was attempted but command failed
             if sys.stdin.isatty():
                 warning('Sudo failed. Please check:')
                 info('  1. Your password is correct')
                 info('  2. Your user has sudo privileges (check /etc/sudoers)')
                 info(f'  3. Try manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             else:
-                warning('Sudo failed (cached credentials were available but install still failed)')
+                warning('Sudo failed (credentials available but install command failed)')
                 info('Options:')
                 info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
                 info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
@@ -2047,6 +2236,9 @@ def _ensure_local_bin_in_path_unix() -> bool:
     Adds ~/.local/bin to shell profile files (.bashrc, .zshrc, .profile)
     and updates the current process PATH for immediate availability.
 
+    If the user's current shell profile does not exist, creates it to ensure
+    the PATH update persists across sessions on fresh systems.
+
     Returns:
         True if PATH was updated or already correct, False on error.
 
@@ -2073,13 +2265,32 @@ def _ensure_local_bin_in_path_unix() -> bool:
             home / '.profile',
         ]
 
+        # Detect the user's login shell to ensure its profile exists
+        current_shell = os.environ.get('SHELL', '')
+        shell_profile_map: dict[str, Path] = {
+            'bash': home / '.bashrc',
+            'zsh': home / '.zshrc',
+        }
+
+        # Identify which profile corresponds to the current shell
+        current_shell_profile: Path | None = None
+        for shell_name, profile_path in shell_profile_map.items():
+            if shell_name in current_shell:
+                current_shell_profile = profile_path
+                break
+
         export_line = '\nexport PATH="$HOME/.local/bin:$PATH"\n'
         updated_files: list[Path] = []
 
         for profile_file in profile_files:
-            if profile_file.exists():
+            should_update = profile_file.exists()
+            # Create the profile for the user's current shell if it does not exist
+            if not should_update and profile_file == current_shell_profile:
+                should_update = True
+
+            if should_update:
                 try:
-                    content = profile_file.read_text()
+                    content = profile_file.read_text() if profile_file.exists() else ''
                     if '.local/bin' not in content:
                         profile_file.write_text(content + export_line)
                         updated_files.append(profile_file)
@@ -2152,12 +2363,20 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         if is_installed and source == 'native':
             success(f'Direct download installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
-            remove_npm_claude()
+            if not remove_npm_claude():
+                _warn_npm_removal_failed()
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package is STILL installed after removal attempt')
+                _warn_npm_removal_failed()
             # Update config to reflect native installation method
             update_install_method_config('native')
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
+            # Check for lingering npm even when source is not native
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package detected alongside non-native installation')
+                _warn_npm_removal_failed()
             return True  # Still successful if found somewhere
         error('Installation verification failed')
         return False
@@ -2262,7 +2481,11 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
-                remove_npm_claude()
+                if not remove_npm_claude():
+                    _warn_npm_removal_failed()
+                if _check_npm_claude_installed():
+                    warning('npm Claude Code package is STILL installed after removal attempt')
+                    _warn_npm_removal_failed()
                 # Update config to reflect native installation method
                 update_install_method_config('native')
                 return True
@@ -2362,7 +2585,11 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
-                    remove_npm_claude()
+                    if not remove_npm_claude():
+                        _warn_npm_removal_failed()
+                    if _check_npm_claude_installed():
+                        warning('npm Claude Code package is STILL installed after removal attempt')
+                        _warn_npm_removal_failed()
                     update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
@@ -2433,7 +2660,11 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
-                remove_npm_claude()
+                if not remove_npm_claude():
+                    _warn_npm_removal_failed()
+                if _check_npm_claude_installed():
+                    warning('npm Claude Code package is STILL installed after removal attempt')
+                    _warn_npm_removal_failed()
                 # Update config to reflect native installation method
                 update_install_method_config('native')
                 return True
@@ -2527,7 +2758,11 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
-                    remove_npm_claude()
+                    if not remove_npm_claude():
+                        _warn_npm_removal_failed()
+                    if _check_npm_claude_installed():
+                        warning('npm Claude Code package is STILL installed after removal attempt')
+                        _warn_npm_removal_failed()
                     update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
@@ -2603,7 +2838,11 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         if is_installed and source == 'native':
             success(f'Native installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
-            remove_npm_claude()
+            if not remove_npm_claude():
+                _warn_npm_removal_failed()
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package is STILL installed after removal attempt')
+                _warn_npm_removal_failed()
             # Update config to reflect native installation method
             update_install_method_config('native')
             return True
@@ -2753,7 +2992,11 @@ def ensure_claude() -> bool:
                             success('Successfully migrated from npm to native installation')
                             info(f'Version maintained: {requested_version}')
                             # Remove npm installation to prevent PATH conflicts
-                            remove_npm_claude()
+                            if not remove_npm_claude():
+                                _warn_npm_removal_failed()
+                            if _check_npm_claude_installed():
+                                warning('npm Claude Code package is STILL installed after removal attempt')
+                                _warn_npm_removal_failed()
                             # Update config to reflect native installation method
                             update_install_method_config('native')
                             return True
@@ -2789,7 +3032,11 @@ def ensure_claude() -> bool:
                         new_version = get_claude_version()
                         info(f'Current version: {new_version}')
                         # Remove npm installation to prevent PATH conflicts
-                        remove_npm_claude()
+                        if not remove_npm_claude():
+                            _warn_npm_removal_failed()
+                        if _check_npm_claude_installed():
+                            warning('npm Claude Code package is STILL installed after removal attempt')
+                            _warn_npm_removal_failed()
                         # Update config to reflect native installation method
                         update_install_method_config('native')
                         return True
@@ -2902,7 +3149,7 @@ def ensure_claude() -> bool:
             for attempt in range(3):
                 claude_path = find_command_robust('claude')
                 if claude_path:
-                    new_version = get_claude_version()
+                    new_version = get_claude_version(claude_path)
                     if new_version:
                         success(f'Claude Code version {new_version} installed successfully')
                     return True
@@ -2938,7 +3185,7 @@ def ensure_claude() -> bool:
         for attempt in range(3):
             claude_path = find_command_robust('claude')
             if claude_path:
-                new_version = get_claude_version()
+                new_version = get_claude_version(claude_path)
                 if new_version:
                     success(f'Claude Code version {new_version} installed successfully via npm fallback')
                 return True

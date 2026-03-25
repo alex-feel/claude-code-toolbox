@@ -263,7 +263,12 @@ class TestNodeInstallationEdgeCases:
         # Mock /etc/debian_version exists
         mock_debian_path = MagicMock()
         mock_debian_path.exists.return_value = True
+        # Handle stat().st_size for native-path-first check in find_command_robust
+        mock_stat = MagicMock()
+        mock_stat.st_size = 0  # File too small = not a valid binary
+        mock_debian_path.stat.return_value = mock_stat
         mock_path.return_value = mock_debian_path
+        mock_path.home.return_value = mock_debian_path
 
         result = install_claude.ensure_nodejs()
 
@@ -295,10 +300,14 @@ class TestClaudeInstallationEdgeCases:
         """Test Claude version detection checking Windows-specific paths."""
         del mock_system, mock_find  # Mark as intentionally unused
 
-        # Mock first path doesn't exist, second path exists
+        # Mock paths -- native-path-first check returns exists=False for native path
         mock_path_instance = MagicMock()
-        mock_path_instance.exists.side_effect = [False, True, False, False]
+        mock_path_instance.exists.side_effect = [False, True, False, False, False, False]
+        mock_stat = MagicMock()
+        mock_stat.st_size = 0  # Not a valid binary
+        mock_path_instance.stat.return_value = mock_stat
         mock_path.return_value = mock_path_instance
+        mock_path.home.return_value = mock_path_instance
 
         with patch('scripts.install_claude.run_command') as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, 'claude, version 0.7.8', '')

@@ -802,6 +802,7 @@ class TestNativeWindowsInstallerFunction:
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.ensure_local_bin_in_path_windows')
     @patch('install_claude.remove_npm_claude')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
     @patch('install_claude.update_install_method_config')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.unlink')
@@ -812,6 +813,7 @@ class TestNativeWindowsInstallerFunction:
         mock_unlink,
         mock_temp,
         mock_update_config,
+        mock_check_npm,
         mock_remove_npm,
         mock_ensure_path,
         mock_verify,
@@ -820,6 +822,7 @@ class TestNativeWindowsInstallerFunction:
         mock_system,
     ):
         """Test successful native installer execution."""
+        del mock_check_npm
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
 
@@ -1172,6 +1175,7 @@ class TestNativeMacOSInstallerFunction:
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.remove_npm_claude')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
     @patch('install_claude.update_install_method_config')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.chmod')
@@ -1184,12 +1188,14 @@ class TestNativeMacOSInstallerFunction:
         mock_chmod,
         mock_temp,
         mock_update_config,
+        mock_check_npm,
         mock_remove_npm,
         mock_verify,
         mock_run,
         mock_urlopen,
     ):
         """Test successful native macOS installer execution."""
+        del mock_check_npm
         # Mock installer script download
         mock_response = MagicMock()
         mock_response.read.return_value = b'#!/bin/bash\necho "Installing"'
@@ -1232,6 +1238,7 @@ class TestNativeLinuxInstallerFunction:
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.remove_npm_claude')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
     @patch('install_claude.update_install_method_config')
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.chmod')
@@ -1244,12 +1251,14 @@ class TestNativeLinuxInstallerFunction:
         mock_chmod,
         mock_temp,
         mock_update_config,
+        mock_check_npm,
         mock_remove_npm,
         mock_verify,
         mock_run,
         mock_urlopen,
     ):
         """Test successful native Linux installer execution."""
+        del mock_check_npm
         # Mock installer script download
         mock_response = MagicMock()
         mock_response.read.return_value = b'#!/bin/bash\necho "Installing"'
@@ -1579,27 +1588,32 @@ class TestEnsureLocalBinInPathUnix:
         # Profile files don't exist
         mock_exists.return_value = False
 
-        # Save original PATH
+        # Save original PATH and SHELL
         original_path = os.environ.get('PATH', '')
+        original_shell = os.environ.get('SHELL', '')
         os.environ['PATH'] = '/usr/bin:/bin'
+        # Set SHELL to fish so no profile is created (no matching shell)
+        os.environ['SHELL'] = '/bin/fish'
 
         try:
             result = install_claude._ensure_local_bin_in_path_unix()
 
             assert result is True
-            # PATH should be updated in current process (check for .local and bin in path)
+            # PATH should be updated in current process
             assert '.local' in os.environ['PATH']
             assert 'bin' in os.environ['PATH']
-            # Verify mocks were configured (profile files don't exist, so no writes)
-            assert mock_exists.return_value is False
-            # mock_write and mock_read are not called when files don't exist
+            # Profile files don't exist and SHELL=/bin/fish doesn't match bash/zsh
             assert not mock_write.called
             assert not mock_read.called
             # mkdir is called to create .local/bin
             mock_mkdir.assert_called()
         finally:
-            # Restore PATH
+            # Restore PATH and SHELL
             os.environ['PATH'] = original_path
+            if original_shell:
+                os.environ['SHELL'] = original_shell
+            else:
+                os.environ.pop('SHELL', None)
 
     @patch('install_claude.sys.platform', 'linux')
     @patch('pathlib.Path.home')
