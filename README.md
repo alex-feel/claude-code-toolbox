@@ -1,5 +1,9 @@
 # Claude Code Toolbox
 
+<p align="center">
+  <img src=".github/images/banner.jpg" alt="Claude Code Toolbox - automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux" width="100%">
+</p>
+
 [![GitHub License](https://img.shields.io/github/license/alex-feel/claude-code-toolbox)](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-toolbox)
 
 Automated installers and an environment configuration framework for Claude Code on Windows, macOS, and Linux.
