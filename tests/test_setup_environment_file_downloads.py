@@ -308,3 +308,17 @@ class TestProcessFileDownloads:
         actual_source = call_args[0]
         # Source should be passed unchanged (query params preserved)
         assert actual_source == test_source
+
+    @patch('scripts.setup_environment.handle_resource')
+    @patch('scripts.setup_environment.normalize_tilde_path')
+    def test_process_file_downloads_uses_normalize_tilde_path(
+        self, mock_normalize: MagicMock, mock_handle: MagicMock,
+    ) -> None:
+        """Verify process_file_downloads uses normalize_tilde_path for WSL-safe tilde expansion."""
+        mock_normalize.return_value = '/home/user/test.txt'
+        mock_handle.return_value = True
+
+        file_specs = [{'source': 'test.txt', 'dest': '~/test.txt'}]
+        process_file_downloads(file_specs, 'config.yaml')
+
+        mock_normalize.assert_called_once_with('~/test.txt')

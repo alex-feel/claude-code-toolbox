@@ -8458,6 +8458,52 @@ class TestWriteUserSettingsEdgeCases:
             assert result is False  # Should return False on OSError  # Should return False on permission error
 
 
+class TestWriteUserSettingsWslWarning:
+    """Tests for WSL warning when Windows-style paths are detected in settings."""
+
+    def test_wsl_warning_fires_for_windows_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify WSL warning fires for Windows-style paths in settings."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        # Single backslash as JSON produces from Windows paths
+        settings = {'apiKeyHelper': 'C:\\Users\\test\\.claude\\scripts\\key.py'}
+
+        with (
+            patch('setup_environment.is_wsl', return_value=True),
+            patch('setup_environment.warning') as mock_warning,
+        ):
+            setup_environment.write_user_settings(settings, claude_dir)
+            # At least one warning should mention WSL and Windows-style path
+            wsl_warnings = [
+                call for call in mock_warning.call_args_list
+                if 'WSL detected' in str(call) and 'Windows-style path' in str(call)
+            ]
+            assert len(wsl_warnings) > 0, 'WSL warning should fire for Windows-style path'
+
+    def test_wsl_warning_does_not_fire_for_linux_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify WSL warning does NOT fire for Linux-style paths."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        # Use an already-expanded Linux path (no tilde) to avoid platform-dependent expansion
+        settings = {'apiKeyHelper': '/home/user/.claude/scripts/key.py'}
+
+        with (
+            patch('setup_environment.is_wsl', return_value=True),
+            patch('setup_environment.warning') as mock_warning,
+        ):
+            setup_environment.write_user_settings(settings, claude_dir)
+            # No warning should mention WSL + Windows-style path
+            wsl_warnings = [
+                call for call in mock_warning.call_args_list
+                if 'WSL detected' in str(call) and 'Windows-style path' in str(call)
+            ]
+            assert len(wsl_warnings) == 0, 'WSL warning should NOT fire for Linux-style path'
+
+
 class TestUserSettingsErrorRecovery:
     """Error handling and recovery tests."""
 

@@ -1428,7 +1428,7 @@ def write_user_settings(
                 if key in merged and isinstance(merged[key], str):
                     value = merged[key]
                     # Check for Windows path patterns (e.g., C:\, D:\)
-                    if re.search(r'[A-Za-z]:\\\\', value):
+                    if re.search(r'[A-Za-z]:\\', value):
                         warning(
                             f'WSL detected: {key} contains Windows-style path: {value}. '
                             'This may not work in the Linux environment. '
@@ -5269,10 +5269,8 @@ def process_file_downloads(
             invalid_count += 1
             continue
 
-        # Expand destination path (~ and environment variables)
-        # This makes it work cross-platform: ~/.config, %USERPROFILE%\\bin, $HOME/.local
-        expanded_dest = os.path.expanduser(str(dest))
-        expanded_dest = os.path.expandvars(expanded_dest)
+        # Expand destination path using normalize_tilde_path for WSL-safe tilde expansion
+        expanded_dest = normalize_tilde_path(str(dest))
         dest_path = Path(expanded_dest)
 
         # Handle both file and directory destinations
