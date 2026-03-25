@@ -244,9 +244,9 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
     # PATH ordering would resolve to the npm binary first.
     if cmd == 'claude':
         if sys.platform == 'win32':
-            native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
         else:
-            native_path = Path.home() / '.local' / 'bin' / 'claude'
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
         try:
             if native_path.exists() and native_path.stat().st_size > 1000:
                 return str(native_path)
@@ -315,8 +315,8 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
         if cmd == 'claude':
             common_paths = [
                 # Native installer target (checked first for correct precedence)
-                str(Path.home() / '.local' / 'bin' / 'claude'),
-                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.local' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
             ]
@@ -384,7 +384,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
 
     if sys.platform == 'win32':
         # Check native installer location first
-        native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
         if native_path.exists() and native_path.stat().st_size > 1000:
             result = (True, str(native_path), 'native')
         else:
@@ -418,7 +418,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                             result = (False, None, 'none')
     else:
         # Non-Windows platforms: check native path explicitly first (mirrors Windows branch)
-        native_path = Path.home() / '.local' / 'bin' / 'claude'
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
         if native_path.exists() and native_path.stat().st_size > 1000:
             result = (True, str(native_path), 'native')
         else:
@@ -674,7 +674,7 @@ def remove_npm_claude() -> bool:
     else:
         npm_binary_paths = [
             Path('/usr/local/bin/claude'),
-            Path.home() / '.npm-global' / 'bin' / 'claude',
+            get_real_user_home() / '.npm-global' / 'bin' / 'claude',
         ]
 
     removed_any = False
@@ -752,7 +752,7 @@ def update_install_method_config(method: str = 'native') -> bool:
         installation function's success status. A warning is logged on failure
         to inform the user that manual config update may be needed.
     """
-    config_path = Path.home() / '.claude.json'
+    config_path = get_real_user_home() / '.claude.json'
     try:
         # READ existing config (preserves all existing keys)
         config: dict[str, Any] = _read_json_dict(config_path)
@@ -1125,8 +1125,13 @@ def install_git_windows_download() -> bool:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                # Save current opener state; build_opener() creates a fresh default opener for restoration
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
                 urllib.request.install_opener(opener)
-                urlretrieve(installer_url, temp_path)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
             else:
                 raise
 
@@ -1254,11 +1259,32 @@ def set_disable_autoupdater() -> None:
         # Get all shell config files (with Linux conditional filtering)
         profile_files = _get_shell_config_files()
 
+        # Detect the user's login shell to ensure its profile exists
+        home = get_real_user_home()
+        current_shell = os.environ.get('SHELL', '')
+        shell_profile_map: dict[str, Path] = {
+            'bash': home / '.bashrc',
+            'zsh': home / '.zshrc',
+            'fish': home / '.config' / 'fish' / 'config.fish',
+        }
+
+        # Identify which profile corresponds to the current shell
+        current_shell_profile: Path | None = None
+        for shell_name, profile_path in shell_profile_map.items():
+            if shell_name in current_shell:
+                current_shell_profile = profile_path
+                break
+
         updated_files: list[Path] = []
         for profile_file in profile_files:
-            if profile_file.exists():
+            should_update = profile_file.exists()
+            # Create the profile for the user's current shell if it does not exist
+            if not should_update and profile_file == current_shell_profile:
+                should_update = True
+
+            if should_update:
                 try:
-                    content = profile_file.read_text()
+                    content = profile_file.read_text() if profile_file.exists() else ''
                     if 'DISABLE_AUTOUPDATER' not in content:
                         # Use Fish-specific syntax for Fish config
                         if _is_fish_config(profile_file):
@@ -1281,6 +1307,8 @@ def set_disable_autoupdater() -> None:
                         else:
                             content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
 
+                        # Ensure parent directory exists (e.g. ~/.config/fish/)
+                        profile_file.parent.mkdir(parents=True, exist_ok=True)
                         profile_file.write_text(content)
                         updated_files.append(profile_file)
                 except Exception as e:
@@ -1502,8 +1530,12 @@ def install_nodejs_direct() -> bool:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
                 urllib.request.install_opener(opener)
-                urlretrieve(installer_url, temp_path)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
             else:
                 raise
 
@@ -2192,7 +2224,7 @@ def _cleanup_old_claude_files() -> None:
         Silently ignores locked files (will try again next time).
     """
     if sys.platform == 'win32':
-        local_bin = Path.home() / '.local' / 'bin'
+        local_bin = get_real_user_home() / '.local' / 'bin'
 
         if not local_bin.exists():
             return
@@ -2307,12 +2339,15 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
             urllib.request.install_opener(opener)
             try:
                 urlretrieve(gcs_url, str(temp_path))
             except Exception as ssl_download_error:
                 error(f'Download with SSL fallback failed: {ssl_download_error}')
                 return False
+            finally:
+                urllib.request.install_opener(saved_opener)
 
         # Validate downloaded file (minimum size check)
         if not temp_path.exists():
@@ -2490,7 +2525,7 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     # Clean up any leftover .old files from previous installations
     _cleanup_old_claude_files()
 
-    native_target = Path.home() / '.local' / 'bin' / 'claude.exe'
+    native_target = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
 
     # CASE 1: No specific version or "latest" requested
     # Safe to use native installer - "latest" string bypasses version check bug
@@ -2797,7 +2832,7 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         # Specific version requested - use direct GCS download to bypass buggy installer
         info(f'Specific version {version} requested - using direct GCS download...')
 
-        native_path = Path.home() / '.local' / 'bin' / 'claude'
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
 
         # Try direct download from GCS
         if _download_claude_direct_from_gcs(version, native_path):
@@ -2825,6 +2860,7 @@ def install_claude_native_macos(version: str | None = None) -> bool:
                     _warn_npm_removal_failed()
                 # Update config to reflect native installation method
                 update_install_method_config('native')
+                set_disable_autoupdater()
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2975,7 +3011,7 @@ def install_claude_native_linux(version: str | None = None) -> bool:
     # Specific version requested - use direct GCS download to bypass buggy installer
     info(f'Specific version {version} requested - using direct GCS download...')
 
-    native_path = Path.home() / '.local' / 'bin' / 'claude'
+    native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
 
     # Try direct download from GCS
     if _download_claude_direct_from_gcs(version, native_path):
@@ -3003,6 +3039,7 @@ def install_claude_native_linux(version: str | None = None) -> bool:
                 _warn_npm_removal_failed()
             # Update config to reflect native installation method
             update_install_method_config('native')
+            set_disable_autoupdater()
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -3431,7 +3468,7 @@ def ensure_local_bin_in_path_windows() -> bool:
     success = True
     if sys.platform == 'win32':
         try:
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             # Import winreg here to avoid import errors on non-Windows platforms

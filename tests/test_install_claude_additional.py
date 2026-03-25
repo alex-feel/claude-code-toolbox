@@ -686,8 +686,9 @@ class TestGCSDirectDownload:
 
         assert result is True
         assert mock_urlretrieve.call_count == 2
-        mock_build_opener.assert_called_once()
-        mock_install_opener.assert_called_once()
+        mock_build_opener.assert_called()
+        # install_opener called twice: once to install SSL-bypass opener, once to restore
+        assert mock_install_opener.call_count == 2
         mock_mkdir.assert_called()  # Directory creation
         mock_replace.assert_called()  # Atomic file move
 
@@ -1043,6 +1044,41 @@ class TestHybridInstallMacOS:
         mock_ensure_path.assert_called()
 
     @patch('sys.platform', 'darwin')
+    @patch('install_claude.set_disable_autoupdater')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('install_claude.verify_claude_installation')
+    @patch('pathlib.Path.chmod')
+    @patch('time.sleep')
+    def test_install_claude_native_macos_gcs_success_calls_set_disable_autoupdater(
+        self,
+        mock_sleep,
+        mock_chmod,
+        mock_verify,
+        mock_ensure_path,
+        mock_gcs_download,
+        mock_remove_npm,
+        mock_check_npm,
+        mock_update_config,
+        mock_set_autoupdater,
+    ):
+        """GCS download success path on macOS calls set_disable_autoupdater()."""
+        del mock_ensure_path, mock_remove_npm, mock_check_npm
+        mock_gcs_download.return_value = True
+        mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_macos(version='2.0.76')
+
+        assert result is True
+        mock_set_autoupdater.assert_called_once()
+        mock_update_config.assert_called_once_with('native')
+        mock_sleep.assert_called()
+        mock_chmod.assert_called()
+
+    @patch('sys.platform', 'darwin')
     @patch('install_claude._download_claude_direct_from_gcs')
     @patch('install_claude._install_claude_native_macos_installer')
     def test_install_claude_native_macos_gcs_fails_fallback_to_installer(
@@ -1136,6 +1172,43 @@ class TestHybridInstallLinux:
         call_args = mock_gcs_download.call_args[0]
         assert call_args[0] == '2.0.76'
         mock_ensure_path.assert_called()
+        mock_platform.assert_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.set_disable_autoupdater')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    @patch('install_claude._download_claude_direct_from_gcs')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('install_claude.verify_claude_installation')
+    @patch('pathlib.Path.chmod')
+    @patch('time.sleep')
+    def test_install_claude_native_linux_gcs_success_calls_set_disable_autoupdater(
+        self,
+        mock_sleep,
+        mock_chmod,
+        mock_verify,
+        mock_ensure_path,
+        mock_gcs_download,
+        mock_remove_npm,
+        mock_check_npm,
+        mock_update_config,
+        mock_set_autoupdater,
+        mock_platform,
+    ):
+        """GCS download success path on Linux calls set_disable_autoupdater()."""
+        del mock_ensure_path, mock_remove_npm, mock_check_npm
+        mock_gcs_download.return_value = True
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_linux(version='2.0.76')
+
+        assert result is True
+        mock_set_autoupdater.assert_called_once()
+        mock_update_config.assert_called_once_with('native')
+        mock_sleep.assert_called()
+        mock_chmod.assert_called()
         mock_platform.assert_called()
 
     @patch('platform.system', return_value='Linux')
@@ -1556,6 +1629,36 @@ class TestNativeWindowsInstallerDiagnostics:
 
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs.get('capture_output') is True
+
+
+class TestSetDisableAutoupdaterProfileCreation:
+    """Test set_disable_autoupdater() creates profiles for the current shell on fresh systems."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude.get_real_user_home')
+    @patch('install_claude._get_shell_config_files')
+    def test_creates_profile_for_current_shell_when_missing(
+        self, mock_get_configs, mock_home, mock_system, tmp_path,
+    ):
+        """Profile for the current shell is created when it does not exist."""
+        del mock_system
+        mock_home.return_value = tmp_path
+        bashrc = tmp_path / '.bashrc'
+        # .bashrc does not exist yet
+        assert not bashrc.exists()
+        # Return .bashrc as the only config file to check
+        mock_get_configs.return_value = [bashrc]
+
+        with patch.dict(os.environ, {'SHELL': '/bin/bash'}):
+            install_claude.set_disable_autoupdater()
+
+        # Verify .bashrc was created with DISABLE_AUTOUPDATER and marker blocks
+        assert bashrc.exists()
+        content = bashrc.read_text()
+        assert 'DISABLE_AUTOUPDATER' in content
+        assert 'export DISABLE_AUTOUPDATER=1' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
+        assert install_claude.SHELL_CONFIG_MARKER_END in content
 
 
 class TestEnsureLocalBinInPathUnix:

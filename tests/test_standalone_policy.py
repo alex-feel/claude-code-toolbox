@@ -242,3 +242,18 @@ class TestMarkerBlockConstantsIdentity:
             f'Marker END diverged: install_claude={ic_end.group(1)!r} '
             f'vs setup_environment={se_end.group(1)!r}'
         )
+
+
+class TestGlobalConfigExcludedKeysParity:
+    """Enforce GLOBAL_CONFIG_EXCLUDED_KEYS parity between setup_environment.py and environment_config.py."""
+
+    def test_keys_match(self) -> None:
+        """GLOBAL_CONFIG_EXCLUDED_KEYS must be identical in both files."""
+        from scripts.models.environment_config import GLOBAL_CONFIG_EXCLUDED_KEYS as MODEL_EXCLUDED_KEYS
+        from scripts.setup_environment import GLOBAL_CONFIG_EXCLUDED_KEYS as SETUP_EXCLUDED_KEYS
+
+        assert SETUP_EXCLUDED_KEYS == MODEL_EXCLUDED_KEYS, (
+            f'GLOBAL_CONFIG_EXCLUDED_KEYS mismatch: '
+            f'setup_environment.py has {sorted(SETUP_EXCLUDED_KEYS)}, '
+            f'environment_config.py has {sorted(MODEL_EXCLUDED_KEYS)}'
+        )

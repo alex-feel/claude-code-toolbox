@@ -699,9 +699,9 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
     # PATH ordering would resolve to the npm binary first.
     if cmd == 'claude':
         if sys.platform == 'win32':
-            native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
         else:
-            native_path = Path.home() / '.local' / 'bin' / 'claude'
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
         try:
             if native_path.exists() and native_path.stat().st_size > 1000:
                 return str(native_path)
@@ -770,8 +770,8 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
         if cmd == 'claude':
             common_paths = [
                 # Native installer target (checked first for correct precedence)
-                str(Path.home() / '.local' / 'bin' / 'claude'),
-                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.local' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
             ]
@@ -1080,7 +1080,7 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     Key invariant: A tilde path (~...) is ALWAYS local, never a URL.
     After expansion, tilde paths become absolute local paths.
 
-    Uses Path.home() for tilde expansion instead of os.path.expanduser()
+    Uses get_real_user_home() for tilde expansion instead of os.path.expanduser()
     to avoid WSL HOME contamination, where os.path.expanduser() may
     return a Windows home path (C:\\Users\\user) instead of the correct
     Linux home (/home/user).
@@ -1112,12 +1112,12 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     if not path:
         return path
 
-    # Step 1: Expand tilde (~, ~username) using Path.home() for reliability
+    # Step 1: Expand tilde (~, ~username) using get_real_user_home() for reliability
     if path.startswith('~'):
         if path == '~' or path.startswith(('~/', '~\\')):
-            # Current user's home directory - use Path.home() to avoid
+            # Current user's home directory - use get_real_user_home() to avoid
             # WSL HOME contamination from os.path.expanduser()
-            home_str = str(Path.home())
+            home_str = str(get_real_user_home())
             # path[2:] skips the ~/ or ~\ prefix (no-op when path == '~')
             expanded = home_str if path == '~' else str(Path(home_str) / path[2:])
         else:
@@ -1509,7 +1509,7 @@ def write_global_config(
     Returns:
         True if config was written successfully, False on write failure.
     """
-    config_file = Path.home() / '.claude.json'
+    config_file = get_real_user_home() / '.claude.json'
 
     ok, _ = _write_merged_json(
         config_file,
@@ -1722,8 +1722,8 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
                 )
 
             # Validate it's the expected .local\bin directory
-            expected_local_bin = str(Path.home() / '.local' / 'bin')
-            if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(Path.home()).lower()):
+            expected_local_bin = str(get_real_user_home() / '.local' / 'bin')
+            if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(get_real_user_home()).lower()):
                 # Allow only paths under user's home directory
                 return (
                     False,
@@ -1833,7 +1833,7 @@ def ensure_local_bin_in_path() -> None:
     if platform.system() != 'Windows':
         return
 
-    local_bin = Path.home() / '.local' / 'bin'
+    local_bin = get_real_user_home() / '.local' / 'bin'
     local_bin.mkdir(parents=True, exist_ok=True)
 
     path_success, path_message = add_directory_to_windows_path(str(local_bin))
@@ -2729,13 +2729,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         if repo_type == 'github':
             return build_github_headers(env_token)
 
-    # Method 3: Auth config file (future expansion)
-    # auth_file = Path.home() / '.claude' / 'auth.yaml'
-    # if auth_file.exists():
-    #     # Implementation for auth file would go here
-    #     pass
-
-    # Method 4: Interactive prompt (only if repo type detected and terminal is interactive)
+    # Method 3: Interactive prompt (only if repo type detected and terminal is interactive)
     if repo_type and sys.stdin.isatty():
         warning(f'Private {repo_type.title()} repository detected but no authentication found')
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
@@ -4285,8 +4279,12 @@ def _install_nodejs_direct() -> bool:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
                 urllib.request.install_opener(opener)
-                urlretrieve(installer_url, temp_path)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
             else:
                 raise
 
@@ -7132,7 +7130,7 @@ def register_global_command(
     try:
         if system == 'Windows':
             # Create batch file in .local/bin
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             # Create wrappers for all Windows shells
@@ -7229,7 +7227,7 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
         else:
             # Create symlink in ~/.local/bin
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             symlink_path = local_bin / command_name
@@ -7682,7 +7680,7 @@ def main() -> None:
             sys.exit(1)
 
         # Set up directories
-        home = Path.home()
+        home = get_real_user_home()
         claude_user_dir = home / '.claude'
         agents_dir = claude_user_dir / 'agents'
         commands_dir = claude_user_dir / 'commands'
