@@ -205,10 +205,14 @@ class TestWindowsGitBash:
         result = install_claude.find_bash_windows()
         assert result == str(Path('C:\\Git\\bash.exe').resolve())
 
-    @patch('install_claude.find_command')
-    def test_find_bash_windows_in_path(self, mock_find):
-        """Test finding bash.exe in PATH."""
-        mock_find.return_value = 'C:\\Program Files\\Git\\bin\\bash.exe'
+    @patch('shutil.which', return_value='C:\\Program Files\\Git\\bin\\bash.exe')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH': ''})
+    def test_find_bash_windows_in_path(self, mock_exists, mock_which):
+        """Test finding bash.exe in PATH via shutil.which fallback."""
+        # Verify mock configuration
+        assert mock_exists.return_value is False
+        assert mock_which.return_value == 'C:\\Program Files\\Git\\bin\\bash.exe'
         result = install_claude.find_bash_windows()
         assert result == 'C:\\Program Files\\Git\\bin\\bash.exe'
 
@@ -234,11 +238,11 @@ class TestWindowsGitBash:
         assert result is not None
         assert 'Git' in result
 
-    @patch('install_claude.find_command', return_value='winget')
-    def test_check_winget_available(self, mock_find):
+    @patch('shutil.which', return_value='winget')
+    def test_check_winget_available(self, mock_which):
         """Test winget availability check."""
         # Verify mock configuration
-        assert mock_find.return_value == 'winget'
+        assert mock_which.return_value == 'winget'
         assert install_claude.check_winget() is True
 
     @patch('shutil.which', return_value=None)

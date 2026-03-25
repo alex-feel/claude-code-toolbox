@@ -553,6 +553,25 @@ Step comments and print statements in `main()` (e.g., `# Step N:`, `Step N: ...`
    - `%LOCALAPPDATA%\Claude\additional-settings.json` on Windows
 5. Ensure hooks trigger correctly
 
+### Mock Target Alignment Rule
+
+When production code is refactored to change which function a call site uses (e.g., replacing `find_command('node')` with `shutil.which('node')`), ALL test mocks that target the old function MUST be updated to target the new function. Stale mock targets cause tests to pass locally but fail on CI.
+
+Key patterns to verify:
+- `@patch('module.find_command')` -- confirm the production code still calls `find_command()` at that call site
+- `@patch('shutil.which')` -- confirm the production code actually calls `shutil.which()` at the mocked call site
+- When `shutil.which` replaces `find_command`, mock `Path.exists()` to return `False` for common-path checks that precede the `shutil.which` fallback
+
+### Platform-Specific Path Behavior in Tests
+
+Tests that create or assert on Windows-style paths (using backslashes) MUST be marked as Windows-only:
+
+```python
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
+```
+
+`Path(r'C:\Program Files\nodejs\node.exe')` on Linux becomes `PosixPath('C:\\Program Files\\nodejs\\node.exe')` (a single path component), so `Path(...).parent` returns `PosixPath('.')` instead of the expected Windows parent directory. `Path` uses the running OS's path semantics, not the path's apparent format.
+
 ## Script Dependencies
 
 - **Python 3.12** required for all Python scripts

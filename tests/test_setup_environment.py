@@ -1331,6 +1331,8 @@ class TestGetAllShellConfigFiles:
     def test_includes_fish_config_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test includes fish config file on macOS."""
         monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+        original_which = shutil.which
+        monkeypatch.setattr(shutil, 'which', lambda cmd: '/usr/local/bin/fish' if cmd == 'fish' else original_which(cmd))
         config_files = setup_environment.get_all_shell_config_files()
         file_names = [str(f) for f in config_files]
         # Should include fish config on macOS (fish is common on macOS)
@@ -6538,6 +6540,7 @@ class TestVerifyNodejsAvailable:
         captured = capsys.readouterr()
         assert 'not found in PATH' in captured.out
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
     @patch('subprocess.run')
@@ -6558,6 +6561,7 @@ class TestVerifyNodejsAvailable:
         assert 'Node.js verified' in captured.out
         assert 'v20.10.0' in captured.out
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
     @patch('setup_environment.find_command')

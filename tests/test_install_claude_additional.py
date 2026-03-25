@@ -481,11 +481,11 @@ class TestGitBashDetection:
 class TestWingetCheck:
     """Test winget availability check."""
 
-    @patch('install_claude.find_command', return_value='C:\\Windows\\System32\\winget.exe')
-    def test_check_winget_found(self, mock_find):
+    @patch('shutil.which', return_value='C:\\Windows\\System32\\winget.exe')
+    def test_check_winget_found(self, mock_which):
         """Test winget check when found."""
         # Verify mock configuration
-        assert mock_find.return_value == 'C:\\Windows\\System32\\winget.exe'
+        assert mock_which.return_value == 'C:\\Windows\\System32\\winget.exe'
         assert install_claude.check_winget() is True
 
     @patch('shutil.which', return_value=None)
