@@ -6000,8 +6000,8 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
         stderr_text = str(result.stderr) if result.stderr else ''
         if 'TypeError' in stderr_text and 'prototype' in stderr_text:
             error('This appears to be a Node.js v25 incompatibility issue')
-            error('Claude Code is not yet compatible with Node.js v25+')
-            info('Node.js v25 removed the SlowBuffer API that Claude Code depends on')
+            error('npm-installed Claude Code is not yet compatible with Node.js v25+')
+            info('Node.js v25 removed the SlowBuffer API that npm-installed Claude Code depends on')
             info('Please downgrade to Node.js v22 or v20 (LTS)')
 
         return False

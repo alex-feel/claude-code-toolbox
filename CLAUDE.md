@@ -86,7 +86,7 @@ The `ensure_nodejs()` function accepts a `check_claude_compat` parameter:
 
 **Usage contexts:**
 - `install_claude.py` main() calls `ensure_nodejs()` (default `True`) -- Claude Code npm runtime needs compatible Node.js
-- `setup_environment.py` `install_nodejs_if_requested()` calls `ensure_nodejs(check_claude_compat=False)` -- `install-nodejs: true` config needs Node.js for general purposes (MCP servers, npx tools), not for Claude Code itself
+- `setup_environment.py` `install_nodejs_if_requested()` calls the standalone `_ensure_nodejs()` which checks only minimum version (>= 18.0.0) -- `install-nodejs: true` config needs Node.js for general purposes (MCP servers, npx tools), not for Claude Code itself
 
 ### Version-Aware Compatibility
 
