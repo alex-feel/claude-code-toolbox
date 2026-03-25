@@ -2863,30 +2863,51 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
     @patch('sys.platform', 'linux')
     def test_creates_bashrc_for_bash_shell(self, tmp_path: Path) -> None:
         """Creates .bashrc when current shell is bash and file does not exist."""
-        with patch('pathlib.Path.home', return_value=tmp_path), \
-             patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}):
+        with patch('install_claude.get_real_user_home', return_value=tmp_path), \
+             patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
+             patch('install_claude.shutil.which', return_value=None):
             install_claude._ensure_local_bin_in_path_unix()
 
         bashrc = tmp_path / '.bashrc'
         assert bashrc.exists()
-        assert '.local/bin' in bashrc.read_text()
+        content = bashrc.read_text()
+        assert '.local/bin' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
 
     @patch('sys.platform', 'linux')
     def test_creates_zshrc_for_zsh_shell(self, tmp_path: Path) -> None:
         """Creates .zshrc when current shell is zsh and file does not exist."""
-        with patch('pathlib.Path.home', return_value=tmp_path), \
-             patch.dict(os.environ, {'SHELL': '/bin/zsh', 'PATH': ''}):
+        with patch('install_claude.get_real_user_home', return_value=tmp_path), \
+             patch.dict(os.environ, {'SHELL': '/bin/zsh', 'PATH': ''}), \
+             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'):
             install_claude._ensure_local_bin_in_path_unix()
 
         zshrc = tmp_path / '.zshrc'
         assert zshrc.exists()
-        assert '.local/bin' in zshrc.read_text()
+        content = zshrc.read_text()
+        assert '.local/bin' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
+
+    @patch('sys.platform', 'linux')
+    def test_creates_fish_config_for_fish_shell(self, tmp_path: Path) -> None:
+        """Creates config.fish when current shell is fish and file does not exist."""
+        with patch('install_claude.get_real_user_home', return_value=tmp_path), \
+             patch.dict(os.environ, {'SHELL': '/usr/bin/fish', 'PATH': ''}), \
+             patch('install_claude.shutil.which', return_value='/usr/bin/fish'):
+            install_claude._ensure_local_bin_in_path_unix()
+
+        fish_config = tmp_path / '.config' / 'fish' / 'config.fish'
+        assert fish_config.exists()
+        content = fish_config.read_text()
+        assert 'fish_add_path' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
 
     @patch('sys.platform', 'linux')
     def test_does_not_create_for_unknown_shell(self, tmp_path: Path) -> None:
-        """Does not create profile files when shell is unknown."""
-        with patch('pathlib.Path.home', return_value=tmp_path), \
-             patch.dict(os.environ, {'SHELL': '/bin/fish', 'PATH': ''}):
+        """Does not create profile files when shell is unknown (e.g. tcsh)."""
+        with patch('install_claude.get_real_user_home', return_value=tmp_path), \
+             patch.dict(os.environ, {'SHELL': '/bin/tcsh', 'PATH': ''}), \
+             patch('install_claude.shutil.which', return_value=None):
             install_claude._ensure_local_bin_in_path_unix()
 
         assert not (tmp_path / '.bashrc').exists()
@@ -2898,13 +2919,15 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         bashrc = tmp_path / '.bashrc'
         bashrc.write_text('# existing content\n')
 
-        with patch('pathlib.Path.home', return_value=tmp_path), \
-             patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}):
+        with patch('install_claude.get_real_user_home', return_value=tmp_path), \
+             patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
+             patch('install_claude.shutil.which', return_value=None):
             install_claude._ensure_local_bin_in_path_unix()
 
         content = bashrc.read_text()
         assert '# existing content' in content
         assert '.local/bin' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
 
 
 class TestUpdateInstallMethodConfig:

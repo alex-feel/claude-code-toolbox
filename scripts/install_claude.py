@@ -67,6 +67,10 @@ CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
 CLAUDE_GITHUB_RELEASES_API = 'https://api.github.com/repos/anthropics/claude-code/releases/latest'
 CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
 
+# Shell config marker block constants
+SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
+SHELL_CONFIG_MARKER_END = '# <<< claude-code-toolbox <<<'
+
 
 # Logging functions
 def info(msg: str) -> None:
@@ -97,6 +101,75 @@ def banner() -> None:
     print(f'{Colors.CYAN}  Claude Code {os_name} Installer{Colors.NC}')
     print(f'{Colors.CYAN}============================================{Colors.NC}')
     print()
+
+
+def get_real_user_home() -> Path:
+    """Get the real user's home directory, even when running under sudo.
+
+    On Linux/macOS, when running with sudo, the HOME environment variable
+    and Path.home() return /root instead of the actual user's home.
+    This function detects the real user via SUDO_USER and returns their home.
+
+    Returns:
+        Path: The real user's home directory.
+    """
+    if sys.platform != 'win32':
+        # Check if running under sudo (Unix-only)
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            try:
+                # Get the home directory of the user who invoked sudo
+                # pwd is imported at module level for non-Windows platforms
+                import pwd as pwd_module
+
+                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+            except KeyError:
+                # User not found in password database, fall back
+                warning(f'Could not find home directory for sudo user: {sudo_user}')
+
+    # Windows or not running under sudo - use default home
+    return Path.home()
+
+
+def _get_shell_config_files() -> list[Path]:
+    """Get shell configuration files for environment variable persistence.
+
+    Returns all common shell config files, with Linux conditional
+    filtering for zsh (only if installed) and fish (only if installed).
+    On macOS, zsh is always included (default shell since Catalina),
+    but fish is only included if installed.
+
+    Returns:
+        List of shell config file paths to update.
+    """
+    home = get_real_user_home()
+    config_files: list[Path] = [
+        # Bash files
+        home / '.bashrc',
+        home / '.bash_profile',
+        home / '.profile',
+        # Zsh files
+        home / '.zshenv',
+        home / '.zprofile',
+        home / '.zshrc',
+        # Fish files
+        home / '.config' / 'fish' / 'config.fish',
+    ]
+
+    # On Linux, only include zsh files if zsh is installed
+    if platform.system() == 'Linux' and not shutil.which('zsh'):
+        config_files = [f for f in config_files if not f.name.startswith('.zsh')]
+
+    # On both Linux and macOS, only include fish config if fish is installed
+    if sys.platform != 'win32' and not shutil.which('fish'):
+        config_files = [f for f in config_files if 'fish' not in str(f)]
+
+    return config_files
+
+
+def _is_fish_config(config_file: Path) -> bool:
+    """Check if a config file path is a Fish shell config."""
+    return 'fish' in str(config_file)
 
 
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -1178,16 +1251,8 @@ def set_disable_autoupdater() -> None:
     if platform.system() == 'Windows':
         set_windows_env_var('DISABLE_AUTOUPDATER', '1')
     else:
-        # For Unix-like systems, add to shell profile files
-        home = Path.home()
-        env_line = '\n# Disable Claude Code auto-updates\nexport DISABLE_AUTOUPDATER=1\n'
-
-        # List of shell profile files to update
-        profile_files = [
-            home / '.bashrc',
-            home / '.zshrc',
-            home / '.profile',
-        ]
+        # Get all shell config files (with Linux conditional filtering)
+        profile_files = _get_shell_config_files()
 
         updated_files: list[Path] = []
         for profile_file in profile_files:
@@ -1195,14 +1260,35 @@ def set_disable_autoupdater() -> None:
                 try:
                     content = profile_file.read_text()
                     if 'DISABLE_AUTOUPDATER' not in content:
-                        profile_file.write_text(content + env_line)
+                        # Use Fish-specific syntax for Fish config
+                        if _is_fish_config(profile_file):
+                            export_line = 'set -gx DISABLE_AUTOUPDATER 1'
+                        else:
+                            export_line = 'export DISABLE_AUTOUPDATER=1'
+
+                        # Use marker block for managed entries
+                        if SHELL_CONFIG_MARKER_START in content:
+                            # Append inside existing marker block
+                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                            if marker_end_idx != -1:
+                                content = (
+                                    content[:marker_end_idx]
+                                    + export_line + '\n'
+                                    + content[marker_end_idx:]
+                                )
+                            else:
+                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+                        else:
+                            content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+
+                        profile_file.write_text(content)
                         updated_files.append(profile_file)
                 except Exception as e:
                     warning(f'Could not update {profile_file}: {e}')
 
         if updated_files:
             success(f"Added DISABLE_AUTOUPDATER to: {', '.join(str(f) for f in updated_files)}")
-            info('Please restart your shell or run: export DISABLE_AUTOUPDATER=1')
+            info('Please restart your shell to apply changes')
         else:
             warning('No shell profile files were updated')
 
@@ -2283,7 +2369,7 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
 def _ensure_local_bin_in_path_unix() -> bool:
     """Ensure ~/.local/bin is in PATH on Unix-like systems.
 
-    Adds ~/.local/bin to shell profile files (.bashrc, .zshrc, .profile)
+    Adds ~/.local/bin to shell profile files for Bash, Zsh, and Fish
     and updates the current process PATH for immediate availability.
 
     If the user's current shell profile does not exist, creates it to ensure
@@ -2297,7 +2383,8 @@ def _ensure_local_bin_in_path_unix() -> bool:
     """
     # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform != 'win32':
-        local_bin = Path.home() / '.local' / 'bin'
+        home = get_real_user_home()
+        local_bin = home / '.local' / 'bin'
         local_bin.mkdir(parents=True, exist_ok=True)
         local_bin_str = str(local_bin)
 
@@ -2308,18 +2395,14 @@ def _ensure_local_bin_in_path_unix() -> bool:
             info(f'Updated current session PATH with {local_bin_str}')
 
         # Update shell profile files
-        home = Path.home()
-        profile_files = [
-            home / '.bashrc',
-            home / '.zshrc',
-            home / '.profile',
-        ]
+        profile_files = _get_shell_config_files()
 
         # Detect the user's login shell to ensure its profile exists
         current_shell = os.environ.get('SHELL', '')
         shell_profile_map: dict[str, Path] = {
             'bash': home / '.bashrc',
             'zsh': home / '.zshrc',
+            'fish': home / '.config' / 'fish' / 'config.fish',
         }
 
         # Identify which profile corresponds to the current shell
@@ -2329,7 +2412,6 @@ def _ensure_local_bin_in_path_unix() -> bool:
                 current_shell_profile = profile_path
                 break
 
-        export_line = '\nexport PATH="$HOME/.local/bin:$PATH"\n'
         updated_files: list[Path] = []
 
         for profile_file in profile_files:
@@ -2341,8 +2423,34 @@ def _ensure_local_bin_in_path_unix() -> bool:
             if should_update:
                 try:
                     content = profile_file.read_text() if profile_file.exists() else ''
+                    # .local/bin substring check correctly detects the PATH entry regardless
+                    # of format (~/.local/bin, $HOME/.local/bin, or absolute path).
+                    # Theoretical false-match risk from comments is negligible.
                     if '.local/bin' not in content:
-                        profile_file.write_text(content + export_line)
+                        # Use Fish-specific PATH syntax
+                        if _is_fish_config(profile_file):
+                            export_line = 'fish_add_path ~/.local/bin'
+                        else:
+                            export_line = 'export PATH="$HOME/.local/bin:$PATH"'
+
+                        # Use marker block for managed entries
+                        if SHELL_CONFIG_MARKER_START in content:
+                            # Append inside existing marker block
+                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                            if marker_end_idx != -1:
+                                content = (
+                                    content[:marker_end_idx]
+                                    + export_line + '\n'
+                                    + content[marker_end_idx:]
+                                )
+                            else:
+                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+                        else:
+                            content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+
+                        # Ensure parent directory exists (e.g. ~/.config/fish/)
+                        profile_file.parent.mkdir(parents=True, exist_ok=True)
+                        profile_file.write_text(content)
                         updated_files.append(profile_file)
                 except Exception as e:
                     warning(f'Could not update {profile_file}: {e}')

@@ -3697,16 +3697,12 @@ def get_all_shell_config_files() -> list[Path]:
         ]
 
         # On Linux, only include zsh files if zsh is installed
-        if platform.system() == 'Linux':
-            zsh_path = shutil.which('zsh')
-            if not zsh_path:
-                # Filter out zsh-specific files if zsh is not installed
-                config_files = [f for f in config_files if not f.name.startswith('.zsh')]
+        if platform.system() == 'Linux' and not shutil.which('zsh'):
+            config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
-            # Only include fish config if fish is installed
-            fish_path = shutil.which('fish')
-            if not fish_path:
-                config_files = [f for f in config_files if 'fish' not in str(f)]
+        # On both Linux and macOS, only include fish config if fish is installed
+        if not shutil.which('fish'):
+            config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
 
@@ -4149,7 +4145,7 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
 
     # Provide reload instructions for Unix systems
     if sys.platform != 'win32' and (set_count > 0 or delete_count > 0):
-        info('Note: Open a new terminal or run "source ~/.bashrc" to apply changes')
+        info('Note: Open a new terminal to apply changes')
         # Provide explicit unset instructions for deleted variables
         if deleted_names:
             unset_cmds = ' '.join(f'unset {n};' for n in deleted_names)
@@ -7253,8 +7249,9 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
             # Ensure ~/.local/bin is in PATH
             info('Make sure ~/.local/bin is in your PATH')
-            info('Add this to your ~/.bashrc or ~/.zshrc if needed:')
-            info('  export PATH="$HOME/.local/bin:$PATH"')
+            info('Add this to your shell config if needed:')
+            info('  Bash/Zsh: export PATH="$HOME/.local/bin:$PATH"')
+            info('  Fish: fish_add_path ~/.local/bin')
 
         if system == 'Windows':
             if additional_names:

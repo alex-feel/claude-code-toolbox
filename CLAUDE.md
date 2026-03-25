@@ -41,6 +41,10 @@ The installer uses a native-first approach with automatic npm fallback:
 **Identical Code Parts:** The following code elements MUST be kept identical between both scripts (CI tests in `tests/test_standalone_policy.py` enforce this):
 - `Colors` class -- ANSI color codes for terminal output
 - `find_command()` function -- comprehensive command discovery with PATHEXT normalization, retry logic, native-path-first, and platform-specific fallback paths
+- `get_real_user_home()` function -- sudo-aware home directory resolution (EXACT body match)
+- Shell config file list -- the set of 7 shell config files (.bashrc, .bash_profile, .profile, .zshenv, .zprofile, .zshrc, config.fish) and conditional filtering logic
+- Fish config detection -- the `'fish' in str()` pattern for identifying Fish shell configs
+- Marker block constants -- `# >>> claude-code-toolbox >>>` / `# <<< claude-code-toolbox <<<` strings
 
 **Intentionally Different Code:** The following functions exist in both scripts but are INTENTIONALLY different and MUST NOT be synchronized:
 - `info()`, `success()`, `warning()`, `error()` -- different output formatting per script

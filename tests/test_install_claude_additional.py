@@ -1569,7 +1569,7 @@ class TestEnsureLocalBinInPathUnix:
         assert result is True
 
     @patch('install_claude.sys.platform', 'linux')
-    @patch('pathlib.Path.home')
+    @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.read_text')
@@ -1592,17 +1592,18 @@ class TestEnsureLocalBinInPathUnix:
         original_path = os.environ.get('PATH', '')
         original_shell = os.environ.get('SHELL', '')
         os.environ['PATH'] = '/usr/bin:/bin'
-        # Set SHELL to fish so no profile is created (no matching shell)
-        os.environ['SHELL'] = '/bin/fish'
+        # Set SHELL to tcsh so no profile is created (no matching shell)
+        os.environ['SHELL'] = '/bin/tcsh'
 
         try:
-            result = install_claude._ensure_local_bin_in_path_unix()
+            with patch('install_claude.shutil.which', return_value=None):
+                result = install_claude._ensure_local_bin_in_path_unix()
 
             assert result is True
             # PATH should be updated in current process
             assert '.local' in os.environ['PATH']
             assert 'bin' in os.environ['PATH']
-            # Profile files don't exist and SHELL=/bin/fish doesn't match bash/zsh
+            # Profile files don't exist and SHELL=/bin/tcsh doesn't match bash/zsh/fish
             assert not mock_write.called
             assert not mock_read.called
             # mkdir is called to create .local/bin
@@ -1616,7 +1617,7 @@ class TestEnsureLocalBinInPathUnix:
                 os.environ.pop('SHELL', None)
 
     @patch('install_claude.sys.platform', 'linux')
-    @patch('pathlib.Path.home')
+    @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.read_text')
@@ -1641,7 +1642,8 @@ class TestEnsureLocalBinInPathUnix:
         os.environ['PATH'] = '/usr/bin:/bin'
 
         try:
-            result = install_claude._ensure_local_bin_in_path_unix()
+            with patch('install_claude.shutil.which', return_value=None):
+                result = install_claude._ensure_local_bin_in_path_unix()
 
             assert result is True
             # Should write to profile files
