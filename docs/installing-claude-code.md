@@ -66,7 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_CODE_TOOLBOX
 
 ### `CLAUDE_CODE_TOOLBOX_VERSION`
 
-Specify a particular version to install (e.g., `2.0.76`). Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. When a specific version is set, `DISABLE_AUTOUPDATER` is automatically configured to prevent auto-updates from overwriting the pinned version. If the requested version is not found via GCS download, the installer falls back to the native installer with the latest version.
+Specify a particular version to install (e.g., `2.0.76`). Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. When a specific version is set, `DISABLE_AUTOUPDATER` is automatically configured to prevent auto-updates from overwriting the pinned version. When the version pin is removed (running without `CLAUDE_CODE_TOOLBOX_VERSION`), `DISABLE_AUTOUPDATER` is automatically removed from all shell profiles and the Windows registry, re-enabling auto-updates. If the requested version is not found via GCS download, the installer falls back to the native installer with the latest version.
 
 **Linux/macOS example:**
 

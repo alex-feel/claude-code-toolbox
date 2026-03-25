@@ -1661,6 +1661,233 @@ class TestSetDisableAutoupdaterProfileCreation:
         assert install_claude.SHELL_CONFIG_MARKER_END in content
 
 
+class TestUnsetDisableAutoupdater:
+    """Test unset_disable_autoupdater() removes DISABLE_AUTOUPDATER from shell profiles and registry."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_removes_from_bash_profile(self, mock_get_configs, mock_system, tmp_path):
+        """DISABLE_AUTOUPDATER export line is removed from .bashrc."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text(
+            f'{install_claude.SHELL_CONFIG_MARKER_START}\n'
+            f'export DISABLE_AUTOUPDATER=1\n'
+            f'{install_claude.SHELL_CONFIG_MARKER_END}\n',
+            encoding='utf-8',
+        )
+        mock_get_configs.return_value = [bashrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        content = bashrc.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_removes_from_fish_config(self, mock_get_configs, mock_system, tmp_path):
+        """Fish-style set -gx DISABLE_AUTOUPDATER is removed from config.fish."""
+        del mock_system
+        fish_dir = tmp_path / '.config' / 'fish'
+        fish_dir.mkdir(parents=True)
+        fish_config = fish_dir / 'config.fish'
+        fish_config.write_text(
+            f'{install_claude.SHELL_CONFIG_MARKER_START}\n'
+            f'set -gx DISABLE_AUTOUPDATER 1\n'
+            f'{install_claude.SHELL_CONFIG_MARKER_END}\n',
+            encoding='utf-8',
+        )
+        mock_get_configs.return_value = [fish_config]
+
+        install_claude.unset_disable_autoupdater()
+
+        content = fish_config.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_removes_from_multiple_files(self, mock_get_configs, mock_system, tmp_path):
+        """DISABLE_AUTOUPDATER is removed from both .bashrc and .zshrc."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        zshrc = tmp_path / '.zshrc'
+        bashrc.write_text('export DISABLE_AUTOUPDATER=1\n', encoding='utf-8')
+        zshrc.write_text('export DISABLE_AUTOUPDATER=1\n', encoding='utf-8')
+        mock_get_configs.return_value = [bashrc, zshrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        assert 'DISABLE_AUTOUPDATER' not in bashrc.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in zshrc.read_text(encoding='utf-8')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_preserves_other_exports_in_marker_block(self, mock_get_configs, mock_system, tmp_path):
+        """Other exports in the marker block are preserved when only DISABLE_AUTOUPDATER is removed."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text(
+            f'{install_claude.SHELL_CONFIG_MARKER_START}\n'
+            f'export PATH="$HOME/.local/bin:$PATH"\n'
+            f'export DISABLE_AUTOUPDATER=1\n'
+            f'{install_claude.SHELL_CONFIG_MARKER_END}\n',
+            encoding='utf-8',
+        )
+        mock_get_configs.return_value = [bashrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        content = bashrc.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in content
+        assert 'export PATH="$HOME/.local/bin:$PATH"' in content
+        assert install_claude.SHELL_CONFIG_MARKER_START in content
+        assert install_claude.SHELL_CONFIG_MARKER_END in content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_cleans_empty_marker_block(self, mock_get_configs, mock_system, tmp_path):
+        """Empty marker block is removed when its only content was DISABLE_AUTOUPDATER."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text(
+            f'# existing content\n'
+            f'{install_claude.SHELL_CONFIG_MARKER_START}\n'
+            f'export DISABLE_AUTOUPDATER=1\n'
+            f'{install_claude.SHELL_CONFIG_MARKER_END}\n',
+            encoding='utf-8',
+        )
+        mock_get_configs.return_value = [bashrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        content = bashrc.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in content
+        assert install_claude.SHELL_CONFIG_MARKER_START not in content
+        assert install_claude.SHELL_CONFIG_MARKER_END not in content
+        assert '# existing content' in content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_removes_outside_marker_block(self, mock_get_configs, mock_system, tmp_path):
+        """DISABLE_AUTOUPDATER outside a marker block (legacy/manual) is also removed."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        bashrc.write_text(
+            '# my stuff\n'
+            'export DISABLE_AUTOUPDATER=1\n'
+            'export OTHER_VAR=hello\n',
+            encoding='utf-8',
+        )
+        mock_get_configs.return_value = [bashrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        content = bashrc.read_text(encoding='utf-8')
+        assert 'DISABLE_AUTOUPDATER' not in content
+        assert 'export OTHER_VAR=hello' in content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_noop_when_not_set(self, mock_get_configs, mock_system, tmp_path):
+        """No changes made when DISABLE_AUTOUPDATER is not present in any file."""
+        del mock_system
+        bashrc = tmp_path / '.bashrc'
+        original_content = '# just a config\nexport PATH="/usr/bin:$PATH"\n'
+        bashrc.write_text(original_content, encoding='utf-8')
+        mock_get_configs.return_value = [bashrc]
+
+        install_claude.unset_disable_autoupdater()
+
+        assert bashrc.read_text(encoding='utf-8') == original_content
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_unix_noop_when_files_dont_exist(self, mock_get_configs, mock_system, tmp_path):
+        """No error when config files do not exist."""
+        del mock_system
+        nonexistent = tmp_path / '.bashrc'
+        mock_get_configs.return_value = [nonexistent]
+
+        # Should not raise
+        install_claude.unset_disable_autoupdater()
+
+    @patch('platform.system', return_value='Windows')
+    @patch('subprocess.run')
+    def test_windows_registry_delete(self, mock_run, mock_system):
+        """REG DELETE is called with correct arguments on Windows."""
+        del mock_system
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with patch.dict(os.environ, {}, clear=False):
+            install_claude.unset_disable_autoupdater()
+
+        mock_run.assert_called_once_with(
+            ['REG', 'DELETE', r'HKCU\Environment', '/V', 'DISABLE_AUTOUPDATER', '/F'],
+            capture_output=True,
+            text=True,
+        )
+
+    @patch('platform.system', return_value='Windows')
+    @patch('subprocess.run')
+    def test_windows_removes_from_environ(self, mock_run, mock_system):
+        """DISABLE_AUTOUPDATER is removed from os.environ on Windows."""
+        del mock_system
+        mock_run.return_value = MagicMock(returncode=0)
+
+        with patch.dict(os.environ, {'DISABLE_AUTOUPDATER': '1'}, clear=False):
+            install_claude.unset_disable_autoupdater()
+            assert 'DISABLE_AUTOUPDATER' not in os.environ
+
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._get_shell_config_files')
+    def test_removes_from_current_process(self, mock_get_configs, mock_system, tmp_path):
+        """DISABLE_AUTOUPDATER is removed from os.environ on Unix."""
+        del mock_system
+        mock_get_configs.return_value = [tmp_path / '.bashrc']
+
+        with patch.dict(os.environ, {'DISABLE_AUTOUPDATER': '1'}, clear=False):
+            install_claude.unset_disable_autoupdater()
+            assert 'DISABLE_AUTOUPDATER' not in os.environ
+
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_ensure_claude_calls_unset_when_no_version_pin(
+        self, mock_verify, mock_version, mock_unset,
+    ):
+        """unset_disable_autoupdater() is called when no version is pinned."""
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'native')
+        mock_version.return_value = '1.0.0'
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_VERSION', None)
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', None)
+            install_claude.ensure_claude()
+
+        mock_unset.assert_called()
+
+    @patch('install_claude.set_disable_autoupdater')
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.compare_versions')
+    @patch('install_claude.install_claude_npm')
+    def test_ensure_claude_does_not_call_unset_when_version_pinned(
+        self, mock_npm, mock_compare, mock_verify, mock_version, mock_unset, mock_set,
+    ):
+        """unset_disable_autoupdater() is NOT called when a version is pinned."""
+        del mock_set  # Required by @patch decorator but not directly used
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'npm')
+        mock_version.return_value = '1.0.0'
+        mock_compare.return_value = 0
+        mock_npm.return_value = True
+
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_VERSION': '1.0.0'}, clear=False):
+            install_claude.ensure_claude()
+
+        mock_unset.assert_not_called()
+
+
 class TestEnsureLocalBinInPathUnix:
     """Test the _ensure_local_bin_in_path_unix function."""
 

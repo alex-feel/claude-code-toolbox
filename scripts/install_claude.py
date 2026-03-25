@@ -172,6 +172,91 @@ def _is_fish_config(config_file: Path) -> bool:
     return 'fish' in str(config_file)
 
 
+def _is_bash_zsh_export_line(line: str, name: str) -> bool:
+    """Check if a line is a bash/zsh export for the given variable name.
+
+    Matches patterns:
+    - export NAME="value"
+    - export NAME='value'
+    - export NAME=value
+    - NAME="value" (without export keyword)
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line exports the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Match "export NAME=" or "NAME=" patterns
+    # Must be at start of line (after stripping) to avoid partial matches
+    return stripped.startswith((f'export {name}=', f'{name}='))
+
+
+def _is_fish_set_line(line: str, name: str) -> bool:
+    """Check if a line is a fish shell set command for the given variable name.
+
+    Matches patterns:
+    - set -gx NAME "value"
+    - set -gx NAME 'value'
+    - set -Ux NAME "value"
+    - set NAME "value"
+    - And variations with different flag orders
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Fish shell set pattern: set [-flags] NAME value
+    # Pattern matches: set (with optional flags like -gx, -Ux, etc.) followed by NAME and value
+    fish_pattern = rf'^set\s+(?:-[gGxXUu]+\s+)*{re.escape(name)}\s+'
+    return bool(re.match(fish_pattern, stripped))
+
+
+def _is_env_var_line(config_file: Path, line: str, name: str) -> bool:
+    """Check if a line sets the given environment variable (any shell syntax).
+
+    Detects the shell type from the config file path and checks accordingly.
+
+    Args:
+        config_file: Path to the shell config file.
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    # Check if this is a fish config file
+    is_fish = 'fish' in str(config_file)
+
+    if is_fish:
+        return _is_fish_set_line(line, name)
+    return _is_bash_zsh_export_line(line, name)
+
+
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result with robust encoding handling.
 
@@ -1319,6 +1404,93 @@ def set_disable_autoupdater() -> None:
             info('Please restart your shell to apply changes')
         else:
             warning('No shell profile files were updated')
+
+
+def unset_disable_autoupdater() -> None:
+    """Remove DISABLE_AUTOUPDATER environment variable from shell profiles and registry.
+
+    Removes the variable from all shell config files (inside and outside marker blocks)
+    and cleans up empty marker blocks. On Windows, also removes from user environment
+    registry.
+
+    Safe to call when DISABLE_AUTOUPDATER is not set (no-op).
+    """
+    if platform.system() == 'Windows':
+        # Remove from Windows user environment registry
+        try:
+            result = subprocess.run(
+                ['REG', 'DELETE', r'HKCU\Environment', '/V', 'DISABLE_AUTOUPDATER', '/F'],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                info('Removed DISABLE_AUTOUPDATER from Windows registry')
+        except Exception:
+            pass  # Variable may not exist in registry -- that's fine
+        # Remove from current process
+        os.environ.pop('DISABLE_AUTOUPDATER', None)
+    else:
+        # Unix: remove from all shell config files
+        profile_files = _get_shell_config_files()
+        removed_files: list[Path] = []
+
+        for config_file in profile_files:
+            if not config_file.exists():
+                continue
+
+            try:
+                content = config_file.read_text(encoding='utf-8')
+                original_content = content
+
+                # First pass: Remove the variable from ANYWHERE in the file
+                lines = content.split('\n')
+                new_lines: list[str] = []
+                for line in lines:
+                    if _is_env_var_line(config_file, line, 'DISABLE_AUTOUPDATER'):
+                        continue  # Skip this line (remove)
+                    new_lines.append(line)
+
+                new_content = '\n'.join(new_lines)
+
+                # Clean up empty marker blocks
+                if SHELL_CONFIG_MARKER_START in new_content:
+                    start_idx = new_content.find(SHELL_CONFIG_MARKER_START)
+                    end_idx = new_content.find(SHELL_CONFIG_MARKER_END)
+
+                    if end_idx != -1:
+                        before = new_content[:start_idx]
+                        block = new_content[start_idx:end_idx + len(SHELL_CONFIG_MARKER_END)]
+                        after = new_content[end_idx + len(SHELL_CONFIG_MARKER_END):]
+
+                        # Check if block is empty (only markers and whitespace)
+                        block_lines = block.split('\n')
+                        has_content = False
+                        for block_line in block_lines:
+                            if block_line in (SHELL_CONFIG_MARKER_START, SHELL_CONFIG_MARKER_END):
+                                continue
+                            if block_line.strip():
+                                has_content = True
+                                break
+
+                        if not has_content:
+                            # Block is empty, remove it entirely
+                            new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
+                            # Handle edge case where file becomes only newlines
+                            if new_content.strip() == '':
+                                new_content = ''
+
+                # Only write if content changed
+                if new_content != original_content:
+                    config_file.write_text(new_content, encoding='utf-8')
+                    removed_files.append(config_file)
+            except OSError as e:
+                warning(f'Could not modify {config_file}: {e}')
+
+        # Also remove from current process
+        os.environ.pop('DISABLE_AUTOUPDATER', None)
+
+        if removed_files:
+            info(f"Removed DISABLE_AUTOUPDATER from: {', '.join(str(f) for f in removed_files)}")
 
 
 def configure_powershell_policy() -> None:
@@ -3211,6 +3383,9 @@ def ensure_claude() -> bool:
                     return True  # Don't fail, npm still works
 
             return True
+
+        # No version pin -- remove DISABLE_AUTOUPDATER if previously set
+        unset_disable_autoupdater()
 
         # Check if migration from npm to native is beneficial
         # Only auto-migrate if: (1) auto mode, (2) no specific version, (3) currently npm
