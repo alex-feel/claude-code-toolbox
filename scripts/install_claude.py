@@ -831,7 +831,7 @@ def remove_npm_claude() -> bool:
         return True
 
     # Non-sudo uninstall failed - try with sudo on Unix systems
-    if platform.system() != 'Windows':
+    if sys.platform != 'win32':
         sudo_result = _run_with_sudo_fallback(
             [npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
             capture_output=True,

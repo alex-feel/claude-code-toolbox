@@ -2423,15 +2423,14 @@ class TestRemoveNpmClaude:
         ]
 
     @patch('install_claude._warn_npm_removal_failed')
-    @patch('platform.system', return_value='Windows')
+    @patch('sys.platform', 'win32')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_uninstall_failure(
-        self, mock_find: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+        self, mock_find: MagicMock, mock_run: MagicMock,
         mock_warn: MagicMock,
     ) -> None:
         """Test remove_npm_claude returns False when npm uninstall fails on Windows."""
-        assert mock_system.return_value == 'Windows'
         mock_find.return_value = '/usr/local/bin/npm'
         # First call: npm list -g returns 0 (package found)
         # Second call: npm uninstall -g returns non-zero (failure)
@@ -2465,16 +2464,15 @@ class TestRemoveNpmClaude:
         args = mock_run.call_args_list[0][0][0]
         assert args[0] == r'C:\Program Files\nodejs\npm.cmd'
 
-    @patch('platform.system', return_value='Linux')
+    @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_sudo_with_tty(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_sudo: MagicMock, mock_system: MagicMock,
+        mock_sudo: MagicMock,
     ) -> None:
         """Test sudo retry via _run_with_sudo_fallback when initial uninstall fails."""
-        assert mock_system.return_value == 'Linux'
         mock_find.return_value = '/usr/bin/npm'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)
@@ -2491,17 +2489,15 @@ class TestRemoveNpmClaude:
         assert sudo_args[0] == '/usr/bin/npm'
         assert 'uninstall' in sudo_args
 
-    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_no_tty_no_cached_creds(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_sudo: MagicMock, mock_system: MagicMock,
+        mock_sudo: MagicMock,
     ) -> None:
         """Test direct file removal fallback when sudo is unavailable."""
-        assert mock_system.return_value == 'Linux'
         mock_find.return_value = '/usr/bin/npm'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)
@@ -2516,16 +2512,15 @@ class TestRemoveNpmClaude:
         assert result is False
         mock_sudo.assert_called_once()
 
-    @patch('platform.system', return_value='Linux')
+    @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_no_tty_cached_creds(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_sudo: MagicMock, mock_system: MagicMock,
+        mock_sudo: MagicMock,
     ) -> None:
         """Test sudo retry via _run_with_sudo_fallback with cached credentials."""
-        assert mock_system.return_value == 'Linux'
         mock_find.return_value = '/usr/bin/npm'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)
@@ -2541,17 +2536,15 @@ class TestRemoveNpmClaude:
         sudo_args = mock_sudo.call_args[0][0]
         assert sudo_args[0] == '/usr/bin/npm'
 
-    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._run_with_sudo_fallback')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_sudo_file_not_found(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_sudo: MagicMock, mock_system: MagicMock,
+        mock_sudo: MagicMock,
     ) -> None:
         """Test graceful handling when sudo is unavailable (returns None)."""
-        assert mock_system.return_value == 'Linux'
         mock_find.return_value = '/usr/bin/npm'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)
@@ -2566,16 +2559,15 @@ class TestRemoveNpmClaude:
         assert result is False
         mock_sudo.assert_called_once()
 
-    @patch('platform.system', return_value='Linux')
+    @patch('sys.platform', 'linux')
     @patch('subprocess.run')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_first_attempt_succeeds_no_sudo(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_subprocess: MagicMock, mock_system: MagicMock,
+        mock_subprocess: MagicMock,
     ) -> None:
         """Test no sudo attempt when initial uninstall succeeds (regression test)."""
-        assert mock_system.return_value == 'Linux'
         mock_find.return_value = '/usr/bin/npm'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)
@@ -2589,17 +2581,16 @@ class TestRemoveNpmClaude:
         mock_subprocess.assert_not_called()
 
     @patch('install_claude._warn_npm_removal_failed')
-    @patch('platform.system', return_value='Windows')
+    @patch('sys.platform', 'win32')
     @patch('subprocess.run')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_windows_no_sudo(
         self, mock_find: MagicMock, mock_run: MagicMock,
-        mock_subprocess: MagicMock, mock_system: MagicMock,
+        mock_subprocess: MagicMock,
         mock_warn: MagicMock,
     ) -> None:
         """Test no sudo attempt on Windows even when uninstall fails."""
-        assert mock_system.return_value == 'Windows'
         mock_find.return_value = r'C:\Program Files\nodejs\npm.cmd'
         mock_run.side_effect = [
             MagicMock(returncode=0),  # npm list -g (package found)

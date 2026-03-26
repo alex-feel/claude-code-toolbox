@@ -574,6 +574,26 @@ Tests that create or assert on Windows-style paths (using backslashes) MUST be m
 
 `Path(r'C:\Program Files\nodejs\node.exe')` on Linux becomes `PosixPath('C:\\Program Files\\nodejs\\node.exe')` (a single path component), so `Path(...).parent` returns `PosixPath('.')` instead of the expected Windows parent directory. `Path` uses the running OS's path semantics, not the path's apparent format.
 
+### Platform Detection Mock Completeness Rule
+
+When production code uses platform detection (`sys.platform`, `platform.system()`, or both), tests MUST mock ALL platform detection methods used in the complete code path under test, not just one.
+
+**The trap:** A test mocks `platform.system()` to simulate Windows, but the same function also checks `sys.platform` (or vice versa). The test passes on the simulated platform (e.g., Windows CI where `sys.platform` is already `'win32'`) but fails on other CI platforms where the un-mocked check evaluates differently.
+
+**Rules:**
+1. Before writing a platform-simulation test, read the COMPLETE production function and identify ALL platform checks (`sys.platform`, `platform.system()`, `os.name`, etc.)
+2. Mock ALL of them consistently for the simulated platform
+3. Prefer using ONE platform detection method per function. `sys.platform` is preferred for MyPy compatibility (see "Platform-Specific Code Patterns" section)
+4. When refactoring production code to change platform detection method, update ALL test mocks targeting that function
+
+**Quick reference -- equivalent values:**
+
+| Simulated Platform | `sys.platform` | `platform.system()` | `os.name` |
+|--------------------|----------------|---------------------|-----------|
+| Windows            | `'win32'`      | `'Windows'`         | `'nt'`    |
+| Linux              | `'linux'`      | `'Linux'`           | `'posix'` |
+| macOS              | `'darwin'`     | `'Darwin'`          | `'posix'` |
+
 ## Script Dependencies
 
 - **Python 3.12** required for all Python scripts

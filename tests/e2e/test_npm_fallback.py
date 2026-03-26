@@ -304,7 +304,7 @@ class TestRemoveNpmClaudeSudoGatingE2E:
         mock_sudo.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         with (
-            patch('platform.system', return_value='Linux'),
+            patch('sys.platform', 'linux'),
             patch.object(
                 install_claude, 'find_command', return_value='/usr/bin/npm',
             ),
