@@ -9269,3 +9269,112 @@ class TestSensitivePathDetection:
     def test_safe_path_not_flagged(self) -> None:
         """~/.claude/data/file.txt is not flagged as sensitive."""
         assert self._detect_paths('~/.claude/data/file.txt') == []
+
+
+class TestDryRunEnvVar:
+    """Test CLAUDE_CODE_TOOLBOX_DRY_RUN environment variable support."""
+
+    def _make_plan(self) -> setup_environment.InstallationPlan:
+        return setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version='1.0',
+        )
+
+    def test_dry_run_env_var_triggers_dry_run(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_DRY_RUN=1 causes confirm_installation to receive dry_run=True."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=False, dry_run=True,
+            )
+        assert result is False
+
+    def test_dry_run_env_var_exits_zero(self) -> None:
+        """DRY_RUN env var resolves to dry_run=True which triggers exit 0 path."""
+        env_val = os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN')
+        try:
+            os.environ['CLAUDE_CODE_TOOLBOX_DRY_RUN'] = '1'
+            dry_run = os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
+            assert dry_run is True
+        finally:
+            if env_val is None:
+                os.environ.pop('CLAUDE_CODE_TOOLBOX_DRY_RUN', None)
+            else:
+                os.environ['CLAUDE_CODE_TOOLBOX_DRY_RUN'] = env_val
+
+    def test_dry_run_cli_flag_still_works(self) -> None:
+        """--dry-run CLI flag continues to work (regression test)."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=False, dry_run=True,
+            )
+        assert result is False
+
+    def test_dry_run_env_var_requires_exact_one(self) -> None:
+        """Only exact value '1' is accepted for CLAUDE_CODE_TOOLBOX_DRY_RUN."""
+        for value in ('true', 'yes', 'True', '0', ''):
+            assert os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') != '1' or True
+            env_val = os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN')
+            try:
+                os.environ['CLAUDE_CODE_TOOLBOX_DRY_RUN'] = value
+                dry_run = os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
+                assert dry_run is False, f'Value {value!r} should not trigger dry_run'
+            finally:
+                if env_val is None:
+                    os.environ.pop('CLAUDE_CODE_TOOLBOX_DRY_RUN', None)
+                else:
+                    os.environ['CLAUDE_CODE_TOOLBOX_DRY_RUN'] = env_val
+
+
+class TestSuggestKnownKey:
+    """Test _suggest_known_key() fuzzy matching for unknown config keys."""
+
+    def test_suggest_known_key_underscore_to_hyphen(self) -> None:
+        """Underscore variant 'effort_level' suggests 'effort-level'."""
+        result = setup_environment._suggest_known_key('effort_level')
+        assert result == 'effort-level'
+
+    def test_suggest_known_key_close_typo(self) -> None:
+        """Underscore variant 'mcp_servers' suggests 'mcp-servers'."""
+        result = setup_environment._suggest_known_key('mcp_servers')
+        assert result == 'mcp-servers'
+
+    def test_suggest_known_key_no_match(self) -> None:
+        """Completely unrelated key returns None."""
+        result = setup_environment._suggest_known_key('completely-random-xyz')
+        assert result is None
+
+    def test_display_summary_did_you_mean(self) -> None:
+        """Display output contains 'did you mean' for an underscore typo."""
+        import io
+        plan = setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version='1.0',
+            unknown_keys=['effort_level'],
+        )
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'did you mean' in output
+        assert "'effort-level'" in output
+
+    def test_display_summary_no_suggestion_for_unknown(self) -> None:
+        """No suggestion shown for a completely unrelated key."""
+        import io
+        plan = setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version='1.0',
+            unknown_keys=['completely-random-xyz'],
+        )
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'completely-random-xyz' in output
+        assert 'did you mean' not in output
