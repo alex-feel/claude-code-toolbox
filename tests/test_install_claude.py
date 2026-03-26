@@ -1786,18 +1786,20 @@ class TestVerifyClaudeInstallation:
         assert 'npm' in path.lower()
 
     @patch('sys.platform', 'win32')
+    @patch('install_claude._classify_localappdata_claude', return_value='winget')
     @patch('pathlib.Path.exists')
     @patch('pathlib.Path.stat')
     @patch('os.path.expandvars')
-    def test_verify_claude_installation_winget(self, mock_expandvars, mock_stat, mock_exists):
+    def test_verify_claude_installation_winget(self, mock_expandvars, mock_stat, mock_exists, mock_classify):
         """Test verification when winget installation exists."""
-        # Mock: native and npm don't exist, winget exists with valid size
-        # Order of exists() calls: native, npm_cmd, npm_executable, winget
+        # Mock: native and npm don't exist, programs path exists with valid size
+        # Order of exists() calls: native, npm_cmd, npm_executable, programs_path
+        assert mock_classify.return_value == 'winget'
         mock_exists.side_effect = [
             False,  # native_path.exists() -> False
             False,  # npm_cmd_path.exists() -> False
             False,  # npm_path.exists() -> False
-            True,  # winget_path.exists() -> True
+            True,  # programs_path.exists() -> True
         ]
         mock_stat.return_value.st_size = 5000000  # 5MB file
         mock_expandvars.side_effect = lambda x: x.replace('%LOCALAPPDATA%', 'C:\\Users\\Test\\AppData\\Local')
@@ -1839,12 +1841,14 @@ class TestVerifyClaudeInstallation:
         assert '.local\\bin' in path.lower()
 
     @patch('sys.platform', 'win32')
+    @patch('install_claude._classify_localappdata_claude', return_value='winget')
     @patch('pathlib.Path.exists', return_value=False)
     @patch('install_claude.find_command')
-    def test_verify_claude_installation_path_fallback_winget_detection(self, mock_find, mock_exists):
+    def test_verify_claude_installation_path_fallback_winget_detection(self, mock_find, mock_exists, mock_classify):
         """Test PATH fallback with winget source detection from path string."""
         # Mock: no direct paths exist, but find_command finds winget installation
         assert mock_exists.return_value is False
+        assert mock_classify.return_value == 'winget'
         mock_find.return_value = 'C:\\Users\\Test\\AppData\\Local\\Programs\\claude\\claude.exe'
 
         is_installed, path, source = install_claude.verify_claude_installation()
@@ -2793,6 +2797,47 @@ class TestCheckNpmClaudeInstalled:
         del mock_find
         mock_run.return_value = MagicMock(returncode=1)
         assert install_claude._check_npm_claude_installed() is False
+
+
+class TestFinalizeNativeInstall:
+    """Tests for _finalize_native_install() helper function."""
+
+    def test_calls_sequence(self) -> None:
+        """Verify _finalize_native_install calls remove, check, and config update."""
+        with patch('install_claude.remove_npm_claude', return_value=True) as mock_remove, \
+                patch('install_claude._check_npm_claude_installed', return_value=False) as mock_check, \
+                patch('install_claude.update_install_method_config') as mock_config:
+            install_claude._finalize_native_install()
+            mock_remove.assert_called_once()
+            mock_check.assert_called_once()
+            mock_config.assert_called_once_with('native')
+
+    def test_warns_on_removal_failure(self) -> None:
+        """Verify warning is issued when npm removal fails."""
+        with patch('install_claude.remove_npm_claude', return_value=False), \
+                patch('install_claude._check_npm_claude_installed', return_value=False), \
+                patch('install_claude.update_install_method_config'), \
+                patch('install_claude._warn_npm_removal_failed') as mock_warn:
+            install_claude._finalize_native_install()
+            mock_warn.assert_called_once()
+
+    def test_warns_on_npm_still_installed(self) -> None:
+        """Verify warning when npm is still installed after removal attempt."""
+        with patch('install_claude.remove_npm_claude', return_value=True), \
+                patch('install_claude._check_npm_claude_installed', return_value=True), \
+                patch('install_claude.update_install_method_config'), \
+                patch('install_claude._warn_npm_removal_failed') as mock_warn:
+            install_claude._finalize_native_install()
+            mock_warn.assert_called_once()
+
+    def test_both_failures(self) -> None:
+        """Verify both warnings when removal fails AND npm still detected."""
+        with patch('install_claude.remove_npm_claude', return_value=False), \
+                patch('install_claude._check_npm_claude_installed', return_value=True), \
+                patch('install_claude.update_install_method_config'), \
+                patch('install_claude._warn_npm_removal_failed') as mock_warn:
+            install_claude._finalize_native_install()
+            assert mock_warn.call_count == 2
 
 
 class TestVerifyClaudeInstallationUsrLocalBin:
@@ -3950,3 +3995,426 @@ class TestNpmFallbackConfigUpdate:
         result = install_claude.ensure_claude()
         assert result is True
         mock_config.assert_called_with('npm')
+
+
+class TestClassifyLocalappdataClaude:
+    """Tests for _classify_localappdata_claude() heuristic."""
+
+    @patch('os.path.expandvars')
+    @patch('pathlib.Path.exists', return_value=True)
+    @patch('pathlib.Path.iterdir')
+    def test_classify_returns_winget_when_winget_metadata_exists(
+        self, mock_iterdir, mock_exists, mock_expandvars,
+    ):
+        """Returns 'winget' when WinGet Packages dir contains claude directory."""
+        assert mock_exists.return_value is True
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        )
+        claude_dir = MagicMock()
+        claude_dir.name = 'Anthropic.Claude_1.2.3'
+        claude_dir.is_dir.return_value = True
+        mock_iterdir.return_value = [claude_dir]
+        assert install_claude._classify_localappdata_claude() == 'winget'
+
+    @patch('os.path.expandvars')
+    @patch('pathlib.Path.exists', return_value=False)
+    def test_classify_returns_native_when_no_winget_metadata(
+        self, mock_exists, mock_expandvars,
+    ):
+        """Returns 'native' when WinGet Packages directory does not exist."""
+        assert mock_exists.return_value is False
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        )
+        assert install_claude._classify_localappdata_claude() == 'native'
+
+    @patch('os.path.expandvars')
+    @patch('pathlib.Path.exists', return_value=True)
+    @patch('pathlib.Path.iterdir')
+    def test_classify_returns_native_when_winget_dir_empty(
+        self, mock_iterdir, mock_exists, mock_expandvars,
+    ):
+        """Returns 'native' when WinGet Packages dir exists but has no claude entries."""
+        assert mock_exists.return_value is True
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        )
+        other_pkg = MagicMock()
+        other_pkg.name = 'SomeOtherPackage'
+        other_pkg.is_dir.return_value = True
+        mock_iterdir.return_value = [other_pkg]
+        assert install_claude._classify_localappdata_claude() == 'native'
+
+    @patch('os.path.expandvars')
+    @patch('pathlib.Path.exists', return_value=True)
+    @patch('pathlib.Path.iterdir', side_effect=OSError('Access denied'))
+    def test_classify_returns_native_on_oserror(
+        self, mock_iterdir, mock_exists, mock_expandvars,
+    ):
+        """Returns 'native' when iterdir raises OSError."""
+        assert mock_iterdir.side_effect is not None
+        assert mock_exists.return_value is True
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        )
+        assert install_claude._classify_localappdata_claude() == 'native'
+
+    @patch('sys.platform', 'win32')
+    @patch('install_claude._classify_localappdata_claude', return_value='winget')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('os.path.expandvars')
+    def test_verify_claude_installation_programs_path_uses_classifier_winget(
+        self, mock_expandvars, mock_stat, mock_exists, mock_classify,
+    ):
+        """verify_claude_installation() delegates to _classify_localappdata_claude for programs path."""
+        mock_exists.side_effect = [
+            False,  # native_path.exists() -> False
+            False,  # npm_cmd_path.exists() -> False
+            False,  # npm_path.exists() -> False
+            True,   # programs_path.exists() -> True
+        ]
+        mock_stat.return_value.st_size = 5000000
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        ).replace('%APPDATA%', r'C:\Users\Test\AppData\Roaming')
+        is_installed, path, source = install_claude.verify_claude_installation()
+        assert is_installed is True
+        assert source == 'winget'
+        mock_classify.assert_called_once()
+
+    @patch('sys.platform', 'win32')
+    @patch('install_claude._classify_localappdata_claude', return_value='native')
+    @patch('pathlib.Path.exists')
+    @patch('pathlib.Path.stat')
+    @patch('os.path.expandvars')
+    def test_verify_claude_installation_programs_path_uses_classifier_native(
+        self, mock_expandvars, mock_stat, mock_exists, mock_classify,
+    ):
+        """verify_claude_installation() classifies programs path as native when no winget metadata."""
+        mock_exists.side_effect = [
+            False,  # native_path.exists() -> False
+            False,  # npm_cmd_path.exists() -> False
+            False,  # npm_path.exists() -> False
+            True,   # programs_path.exists() -> True
+        ]
+        mock_stat.return_value.st_size = 5000000
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        ).replace('%APPDATA%', r'C:\Users\Test\AppData\Roaming')
+        is_installed, path, source = install_claude.verify_claude_installation()
+        assert is_installed is True
+        assert source == 'native'
+        mock_classify.assert_called_once()
+
+    @patch('sys.platform', 'win32')
+    @patch('install_claude._classify_localappdata_claude', return_value='winget')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude.find_command')
+    def test_verify_claude_installation_path_fallback_uses_classifier(
+        self, mock_find, mock_exists, mock_classify,
+    ):
+        """PATH fallback also delegates to _classify_localappdata_claude."""
+        assert mock_exists.return_value is False
+        mock_find.return_value = r'C:\Users\Test\AppData\Local\Programs\claude\claude.exe'
+        is_installed, path, source = install_claude.verify_claude_installation()
+        assert is_installed is True
+        assert source == 'winget'
+        mock_classify.assert_called_once()
+
+
+class TestWarnMigrationFailed:
+    """Tests for _warn_migration_failed() boxed warning."""
+
+    def test_warn_migration_failed_produces_output(self, capsys):
+        """Verify boxed warning with expected content."""
+        install_claude._warn_migration_failed('/usr/lib/node_modules/.bin/claude')
+        captured = capsys.readouterr()
+        assert '=' * 70 in captured.out
+        assert 'WARNING' in captured.out
+        assert 'Migration' in captured.out
+        assert 'FAILED' in captured.out
+        assert '/usr/lib/node_modules/.bin/claude' in captured.out
+        assert 'still functional via npm' in captured.out
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._warn_migration_failed')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.get_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_warn_migration_failed_called_on_failure(
+        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        mock_get_version, mock_native, mock_config, mock_warn,
+    ):
+        """_warn_migration_failed is called when migration fails."""
+        assert mock_compare.return_value is True
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_unset is not None
+        assert mock_get_version.return_value == '2.1.0'
+        assert mock_native.return_value is False
+        assert mock_config is not None
+        npm_path = '/usr/lib/node_modules/.bin/claude'
+        mock_verify.return_value = (True, npm_path, 'npm')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_warn.assert_called_once_with(npm_path or '')
+
+
+class TestMigrationFailureInstallMethodReset:
+    """Tests for update_install_method_config('npm') on migration failure."""
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._warn_migration_failed')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.get_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_migration_failure_resets_install_method_no_version_pin(
+        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        mock_get_version, mock_native, mock_warn, mock_config,
+    ):
+        """Migration failure without version pin resets installMethod to npm."""
+        assert mock_compare.return_value is True
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_unset is not None
+        assert mock_get_version.return_value == '2.1.0'
+        assert mock_native.return_value is False
+        assert mock_warn is not None
+        mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('npm')
+
+    @patch.dict('os.environ', {
+        'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto',
+        'CLAUDE_CODE_TOOLBOX_VERSION': '2.1.0',
+    }, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._warn_migration_failed')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=False)
+    @patch('install_claude.get_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.set_disable_autoupdater')
+    def test_migration_failure_resets_install_method_version_pinned(
+        self, mock_set_auto, mock_verify, mock_get_version,
+        mock_native, mock_warn, mock_config,
+    ):
+        """Migration failure with version pin resets installMethod to npm."""
+        assert mock_set_auto is not None
+        assert mock_get_version.return_value == '2.1.0'
+        assert mock_native.return_value is False
+        assert mock_warn is not None
+        mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('npm')
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._warn_migration_failed')
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.get_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_migration_not_detected_resets_install_method(
+        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        mock_get_version, mock_native, mock_warn, mock_config,
+    ):
+        """Migration succeeds but verify returns non-native resets installMethod to npm."""
+        assert mock_compare.return_value is True
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_unset is not None
+        assert mock_get_version.return_value == '2.1.0'
+        assert mock_native.return_value is True
+        assert mock_warn is not None
+        # First call: detect npm installation; second call: after native install, still npm
+        mock_verify.side_effect = [
+            (True, '/usr/lib/node_modules/.bin/claude', 'npm'),
+            (True, '/usr/lib/node_modules/.bin/claude', 'npm'),
+        ]
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('npm')
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.unset_disable_autoupdater')
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_successful_migration_sets_native_not_npm(
+        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        mock_get_version, mock_native, mock_npm_check, mock_remove, mock_config,
+    ):
+        """Successful migration sets installMethod to native, not npm."""
+        assert mock_compare.return_value is True
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_unset is not None
+        assert mock_native.return_value is True
+        assert mock_npm_check.return_value is False
+        assert mock_remove.return_value is True
+        mock_get_version.return_value = '2.1.0'
+        mock_verify.side_effect = [
+            (True, '/usr/lib/node_modules/.bin/claude', 'npm'),
+            (True, '/home/user/.local/bin/claude', 'native'),
+        ]
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_config.assert_called_with('native')
+
+
+class TestNativeInstallerRecoveryChain:
+    """Tests for the recovery chain in _install_claude_native_windows_installer()."""
+
+    @pytest.fixture
+    def base_mocks(self):
+        """Common mocks for recovery chain tests."""
+        with patch('install_claude.run_command') as mock_run, \
+                patch('install_claude.urlopen') as mock_urlopen, \
+                patch('install_claude.ensure_local_bin_in_path_windows'), \
+                patch('install_claude.remove_npm_claude', return_value=True), \
+                patch('install_claude._check_npm_claude_installed', return_value=False), \
+                patch('install_claude.update_install_method_config') as mock_config, \
+                patch('install_claude._warn_npm_removal_failed'), \
+                patch('tempfile.NamedTemporaryFile') as mock_tmp, \
+                patch('os.unlink'):
+            # Set up basic installer success
+            mock_response = MagicMock()
+            mock_response.__enter__ = MagicMock(return_value=mock_response)
+            mock_response.__exit__ = MagicMock(return_value=False)
+            mock_response.read.return_value = b'# installer script'
+            mock_urlopen.return_value = mock_response
+            mock_tmp_file = MagicMock()
+            mock_tmp_file.__enter__ = MagicMock(return_value=mock_tmp_file)
+            mock_tmp_file.__exit__ = MagicMock(return_value=False)
+            mock_tmp_file.name = 'C:\\temp\\installer.ps1'
+            mock_tmp.return_value = mock_tmp_file
+            mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+            yield {
+                'config': mock_config,
+            }
+
+    @patch('time.sleep')
+    @patch('install_claude.verify_claude_installation')
+    def test_recovery_retry_succeeds_on_second_attempt(
+        self, mock_verify, mock_sleep, base_mocks,
+    ):
+        """Recovery retries succeed on second attempt after filesystem sync delay."""
+        assert mock_sleep is not None
+        native_path = r'C:\Users\Test\.local\bin\claude.exe'
+        # Initial verify: found but npm, retry 1: still npm, retry 2: native
+        mock_verify.side_effect = [
+            (True, r'C:\Users\Test\AppData\Roaming\npm\claude.cmd', 'npm'),
+            (True, r'C:\Users\Test\AppData\Roaming\npm\claude.cmd', 'npm'),
+            (True, native_path, 'native'),
+        ]
+        result = install_claude._install_claude_native_windows_installer()
+        assert result is True
+        base_mocks['config'].assert_called_with('native')
+
+    @patch('time.sleep')
+    @patch('shutil.copy2')
+    @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.stat')
+    @patch('pathlib.Path.exists')
+    @patch('install_claude.verify_claude_installation')
+    @patch('os.path.expandvars')
+    def test_recovery_alternative_path_succeeds(
+        self, mock_expandvars, mock_verify, mock_exists_path,
+        mock_stat, mock_mkdir, mock_copy, mock_sleep, base_mocks,
+    ):
+        """Recovery finds binary at alternative path and copies to expected location."""
+        assert mock_mkdir is not None
+        assert mock_sleep is not None
+        native_path = r'C:\Users\Test\.local\bin\claude.exe'
+        mock_expandvars.side_effect = lambda x: x.replace(
+            '%LOCALAPPDATA%', r'C:\Users\Test\AppData\Local',
+        )
+        # Initial verify: not found; 3 retries: not found; alt path exists
+        mock_verify.side_effect = [
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (True, native_path, 'native'),  # after copy
+        ]
+        # alt_paths[0].exists() -> True, alt_paths[0].stat().st_size > 1000
+        mock_exists_path.side_effect = [True]
+        mock_stat.return_value.st_size = 5000000
+        result = install_claude._install_claude_native_windows_installer()
+        assert result is True
+        mock_copy.assert_called_once()
+        base_mocks['config'].assert_called_with('native')
+
+    @patch('time.sleep')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    def test_recovery_gcs_fallback_succeeds(
+        self, mock_verify, mock_latest, mock_gcs, mock_exists, mock_sleep, base_mocks,
+    ):
+        """Recovery GCS download fallback succeeds when all other methods fail."""
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_exists.return_value is False
+        assert mock_sleep is not None
+        native_path = r'C:\Users\Test\.local\bin\claude.exe'
+        # Initial: not found; 3 retries: not found; no alt paths; GCS succeeds
+        mock_verify.side_effect = [
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (False, None, 'none'),
+            (True, native_path, 'native'),  # after GCS download
+        ]
+        result = install_claude._install_claude_native_windows_installer()
+        assert result is True
+        mock_gcs.assert_called_once()
+        base_mocks['config'].assert_called_with('native')
+
+    @patch('time.sleep')
+    @patch('pathlib.Path.exists', return_value=False)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude.verify_claude_installation')
+    def test_recovery_all_steps_fail(
+        self, mock_verify, mock_latest, mock_gcs, mock_exists, mock_sleep, base_mocks,
+    ):
+        """Returns False when all recovery steps fail."""
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_gcs.return_value is False
+        assert mock_exists.return_value is False
+        assert mock_sleep is not None
+        assert base_mocks is not None
+        mock_verify.return_value = (False, None, 'none')
+        result = install_claude._install_claude_native_windows_installer()
+        assert result is False
+
+    @patch('time.sleep')
+    @patch('install_claude.verify_claude_installation')
+    def test_recovery_not_triggered_when_native_verified(
+        self, mock_verify, mock_sleep, base_mocks,
+    ):
+        """No recovery when initial verification succeeds as native."""
+        assert base_mocks is not None
+        native_path = r'C:\Users\Test\.local\bin\claude.exe'
+        mock_verify.return_value = (True, native_path, 'native')
+        result = install_claude._install_claude_native_windows_installer()
+        assert result is True
+        # Only the initial 1-second sleep for PATH update, no 2-second recovery sleeps
+        sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
+        assert 2 not in sleep_calls
