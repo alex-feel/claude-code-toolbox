@@ -105,6 +105,10 @@ try {
             $extraArgs += '--yes'
         } elseif ($arg -eq '--dry-run') {
             $extraArgs += '--dry-run'
+        } elseif ($arg -eq '--skip-install') {
+            $extraArgs += '--skip-install'
+        } elseif ($arg -eq '--no-admin') {
+            $extraArgs += '--no-admin'
         }
     }
 

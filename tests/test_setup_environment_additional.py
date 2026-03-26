@@ -523,18 +523,24 @@ class TestInstallClaudeEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Darwin')
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.run_command')
-    def test_install_claude_macos_failure(self, mock_run, _mock_system):
-        """Test Claude installation failure on macOS."""
+    def test_install_claude_macos_failure(self, mock_run, mock_is_file, mock_system):
+        """Test Claude installation failure on macOS via bootstrap download."""
+        assert mock_system.return_value == 'Darwin'
+        assert mock_is_file.return_value is False
         mock_run.return_value = subprocess.CompletedProcess([], 1, '', 'Error')
 
         result = setup_environment.install_claude()
         assert result is False
 
     @patch('platform.system', return_value='Linux')
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.run_command')
-    def test_install_claude_linux_success(self, mock_run, _mock_system):
-        """Test Claude installation on Linux."""
+    def test_install_claude_linux_success(self, mock_run, mock_is_file, mock_system):
+        """Test Claude installation on Linux via bootstrap download."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_is_file.return_value is False
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_claude()
@@ -550,6 +556,70 @@ class TestInstallClaudeEdgeCases:
 
         result = setup_environment.install_claude()
         assert result is False
+
+
+class TestInstallClaudeLocalCopy:
+    """Test install_claude() local copy detection and usage."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('shutil.which', return_value='/usr/bin/uv')
+    @patch('setup_environment.run_command')
+    @patch('pathlib.Path.is_file', return_value=True)
+    def test_install_claude_uses_local_copy_on_linux(self, _mock_is_file, mock_run, _mock_which, _mock_system):
+        """Local install_claude.py is used directly on Linux when present."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_claude()
+        assert result is True
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert '/usr/bin/uv' in call_args[0]
+        assert '--no-project' in call_args
+        assert '--python' in call_args
+        assert '3.12' in call_args
+        assert call_args[-1].endswith('install_claude.py')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('pathlib.Path.is_file', return_value=False)
+    @patch('setup_environment.run_command')
+    def test_install_claude_fallback_when_no_local_copy(self, mock_run, _mock_is_file, _mock_system):
+        """Falls back to bootstrap download when no local copy exists."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_claude()
+        assert result is True
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert 'bash' in call_args
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('shutil.which', return_value=None)
+    @patch('pathlib.Path.is_file', return_value=True)
+    @patch('setup_environment.run_command')
+    def test_install_claude_fallback_when_uv_not_found(self, mock_run, _mock_is_file, _mock_which, _mock_system):
+        """Falls back to bootstrap download when uv is not in PATH."""
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_claude()
+        assert result is True
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert 'bash' in call_args
+
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.urlopen')
+    @patch('setup_environment.run_command')
+    def test_install_claude_local_copy_not_used_on_windows(self, mock_run, mock_urlopen, _mock_system, _mock_admin):
+        """Local copy path is skipped on Windows even if file exists."""
+        mock_urlopen.return_value = MagicMock(read=lambda: b'# PowerShell script')
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_claude()
+        assert result is True
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert 'powershell' in call_args
 
 
 class TestMCPServerConfigurationEdgeCases:

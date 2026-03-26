@@ -108,6 +108,12 @@ for arg in "$@"; do
         --dry-run)
             EXTRA_ARGS="$EXTRA_ARGS --dry-run"
             ;;
+        --skip-install)
+            EXTRA_ARGS="$EXTRA_ARGS --skip-install"
+            ;;
+        --no-admin)
+            EXTRA_ARGS="$EXTRA_ARGS --no-admin"
+            ;;
     esac
 done
 

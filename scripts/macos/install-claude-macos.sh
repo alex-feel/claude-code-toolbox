@@ -65,11 +65,21 @@ echo ""
 
 SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
-# Download and run the Python script with uv
-# uv will handle Python 3.12 installation automatically
-if curl -fsSL "$SCRIPT_URL" | uv run --no-project --python 3.12 -; then
-    exit 0
+# Download to temp file to avoid E2BIG (Argument list too long) error.
+# When piped via stdin, uv constructs 'python -c "<entire_script>"' as a single
+# execve() argument. Scripts exceeding Linux MAX_ARG_STRLEN (128 KiB) fail.
+# See: https://github.com/astral-sh/uv/issues/11220
+TEMP_DIR=$(mktemp -d /tmp/claude_install.XXXXXX)
+trap 'rm -rf "$TEMP_DIR"' EXIT
+
+if curl -fsSL "$SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
+    if uv run --no-project --python 3.12 "$TEMP_DIR/install_claude.py"; then
+        exit 0
+    else
+        echo -e "${RED}[FAIL]${NC} Installation failed"
+        exit 1
+    fi
 else
-    echo -e "${RED}[FAIL]${NC} Installation failed"
+    echo -e "${RED}[FAIL]${NC} Failed to download installer script"
     exit 1
 fi
