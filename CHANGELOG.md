@@ -1,5 +1,19 @@
 # Changelog
 
+## [5.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.0.0...v5.1.0) (2026-03-26)
+
+
+### Features
+
+* add DRY_RUN env var and did-you-mean suggestions for unknown keys ([6931384](https://github.com/alex-feel/claude-code-toolbox/commit/6931384e13e3cca72b81ddd81ccb7f24d3ac9895))
+
+
+### Bug Fixes
+
+* download install_claude.py to temp file instead of piping via stdin ([0f4c6b1](https://github.com/alex-feel/claude-code-toolbox/commit/0f4c6b1e3a581d4ed1ebc786e7a7926387c00fa9))
+* forward --skip-install and --no-admin flags in bootstrap scripts ([9fc0e14](https://github.com/alex-feel/claude-code-toolbox/commit/9fc0e1470c954a1cdaa8bf3474be8638c6fb0830))
+* resolve Windows native install detection and recovery failures ([948f310](https://github.com/alex-feel/claude-code-toolbox/commit/948f310b0a7495c9096fbe8f6cdb5ac2da9de604))
+
 ## [5.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.29.1...v5.0.0) (2026-03-26)
 
 
