@@ -1,5 +1,36 @@
 # Changelog
 
+## [5.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v4.29.1...v5.0.0) (2026-03-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* The dependency platform key "mac" is renamed to "macos". Existing environment YAML configurations using "mac" under the "dependencies" section must be updated to use "macos" instead.
+* All toolbox environment variables have been renamed for consistency. The following variables are affected:
+* The deprecated `command-name` (singular) and `include-co-authored-by` configuration keys are no longer supported. Use `command-names` (array) and `attribution` instead.
+
+### Features
+
+* add configuration version checking infrastructure ([ef39b20](https://github.com/alex-feel/claude-code-toolbox/commit/ef39b20496985b41e18ce94bba9ad086f078d2ee))
+* add EnvironmentConfig validation model and remove deprecated keys ([5c22d71](https://github.com/alex-feel/claude-code-toolbox/commit/5c22d71b1505580cb0a972f3024b2aca990f4b70))
+* add global-config support for ~/.claude.json settings ([165aa4a](https://github.com/alex-feel/claude-code-toolbox/commit/165aa4a1770bf47b2d60751661ef5558554aad0e))
+* add pre-installation confirmation mechanism ([640ea95](https://github.com/alex-feel/claude-code-toolbox/commit/640ea952dc7c7599abe1e3cd9152d5e3ff9ce8c8))
+* improve upgrade-path reliability and version detection ([c4979ff](https://github.com/alex-feel/claude-code-toolbox/commit/c4979ffce76937fe76abf72d176f89fa56634c95))
+
+
+### Bug Fixes
+
+* complete shell support in install_claude.py for Bash, Zsh, and Fish ([5d61ca2](https://github.com/alex-feel/claude-code-toolbox/commit/5d61ca261122bdc24fb9c87f9fd4e779d7588e6c))
+* correct WSL path handling in file downloads and settings warning ([5429738](https://github.com/alex-feel/claude-code-toolbox/commit/542973891531cf3f13f2200da1ea02ea9bba48ef))
+* enforce standalone script policy and consolidate find_command ([e279dbf](https://github.com/alex-feel/claude-code-toolbox/commit/e279dbf90704b3e8acae08829577f2d14dd89420))
+* extract version from root config before inheritance resolution ([eefa9f9](https://github.com/alex-feel/claude-code-toolbox/commit/eefa9f96f501205270d11665e935b9fc7fdd5b15))
+* improve npm removal reliability and native binary discovery ([8a4ef7b](https://github.com/alex-feel/claude-code-toolbox/commit/8a4ef7bce5107494f4a886ef5fec9687efd7e9c9))
+* remove DISABLE_AUTOUPDATER when version pin is removed ([394763c](https://github.com/alex-feel/claude-code-toolbox/commit/394763ce0ebed037e5eaeeec7500a0a1a133c23f))
+* rename all toolbox environment variables to CLAUDE_CODE_TOOLBOX_* prefix ([2792617](https://github.com/alex-feel/claude-code-toolbox/commit/27926176c875ca290e9abbb6484d22d915a86c1c))
+* rename mac dependency platform key to macos ([33b21b5](https://github.com/alex-feel/claude-code-toolbox/commit/33b21b5f9f8f47cab08a2a742502df9e5f544a50))
+* rename macos dependency platform key to mac ([8059e77](https://github.com/alex-feel/claude-code-toolbox/commit/8059e77939596bf53c51b4dc3623b607ca5d9b23))
+* resolve 6 pre-release bugs in installer and environment setup ([389e352](https://github.com/alex-feel/claude-code-toolbox/commit/389e3520a45e228635112be7c7bd13291bea96ca))
+
 ## [4.29.1](https://github.com/alex-feel/claude-code-toolbox/compare/v4.29.0...v4.29.1) (2026-03-17)
 
 
