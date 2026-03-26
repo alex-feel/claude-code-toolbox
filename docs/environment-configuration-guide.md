@@ -99,6 +99,8 @@ export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/rep
 | `--yes` / `-y` | Auto-confirm installation (skip interactive prompt) |
 | `--dry-run`    | Show installation plan and exit without installing  |
 
+> **Important:** CLI flags like `--yes` and `--dry-run` cannot be passed through piped invocations (`iex (irm ...)` on Windows, `curl ... | bash` on Linux/macOS). The piped execution pattern creates no parameter binding context, so flags are silently ignored. Use environment variables instead (see [Non-interactive mode](#non-interactive-mode) and [Dry-run mode](#dry-run-mode) below).
+
 ## Ready-Made Configurations
 
 The [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository contains ready-made environment configurations that you can use directly.
@@ -159,6 +161,12 @@ Quick-reference table of all 26 configuration keys. Each key links to its detail
 | [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration           |
 
 > `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
+
+### Configuration key naming
+
+All configuration keys use **kebab-case** (hyphenated lowercase), for example `mcp-servers`, `effort-level`, `files-to-download`. Using underscores (`effort_level`, `mcp_servers`) will cause the key to be flagged as unknown during installation.
+
+> **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `effort_level` and `effort-level`. However, the runtime setup script (`setup_environment.py`) uses `config.get('effort-level')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
 
 ## Configuration Keys
 
@@ -997,6 +1005,7 @@ hooks:
 | `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                  | `1`, `true`, or `yes` |
 | `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS        | Exact value `1` only  |
 | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation                   | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan without changes   | Exact value `1` only  |
 | `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows) | Path to `bash.exe`    |
 
 ### Authentication
@@ -1092,11 +1101,59 @@ export CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1
 
 For automated environments where no interactive prompt is available:
 
+**Environment variable (all platforms, works in piped mode):**
+
 ```bash
 export CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1
 ```
 
-Or use the `--yes` CLI flag.
+**CLI flag (direct invocation only, not piped):**
+
+```bash
+./setup-environment.sh python --yes
+```
+
+**Windows PowerShell (piped via iex):**
+
+```powershell
+$env:CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL='1'; $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
+**Linux/macOS (piped via curl):**
+
+```bash
+export CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+```
+
+Alternatively, on Linux/macOS you can pass flags through `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash -s -- --yes
+```
+
+### Dry-run mode
+
+To preview the installation plan without making any changes:
+
+**Environment variable (all platforms, works in piped mode):**
+
+```bash
+export CLAUDE_CODE_TOOLBOX_DRY_RUN=1
+```
+
+**CLI flag (direct invocation only, not piped):**
+
+```bash
+./setup-environment.sh python --dry-run
+```
+
+**Windows PowerShell (piped via iex):**
+
+```powershell
+$env:CLAUDE_CODE_TOOLBOX_DRY_RUN='1'; $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
 
 ## Security Considerations
 

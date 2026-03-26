@@ -129,6 +129,7 @@ The setup script requires explicit user confirmation before installing any resou
 **Environment Variable:**
 
 - `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1`: Auto-confirm (only exact value `'1'` accepted)
+- `CLAUDE_CODE_TOOLBOX_DRY_RUN=1`: Preview installation plan without changes (only exact value `'1'` accepted)
 
 **Default Behavior:**
 
@@ -142,7 +143,7 @@ The setup script requires explicit user confirmation before installing any resou
 - `1`: Errors or non-interactive refusal
 
 **Bootstrap Scripts:**
-All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes` and `--dry-run` flags to the Python script. The `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
+All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes`, `--dry-run`, `--skip-install`, and `--no-admin` flags to the Python script. The `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
 
 **Known Config Keys:**
 The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
@@ -470,6 +471,7 @@ The setup scripts support these environment variables for debugging and customiz
 - `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
 - `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
 - `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
+- `CLAUDE_CODE_TOOLBOX_DRY_RUN`: Set to `1` to preview installation plan without changes (parity with `--dry-run` CLI flag; exact value `'1'` only)
 
 ### npm Sudo Handling (Three-Tier Fallback)
 
