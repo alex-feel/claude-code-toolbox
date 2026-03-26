@@ -3394,6 +3394,23 @@ def collect_installation_plan(
     )
 
 
+def _suggest_known_key(unknown_key: str) -> str | None:
+    """Suggest the closest KNOWN_CONFIG_KEYS match for an unknown key.
+
+    Uses difflib.get_close_matches with a 0.6 cutoff for fuzzy matching.
+    Returns the best match, or None if no close match exists.
+
+    Args:
+        unknown_key: The unrecognized configuration key.
+
+    Returns:
+        The closest matching known key, or None.
+    """
+    import difflib
+    matches = difflib.get_close_matches(unknown_key, KNOWN_CONFIG_KEYS, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
+
 def display_installation_summary(
     plan: InstallationPlan,
     output: TextIO | None = None,
@@ -3513,7 +3530,11 @@ def display_installation_summary(
         for path in plan.sensitive_paths:
             _print(f'  {Colors.RED}[!] Sensitive path: {path}{Colors.NC}')
         for key in plan.unknown_keys:
-            _print(f'  {Colors.YELLOW}[?] Unknown config key: {key!r}{Colors.NC}')
+            suggestion = _suggest_known_key(key)
+            if suggestion:
+                _print(f'  {Colors.YELLOW}[?] Unknown config key: {key!r} (did you mean {suggestion!r}?){Colors.NC}')
+            else:
+                _print(f'  {Colors.YELLOW}[?] Unknown config key: {key!r}{Colors.NC}')
 
 
 def _dev_tty_available() -> bool:
@@ -3570,7 +3591,7 @@ def confirm_installation(
     """Gate installation execution on explicit user consent.
 
     Implements the confirmation flow:
-    1. --dry-run: display summary, return False (caller exits 0)
+    1. --dry-run or CLAUDE_CODE_TOOLBOX_DRY_RUN=1: display summary, return False (caller exits 0)
     2. --yes or CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1: display summary, return True
     3. Interactive TTY: prompt user with [y/N]
     4. /dev/tty available: prompt via /dev/tty
@@ -3616,6 +3637,7 @@ def confirm_installation(
         info('  1. Pass --yes flag: setup_environment.py <config> --yes')
         info('  2. Set environment variable: CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
         info('  3. Preview only: setup_environment.py <config> --dry-run')
+        info('  4. Set environment variable: CLAUDE_CODE_TOOLBOX_DRY_RUN=1')
         return False
 
     # Interactive confirmation
@@ -7662,16 +7684,17 @@ def main() -> None:
 
         # Determine auto-confirm from --yes flag or environment variable
         auto_confirm = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
+        dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
 
         # Confirmation gate
         confirmed = confirm_installation(
             plan=plan,
             auto_confirm=auto_confirm,
-            dry_run=args.dry_run,
+            dry_run=dry_run,
         )
 
         if not confirmed:
-            if args.dry_run:
+            if dry_run:
                 sys.exit(0)
             # Interactive cancellation: exit 0 (user's deliberate choice)
             # Non-interactive refusal: exit 1 (missing prerequisite)
