@@ -34,5 +34,5 @@ jobs:
 
       - name: Run sync script
         env:
-          GH_PAT: ${{ secrets.ARTIFACTS_REPO_PAT }}
+          GH_PAT: ${{ secrets.PUBLIC_REPO_PAT }}
         run: uv run python .github/sync_to_repos.py .github/sync-config.yaml
