@@ -17,6 +17,8 @@ from typing import Final
 COMMON_FILES: Final[list[str]] = [
     # MCP server configuration (always in claude_dir)
     '{claude_dir}/{cmd}-mcp.json',
+    # Installation manifest (always in claude_dir)
+    '{claude_dir}/{cmd}-manifest.json',
 ]
 
 # Expected keys in generated JSON files
@@ -40,5 +42,15 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'allow',
         'deny',
         'ask',
+    ],
+    'manifest': [
+        'name',
+        'version',
+        'config_source',
+        'config_source_url',
+        'config_source_type',
+        'installed_at',
+        'last_checked_at',
+        'command_names',
     ],
 }

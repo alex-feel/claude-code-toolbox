@@ -26,39 +26,39 @@ class TestIsParallelModeEnabled:
     def test_parallel_mode_enabled_by_default(self) -> None:
         """Test that parallel mode is enabled by default."""
         with patch.dict(os.environ, {}, clear=True):
-            # Remove CLAUDE_SEQUENTIAL_MODE if it exists
-            os.environ.pop('CLAUDE_SEQUENTIAL_MODE', None)
+            # Remove CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE if it exists
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE', None)
             assert is_parallel_mode_enabled() is True
 
     def test_parallel_mode_disabled_with_1(self) -> None:
-        """Test that CLAUDE_SEQUENTIAL_MODE=1 disables parallel mode."""
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+        """Test that CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1 disables parallel mode."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
             assert is_parallel_mode_enabled() is False
 
     def test_parallel_mode_disabled_with_true(self) -> None:
-        """Test that CLAUDE_SEQUENTIAL_MODE=true disables parallel mode."""
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'true'}):
+        """Test that CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=true disables parallel mode."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'true'}):
             assert is_parallel_mode_enabled() is False
 
     def test_parallel_mode_disabled_with_yes(self) -> None:
-        """Test that CLAUDE_SEQUENTIAL_MODE=yes disables parallel mode."""
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'yes'}):
+        """Test that CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=yes disables parallel mode."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'yes'}):
             assert is_parallel_mode_enabled() is False
 
     def test_parallel_mode_disabled_case_insensitive(self) -> None:
-        """Test that CLAUDE_SEQUENTIAL_MODE is case insensitive."""
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'TRUE'}):
+        """Test that CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is case insensitive."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'TRUE'}):
             assert is_parallel_mode_enabled() is False
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'Yes'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'Yes'}):
             assert is_parallel_mode_enabled() is False
 
     def test_parallel_mode_enabled_with_other_values(self) -> None:
         """Test that other values keep parallel mode enabled."""
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '0'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '0'}):
             assert is_parallel_mode_enabled() is True
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'false'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'false'}):
             assert is_parallel_mode_enabled() is True
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': 'no'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': 'no'}):
             assert is_parallel_mode_enabled() is True
 
 
@@ -109,7 +109,7 @@ class TestExecuteParallel:
             call_order.append(x)
             return x * 2
 
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
             result = execute_parallel([1, 2, 3, 4, 5], tracking_func)
 
         assert result == [2, 4, 6, 8, 10]
@@ -178,7 +178,7 @@ class TestExecuteParallelSafe:
                 raise ValueError('Failed')
             return x * 2
 
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
             result = execute_parallel_safe([1, 2, 3, 4, 5], sometimes_fail, default_on_error=-1)
 
         assert result == [2, 4, -1, 8, 10]
@@ -205,11 +205,15 @@ class TestValidationWithParallelExecution:
             ('https://example.com/file3.md', True),
         ]
 
-        mock_validator.validate.side_effect = [
-            (True, 'HEAD'),
-            (True, 'Range'),
-            (True, 'HEAD'),
-        ]
+        def validate_side_effect(resolved_path: str, _is_remote: bool) -> tuple[bool, str]:
+            responses: dict[str, tuple[bool, str]] = {
+                'https://example.com/file1.md': (True, 'HEAD'),
+                'https://example.com/file2.md': (True, 'Range'),
+                'https://example.com/file3.md': (True, 'HEAD'),
+            }
+            return responses.get(resolved_path, (False, 'None'))
+
+        mock_validator.validate.side_effect = validate_side_effect
 
         config = {'agents': ['file1.md', 'file2.md', 'file3.md']}
 
@@ -248,7 +252,7 @@ class TestValidationWithParallelExecution:
 
         config = {'agents': ['file1.md', 'file2.md']}
 
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
             all_valid, results = setup_environment.validate_all_config_files(
                 config,
                 'https://example.com',
@@ -292,7 +296,7 @@ class TestDownloadsWithParallelExecution:
             dest_dir = Path(tmpdir)
             resources = ['file1.md', 'file2.md']
 
-            with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+            with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
                 result = setup_environment.process_resources(
                     resources,
                     dest_dir,
@@ -423,7 +427,7 @@ class TestParallelExecutionPerformance:
         items = [1, 2]
 
         with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop('CLAUDE_SEQUENTIAL_MODE', None)
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE', None)
             result = execute_parallel(items, barrier_task, max_workers=worker_count)
 
         assert concurrent_detected.is_set(), (
@@ -453,7 +457,7 @@ class TestParallelExecutionPerformance:
 
         items = [1, 2]
 
-        with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
             result = execute_parallel(items, barrier_task)
 
         assert not barrier_reached_simultaneously.is_set(), (
@@ -538,7 +542,7 @@ class TestSkillsWithParallelExecution:
                 {'name': 'skill-1', 'base': 'https://example.com/skill-1', 'files': ['SKILL.md']},
             ]
 
-            with patch.dict(os.environ, {'CLAUDE_SEQUENTIAL_MODE': '1'}):
+            with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'}):
                 result = setup_environment.process_skills(
                     skills_config,
                     skills_dir,

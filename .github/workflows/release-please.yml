@@ -17,6 +17,8 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
     steps:
+      # TODO: googleapis/release-please-action@v4 still uses node20.
+      # Track https://github.com/googleapis/release-please-action/issues/1162 for node24 update.
       - id: release
         uses: googleapis/release-please-action@v4
         with:
@@ -31,18 +33,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: main
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version-file: pyproject.toml
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
 
       - name: Update uv.lock file
         run: uv sync

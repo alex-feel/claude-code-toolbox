@@ -58,7 +58,7 @@ class TestMCPArgumentOrdering:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),
@@ -109,7 +109,7 @@ class TestMCPArgumentOrdering:
         with (
             patch('platform.system', return_value='Windows'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value=r'C:\Users\Test\AppData\Roaming\npm\claude.CMD',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),
@@ -161,7 +161,7 @@ class TestMCPArgumentOrdering:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),
@@ -212,7 +212,7 @@ class TestMCPArgumentOrdering:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),
@@ -272,7 +272,7 @@ class TestMCPHeaderEnvVarExpansion:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),
@@ -319,7 +319,7 @@ class TestMCPProfileHeaderConfig:
         with (
             patch('platform.system', return_value='Linux'),
             patch.object(
-                setup_environment, 'find_command_robust',
+                setup_environment, 'find_command',
                 return_value='/usr/local/bin/claude',
             ),
             patch.object(setup_environment, 'run_bash_command', mock_bash),

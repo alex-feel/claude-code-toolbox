@@ -2,6 +2,7 @@
 .idea
 .claude
 .serena
+.context_server
 
 ### Python template
 # Byte-compiled / optimized / DLL files

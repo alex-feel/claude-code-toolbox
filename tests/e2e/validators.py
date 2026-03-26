@@ -924,3 +924,142 @@ def validate_tilde_preservation_on_unix(
         return errors
     # Not applicable on Windows
     return []
+
+
+def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
+    """Validate {cmd}-manifest.json structure and content.
+
+    Validates the installation manifest file that records configuration metadata.
+
+    Validates:
+    - File exists and is valid JSON
+    - Required fields are present: name, version, config_source, config_source_url,
+      config_source_type, installed_at, last_checked_at, command_names
+    - version matches config['version'] if present
+    - config_source_type is one of: url, local, repo
+    - command_names is a non-empty list
+    - installed_at is a valid ISO timestamp string
+    - last_checked_at is None (freshly created)
+    - name matches the primary command name
+
+    Args:
+        path: Path to the manifest JSON file
+        config: Golden configuration dictionary
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    data, file_errors = validate_json_file(path)
+    if file_errors:
+        return file_errors
+
+    assert data is not None
+
+    # Required fields check
+    required_fields = [
+        'name', 'version', 'config_source', 'config_source_url',
+        'config_source_type', 'installed_at', 'last_checked_at', 'command_names',
+    ]
+    errors = [
+        f"Manifest missing required field: '{field}'"
+        for field in required_fields
+        if field not in data
+    ]
+
+    if errors:
+        return errors  # Cannot validate content without required fields
+
+    # Version check
+    expected_version = config.get('version')
+    if expected_version is not None:
+        expected_version_str = str(expected_version).strip()
+        if data['version'] != expected_version_str:
+            errors.append(
+                f"Manifest version: expected {expected_version_str!r}, got {data['version']!r}",
+            )
+    elif data['version'] is not None:
+        errors.append(
+            f"Manifest version: expected None (no version in config), got {data['version']!r}",
+        )
+
+    # config_source_type validation
+    valid_types = {'url', 'local', 'repo'}
+    if data['config_source_type'] not in valid_types:
+        errors.append(
+            f"Manifest config_source_type: expected one of {valid_types}, "
+            f"got {data['config_source_type']!r}",
+        )
+
+    # command_names validation
+    if not isinstance(data['command_names'], list) or len(data['command_names']) == 0:
+        errors.append('Manifest command_names: expected non-empty list')
+
+    # installed_at must be a string (ISO timestamp)
+    if not isinstance(data['installed_at'], str):
+        errors.append(
+            f"Manifest installed_at: expected ISO timestamp string, "
+            f"got {type(data['installed_at']).__name__}",
+        )
+
+    # last_checked_at must be None for fresh manifest
+    if data['last_checked_at'] is not None:
+        errors.append(
+            f"Manifest last_checked_at: expected None for fresh manifest, "
+            f"got {data['last_checked_at']!r}",
+        )
+
+    # name should match primary command name
+    cmd_names = config.get('command-names')
+    expected_cmd = cmd_names[0] if isinstance(cmd_names, list) and cmd_names else ''
+    if expected_cmd and data['name'] != expected_cmd:
+        errors.append(
+            f"Manifest name: expected {expected_cmd!r}, got {data['name']!r}",
+        )
+
+    return errors
+
+
+def validate_global_config_output(
+    home_dir: Path,
+    golden_config: dict[str, Any],
+) -> list[str]:
+    """Validate ~/.claude.json contains merged global-config values.
+
+    Validates:
+    - File exists and is valid JSON
+    - All global-config keys from golden config are present
+    - Values match expected values
+
+    Args:
+        home_dir: Path to the home directory (e.g., tmp_path)
+        golden_config: Golden configuration dictionary
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+    claude_json = home_dir / '.claude.json'
+
+    global_config = golden_config.get('global-config')
+    if not global_config:
+        return errors
+
+    if not claude_json.exists():
+        errors.append(f'Expected {claude_json} to exist')
+        return errors
+
+    try:
+        content = json.loads(claude_json.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as e:
+        errors.append(f'Invalid JSON in {claude_json}: {e}')
+        return errors
+
+    for key, expected_value in global_config.items():
+        if key not in content:
+            errors.append(f'Missing key {key!r} in ~/.claude.json')
+        elif content[key] != expected_value:
+            errors.append(
+                f'Key {key!r}: expected {expected_value!r}, got {content[key]!r}',
+            )
+
+    return errors

@@ -4,7 +4,7 @@
 # Purpose: Bootstrap uv and run the cross-platform environment setup
 # Usage: curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 # To specify configuration:
-#   export CLAUDE_ENV_CONFIG=python
+#   export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python
 #   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 
 set -euo pipefail
@@ -29,7 +29,7 @@ if [[ "$OSTYPE" != "darwin"* ]]; then
 fi
 
 # Refuse to run as root unless explicitly allowed
-if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_ALLOW_ROOT:-}" != "1" ]; then
+if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_CODE_TOOLBOX_ALLOW_ROOT:-}" != "1" ]; then
     echo -e "${RED}[FAIL]${NC} This script should NOT be run as root or with sudo"
     echo ""
     echo -e "${YELLOW}[WARN]${NC} Running as root creates configuration under /root/,"
@@ -39,7 +39,7 @@ if [ "$(id -u)" -eq 0 ] && [ "${CLAUDE_ALLOW_ROOT:-}" != "1" ]; then
     echo -e "${CYAN}[INFO]${NC}   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash"
     echo ""
     echo -e "${CYAN}[INFO]${NC} The installer will request sudo only when needed (e.g., npm)."
-    echo -e "${CYAN}[INFO]${NC} To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>"
+    echo -e "${CYAN}[INFO]${NC} To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 bash <script>"
     exit 1
 fi
 
@@ -77,26 +77,39 @@ SETUP_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbo
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
 # Check if configuration is specified
-CONFIG="${CLAUDE_ENV_CONFIG:-${1:-}}"
+CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-${1:-}}"
 
 if [ -z "$CONFIG" ]; then
     echo -e "${RED}[ERROR]${NC} No configuration specified!"
     echo -e "${YELLOW}Usage: setup-environment.sh <config_name>${NC}"
-    echo -e "${YELLOW}   or: CLAUDE_ENV_CONFIG=python ./setup-environment.sh${NC}"
+    echo -e "${YELLOW}   or: CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python ./setup-environment.sh${NC}"
     exit 1
 fi
 
 # Build auth arguments
 # GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-# Only pass --auth for explicit override (CLAUDE_ENV_AUTH) or generic token (REPO_TOKEN)
+# Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
 AUTH_ARGS=""
-if [ -n "${CLAUDE_ENV_AUTH:-}" ]; then
+if [ -n "${CLAUDE_CODE_TOOLBOX_ENV_AUTH:-}" ]; then
     echo -e "${CYAN}[INFO]${NC} Using provided authentication"
-    AUTH_ARGS="--auth $CLAUDE_ENV_AUTH"
+    AUTH_ARGS="--auth $CLAUDE_CODE_TOOLBOX_ENV_AUTH"
 elif [ -n "${REPO_TOKEN:-}" ]; then
     echo -e "${CYAN}[INFO]${NC} Generic repo token found, will use for authentication"
     AUTH_ARGS="--auth $REPO_TOKEN"
 fi
+
+# Collect extra flags to forward to Python script
+EXTRA_ARGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --yes|-y)
+            EXTRA_ARGS="$EXTRA_ARGS --yes"
+            ;;
+        --dry-run)
+            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
+            ;;
+    esac
+done
 
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)
@@ -109,9 +122,9 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
     if [ -n "$AUTH_ARGS" ]; then
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS $EXTRA_ARGS
     else
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG"
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $EXTRA_ARGS
     fi
     EXIT_CODE=$?
 else

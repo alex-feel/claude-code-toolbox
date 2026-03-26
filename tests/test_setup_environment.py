@@ -199,12 +199,6 @@ class TestUtilityFunctions:
         # Verify shutil.which was NOT called for empty list
         mock_which.assert_not_called()
 
-    @patch('shutil.which')
-    def test_find_command(self, mock_which):
-        """Test finding command in PATH."""
-        mock_which.return_value = '/usr/bin/git'
-        assert setup_environment.find_command('git') == '/usr/bin/git'
-
 
 class TestConvertToUnixPath:
     """Tests for convert_to_unix_path function."""
@@ -1337,6 +1331,8 @@ class TestGetAllShellConfigFiles:
     def test_includes_fish_config_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test includes fish config file on macOS."""
         monkeypatch.setattr(platform, 'system', lambda: 'Darwin')
+        original_which = shutil.which
+        monkeypatch.setattr(shutil, 'which', lambda cmd: '/usr/local/bin/fish' if cmd == 'fish' else original_which(cmd))
         config_files = setup_environment.get_all_shell_config_files()
         file_names = [str(f) for f in config_files]
         # Should include fish config on macOS (fish is common on macOS)
@@ -1828,7 +1824,7 @@ class TestInstallDependencies:
 
         # Commands should be executed as-is (with tilde expansion)
         result = setup_environment.install_dependencies({
-            'mac': [
+            'macos': [
                 'echo "export FOO=bar" >> ~/.zshrc',
                 'brew install tool',
             ],
@@ -1934,7 +1930,7 @@ class TestInstallDependencies:
         mock_expand.return_value = f'uv tool install --force {home}/.local/tools/custom-tool'
 
         result = setup_environment.install_dependencies({
-            'mac': ['uv tool install ~/.local/tools/custom-tool'],
+            'macos': ['uv tool install ~/.local/tools/custom-tool'],
         })
 
         assert result is True
@@ -1960,25 +1956,25 @@ class TestInstallNodejsIfRequested:
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_true_calls_ensure_nodejs(self, mock_ensure):
-        """Test that function calls ensure_nodejs with check_claude_compat=False."""
+        """Test that function calls _ensure_nodejs standalone."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
-        mock_ensure.assert_called_once_with(check_claude_compat=False)
+        mock_ensure.assert_called_once()
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_installation_failure_returns_false(self, mock_ensure):
-        """Test that function returns False when ensure_nodejs fails."""
+        """Test that function returns False when _ensure_nodejs fails."""
         mock_ensure.return_value = False
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is False
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific')
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     @patch('setup_environment.refresh_path_from_registry')
     def test_windows_refreshes_path(self, mock_refresh, mock_ensure):
         """Test that PATH is refreshed on Windows after installation."""
@@ -1988,7 +1984,7 @@ class TestInstallNodejsIfRequested:
         mock_refresh.assert_called_once()
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     @patch('setup_environment.refresh_path_from_registry')
     def test_non_windows_skips_path_refresh(self, mock_refresh, mock_ensure, mock_system):
         """Test that PATH refresh is skipped on non-Windows platforms."""
@@ -1999,15 +1995,14 @@ class TestInstallNodejsIfRequested:
         setup_environment.install_nodejs_if_requested(config)
         mock_refresh.assert_not_called()
 
-    @patch('install_claude.ensure_nodejs')
+    @patch('setup_environment._ensure_nodejs')
     def test_nodejs_v25_accepted_via_install_nodejs_flag(self, mock_ensure):
         """Node.js v25 is accepted when install-nodejs: true (general purpose)."""
         mock_ensure.return_value = True
         config = {'install-nodejs': True}
         result = setup_environment.install_nodejs_if_requested(config)
         assert result is True
-        # Verify check_claude_compat=False was passed (v25 would be accepted)
-        mock_ensure.assert_called_once_with(check_claude_compat=False)
+        mock_ensure.assert_called_once()
 
 
 class TestFetchUrlWithAuth:
@@ -2044,7 +2039,7 @@ class TestConfigureMCPServer:
     """Test MCP server configuration."""
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server on Unix."""
@@ -2072,7 +2067,7 @@ class TestConfigureMCPServer:
         assert 'mcp add' in bash_cmd
         assert 'test-server' in bash_cmd
 
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_stdio(self, mock_run, mock_find):
         """Test configuring stdio MCP server on Unix."""
@@ -2092,7 +2087,7 @@ class TestConfigureMCPServer:
         assert mock_run.call_count == 4
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_ampersand_in_url(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with URL containing ampersand on Unix.
@@ -2127,7 +2122,7 @@ class TestConfigureMCPServer:
         assert 'read_only=true' in bash_cmd
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_multiple_query_params(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with URL containing multiple special characters."""
@@ -2158,7 +2153,7 @@ class TestConfigureMCPServer:
         assert 'format=json' in bash_cmd
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_header_and_special_url(self, mock_run, mock_find, mock_bash):
         """Test configuring HTTP MCP server with header and URL containing special characters."""
@@ -2196,7 +2191,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_http_with_header_windows_argument_order(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2242,7 +2237,7 @@ class TestConfigureMCPServer:
         assert header_pos > url_pos, '--header must come after url (variadic option prevents greedy consumption)'
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_env_and_header_argument_order(self, mock_run, mock_find, mock_bash):
         """Test HTTP transport with both env vars and header places variadic --header after positional args."""
@@ -2277,7 +2272,7 @@ class TestConfigureMCPServer:
         )
 
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_header_env_var_expansion_unix(self, mock_run, mock_find, mock_bash):
         """Test Unix HTTP transport wraps header in double quotes to allow ${VAR} expansion.
@@ -2317,7 +2312,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_windows_uses_bash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2358,7 +2353,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_uses_bash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2401,7 +2396,7 @@ class TestConfigureMCPServer:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_windows_prefers_shell_script_over_cmd(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system, tmp_path,
     ):
@@ -2419,7 +2414,7 @@ class TestConfigureMCPServer:
         cmd_file.write_text('@echo off\nnode %~dp0\\claude-code %*')
         extensionless_file.write_text('#!/bin/sh\nexec node "$basedir/claude-code" "$@"')
 
-        # find_command_robust returns the .cmd file (as Windows would typically find)
+        # find_command returns the .cmd file (as Windows would typically find)
         mock_find.return_value = str(cmd_file)
 
         # Commands succeed
@@ -2459,7 +2454,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_expands_tilde_in_command(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2498,7 +2493,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_npx_with_tilde_expands(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2533,7 +2528,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_no_tilde_unchanged(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2565,7 +2560,7 @@ class TestMCPTildeExpansionWindows:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_profile_scope_unchanged(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
     ):
@@ -2600,7 +2595,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_multiple_tildes_expanded(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2640,7 +2635,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_windows_backslash_to_forward_slash(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2677,7 +2672,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_local_scope_stdio_with_tilde(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2712,7 +2707,7 @@ class TestMCPTildeExpansionWindows:
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_combined_scope_with_tilde(
         self, mock_find, mock_run_cmd, mock_bash_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2744,7 +2739,7 @@ class TestMCPTildeExpansionWindows:
 
 
 class TestMCPTildeExpansionUnix:
-    """Test tilde expansion in STDIO MCP commands on Mac/Linux.
+    """Test tilde expansion in STDIO MCP commands on macOS/Linux.
 
     P2 fix: Ensures tilde paths in MCP server commands are expanded
     on Unix systems, matching the Windows behavior.
@@ -2753,7 +2748,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_macos_expands_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2783,7 +2778,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_linux_expands_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2813,7 +2808,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_unix_no_tilde_unchanged(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2839,7 +2834,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_stdio_linux_multiple_tildes_expanded(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -2875,7 +2870,7 @@ class TestMCPTildeExpansionUnix:
     @patch('platform.system', return_value='Darwin')
     @patch('setup_environment.expand_tildes_in_command')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_configure_mcp_server_local_scope_macos_with_tilde(
         self, mock_find, mock_run_cmd, mock_expand_tilde, mock_system,
     ):
@@ -3362,6 +3357,25 @@ class TestCreateAdditionalSettings:
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'high'
 
+    def test_create_additional_settings_effort_level_max(self):
+        """Test effortLevel set to max."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_additional_settings(
+                {},
+                claude_dir,
+                'test-env',
+                effort_level='max',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'max'
+
     def test_create_additional_settings_effort_level_none_not_included(self):
         """Test effortLevel not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3504,69 +3518,6 @@ class TestCreateAdditionalSettings:
             settings = json.loads(settings_file.read_text())
 
             assert settings['attribution'] == {'commit': '', 'pr': ''}
-
-    def test_create_additional_settings_attribution_precedence_over_deprecated(self):
-        """Test attribution takes precedence over deprecated include_co_authored_by."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            attribution = {'commit': 'New format', 'pr': 'New format'}
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=False,  # This should be ignored
-                attribution=attribution,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'attribution' in settings
-            assert settings['attribution'] == attribution
-            assert 'includeCoAuthoredBy' not in settings
-
-    def test_create_additional_settings_deprecated_include_co_authored_by_false(self):
-        """Test deprecated include_co_authored_by=False converts to attribution."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=False,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            # Should be converted to new format
-            assert 'attribution' in settings
-            assert settings['attribution'] == {'commit': '', 'pr': ''}
-            assert 'includeCoAuthoredBy' not in settings
-
-    def test_create_additional_settings_deprecated_include_co_authored_by_true(self):
-        """Test deprecated include_co_authored_by=True does not override defaults."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_additional_settings(
-                {},
-                claude_dir,
-                'test-env',
-                include_co_authored_by=True,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
-            settings = json.loads(settings_file.read_text())
-
-            # true -> use defaults, so neither key should be set
-            assert 'attribution' not in settings
-            assert 'includeCoAuthoredBy' not in settings
 
     def test_create_additional_settings_attribution_none_not_included(self):
         """Test attribution not included when None."""
@@ -3902,7 +3853,7 @@ class TestInstallClaude:
     """Test Claude installation."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('urllib.request.urlopen')
+    @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
     @patch('setup_environment.is_admin', return_value=True)
     def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system):
@@ -4050,7 +4001,7 @@ class TestMainFunction:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
 
         assert exc_info.value.code == 1
@@ -4087,7 +4038,7 @@ class TestMainFunction:
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
-                'command-name': 'test-env',
+                'command-names': ['test-env'],
                 'dependencies': {
                     'windows': ['npm install -g test'],
                 },
@@ -4109,7 +4060,7 @@ class TestMainFunction:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -4131,12 +4082,12 @@ class TestMainFunction:
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
         mock_install.return_value = False
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('setup_environment.is_admin', return_value=True)
     def test_main_skip_install(self, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
@@ -4153,7 +4104,7 @@ class TestMainFunction:
         mock_find.return_value = 'claude'
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']),
+            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install', '--yes']),
             patch('setup_environment.create_additional_settings', return_value=True),
             patch('setup_environment.create_launcher_script', return_value=Path('/tmp/launcher')),
             patch('setup_environment.register_global_command', return_value=True),
@@ -4208,7 +4159,7 @@ class TestMainFunction:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -4220,8 +4171,8 @@ class TestMainFunction:
         # (the invalid value should have been reset to None)
         mock_settings.assert_called_once()
         call_args = mock_settings.call_args
-        # effort_level is the 12th positional argument (0-indexed: position 11)
-        assert call_args[0][11] is None
+        # effort_level is the 11th positional argument (0-indexed: position 10)
+        assert call_args[0][10] is None
 
 
 class TestDownloadFailureTracking:
@@ -4286,7 +4237,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -4348,7 +4299,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # sys.exit should NOT be called with 1 when everything succeeds
             mock_exit.assert_not_called()
@@ -4415,7 +4366,7 @@ class TestDownloadFailureTracking:
         mock_register.return_value = True
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'test']),
+            patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
             patch('builtins.print') as mock_print,
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -4486,7 +4437,7 @@ class TestDownloadFailureTracking:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit'):
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit'):
             setup_environment.main()
             # MCP servers should still be configured despite download failures
             mock_mcp.assert_called_once()
@@ -5521,6 +5472,274 @@ class TestValidateUserSettings:
             assert key in result[0]
 
 
+class TestWriteMergedJson:
+    """Tests for _write_merged_json helper function."""
+
+    def test_creates_new_file(self, tmp_path: Path) -> None:
+        """Creates new file when none exists."""
+        target = tmp_path / 'output.json'
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert merged == {'key': 'value'}
+        assert target.exists()
+        written = json.loads(target.read_text(encoding='utf-8'))
+        assert written == {'key': 'value'}
+
+    def test_merges_into_existing(self, tmp_path: Path) -> None:
+        """Merges new settings into existing file."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'existing': 'val', 'key': 'old'}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'new', 'added': True})
+
+        assert ok is True
+        assert merged['existing'] == 'val'
+        assert merged['key'] == 'new'
+        assert merged['added'] is True
+
+    def test_handles_invalid_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handles invalid JSON gracefully."""
+        target = tmp_path / 'output.json'
+        target.write_text('{ broken json !!!', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        captured = capsys.readouterr()
+        assert 'Invalid JSON' in captured.out
+        assert merged == {'key': 'value'}
+
+    def test_handles_non_dict_json(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Handles non-dict JSON gracefully."""
+        target = tmp_path / 'output.json'
+        target.write_text('["array", "not", "dict"]', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        captured = capsys.readouterr()
+        assert 'not a dict' in captured.out
+        assert merged == {'key': 'value'}
+
+    def test_handles_empty_file(self, tmp_path: Path) -> None:
+        """Handles empty file as empty dict."""
+        target = tmp_path / 'output.json'
+        target.write_text('', encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert merged == {'key': 'value'}
+
+    def test_custom_array_union_keys(self, tmp_path: Path) -> None:
+        """Custom array_union_keys are used."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(
+            target, {'list': [2, 3]}, array_union_keys={'list'},
+        )
+
+        assert ok is True
+        assert set(merged['list']) == {1, 2, 3}
+
+    def test_empty_array_union_keys(self, tmp_path: Path) -> None:
+        """Empty set() disables array union."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(
+            target, {'list': [3, 4]}, array_union_keys=set(),
+        )
+
+        assert ok is True
+        assert merged['list'] == [3, 4]
+
+    def test_creates_parent_directories(self, tmp_path: Path) -> None:
+        """Creates parent directories when ensure_parent=True."""
+        target = tmp_path / 'subdir' / 'nested' / 'output.json'
+
+        ok, _ = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is True
+        assert target.exists()
+
+    def test_returns_false_on_write_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns False on write failure."""
+        target = tmp_path / 'output.json'
+
+        def mock_write_text(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError('Permission denied')
+
+        monkeypatch.setattr(Path, 'write_text', mock_write_text)
+
+        ok, _ = setup_environment._write_merged_json(target, {'key': 'value'})
+
+        assert ok is False
+
+    def test_preserves_existing_keys(self, tmp_path: Path) -> None:
+        """Keys not in update are preserved."""
+        target = tmp_path / 'output.json'
+        target.write_text(json.dumps({'a': 1, 'b': 2}), encoding='utf-8')
+
+        ok, merged = setup_environment._write_merged_json(target, {'c': 3})
+
+        assert ok is True
+        assert merged == {'a': 1, 'b': 2, 'c': 3}
+
+    def test_file_ends_with_newline(self, tmp_path: Path) -> None:
+        """Written file ends with newline."""
+        target = tmp_path / 'output.json'
+
+        setup_environment._write_merged_json(target, {'key': 'value'})
+
+        content = target.read_text(encoding='utf-8')
+        assert content.endswith('\n')
+
+
+class TestValidateGlobalConfig:
+    """Tests for validate_global_config function."""
+
+    def test_valid_config_returns_empty(self) -> None:
+        """Valid global config returns empty error list."""
+        result = setup_environment.validate_global_config({
+            'autoConnectIde': True,
+            'editorMode': 'vim',
+        })
+        assert result == []
+
+    def test_oauth_session_rejected(self) -> None:
+        """oauthSession key is rejected."""
+        result = setup_environment.validate_global_config({'oauthSession': 'token'})
+        assert len(result) == 1
+        assert 'oauthSession' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_oauth_account_rejected(self) -> None:
+        """oauthAccount key is rejected."""
+        result = setup_environment.validate_global_config({'oauthAccount': 'account'})
+        assert len(result) == 1
+        assert 'oauthAccount' in result[0]
+        assert 'not allowed' in result[0]
+
+    def test_both_oauth_keys_rejected(self) -> None:
+        """Both OAuth keys are reported."""
+        result = setup_environment.validate_global_config({
+            'oauthSession': 'token',
+            'oauthAccount': 'account',
+        })
+        assert len(result) == 2
+
+    def test_empty_config_passes(self) -> None:
+        """Empty config passes validation."""
+        result = setup_environment.validate_global_config({})
+        assert result == []
+
+    def test_excluded_keys_constant_used(self) -> None:
+        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant."""
+        for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
+            result = setup_environment.validate_global_config({key: 'test_value'})
+            assert len(result) == 1
+            assert key in result[0]
+
+
+class TestWriteGlobalConfig:
+    """Tests for write_global_config function."""
+
+    def test_creates_claude_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Creates ~/.claude.json when it does not exist."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        assert not config_file.exists()
+
+        result = setup_environment.write_global_config({'autoConnectIde': True})
+
+        assert result is True
+        assert config_file.exists()
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written == {'autoConnectIde': True}
+
+    def test_merges_into_existing_claude_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Deep merges into existing ~/.claude.json."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'existingKey': 'value'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'autoConnectIde': True})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['existingKey'] == 'value'
+        assert written['autoConnectIde'] is True
+
+    def test_preserves_install_method(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Preserves installMethod key written by install_claude.py."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'installMethod': 'native'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'editorMode': 'vim'})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['installMethod'] == 'native'
+        assert written['editorMode'] == 'vim'
+
+    def test_mcp_servers_deep_merge(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mcpServers dict-of-dicts merges correctly."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        existing = {'mcpServers': {'server1': {'url': 'http://old'}}}
+        config_file.write_text(json.dumps(existing), encoding='utf-8')
+
+        result = setup_environment.write_global_config({
+            'mcpServers': {'server2': {'url': 'http://new'}},
+        })
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert 'server1' in written['mcpServers']
+        assert 'server2' in written['mcpServers']
+
+    def test_scalar_overwrite(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Scalar values are overwritten."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'editorMode': 'emacs'}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'editorMode': 'vim'})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['editorMode'] == 'vim'
+
+    def test_no_array_union(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Arrays are NOT unioned (replaced instead)."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text(json.dumps({'items': [1, 2]}), encoding='utf-8')
+
+        result = setup_environment.write_global_config({'items': [3, 4]})
+
+        assert result is True
+        written = json.loads(config_file.read_text(encoding='utf-8'))
+        assert written['items'] == [3, 4]
+
+    def test_returns_false_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns False on write failure."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+
+        def mock_write_text(*_args: Any, **_kwargs: Any) -> None:
+            raise OSError('Permission denied')
+
+        monkeypatch.setattr(Path, 'write_text', mock_write_text)
+
+        result = setup_environment.write_global_config({'key': 'value'})
+
+        assert result is False
+
+
 class TestDetectSettingsConflicts:
     """Test the detect_settings_conflicts function."""
 
@@ -5680,7 +5899,7 @@ class TestConfigInheritance:
     def test_no_inheritance_returns_config_unchanged(self):
         """Test that config without 'inherit' key is returned as-is."""
         config = {'name': 'Test', 'model': 'claude-3'}
-        result = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(config, 'test.yaml')
         assert result == config
 
     def test_inherit_key_removed_from_result(self):
@@ -5688,7 +5907,7 @@ class TestConfigInheritance:
         with patch.object(setup_environment, 'load_config_from_source') as mock_load:
             mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
             config = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-            result = setup_environment.resolve_config_inheritance(config, 'child.yaml')
+            result, _chain = setup_environment.resolve_config_inheritance(config, 'child.yaml')
             assert 'inherit' not in result
 
     @patch.object(setup_environment, 'load_config_from_source')
@@ -5699,7 +5918,7 @@ class TestConfigInheritance:
             'parent.yaml',
         )
         child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         assert result['name'] == 'Parent'  # Inherited from parent
         assert result['model'] == 'claude-3'  # Overridden by child
@@ -5716,7 +5935,7 @@ class TestConfigInheritance:
             'inherit': 'parent.yaml',
             'dependencies': {'linux': ['apt']},  # Completely replaces
         }
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         # Child's dependencies should COMPLETELY replace parent's
         assert result['dependencies'] == {'linux': ['apt']}
@@ -5737,7 +5956,7 @@ class TestConfigInheritance:
         mock_load.side_effect = load_side_effect
 
         child = {'inherit': 'parent.yaml', 'c': 30, 'd': 4}
-        result = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
 
         assert result['name'] == 'Grandparent'  # From grandparent
         assert result['a'] == 1  # From grandparent
@@ -5852,7 +6071,7 @@ class TestConfigInheritance:
         """Test inheriting from full URL."""
         mock_load.return_value = ({'name': 'Remote'}, 'https://example.com/base.yaml')
         config = {'inherit': 'https://example.com/base.yaml', 'model': 'test'}
-        result = setup_environment.resolve_config_inheritance(config, './local.yaml')
+        result, _chain = setup_environment.resolve_config_inheritance(config, './local.yaml')
 
         assert result['name'] == 'Remote'
         mock_load.assert_called_once_with('https://example.com/base.yaml', None)
@@ -5934,7 +6153,8 @@ dependencies:
             parent = Path(tmpdir) / 'parent.yaml'
             parent.write_text(f'''
 inherit: {grandparent}
-command-name: my-env
+command-names:
+  - my-env
 mcp-servers:
   - name: server1
 ''')
@@ -5950,16 +6170,119 @@ agents:
 
             # Load and resolve
             config, source = setup_environment.load_config_from_source(str(child))
-            resolved = setup_environment.resolve_config_inheritance(config, source)
+            resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
             # Verify inheritance
             assert resolved['name'] == 'Grandparent Config'  # From grandparent
             assert resolved['model'] == 'claude-3'  # Overridden by child
-            assert resolved['command-name'] == 'my-env'  # From parent
+            assert resolved['command-names'] == ['my-env']  # From parent
             assert resolved['mcp-servers'] == [{'name': 'server1'}]  # From parent
             assert resolved['agents'] == ['my-agent.md']  # From child
             assert resolved['dependencies'] == {'common': ['pip install base']}  # From grandparent
             assert 'inherit' not in resolved
+
+
+class TestVersionInheritance:
+    """Test that version field is extracted from root config, not inherited."""
+
+    @patch('setup_environment.load_config_from_source')
+    def test_parent_version_does_not_leak_to_child(self, mock_load: MagicMock) -> None:
+        """When child omits version, parent version must NOT appear in plan."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'name': 'Child'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        # Extract version BEFORE merge (the correct approach)
+        root_version = child_config.get('version')
+        assert root_version is None
+
+        # Verify the merge DOES leak (documenting the bug behavior)
+        merged, _chain = setup_environment.resolve_config_inheritance(
+            child_config, 'child.yaml',
+        )
+        assert merged.get('version') == '1.0.0'  # Parent's version leaks into merged config
+
+    @patch('setup_environment.load_config_from_source')
+    def test_child_version_preserved_over_parent(self, mock_load: MagicMock) -> None:
+        """Child with version takes precedence, pre-merge extraction gets child's value."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'version': '2.0.0'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        root_version = child_config.get('version')
+        assert root_version == '2.0.0'
+
+    def test_plan_uses_passed_version_not_merged_config(self) -> None:
+        """collect_installation_plan uses config_version parameter, ignoring config dict version."""
+        # Simulates merged config where parent's version leaked in
+        config: dict[str, Any] = {'name': 'test', 'version': '1.0.0'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = MagicMock()
+        args.skip_install = False
+
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,  # Root config had no version
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version is None  # Parameter value used, NOT config dict
+
+    def test_plan_with_explicit_root_version(self) -> None:
+        """Pre-extracted root version is correctly passed to plan."""
+        config: dict[str, Any] = {'name': 'test'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = MagicMock()
+        args.skip_install = False
+
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version='2.0.0',
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version == '2.0.0'
+
+    @patch('setup_environment.load_config_from_source')
+    def test_full_flow_parent_version_does_not_leak_into_plan(self, mock_load: MagicMock) -> None:
+        """Integration: parent version absent from plan when child omits it."""
+        parent_config: dict[str, Any] = {'name': 'Parent', 'version': '1.0.0', 'model': 'base'}
+        child_config: dict[str, Any] = {'inherit': 'parent.yaml', 'name': 'Child'}
+        mock_load.return_value = (parent_config, 'parent.yaml')
+
+        # Step 1: Extract version BEFORE merge
+        raw_version = child_config.get('version')
+        config_version: str | None = None
+        if raw_version is not None:
+            version_str = str(raw_version).strip()
+            if version_str:
+                config_version = version_str
+
+        # Step 2: Resolve inheritance (merges parent into child)
+        merged, chain = setup_environment.resolve_config_inheritance(
+            child_config, 'child.yaml',
+        )
+
+        # Step 3: Build plan with pre-extracted version
+        args = MagicMock()
+        args.skip_install = False
+        plan = setup_environment.collect_installation_plan(
+            config=merged,
+            config_source='child.yaml',
+            config_name='child',
+            config_version=config_version,
+            inheritance_chain=chain,
+            args=args,
+        )
+        assert plan.config_version is None  # Parent's "1.0.0" must NOT leak
 
 
 class TestCommandNames:
@@ -6014,7 +6337,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6073,7 +6396,7 @@ class TestCommandNames:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -6082,135 +6405,6 @@ class TestCommandNames:
         call_args = mock_register.call_args
         assert call_args[0][1] == 'aegis'  # Primary command name
         assert call_args[0][2] == ['claude-dev', 'myenv']  # Additional names
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_command_name_deprecated_shows_warning(
-        self,
-        mock_mkdir,
-        mock_is_admin,
-        mock_register,
-        mock_launcher,
-        mock_settings,
-        mock_mcp,
-        mock_download,
-        mock_deps,
-        mock_install,
-        mock_validate,
-        mock_load,
-        capsys,
-    ):
-        """Test deprecated command-name shows deprecation warning."""
-        # Verify mocks are properly configured
-        assert mock_mkdir is not None
-        assert mock_is_admin.return_value is True
-        mock_load.return_value = (
-            {
-                'name': 'Test Environment',
-                'command-name': 'old-style',  # Deprecated format
-                'dependencies': {},
-                'agents': [],
-                'slash-commands': [],
-                'mcp-servers': [],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_deps.return_value = True
-        mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = Path('/tmp/launcher.sh')
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        # Verify deprecation warning was shown
-        captured = capsys.readouterr()
-        assert 'deprecated' in captured.out.lower()
-        assert 'command-names' in captured.out
-
-        # Verify register_global_command was still called with the name
-        mock_register.assert_called_once()
-        call_args = mock_register.call_args
-        assert call_args[0][1] == 'old-style'  # Primary command name
-        assert call_args[0][2] is None  # No additional names
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_command_names_takes_precedence_over_deprecated(
-        self,
-        mock_mkdir,
-        mock_is_admin,
-        mock_register,
-        mock_launcher,
-        mock_settings,
-        mock_mcp,
-        mock_download,
-        mock_deps,
-        mock_install,
-        mock_validate,
-        mock_load,
-        capsys,
-    ):
-        """Test command-names takes precedence when both are specified."""
-        # Verify mocks are properly configured
-        assert mock_mkdir is not None
-        assert mock_is_admin.return_value is True
-        mock_load.return_value = (
-            {
-                'name': 'Test Environment',
-                'command-names': ['new-style'],  # New format
-                'command-name': 'old-style',  # Deprecated format (should be ignored)
-                'dependencies': {},
-                'agents': [],
-                'slash-commands': [],
-                'mcp-servers': [],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_deps.return_value = True
-        mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = Path('/tmp/launcher.sh')
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        # Verify warning about both being specified
-        captured = capsys.readouterr()
-        assert 'both' in captured.out.lower() or 'Both' in captured.out
-
-        # Verify register_global_command was called with new format
-        mock_register.assert_called_once()
-        call_args = mock_register.call_args
-        assert call_args[0][1] == 'new-style'  # New format takes precedence
 
     @patch('setup_environment.load_config_from_source')
     def test_command_names_validation_empty_name(self, mock_load):
@@ -6223,7 +6417,7 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -6238,7 +6432,7 @@ class TestCommandNames:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -6327,13 +6521,26 @@ class TestVerifyNodejsAvailable:
     """Test verify_nodejs_available function with various Node.js installation methods."""
 
     @patch('platform.system', return_value='Linux')
-    def test_non_windows_returns_true(self, mock_system):
-        """Test that non-Windows platforms always return True."""
-        # Verify mock is properly configured for Linux platform
+    @patch('shutil.which', return_value='/usr/bin/node')
+    def test_non_windows_returns_node_dir(self, mock_which, mock_system):
+        """Test that non-Windows platforms return the node parent directory."""
         assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value == '/usr/bin/node'
         result = setup_environment.verify_nodejs_available()
-        assert result is True
+        assert result == str(Path('/usr/bin/node').parent)
 
+    @patch('platform.system', return_value='Linux')
+    @patch('shutil.which', return_value=None)
+    def test_unix_node_not_found_returns_none(self, mock_which, mock_system, capsys):
+        """Test that Unix returns None with warning when node is not found."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value is None
+        result = setup_environment.verify_nodejs_available()
+        assert result is None
+        captured = capsys.readouterr()
+        assert 'not found in PATH' in captured.out
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
     @patch('subprocess.run')
@@ -6348,25 +6555,26 @@ class TestVerifyNodejsAvailable:
 
         result = setup_environment.verify_nodejs_available()
 
-        assert result is True
+        assert result == r'C:\Program Files\nodejs'
         mock_which.assert_called_with('node')
         captured = capsys.readouterr()
         assert 'Node.js verified' in captured.out
         assert 'v20.10.0' in captured.out
 
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     @patch('subprocess.run')
-    def test_windows_node_via_find_command_robust(
+    def test_windows_node_via_find_command(
         self, mock_run, mock_find_robust, mock_which, mock_system, capsys,
     ):
-        """Test finding Node.js via find_command_robust fallback on Windows."""
+        """Test finding Node.js via find_command fallback on Windows."""
         # Verify mock is properly configured for Windows platform
         assert mock_system.return_value == 'Windows'
         # shutil.which returns None (not in PATH)
         mock_which.return_value = None
-        # find_command_robust finds it in a version manager location
+        # find_command finds it in a version manager location
         mock_find_robust.return_value = r'C:\Users\test\AppData\Roaming\nvm\v20.10.0\node.exe'
         mock_run.return_value = subprocess.CompletedProcess(
             ['node', '--version'], 0, 'v20.10.0', '',
@@ -6375,13 +6583,13 @@ class TestVerifyNodejsAvailable:
         with patch.dict('os.environ', {'PATH': r'C:\Windows\System32'}):
             result = setup_environment.verify_nodejs_available()
 
-        assert result is True
+        assert result == r'C:\Users\test\AppData\Roaming\nvm\v20.10.0'
         captured = capsys.readouterr()
         assert 'Node.js verified' in captured.out
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which')
-    @patch('setup_environment.find_command_robust')
+    @patch('setup_environment.find_command')
     def test_windows_node_not_found(self, mock_find_robust, mock_which, mock_system, capsys):
         """Test when Node.js is not found on Windows."""
         # Verify mock is properly configured for Windows platform
@@ -6391,14 +6599,14 @@ class TestVerifyNodejsAvailable:
 
         result = setup_environment.verify_nodejs_available()
 
-        assert result is False
+        assert result is None
         captured = capsys.readouterr()
         assert 'Node.js not found in PATH' in captured.err
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
 class TestFindCommandRobustNodePaths:
-    """Test find_command_robust with various Node.js installation paths."""
+    """Test find_command with various Node.js installation paths."""
 
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value=None)  # Primary search fails
@@ -6417,7 +6625,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result
@@ -6439,7 +6647,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'USERPROFILE': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result
@@ -6463,7 +6671,7 @@ class TestFindCommandRobustNodePaths:
             node_exe.write_text('fake node')
 
             with patch.dict('os.environ', {'APPDATA': tmpdir}):
-                result = setup_environment.find_command_robust('node')
+                result = setup_environment.find_command('node')
 
             assert result is not None
             assert 'node.exe' in result
@@ -6480,7 +6688,7 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6495,7 +6703,7 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6507,7 +6715,7 @@ class TestMCPServerNeedsNodejsDetection:
         mcp_servers: list[dict[str, str]] = []
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
@@ -6522,12 +6730,167 @@ class TestMCPServerNeedsNodejsDetection:
         ]
 
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
 
         assert needs_nodejs is False
+
+    def test_npx_substring_does_not_match(self):
+        """Substring 'npx' inside a different command does not trigger."""
+        mcp_servers = [
+            {'name': 'wrapper', 'command': 'python run_npx_wrapper.py'},
+        ]
+
+        needs_nodejs = any(
+            setup_environment._command_starts_with_npx(str(server.get('command', '')))
+            for server in mcp_servers
+            if server.get('command')
+        )
+
+        assert needs_nodejs is False
+
+
+class TestCommandStartsWithNpx:
+    """Test _command_starts_with_npx helper."""
+
+    def test_npx_command(self):
+        assert setup_environment._command_starts_with_npx('npx -y @mcp/server') is True
+
+    def test_npx_bare(self):
+        assert setup_environment._command_starts_with_npx('npx') is True
+
+    def test_python_command(self):
+        assert setup_environment._command_starts_with_npx('python server.py') is False
+
+    def test_npx_in_path(self):
+        """npx as substring in path does not match."""
+        assert setup_environment._command_starts_with_npx('python run_npx_wrapper.py') is False
+
+    def test_npx_in_argument(self):
+        """npx as an argument (not first token) does not match."""
+        assert setup_environment._command_starts_with_npx('node --run npx') is False
+
+    def test_empty_command(self):
+        assert setup_environment._command_starts_with_npx('') is False
+
+    def test_malformed_quotes(self):
+        """Handles malformed quoting gracefully."""
+        assert setup_environment._command_starts_with_npx("npx -y 'unclosed") is True
+
+
+class TestPrepareWindowsBashEnv:
+    """Test _prepare_windows_bash_env helper."""
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_none_nodejs_dir_uses_current_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}):
+            env = setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude', None,
+            )
+            mock_convert.assert_called_once_with(r'C:\Windows')
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+            assert env.unix_explicit_path == '/mocked/path'
+            assert env.unix_claude_cmd == '/c/Users/test/.local/bin/claude'
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/nodejs/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_prepends_nodejs_dir_when_not_in_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}), patch('pathlib.Path.exists', return_value=True):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\Program Files\nodejs',
+            )
+            mock_convert.assert_called_once_with(
+                r'C:\Program Files\nodejs;C:\Windows',
+            )
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_does_not_duplicate_when_already_in_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Program Files\nodejs;C:\Windows'}):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\Program Files\nodejs',
+            )
+            mock_convert.assert_called_once_with(
+                r'C:\Program Files\nodejs;C:\Windows',
+            )
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_nonexistent_dir_uses_current_path(
+        self, mock_unix, mock_bash, mock_convert,
+    ):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}), patch('pathlib.Path.exists', return_value=False):
+            setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude',
+                r'C:\nonexistent',
+            )
+            mock_convert.assert_called_once_with(r'C:\Windows')
+            mock_bash.assert_called_once()
+            mock_unix.assert_called_once()
+
+    @patch('setup_environment.convert_path_env_to_unix', return_value='/mocked/path')
+    @patch(
+        'setup_environment.get_bash_preferred_command',
+        return_value=r'C:\Users\test\.local\bin\claude',
+    )
+    @patch(
+        'setup_environment.convert_to_unix_path',
+        return_value='/c/Users/test/.local/bin/claude',
+    )
+    def test_returns_named_tuple(self, mock_unix, mock_bash, mock_convert):
+        with patch.dict('os.environ', {'PATH': r'C:\Windows'}):
+            env = setup_environment._prepare_windows_bash_env(
+                r'C:\Users\test\.local\bin\claude', None,
+            )
+            assert mock_convert.called
+            assert mock_bash.called
+            assert mock_unix.called
+            assert hasattr(env, 'unix_explicit_path')
+            assert hasattr(env, 'unix_claude_cmd')
 
 
 class TestFetchWithRetry:
@@ -7129,25 +7492,25 @@ class TestParallelWorkersConfiguration:
         assert setup_environment.DEFAULT_PARALLEL_WORKERS == 2
 
     def test_parallel_workers_env_parsing_logic(self) -> None:
-        """Test that CLAUDE_PARALLEL_WORKERS parsing logic works correctly."""
+        """Test that CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS parsing logic works correctly."""
         # Test the parsing logic that the module uses at load time
-        # The module uses: int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        # The module uses: int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
 
         # Test with env var set
-        os.environ['CLAUDE_PARALLEL_WORKERS'] = '2'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '2'
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 2
 
         # Test with higher value
-        os.environ['CLAUDE_PARALLEL_WORKERS'] = '10'
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '10'
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 10
 
         # Clean up
-        os.environ.pop('CLAUDE_PARALLEL_WORKERS', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', None)
 
         # Test fallback to default
-        value = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
         assert value == 2
 
 
@@ -7359,7 +7722,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7368,9 +7731,9 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 13-16 skipped
+        # Verify output shows Steps 14-18 skipped
         captured = capsys.readouterr()
-        assert 'Steps 13-16: Skipping command creation' in captured.out
+        assert 'Steps 14-18: Skipping command creation' in captured.out
         assert 'Step 12: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -7425,7 +7788,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7435,13 +7798,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 12 and Steps 13-16
+        # Verify output shows Step 12 and Steps 14-18
         captured = capsys.readouterr()
         assert 'Step 12: Writing user settings' in captured.out
-        assert 'Step 13: Downloading hooks' in captured.out
-        assert 'Step 14: Configuring settings' in captured.out
-        assert 'Step 15: Creating launcher script' in captured.out
-        assert 'Step 16: Registering global' in captured.out
+        assert 'Step 14: Downloading hooks' in captured.out
+        assert 'Step 15: Configuring settings' in captured.out
+        assert 'Step 17: Creating launcher script' in captured.out
+        assert 'Step 18: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(
@@ -7460,7 +7823,7 @@ class TestMainFunctionUserSettings:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -7521,7 +7884,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7579,7 +7942,7 @@ class TestMainFunctionUserSettings:
         mock_launcher.return_value = Path('/tmp/launcher.sh')
         mock_register.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7630,7 +7993,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = True
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -7678,7 +8041,7 @@ class TestMainFunctionUserSettings:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = False  # Simulate write failure
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # Should NOT exit with error - write failure is non-fatal
             mock_exit.assert_not_called()
@@ -8099,6 +8462,52 @@ class TestWriteUserSettingsEdgeCases:
             assert result is False  # Should return False on OSError  # Should return False on permission error
 
 
+class TestWriteUserSettingsWslWarning:
+    """Tests for WSL warning when Windows-style paths are detected in settings."""
+
+    def test_wsl_warning_fires_for_windows_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify WSL warning fires for Windows-style paths in settings."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        # Single backslash as JSON produces from Windows paths
+        settings = {'apiKeyHelper': 'C:\\Users\\test\\.claude\\scripts\\key.py'}
+
+        with (
+            patch('setup_environment.is_wsl', return_value=True),
+            patch('setup_environment.warning') as mock_warning,
+        ):
+            setup_environment.write_user_settings(settings, claude_dir)
+            # At least one warning should mention WSL and Windows-style path
+            wsl_warnings = [
+                call for call in mock_warning.call_args_list
+                if 'WSL detected' in str(call) and 'Windows-style path' in str(call)
+            ]
+            assert len(wsl_warnings) > 0, 'WSL warning should fire for Windows-style path'
+
+    def test_wsl_warning_does_not_fire_for_linux_path(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify WSL warning does NOT fire for Linux-style paths."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        # Use an already-expanded Linux path (no tilde) to avoid platform-dependent expansion
+        settings = {'apiKeyHelper': '/home/user/.claude/scripts/key.py'}
+
+        with (
+            patch('setup_environment.is_wsl', return_value=True),
+            patch('setup_environment.warning') as mock_warning,
+        ):
+            setup_environment.write_user_settings(settings, claude_dir)
+            # No warning should mention WSL + Windows-style path
+            wsl_warnings = [
+                call for call in mock_warning.call_args_list
+                if 'WSL detected' in str(call) and 'Windows-style path' in str(call)
+            ]
+            assert len(wsl_warnings) == 0, 'WSL warning should NOT fire for Linux-style path'
+
+
 class TestUserSettingsErrorRecovery:
     """Error handling and recovery tests."""
 
@@ -8140,7 +8549,7 @@ class TestUserSettingsErrorRecovery:
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_write_user_settings.return_value = False  # Write fails
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             # Should NOT exit - write failure is non-fatal
             mock_exit.assert_not_called()
@@ -8166,7 +8575,7 @@ class TestUserSettingsErrorRecovery:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
 
         assert exc_info.value.code == 1
@@ -8255,7 +8664,7 @@ model: claude-sonnet-4
         # Load child config
         config, source = setup_environment.load_config_from_source(str(child_file))
         # Resolve inheritance chain
-        resolved = setup_environment.resolve_config_inheritance(config, source)
+        resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
         # Child inherits parent's user-settings
         assert 'user-settings' in resolved
@@ -8283,7 +8692,7 @@ user-settings:
         # Load child config
         config, source = setup_environment.load_config_from_source(str(child_file))
         # Resolve inheritance chain
-        resolved = setup_environment.resolve_config_inheritance(config, source)
+        resolved, _chain = setup_environment.resolve_config_inheritance(config, source)
 
         # Child has user-settings, parent did not
         assert 'user-settings' in resolved
@@ -8296,8 +8705,8 @@ class TestRootGuard:
     """Test root detection guard in setup_environment.py main()."""
 
     def test_root_guard_exits_when_root_without_override(self) -> None:
-        """Running as root without CLAUDE_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8308,12 +8717,12 @@ class TestRootGuard:
         assert exc_info.value.code == 1
 
     def test_root_guard_allows_when_override_set(self) -> None:
-        """CLAUDE_ALLOW_ROOT=1 allows root execution to proceed."""
+        """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed."""
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {'CLAUDE_ALLOW_ROOT': '1'}),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1'}),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),
@@ -8325,7 +8734,7 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Windows'),
             patch.object(setup_environment, 'is_admin', return_value=False),
-            patch('sys.argv', ['setup_environment.py', 'python']),
+            patch('sys.argv', ['setup_environment.py', 'python', '--yes']),
             patch.object(setup_environment, 'load_config_from_source',
                          side_effect=Exception('Config loading stopped by test')),
             contextlib.suppress(SystemExit, Exception),
@@ -8336,7 +8745,7 @@ class TestRootGuard:
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8347,11 +8756,11 @@ class TestRootGuard:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
-        assert 'CLAUDE_ALLOW_ROOT' in combined
+        assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
     def test_root_guard_works_on_macos(self) -> None:
         """Root guard activates on macOS the same as Linux."""
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8366,7 +8775,7 @@ class TestRootGuard:
 
         The root guard MUST run before argparse to catch all invocations.
         """
-        os.environ.pop('CLAUDE_ALLOW_ROOT', None)
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
@@ -8377,3 +8786,486 @@ class TestRootGuard:
             setup_environment.main()
         # Should exit from root guard (code 1), NOT from argparse error (code 2)
         assert exc_info.value.code == 1
+
+
+class TestCollectInstallationPlan:
+    """Test collect_installation_plan() data extraction from config."""
+
+    def _make_args(self, skip_install: bool = False) -> MagicMock:
+        args = MagicMock()
+        args.skip_install = skip_install
+        return args
+
+    def test_collect_plan_basic_config(self) -> None:
+        """Minimal config produces correct plan with defaults."""
+        config: dict[str, Any] = {'name': 'test-env'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_name == 'test-env'
+        assert plan.config_source_type == 'repo'
+        assert plan.agents == []
+        assert plan.slash_commands == []
+        assert plan.total_resources == 0
+
+    def test_collect_plan_full_config(self) -> None:
+        """Config with all resource types produces correct plan."""
+        config: dict[str, Any] = {
+            'name': 'full-env',
+            'version': '2.0.0',
+            'agents': ['agent1.md', 'agent2.md'],
+            'slash-commands': ['cmd1.md'],
+            'skills': [{'name': 'skill1', 'files': ['s.md']}],
+            'files-to-download': [{'source': 'f.txt', 'dest': '~/.claude/f.txt'}],
+            'hooks': {
+                'files': ['hook.py'],
+                'events': [{'event': 'PostToolUse', 'type': 'command', 'command': 'hook.py'}],
+            },
+            'mcp-servers': [{'name': 'srv', 'transport': 'http', 'url': 'http://localhost'}],
+            'model': 'sonnet',
+            'dependencies': {
+                'common': ['pip install flask'],
+                'windows': ['winget install Git'],
+            },
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='full', source_type='local', name='full-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='/path/to/full.yaml',
+            config_name='full',
+            config_version='2.0.0',
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert len(plan.agents) == 2
+        assert len(plan.slash_commands) == 1
+        assert len(plan.skills) == 1
+        assert len(plan.files_to_download) == 1
+        assert len(plan.hooks_files) == 1
+        assert len(plan.hooks_events) == 1
+        assert len(plan.mcp_servers) == 1
+        assert plan.model == 'sonnet'
+        assert plan.config_version == '2.0.0'
+
+    def test_collect_plan_unknown_keys(self) -> None:
+        """Extra keys are detected in plan.unknown_keys."""
+        config: dict[str, Any] = {
+            'name': 'test',
+            'my-typo-key': 'oops',
+            'future-feature': True,
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert 'future-feature' in plan.unknown_keys
+        assert 'my-typo-key' in plan.unknown_keys
+        assert 'name' not in plan.unknown_keys
+
+    def test_collect_plan_sensitive_paths(self) -> None:
+        """Sensitive dest paths are detected in plan.sensitive_paths."""
+        config: dict[str, Any] = {
+            'files-to-download': [
+                {'source': 'key.pub', 'dest': '~/.ssh/authorized_keys'},
+                {'source': 'safe.txt', 'dest': '~/.claude/data/safe.txt'},
+            ],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert '~/.ssh/authorized_keys' in plan.sensitive_paths
+        assert '~/.claude/data/safe.txt' not in plan.sensitive_paths
+
+    def test_collect_plan_dependency_commands(self) -> None:
+        """All platform dependency commands are collected."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['pip install requests'],
+                'linux': ['apt-get install -y curl'],
+                'macos': ['brew install wget'],
+            },
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert 'common' in plan.dependency_commands
+        assert 'linux' in plan.dependency_commands
+        assert 'macos' in plan.dependency_commands
+        assert 'windows' not in plan.dependency_commands
+        assert plan.dependency_commands['common'] == ['pip install requests']
+
+    def test_collect_plan_total_resources(self) -> None:
+        """total_resources property returns correct aggregate count."""
+        config: dict[str, Any] = {
+            'agents': ['a1.md', 'a2.md'],
+            'slash-commands': ['c1.md'],
+            'mcp-servers': [{'name': 's1'}, {'name': 's2'}, {'name': 's3'}],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.total_resources == 6  # 2 agents + 1 cmd + 3 servers
+
+    def test_collect_plan_has_security_concerns(self) -> None:
+        """has_security_concerns property returns True when concerns exist."""
+        config_clean: dict[str, Any] = {'name': 'clean'}
+        config_deps: dict[str, Any] = {
+            'dependencies': {'common': ['pip install x']},
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        args = self._make_args()
+
+        plan_clean = setup_environment.collect_installation_plan(
+            config=config_clean, config_source='test',
+            config_name='test', config_version=None, inheritance_chain=chain, args=args,
+        )
+        plan_deps = setup_environment.collect_installation_plan(
+            config=config_deps, config_source='test',
+            config_name='test', config_version=None, inheritance_chain=chain, args=args,
+        )
+        assert plan_clean.has_security_concerns is False
+        assert plan_deps.has_security_concerns is True
+
+
+class TestDisplayInstallationSummary:
+    """Test display_installation_summary() output formatting."""
+
+    def _make_plan(self, **kwargs: Any) -> setup_environment.InstallationPlan:
+        defaults: dict[str, Any] = {
+            'config_name': 'test-env',
+            'config_source': 'test',
+            'config_source_type': 'repo',
+            'config_version': '1.0',
+        }
+        defaults.update(kwargs)
+        return setup_environment.InstallationPlan(**defaults)
+
+    def test_display_basic_summary(self) -> None:
+        """Basic plan renders without errors."""
+        plan = self._make_plan()
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Installation Summary' in output
+        assert 'test-env' in output
+
+    def test_display_summary_with_inheritance(self) -> None:
+        """Inheritance chain is displayed when multiple entries exist."""
+        chain = [
+            setup_environment.InheritanceChainEntry('base.yaml', 'repo', 'base'),
+            setup_environment.InheritanceChainEntry('child.yaml', 'local', 'child'),
+        ]
+        plan = self._make_plan(inheritance_chain=chain)
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Inheritance Chain' in output
+        assert 'base' in output
+        assert '<-- current' in output
+
+    def test_display_summary_with_attention(self) -> None:
+        """Attention markers shown for sensitive paths and unknown keys."""
+        plan = self._make_plan(
+            sensitive_paths=['~/.ssh/config'],
+            unknown_keys=['my-typo'],
+        )
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[!] ATTENTION' in output
+        assert '~/.ssh/config' in output
+        assert 'my-typo' in output
+
+    def test_display_summary_stderr_when_piped(self) -> None:
+        """Output goes to stderr when stdout is not a TTY."""
+        plan = self._make_plan()
+        import io
+        with patch('sys.stdout') as mock_stdout:
+            mock_stdout.isatty.return_value = False
+            # When output=None, function should auto-select stderr
+            stderr_buf = io.StringIO()
+            with patch('sys.stderr', stderr_buf):
+                setup_environment.display_installation_summary(plan, output=None)
+            assert 'Installation Summary' in stderr_buf.getvalue()
+
+    def test_display_dependency_commands_verbatim(self) -> None:
+        """Full dependency commands are shown, not just counts."""
+        plan = self._make_plan(
+            dependency_commands={
+                'common': ['pip install flask', 'npm install -g typescript'],
+            },
+        )
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '$ pip install flask' in output
+        assert '$ npm install -g typescript' in output
+
+
+class TestConfirmInstallation:
+    """Test confirm_installation() flow control."""
+
+    def _make_plan(self) -> setup_environment.InstallationPlan:
+        return setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version='1.0',
+        )
+
+    def test_confirm_dry_run_returns_false(self) -> None:
+        """--dry-run returns False without prompting."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=False, dry_run=True,
+            )
+        assert result is False
+
+    def test_confirm_auto_yes_returns_true(self) -> None:
+        """--yes returns True without prompting."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=True, dry_run=False,
+            )
+        assert result is True
+
+    def test_confirm_interactive_yes(self) -> None:
+        """User types 'y' at interactive prompt -> True."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value='y'),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is True
+
+    def test_confirm_interactive_no(self) -> None:
+        """User types 'n' at interactive prompt -> False."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value='n'),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_interactive_empty(self) -> None:
+        """User presses Enter (empty input) -> False (default deny)."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_non_interactive_returns_false(self) -> None:
+        """Non-interactive mode (no TTY, no /dev/tty) returns False."""
+        plan = self._make_plan()
+        with (
+            patch.object(setup_environment, 'display_installation_summary'),
+            patch('sys.stdin') as mock_stdin,
+            patch.object(setup_environment, '_dev_tty_available', return_value=False),
+        ):
+            mock_stdin.isatty.return_value = False
+            result = setup_environment.confirm_installation(plan)
+        assert result is False
+
+    def test_confirm_env_var_auto_confirm(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1 auto-confirms via auto_confirm parameter."""
+        plan = self._make_plan()
+        with patch.object(setup_environment, 'display_installation_summary'):
+            # The env var is resolved by the caller (main) and passed as auto_confirm
+            result = setup_environment.confirm_installation(
+                plan, auto_confirm=True, dry_run=False,
+            )
+        assert result is True
+
+
+class TestGetUserConfirmation:
+    """Test _get_user_confirmation() input handling."""
+
+    def test_stdin_tty_input(self) -> None:
+        """Standard TTY input returns user response."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', return_value='  y  '),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == 'y'
+
+    def test_stdin_not_tty_devtty_fallback(self) -> None:
+        """When stdin is not TTY, /dev/tty fallback is attempted on Unix."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('sys.platform', 'linux'),
+            patch('builtins.open', create=True) as mock_open,
+            patch('sys.stderr'),
+        ):
+            mock_stdin.isatty.return_value = False
+            mock_tty = MagicMock()
+            mock_tty.__enter__ = MagicMock(return_value=mock_tty)
+            mock_tty.__exit__ = MagicMock(return_value=False)
+            mock_tty.readline.return_value = '  yes  '
+            mock_open.return_value = mock_tty
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == 'yes'
+
+    def test_stdin_not_tty_no_devtty(self) -> None:
+        """When no TTY and no /dev/tty, returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('sys.platform', 'linux'),
+            patch('builtins.open', side_effect=OSError('No /dev/tty')),
+        ):
+            mock_stdin.isatty.return_value = False
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+    def test_eof_error_returns_empty(self) -> None:
+        """EOFError on stdin returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', side_effect=EOFError),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+    def test_keyboard_interrupt_returns_empty(self) -> None:
+        """KeyboardInterrupt on stdin returns empty string."""
+        with (
+            patch('sys.stdin') as mock_stdin,
+            patch('builtins.input', side_effect=KeyboardInterrupt),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = setup_environment._get_user_confirmation('Prompt: ')
+        assert result == ''
+
+
+class TestUnknownKeyDetection:
+    """Test unknown config key detection against KNOWN_CONFIG_KEYS."""
+
+    def test_known_keys_covers_golden_config(self) -> None:
+        """All golden config keys are present in KNOWN_CONFIG_KEYS."""
+        import yaml
+        golden_path = Path(__file__).parent / 'e2e' / 'golden_config.yaml'
+        with golden_path.open('r', encoding='utf-8') as f:
+            golden: dict[str, Any] = yaml.safe_load(f)
+        missing = [
+            k for k in golden
+            if k not in setup_environment.KNOWN_CONFIG_KEYS
+        ]
+        assert missing == [], (
+            f'Golden config keys missing from KNOWN_CONFIG_KEYS: {missing}'
+        )
+
+    def test_unknown_key_flagged(self) -> None:
+        """An extra key not in KNOWN_CONFIG_KEYS is flagged as unknown."""
+        config: dict[str, Any] = {
+            'name': 'test',
+            'my-typo': 'oops',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config, config_source='test',
+            config_name='test', config_version=None, inheritance_chain=chain,
+            args=MagicMock(skip_install=False),
+        )
+        assert 'my-typo' in plan.unknown_keys
+
+    def test_inherit_key_not_flagged(self) -> None:
+        """The 'inherit' key is in KNOWN_CONFIG_KEYS and not flagged."""
+        assert 'inherit' in setup_environment.KNOWN_CONFIG_KEYS
+
+
+class TestSensitivePathDetection:
+    """Test sensitive filesystem path detection in files-to-download."""
+
+    def _detect_paths(self, dest: str) -> list[str]:
+        config: dict[str, Any] = {
+            'files-to-download': [{'source': 'file.txt', 'dest': dest}],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config, config_source='test',
+            config_name='test', config_version=None, inheritance_chain=chain,
+            args=MagicMock(skip_install=False),
+        )
+        return plan.sensitive_paths
+
+    def test_ssh_path_detected(self) -> None:
+        """~/.ssh/config is flagged as sensitive."""
+        assert '~/.ssh/config' in self._detect_paths('~/.ssh/config')
+
+    def test_gnupg_path_detected(self) -> None:
+        """~/.gnupg/keys is flagged as sensitive."""
+        assert '~/.gnupg/keys' in self._detect_paths('~/.gnupg/keys')
+
+    def test_bashrc_detected(self) -> None:
+        """~/.bashrc is flagged as sensitive."""
+        assert '~/.bashrc' in self._detect_paths('~/.bashrc')
+
+    def test_safe_path_not_flagged(self) -> None:
+        """~/.claude/data/file.txt is not flagged as sensitive."""
+        assert self._detect_paths('~/.claude/data/file.txt') == []

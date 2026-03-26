@@ -20,18 +20,18 @@ def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 
     When Claude is installed locally, configure_mcp_server() would execute
     `claude mcp add --scope project ...` which writes to .mcp.json in CWD.
-    This mock prevents that by making find_command_robust return None for 'claude'.
+    This mock prevents that by making find_command return None for 'claude'.
 
     This fixture is autouse=True to automatically apply to all E2E tests.
     """
-    original_find = setup_environment.find_command_robust
+    original_find = setup_environment.find_command
 
     def mock_find(cmd: str) -> str | None:
         if cmd == 'claude':
             return None  # Pretend Claude is not installed
         return original_find(cmd)
 
-    monkeypatch.setattr(setup_environment, 'find_command_robust', mock_find)
+    monkeypatch.setattr(setup_environment, 'find_command', mock_find)
 
 
 @pytest.fixture
@@ -143,6 +143,7 @@ def golden_config() -> dict[str, Any]:
     ALL supported configuration keys for complete E2E test coverage.
 
     The golden config includes:
+    - version: Configuration version for update checking
     - command-names: Array of command names/aliases
     - base-url: Resource URL (uses local mock_repo)
     - claude-code-version: Version specification

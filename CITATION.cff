@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata from this file."
+type: software
+title: "Claude Code Toolbox"
+abstract: "Automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
+authors:
+  - family-names: Filippov
+    given-names: Aleksandr
+    email: alexfeel@protonmail.com
+    orcid: "https://orcid.org/0009-0001-1120-6114"
+version: 4.29.1 # x-release-please-version
+license: MIT
+url: "https://github.com/alex-feel/claude-code-toolbox"
+repository-code: "https://github.com/alex-feel/claude-code-toolbox"
+keywords:
+  - claude-code
+  - claude-code-mcp
+  - claude-code-hooks
+  - claude-code-subagents
+  - claude-code-commands
+  - claude-code-system-prompts
+  - claude-code-environments
+  - claude-code-skills

@@ -4,6 +4,7 @@ Handles Git Bash (Windows), Node.js, and Claude Code CLI installation.
 """
 
 import contextlib
+import glob as glob_module
 import json
 import os
 import platform
@@ -18,6 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from typing import cast
 from urllib.request import urlopen
 from urllib.request import urlretrieve
 
@@ -62,7 +64,12 @@ GIT_WINDOWS_URL = 'https://git-scm.com/downloads/win'
 GIT_GITHUB_API = 'https://api.github.com/repos/git-for-windows/git/releases/latest'
 CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
+CLAUDE_GITHUB_RELEASES_API = 'https://api.github.com/repos/anthropics/claude-code/releases/latest'
 CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
+
+# Shell config marker block constants
+SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
+SHELL_CONFIG_MARKER_END = '# <<< claude-code-toolbox <<<'
 
 
 # Logging functions
@@ -94,6 +101,159 @@ def banner() -> None:
     print(f'{Colors.CYAN}  Claude Code {os_name} Installer{Colors.NC}')
     print(f'{Colors.CYAN}============================================{Colors.NC}')
     print()
+
+
+def get_real_user_home() -> Path:
+    """Get the real user's home directory, even when running under sudo.
+
+    On Linux/macOS, when running with sudo, the HOME environment variable
+    and Path.home() return /root instead of the actual user's home.
+    This function detects the real user via SUDO_USER and returns their home.
+
+    Returns:
+        Path: The real user's home directory.
+    """
+    if sys.platform != 'win32':
+        # Check if running under sudo (Unix-only)
+        sudo_user = os.environ.get('SUDO_USER')
+        if sudo_user:
+            try:
+                # Get the home directory of the user who invoked sudo
+                # pwd is imported at module level for non-Windows platforms
+                import pwd as pwd_module
+
+                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+            except KeyError:
+                # User not found in password database, fall back
+                warning(f'Could not find home directory for sudo user: {sudo_user}')
+
+    # Windows or not running under sudo - use default home
+    return Path.home()
+
+
+def _get_shell_config_files() -> list[Path]:
+    """Get shell configuration files for environment variable persistence.
+
+    Returns all common shell config files, with Linux conditional
+    filtering for zsh (only if installed) and fish (only if installed).
+    On macOS, zsh is always included (default shell since Catalina),
+    but fish is only included if installed.
+
+    Returns:
+        List of shell config file paths to update.
+    """
+    home = get_real_user_home()
+    config_files: list[Path] = [
+        # Bash files
+        home / '.bashrc',
+        home / '.bash_profile',
+        home / '.profile',
+        # Zsh files
+        home / '.zshenv',
+        home / '.zprofile',
+        home / '.zshrc',
+        # Fish files
+        home / '.config' / 'fish' / 'config.fish',
+    ]
+
+    # On Linux, only include zsh files if zsh is installed
+    if platform.system() == 'Linux' and not shutil.which('zsh'):
+        config_files = [f for f in config_files if not f.name.startswith('.zsh')]
+
+    # On both Linux and macOS, only include fish config if fish is installed
+    if sys.platform != 'win32' and not shutil.which('fish'):
+        config_files = [f for f in config_files if 'fish' not in str(f)]
+
+    return config_files
+
+
+def _is_fish_config(config_file: Path) -> bool:
+    """Check if a config file path is a Fish shell config."""
+    return 'fish' in str(config_file)
+
+
+def _is_bash_zsh_export_line(line: str, name: str) -> bool:
+    """Check if a line is a bash/zsh export for the given variable name.
+
+    Matches patterns:
+    - export NAME="value"
+    - export NAME='value'
+    - export NAME=value
+    - NAME="value" (without export keyword)
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line exports the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Match "export NAME=" or "NAME=" patterns
+    # Must be at start of line (after stripping) to avoid partial matches
+    return stripped.startswith((f'export {name}=', f'{name}='))
+
+
+def _is_fish_set_line(line: str, name: str) -> bool:
+    """Check if a line is a fish shell set command for the given variable name.
+
+    Matches patterns:
+    - set -gx NAME "value"
+    - set -gx NAME 'value'
+    - set -Ux NAME "value"
+    - set NAME "value"
+    - And variations with different flag orders
+
+    Does NOT match:
+    - Comments containing the variable name
+    - Lines where the variable name is part of another word
+
+    Args:
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    stripped = line.strip()
+
+    # Skip comments
+    if stripped.startswith('#'):
+        return False
+
+    # Fish shell set pattern: set [-flags] NAME value
+    # Pattern matches: set (with optional flags like -gx, -Ux, etc.) followed by NAME and value
+    fish_pattern = rf'^set\s+(?:-[gGxXUu]+\s+)*{re.escape(name)}\s+'
+    return bool(re.match(fish_pattern, stripped))
+
+
+def _is_env_var_line(config_file: Path, line: str, name: str) -> bool:
+    """Check if a line sets the given environment variable (any shell syntax).
+
+    Detects the shell type from the config file path and checks accordingly.
+
+    Args:
+        config_file: Path to the shell config file.
+        line: The line to check.
+        name: The environment variable name.
+
+    Returns:
+        bool: True if line sets the variable, False otherwise.
+    """
+    is_fish = _is_fish_config(config_file)
+
+    if is_fish:
+        return _is_fish_set_line(line, name)
+    return _is_bash_zsh_export_line(line, name)
 
 
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -149,13 +309,12 @@ def is_admin() -> bool:
             return False
 
 
-def find_command(cmd: str) -> str | None:
-    """Find a command in PATH."""
-    return shutil.which(cmd)
-
-
-def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
     """Find a command with robust platform-specific fallback search.
+
+    For the 'claude' command, checks the native installer target path first
+    to ensure the native binary is preferred over npm even when PATH ordering
+    would resolve to the npm binary first.
 
     Args:
         cmd: Command name to find (e.g., 'claude', 'node')
@@ -164,7 +323,19 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     Returns:
         Full path to command if found, None otherwise
     """
-    import time
+    # For 'claude' command: check native installer target FIRST
+    # This ensures the native binary is preferred over npm even when
+    # PATH ordering would resolve to the npm binary first.
+    if cmd == 'claude':
+        if sys.platform == 'win32':
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
+        else:
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+        try:
+            if native_path.exists() and native_path.stat().st_size > 1000:
+                return str(native_path)
+        except (OSError, ValueError, TypeError):
+            pass  # Path inaccessible or invalid
 
     # Primary: Use standard PATH search with retry for PATH synchronization
     for attempt in range(2):
@@ -202,8 +373,21 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
         elif cmd == 'node':
             common_paths = [
+                # Official installer paths
                 r'C:\Program Files\nodejs\node.exe',
                 r'C:\Program Files (x86)\nodejs\node.exe',
+                # nvm-windows: %APPDATA%\nvm\<version>\node.exe
+                os.path.expandvars(r'%APPDATA%\nvm'),
+                # fnm: %LOCALAPPDATA%\fnm_multishells\<id>\node.exe
+                os.path.expandvars(r'%LOCALAPPDATA%\fnm_multishells'),
+                # volta: %USERPROFILE%\.volta\bin\node.exe
+                os.path.expandvars(r'%USERPROFILE%\.volta\bin\node.exe'),
+                # scoop: %USERPROFILE%\scoop\apps\nodejs\current\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\apps\nodejs\current\node.exe'),
+                # scoop (alternative): %USERPROFILE%\scoop\shims\node.exe
+                os.path.expandvars(r'%USERPROFILE%\scoop\shims\node.exe'),
+                # chocolatey: C:\ProgramData\chocolatey\bin\node.exe
+                r'C:\ProgramData\chocolatey\bin\node.exe',
             ]
         elif cmd == 'npm':
             common_paths = [
@@ -214,7 +398,9 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
         # Unix-like systems
         if cmd == 'claude':
             common_paths = [
-                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                # Native installer target (checked first for correct precedence)
+                str(get_real_user_home() / '.local' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
             ]
@@ -232,8 +418,22 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     # Check common locations
     for path in common_paths:
         expanded = os.path.expandvars(path)
-        if Path(expanded).exists():
-            return str(Path(expanded).resolve())
+        expanded_path = Path(expanded)
+
+        # Direct file check
+        if expanded_path.exists() and expanded_path.is_file():
+            return str(expanded_path.resolve())
+
+        # Directory-based search for version managers (nvm, fnm)
+        # These store node.exe in subdirectories like: nvm/<version>/node.exe
+        if expanded_path.exists() and expanded_path.is_dir() and cmd == 'node':
+            # Search for node.exe in subdirectories (one level deep)
+            pattern = str(expanded_path / '*' / 'node.exe')
+            matches = glob_module.glob(pattern)
+            if matches:
+                # Return the most recently modified (likely active version)
+                matches.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                return str(Path(matches[0]).resolve())
 
     # Tertiary: Custom fallback paths
     if fallback_paths:
@@ -252,6 +452,9 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
     not just PATH availability. It distinguishes between different installation sources
     to prevent false positives when native installer fails but npm installation exists.
 
+    Both Windows and Unix branches check the native installer path explicitly first,
+    before falling back to PATH search.
+
     Returns:
         Tuple of (is_installed, path, source) where:
         - is_installed: True if Claude exists and is accessible
@@ -265,7 +468,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
 
     if sys.platform == 'win32':
         # Check native installer location first
-        native_path = Path.home() / '.local' / 'bin' / 'claude.exe'
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
         if native_path.exists() and native_path.stat().st_size > 1000:
             result = (True, str(native_path), 'native')
         else:
@@ -284,7 +487,7 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                         result = (True, str(winget_path), 'winget')
                     else:
                         # Fallback to PATH search (with source detection)
-                        claude_path = find_command_robust('claude')
+                        claude_path = find_command('claude')
                         if claude_path:
                             source = 'unknown'
                             claude_lower = claude_path.lower()
@@ -298,19 +501,187 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                         else:
                             result = (False, None, 'none')
     else:
-        # Non-Windows platforms
-        claude_path = find_command_robust('claude')
-        if claude_path:
-            if 'npm' in claude_path or '.npm-global' in claude_path:
-                result = (True, claude_path, 'npm')
-            elif '.local/bin' in claude_path or '/usr/local/bin' in claude_path or '.claude/bin' in claude_path:
-                result = (True, claude_path, 'native')
-            else:
-                result = (True, claude_path, 'unknown')
+        # Non-Windows platforms: check native path explicitly first (mirrors Windows branch)
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+        if native_path.exists() and native_path.stat().st_size > 1000:
+            result = (True, str(native_path), 'native')
         else:
-            result = (False, None, 'none')
+            claude_path = find_command('claude')
+            if claude_path:
+                if 'npm' in claude_path or '.npm-global' in claude_path:
+                    result = (True, claude_path, 'npm')
+                elif '.local/bin' in claude_path or '.claude/bin' in claude_path:
+                    result = (True, claude_path, 'native')
+                elif '/usr/local/bin' in claude_path:
+                    # /usr/local/bin could be npm or native -- classify as unknown
+                    # to trigger proper detection via npm list -g
+                    result = (True, claude_path, 'unknown')
+                else:
+                    result = (True, claude_path, 'unknown')
+            else:
+                result = (False, None, 'none')
 
     return result
+
+
+def _dev_tty_sudo_available() -> bool:
+    """Check if sudo can acquire credentials via /dev/tty in non-interactive mode.
+
+    When stdin is piped (e.g., curl | bash), sudo cannot prompt via stdin.
+    However, if /dev/tty is available, sudo can be invoked with stdin
+    redirected from /dev/tty to prompt the user directly on the terminal.
+
+    Returns:
+        True if /dev/tty is available and sudo can be used through it,
+        False otherwise.
+    """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _run_with_sudo_fallback(
+    cmd: list[str],
+    *,
+    capture_output: bool = True,
+    timeout: int = 30,
+    tty_timeout: int = 60,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a command with sudo, using a three-tier fallback strategy.
+
+    Tier 1: Interactive mode (stdin is a TTY) -- sudo prompts directly.
+    Tier 2: Cached credentials (sudo -n true succeeds) -- sudo without prompt.
+    Tier 3: /dev/tty available -- sudo with stdin redirected from /dev/tty.
+
+    If all tiers fail, returns None without running the command.
+
+    Args:
+        cmd: Command to execute with sudo prepended
+             (e.g., ['npm', 'uninstall', '-g', 'pkg']).
+        capture_output: Whether to capture stdout/stderr.
+        timeout: Timeout in seconds for Tier 1 and Tier 2 attempts.
+        tty_timeout: Timeout for Tier 3 (/dev/tty) attempt. Longer because
+                     the user may need time to type their password.
+
+    Returns:
+        CompletedProcess if sudo was attempted (check returncode for success),
+        None if no sudo mechanism was available.
+    """
+    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
+    if sys.platform != 'win32':
+        sudo_cmd = ['sudo'] + cmd
+
+        # Tier 1: Interactive mode -- user can enter password at stdin
+        if sys.stdin.isatty():
+            try:
+                return subprocess.run(
+                    sudo_cmd,
+                    capture_output=capture_output,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                warning(f'Sudo command timed out after {timeout} seconds')
+                return None
+            except FileNotFoundError:
+                warning('sudo command not found')
+                return None
+
+        # Tier 2: Non-interactive with cached credentials
+        try:
+            cred_check = subprocess.run(
+                ['sudo', '-n', 'true'],
+                capture_output=True,
+                timeout=5,
+            )
+            if cred_check.returncode == 0:
+                try:
+                    return subprocess.run(
+                        sudo_cmd,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    warning(f'Sudo command timed out after {timeout} seconds')
+                    return None
+                except FileNotFoundError:
+                    return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
+        if _dev_tty_sudo_available():
+            info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
+            try:
+                with open('/dev/tty') as tty:
+                    return subprocess.run(
+                        sudo_cmd,
+                        stdin=tty,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=tty_timeout,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+    # Windows or all tiers exhausted
+    return None
+
+
+def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
+    """Display a prominent warning when npm Claude Code removal fails.
+
+    Provides clear manual removal instructions that are impossible to miss
+    in terminal output. Called by callers of remove_npm_claude() when
+    it returns False.
+
+    Args:
+        npm_path: Path to npm executable for the manual command.
+                  If None, uses 'npm' as default.
+    """
+    npm_cmd = npm_path or 'npm'
+    print()
+    warning('=' * 70)
+    warning('  WARNING: npm Claude Code installation was NOT removed')
+    warning('  This may cause the OLD npm version to run instead of the')
+    warning('  new native version due to PATH precedence.')
+    warning('')
+    warning('  To fix manually, run:')
+    if sys.platform == 'win32':
+        warning(f'    {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
+    else:
+        warning(f'    sudo {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
+    warning('')
+    warning('  After removal, restart your terminal to use the native version.')
+    warning('=' * 70)
+    print()
+
+
+def _check_npm_claude_installed() -> bool:
+    """Check if Claude Code is installed via npm global packages.
+
+    Uses ``npm list -g`` to directly query the npm registry, bypassing
+    PATH-based detection which can miss installations at non-standard
+    locations or when PATH ordering creates shadows.
+
+    Returns:
+        True if @anthropic-ai/claude-code is installed via npm, False otherwise.
+    """
+    npm_path = find_command('npm')
+    if not npm_path:
+        return False
+
+    result = run_command([npm_path, 'list', '-g', CLAUDE_NPM_PACKAGE])
+    return result.returncode == 0
 
 
 def remove_npm_claude() -> bool:
@@ -320,10 +691,10 @@ def remove_npm_claude() -> bool:
     standard npm uninstall command. This eliminates PATH precedence issues
     where npm version shadows native installation.
 
-    On Unix systems, if direct uninstall fails with permission errors, attempts
-    sudo with the same TTY/cached-credentials gating logic used by
-    install_claude_npm(). In non-interactive mode without cached credentials,
-    silently skips the removal and provides guidance.
+    On Unix systems, if direct uninstall fails with permission errors, uses
+    the three-tier sudo fallback strategy (interactive, cached credentials,
+    /dev/tty). As a last resort, attempts direct file removal of the npm
+    claude binary.
 
     Should only be called AFTER verify_claude_installation() confirms
     native installation success (source == 'native').
@@ -335,7 +706,7 @@ def remove_npm_claude() -> bool:
         Safe to call even if npm is not installed - returns True in that case.
         Permission failures are handled gracefully without user-facing errors.
     """
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         # No npm found - nothing to uninstall
         return True
@@ -359,41 +730,53 @@ def remove_npm_claude() -> bool:
 
     # Non-sudo uninstall failed - try with sudo on Unix systems
     if platform.system() != 'Windows':
-        # Apply same TTY/credential gating as install_claude_npm()
-        can_sudo = False
-        if sys.stdin.isatty():
-            can_sudo = True  # Interactive mode - user can enter password
-        else:
-            # Non-interactive mode: check for cached sudo credentials
-            try:
-                cred_check = subprocess.run(
-                    ['sudo', '-n', 'true'],
-                    capture_output=True,
-                    timeout=5,
-                )
-                can_sudo = cred_check.returncode == 0
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                can_sudo = False
+        sudo_result = _run_with_sudo_fallback(
+            [npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
+            capture_output=True,
+            timeout=30,
+            tty_timeout=60,
+        )
 
-        if can_sudo:
-            info('Retrying npm uninstall with elevated permissions...')
-            try:
-                sudo_result = subprocess.run(
-                    ['sudo', npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
-                    capture_output=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                warning('Sudo npm uninstall timed out')
-                sudo_result = None
-            except FileNotFoundError:
-                sudo_result = None
+        if sudo_result is not None and sudo_result.returncode == 0:
+            success('Removed npm Claude installation successfully')
+            return True
 
-            if sudo_result is not None and sudo_result.returncode == 0:
-                success('Removed npm Claude installation successfully')
-                return True
+        if sudo_result is None:
+            # No sudo mechanism available -- provide guidance
+            warning('Cannot use sudo (non-interactive mode, no terminal available)')
+            info('When running via curl | bash, sudo cannot prompt for a password.')
+            info(f'Manual removal may be needed: sudo {npm_path} uninstall -g {CLAUDE_NPM_PACKAGE}')
+
+    # Direct file removal as last resort
+    # Most effective on Windows where npm globals are user-writable
+    if sys.platform == 'win32':
+        npm_binary_paths = [
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude.cmd')),
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude')),
+            Path(os.path.expandvars(r'%APPDATA%\npm\claude.ps1')),
+        ]
+    else:
+        npm_binary_paths = [
+            Path('/usr/local/bin/claude'),
+            get_real_user_home() / '.npm-global' / 'bin' / 'claude',
+        ]
+
+    removed_any = False
+    for binary_path in npm_binary_paths:
+        if binary_path.exists():
+            try:
+                binary_path.unlink()
+                info(f'Removed: {binary_path}')
+                removed_any = True
+            except PermissionError:
+                pass  # Expected on macOS/Linux for /usr/local/bin
+            except OSError:
+                pass
+
+    if removed_any:
+        info('Direct file removal partially successful')
+        info('Note: npm registry may still list the package, but the binary is gone')
+        return True
 
     # All attempts failed - provide guidance
     warning('Could not remove npm installation automatically')
@@ -402,15 +785,41 @@ def remove_npm_claude() -> bool:
     return False
 
 
+def _read_json_dict(path: Path) -> dict[str, Any]:
+    """Read a JSON file and return its content as a dict.
+
+    Handles missing files, empty files, invalid JSON, and non-dict JSON
+    gracefully by returning an empty dict with a warning.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        Parsed dict content, or empty dict if file is missing/invalid.
+    """
+    if not path.exists():
+        return {}
+    try:
+        file_content = path.read_text(encoding='utf-8')
+        if not file_content.strip():
+            return {}
+        result = json.loads(file_content)
+        if not isinstance(result, dict):
+            warning(f'Existing {path} is not a dict, starting fresh')
+            return {}
+        return cast(dict[str, Any], result)
+    except json.JSONDecodeError as e:
+        warning(f'Invalid JSON in {path}: {e}, starting fresh')
+        return {}
+
+
 def update_install_method_config(method: str = 'native') -> bool:
-    """Update installMethod in Claude configuration via direct file modification.
+    """Update installMethod in Claude global configuration.
 
-    Directly modifies ~/.claude.json to set the installMethod value.
-    This eliminates System Diagnostics warnings about config mismatch.
-
-    The `claude config` CLI command was deprecated in v1.0.7 and removed
-    in v2.0.0. Direct file modification is the only supported method
-    for updating configuration in Claude Code v2.x.
+    Reads the existing ~/.claude.json, merges the installMethod value,
+    and writes the result back. This approach preserves all other keys
+    in the file (including those written by setup_environment.py's
+    write_global_config function).
 
     Args:
         method: Installation method to set. Valid values:
@@ -427,24 +836,23 @@ def update_install_method_config(method: str = 'native') -> bool:
         installation function's success status. A warning is logged on failure
         to inform the user that manual config update may be needed.
     """
-    config_path = Path.home() / '.claude.json'
+    config_path = get_real_user_home() / '.claude.json'
     try:
-        config: dict[str, Any] = {}
-        if config_path.exists():
-            with open(config_path, encoding='utf-8') as f:
-                config = json.load(f)
+        # READ existing config (preserves all existing keys)
+        config: dict[str, Any] = _read_json_dict(config_path)
 
+        # MERGE: update the single key
         config['installMethod'] = method
 
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
+        # WRITE merged result back
+        config_path.write_text(
+            json.dumps(config, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
 
         success(f'Updated installMethod to "{method}" in ~/.claude.json')
         return True
 
-    except json.JSONDecodeError as e:
-        warning(f'Could not parse existing config: {e}')
-        return False
     except PermissionError as e:
         warning(f'Permission denied updating config: {e}')
         return False
@@ -488,8 +896,8 @@ def find_bash_windows() -> str | None:
         Prioritizes Git Bash locations over PATH search to avoid
         accidentally finding WSL's bash.exe at C:\\Windows\\System32.
     """
-    # Check CLAUDE_CODE_GIT_BASH_PATH env var first
-    env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
+    # Check CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH env var first
+    env_path = os.environ.get('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH')
     if env_path and Path(env_path).exists():
         return str(Path(env_path).resolve())
 
@@ -510,7 +918,7 @@ def find_bash_windows() -> str | None:
             return str(Path(expanded).resolve())
 
     # Fall back to PATH search (may find Git Bash if installed elsewhere)
-    bash_path = find_command('bash.exe')
+    bash_path = shutil.which('bash.exe')
     if bash_path:
         # Skip WSL bash in System32/SysWOW64
         bash_lower = bash_path.lower()
@@ -523,7 +931,7 @@ def find_bash_windows() -> str | None:
 
 def check_winget() -> bool:
     """Check if winget is available on Windows."""
-    return find_command('winget') is not None
+    return shutil.which('winget') is not None
 
 
 def install_git_windows_winget(scope: str = 'user') -> bool:
@@ -801,8 +1209,13 @@ def install_git_windows_download() -> bool:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                # Save current opener state; build_opener() creates a fresh default opener for restoration
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
                 urllib.request.install_opener(opener)
-                urlretrieve(installer_url, temp_path)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
             else:
                 raise
 
@@ -849,7 +1262,7 @@ def install_git_windows_download() -> bool:
         info('Manual installation options:')
         info('  1. Install winget: https://learn.microsoft.com/windows/package-manager/winget/')
         info('  2. Download Git manually: https://gitforwindows.org/')
-        info('  3. Set CLAUDE_CODE_GIT_BASH_PATH to existing Git installation')
+        info('  3. Set CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH to existing Git installation')
         return False
 
 
@@ -927,33 +1340,156 @@ def set_disable_autoupdater() -> None:
     if platform.system() == 'Windows':
         set_windows_env_var('DISABLE_AUTOUPDATER', '1')
     else:
-        # For Unix-like systems, add to shell profile files
-        home = Path.home()
-        env_line = '\n# Disable Claude Code auto-updates\nexport DISABLE_AUTOUPDATER=1\n'
+        # Get all shell config files (with Linux conditional filtering)
+        profile_files = _get_shell_config_files()
 
-        # List of shell profile files to update
-        profile_files = [
-            home / '.bashrc',
-            home / '.zshrc',
-            home / '.profile',
-        ]
+        # Detect the user's login shell to ensure its profile exists
+        home = get_real_user_home()
+        current_shell = os.environ.get('SHELL', '')
+        shell_profile_map: dict[str, Path] = {
+            'bash': home / '.bashrc',
+            'zsh': home / '.zshrc',
+            'fish': home / '.config' / 'fish' / 'config.fish',
+        }
+
+        # Identify which profile corresponds to the current shell
+        current_shell_profile: Path | None = None
+        for shell_name, profile_path in shell_profile_map.items():
+            if shell_name in current_shell:
+                current_shell_profile = profile_path
+                break
 
         updated_files: list[Path] = []
         for profile_file in profile_files:
-            if profile_file.exists():
+            should_update = profile_file.exists()
+            # Create the profile for the user's current shell if it does not exist
+            if not should_update and profile_file == current_shell_profile:
+                should_update = True
+
+            if should_update:
                 try:
-                    content = profile_file.read_text()
+                    content = profile_file.read_text() if profile_file.exists() else ''
                     if 'DISABLE_AUTOUPDATER' not in content:
-                        profile_file.write_text(content + env_line)
+                        # Use Fish-specific syntax for Fish config
+                        if _is_fish_config(profile_file):
+                            export_line = 'set -gx DISABLE_AUTOUPDATER 1'
+                        else:
+                            export_line = 'export DISABLE_AUTOUPDATER=1'
+
+                        # Use marker block for managed entries
+                        if SHELL_CONFIG_MARKER_START in content:
+                            # Append inside existing marker block
+                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                            if marker_end_idx != -1:
+                                content = (
+                                    content[:marker_end_idx]
+                                    + export_line + '\n'
+                                    + content[marker_end_idx:]
+                                )
+                            else:
+                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+                        else:
+                            content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+
+                        # Ensure parent directory exists (e.g. ~/.config/fish/)
+                        profile_file.parent.mkdir(parents=True, exist_ok=True)
+                        profile_file.write_text(content)
                         updated_files.append(profile_file)
                 except Exception as e:
                     warning(f'Could not update {profile_file}: {e}')
 
         if updated_files:
             success(f"Added DISABLE_AUTOUPDATER to: {', '.join(str(f) for f in updated_files)}")
-            info('Please restart your shell or run: export DISABLE_AUTOUPDATER=1')
+            info('Please restart your shell to apply changes')
         else:
             warning('No shell profile files were updated')
+
+
+def unset_disable_autoupdater() -> None:
+    """Remove DISABLE_AUTOUPDATER environment variable from shell profiles and registry.
+
+    Removes the variable from all shell config files (inside and outside marker blocks)
+    and cleans up empty marker blocks. On Windows, also removes from user environment
+    registry.
+
+    Safe to call when DISABLE_AUTOUPDATER is not set (no-op).
+    """
+    if platform.system() == 'Windows':
+        # Remove from Windows user environment registry
+        try:
+            result = subprocess.run(
+                ['REG', 'DELETE', r'HKCU\Environment', '/V', 'DISABLE_AUTOUPDATER', '/F'],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                info('Removed DISABLE_AUTOUPDATER from Windows registry')
+        except Exception:
+            pass  # Variable may not exist in registry -- that's fine
+        # Remove from current process
+        os.environ.pop('DISABLE_AUTOUPDATER', None)
+    else:
+        # Unix: remove from all shell config files
+        profile_files = _get_shell_config_files()
+        removed_files: list[Path] = []
+
+        for config_file in profile_files:
+            if not config_file.exists():
+                continue
+
+            try:
+                content = config_file.read_text(encoding='utf-8')
+                original_content = content
+
+                # First pass: Remove the variable from ANYWHERE in the file
+                lines = content.split('\n')
+                new_lines: list[str] = []
+                for line in lines:
+                    if _is_env_var_line(config_file, line, 'DISABLE_AUTOUPDATER'):
+                        continue  # Skip this line (remove)
+                    new_lines.append(line)
+
+                new_content = '\n'.join(new_lines)
+
+                # Clean up empty marker blocks
+                if SHELL_CONFIG_MARKER_START in new_content:
+                    start_idx = new_content.find(SHELL_CONFIG_MARKER_START)
+                    end_idx = new_content.find(SHELL_CONFIG_MARKER_END)
+
+                    if end_idx != -1:
+                        before = new_content[:start_idx]
+                        block = new_content[start_idx:end_idx + len(SHELL_CONFIG_MARKER_END)]
+                        after = new_content[end_idx + len(SHELL_CONFIG_MARKER_END):]
+
+                        # Check if block is empty (only markers and whitespace)
+                        block_lines = block.split('\n')
+                        has_content = False
+                        for block_line in block_lines:
+                            if block_line in (SHELL_CONFIG_MARKER_START, SHELL_CONFIG_MARKER_END):
+                                continue
+                            if block_line.strip():
+                                has_content = True
+                                break
+
+                        if not has_content:
+                            # Block is empty, remove it entirely
+                            new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
+                            # Handle edge case where file becomes only newlines
+                            if new_content.strip() == '':
+                                new_content = ''
+
+                # Only write if content changed
+                if new_content != original_content:
+                    config_file.write_text(new_content, encoding='utf-8')
+                    removed_files.append(config_file)
+            except OSError as e:
+                warning(f'Could not modify {config_file}: {e}')
+
+        # Also remove from current process
+        os.environ.pop('DISABLE_AUTOUPDATER', None)
+
+        if removed_files:
+            info(f"Removed DISABLE_AUTOUPDATER from: {', '.join(str(f) for f in removed_files)}")
 
 
 def configure_powershell_policy() -> None:
@@ -1008,7 +1544,7 @@ def configure_powershell_policy() -> None:
 # Node.js functions
 def get_node_version() -> str | None:
     """Get installed Node.js version."""
-    node_path = find_command('node')
+    node_path = shutil.which('node')
     if not node_path:
         return None
 
@@ -1061,7 +1597,7 @@ def check_nodejs_compatibility(claude_code_version: str | None = None) -> bool:
         error('Node.js v25+ removed the SlowBuffer API that Claude Code depends on')
         info('Please downgrade to Node.js v22 or v20 (LTS)')
         if platform.system() == 'Darwin':
-            info('On Mac: brew uninstall node && brew install node@22 && brew link --force --overwrite node@22')
+            info('On macOS: brew uninstall node && brew install node@22 && brew link --force --overwrite node@22')
         elif platform.system() == 'Linux':
             info('On Linux: Use nvm or n to install Node.js 22')
             info('  nvm install 22 && nvm use 22')
@@ -1165,8 +1701,12 @@ def install_nodejs_direct() -> bool:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
                 opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
                 urllib.request.install_opener(opener)
-                urlretrieve(installer_url, temp_path)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
             else:
                 raise
 
@@ -1251,7 +1791,7 @@ def install_nodejs_direct() -> bool:
 
 def install_nodejs_homebrew() -> bool:
     """Install Node.js LTS using Homebrew on macOS."""
-    if not find_command('brew'):
+    if not shutil.which('brew'):
         info('Installing Homebrew first...')
         result = run_command([
             '/bin/bash',
@@ -1443,9 +1983,18 @@ def ensure_nodejs(check_claude_compat: bool = True) -> bool:
 
 
 # Claude Code installation
-def get_claude_version() -> str | None:
-    """Get installed Claude Code version."""
-    claude_path = find_command_robust('claude')
+def get_claude_version(claude_path: str | None = None) -> str | None:
+    """Get installed Claude Code version.
+
+    Args:
+        claude_path: Explicit path to Claude executable. If None,
+                     uses find_command() to locate it.
+
+    Returns:
+        Version string (e.g., "2.0.14") if detected, None if not found.
+    """
+    if claude_path is None:
+        claude_path = find_command('claude')
     if not claude_path:
         return None
 
@@ -1461,25 +2010,53 @@ def get_claude_version() -> str | None:
     return None
 
 
-def get_latest_claude_version() -> str | None:
-    """Get the latest available Claude Code version from npm.
+def _get_latest_claude_version_github() -> str | None:
+    """Get the latest Claude Code version from GitHub Releases API.
+
+    This provides a version check channel that does not require npm.
+    Uses the same urllib approach as other GitHub API calls in this script.
 
     Returns:
-        Latest version string (e.g., "1.0.135") or None if cannot determine.
+        Latest version string (e.g., "2.1.83") or None if cannot determine.
     """
-    npm_path = find_command_robust('npm')
-    if not npm_path:
+    try:
+        req = urllib.request.Request(
+            CLAUDE_GITHUB_RELEASES_API,
+            headers={'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'claude-code-toolbox'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            tag = data.get('tag_name', '')
+            # Strip 'v' prefix if present (e.g., "v2.1.83" -> "2.1.83")
+            return tag.lstrip('v') if tag else None
+    except Exception:
         return None
 
-    # Query npm for latest version
-    cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
-    result = run_command(cmd, capture_output=True)
 
-    if result.returncode == 0:
-        version = result.stdout.strip()
-        # Remove quotes if present
-        return version.strip("\"'")
-    return None
+def get_latest_claude_version() -> str | None:
+    """Get the latest available Claude Code version.
+
+    Tries npm registry first (faster, more reliable for npm users),
+    falls back to GitHub Releases API if npm is unavailable.
+
+    Returns:
+        Latest version string (e.g., "2.1.83") or None if cannot determine.
+    """
+    npm_path = find_command('npm')
+    if npm_path:
+        # Query npm for latest version
+        cmd = [npm_path, 'view', f'{CLAUDE_NPM_PACKAGE}@latest', 'version']
+        result = run_command(cmd, capture_output=True)
+
+        if result.returncode == 0:
+            version = result.stdout.strip()
+            # Remove quotes if present
+            version = version.strip("\"'")
+            if version:
+                return version
+
+    # npm unavailable or failed - try GitHub Releases API
+    return _get_latest_claude_version_github()
 
 
 def needs_sudo_for_npm() -> bool:
@@ -1491,7 +2068,7 @@ def needs_sudo_for_npm() -> bool:
     if platform.system() == 'Windows':
         return False
 
-    npm_path = find_command('npm')
+    npm_path = shutil.which('npm')
     if not npm_path:
         return False
 
@@ -1531,7 +2108,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         if npm_cmd.exists():
             info(f'Found npm.cmd at {npm_cmd}')
 
-    npm_path = find_command_robust('npm')
+    npm_path = find_command('npm')
     if not npm_path:
         # On Windows, try to find npm.cmd explicitly
         if platform.system() == 'Windows':
@@ -1607,73 +2184,50 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
         return True
 
-    # Try with sudo on Unix systems
+    # Try with sudo on Unix systems using the three-tier fallback strategy
     if platform.system() != 'Windows':
-        # Check if sudo is viable BEFORE attempting
-        can_sudo = False
-        if sys.stdin.isatty():
-            can_sudo = True  # Interactive mode - user can enter password
+        if will_need_sudo:
+            warning('Global npm directory requires elevated permissions - attempting sudo...')
         else:
-            # Non-interactive mode: check for cached sudo credentials
-            try:
-                cred_check = subprocess.run(
-                    ['sudo', '-n', 'true'],
-                    capture_output=True,
-                    timeout=5,
-                )
-                can_sudo = cred_check.returncode == 0
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                can_sudo = False
+            warning('Non-sudo install failed, attempting with sudo...')
 
-        if not can_sudo:
-            warning('Cannot use sudo (non-interactive mode, no cached credentials)')
-            info('When running via curl | bash, sudo cannot prompt for a password.')
+        sudo_result = _run_with_sudo_fallback(
+            [npm_path, 'install', '-g', package_spec],
+            capture_output=True,
+            timeout=30,
+            tty_timeout=60,
+        )
+
+        if sudo_result is not None and sudo_result.returncode == 0:
+            success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
+
+            # If specific version was installed, set DISABLE_AUTOUPDATER
+            if version:
+                set_disable_autoupdater()
+
+            return True
+
+        if sudo_result is None:
+            # No sudo mechanism available
+            warning('Cannot use sudo (non-interactive mode, no terminal available)')
+            info('When running via curl | bash without /dev/tty, sudo cannot prompt.')
             info('Options:')
             info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
-            info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+            info('  3. Force native installer: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
         else:
-            if will_need_sudo:
-                warning('Global npm directory requires elevated permissions - attempting sudo...')
-            else:
-                warning('Non-sudo install failed, attempting with sudo...')
-
-            try:
-                sudo_result = subprocess.run(
-                    ['sudo', npm_path, 'install', '-g', package_spec],
-                    capture_output=True,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=30,
-                )
-            except subprocess.TimeoutExpired:
-                warning('Sudo attempt timed out after 30 seconds')
-                sudo_result = None
-            except FileNotFoundError:
-                warning('sudo command not found')
-                sudo_result = None
-
-            if sudo_result is not None and sudo_result.returncode == 0:
-                success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
-
-                # If specific version was installed, set DISABLE_AUTOUPDATER
-                if version:
-                    set_disable_autoupdater()
-
-                return True
-
-            # Sudo was attempted but failed - provide context-aware guidance
+            # Sudo was attempted but command failed
             if sys.stdin.isatty():
                 warning('Sudo failed. Please check:')
                 info('  1. Your password is correct')
                 info('  2. Your user has sudo privileges (check /etc/sudoers)')
                 info(f'  3. Try manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
             else:
-                warning('Sudo failed (cached credentials were available but install still failed)')
+                warning('Sudo failed (credentials available but install command failed)')
                 info('Options:')
                 info(f'  1. Run manually: sudo {npm_path} install -g {CLAUDE_NPM_PACKAGE}')
                 info('  2. Configure npm for user installs: npm config set prefix ~/.npm-global')
-                info('  3. Force native installer: CLAUDE_INSTALL_METHOD=native')
+                info('  3. Force native installer: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
 
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     info('Manual installation options:')
@@ -1682,7 +2236,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
     info('       npm config set prefix ~/.npm-global')
     info('       export PATH=~/.npm-global/bin:$PATH')
     info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  3. Force native installer only: CLAUDE_INSTALL_METHOD=native')
+    info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
     info('  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash')
     return False
 
@@ -1841,7 +2395,7 @@ def _cleanup_old_claude_files() -> None:
         Silently ignores locked files (will try again next time).
     """
     if sys.platform == 'win32':
-        local_bin = Path.home() / '.local' / 'bin'
+        local_bin = get_real_user_home() / '.local' / 'bin'
 
         if not local_bin.exists():
             return
@@ -1956,12 +2510,15 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
             opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
             urllib.request.install_opener(opener)
             try:
                 urlretrieve(gcs_url, str(temp_path))
             except Exception as ssl_download_error:
                 error(f'Download with SSL fallback failed: {ssl_download_error}')
                 return False
+            finally:
+                urllib.request.install_opener(saved_opener)
 
         # Validate downloaded file (minimum size check)
         if not temp_path.exists():
@@ -2018,8 +2575,11 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
 def _ensure_local_bin_in_path_unix() -> bool:
     """Ensure ~/.local/bin is in PATH on Unix-like systems.
 
-    Adds ~/.local/bin to shell profile files (.bashrc, .zshrc, .profile)
+    Adds ~/.local/bin to shell profile files for Bash, Zsh, and Fish
     and updates the current process PATH for immediate availability.
+
+    If the user's current shell profile does not exist, creates it to ensure
+    the PATH update persists across sessions on fresh systems.
 
     Returns:
         True if PATH was updated or already correct, False on error.
@@ -2029,7 +2589,8 @@ def _ensure_local_bin_in_path_unix() -> bool:
     """
     # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform != 'win32':
-        local_bin = Path.home() / '.local' / 'bin'
+        home = get_real_user_home()
+        local_bin = home / '.local' / 'bin'
         local_bin.mkdir(parents=True, exist_ok=True)
         local_bin_str = str(local_bin)
 
@@ -2040,22 +2601,62 @@ def _ensure_local_bin_in_path_unix() -> bool:
             info(f'Updated current session PATH with {local_bin_str}')
 
         # Update shell profile files
-        home = Path.home()
-        profile_files = [
-            home / '.bashrc',
-            home / '.zshrc',
-            home / '.profile',
-        ]
+        profile_files = _get_shell_config_files()
 
-        export_line = '\nexport PATH="$HOME/.local/bin:$PATH"\n'
+        # Detect the user's login shell to ensure its profile exists
+        current_shell = os.environ.get('SHELL', '')
+        shell_profile_map: dict[str, Path] = {
+            'bash': home / '.bashrc',
+            'zsh': home / '.zshrc',
+            'fish': home / '.config' / 'fish' / 'config.fish',
+        }
+
+        # Identify which profile corresponds to the current shell
+        current_shell_profile: Path | None = None
+        for shell_name, profile_path in shell_profile_map.items():
+            if shell_name in current_shell:
+                current_shell_profile = profile_path
+                break
+
         updated_files: list[Path] = []
 
         for profile_file in profile_files:
-            if profile_file.exists():
+            should_update = profile_file.exists()
+            # Create the profile for the user's current shell if it does not exist
+            if not should_update and profile_file == current_shell_profile:
+                should_update = True
+
+            if should_update:
                 try:
-                    content = profile_file.read_text()
+                    content = profile_file.read_text() if profile_file.exists() else ''
+                    # .local/bin substring check correctly detects the PATH entry regardless
+                    # of format (~/.local/bin, $HOME/.local/bin, or absolute path).
+                    # Theoretical false-match risk from comments is negligible.
                     if '.local/bin' not in content:
-                        profile_file.write_text(content + export_line)
+                        # Use Fish-specific PATH syntax
+                        if _is_fish_config(profile_file):
+                            export_line = 'fish_add_path ~/.local/bin'
+                        else:
+                            export_line = 'export PATH="$HOME/.local/bin:$PATH"'
+
+                        # Use marker block for managed entries
+                        if SHELL_CONFIG_MARKER_START in content:
+                            # Append inside existing marker block
+                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                            if marker_end_idx != -1:
+                                content = (
+                                    content[:marker_end_idx]
+                                    + export_line + '\n'
+                                    + content[marker_end_idx:]
+                                )
+                            else:
+                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+                        else:
+                            content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+
+                        # Ensure parent directory exists (e.g. ~/.config/fish/)
+                        profile_file.parent.mkdir(parents=True, exist_ok=True)
+                        profile_file.write_text(content)
                         updated_files.append(profile_file)
                 except Exception as e:
                     warning(f'Could not update {profile_file}: {e}')
@@ -2095,7 +2696,7 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     # Clean up any leftover .old files from previous installations
     _cleanup_old_claude_files()
 
-    native_target = Path.home() / '.local' / 'bin' / 'claude.exe'
+    native_target = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
 
     # CASE 1: No specific version or "latest" requested
     # Safe to use native installer - "latest" string bypasses version check bug
@@ -2126,12 +2727,20 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         if is_installed and source == 'native':
             success(f'Direct download installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
-            remove_npm_claude()
+            if not remove_npm_claude():
+                _warn_npm_removal_failed()
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package is STILL installed after removal attempt')
+                _warn_npm_removal_failed()
             # Update config to reflect native installation method
             update_install_method_config('native')
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
+            # Check for lingering npm even when source is not native
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package detected alongside non-native installation')
+                _warn_npm_removal_failed()
             return True  # Still successful if found somewhere
         error('Installation verification failed')
         return False
@@ -2236,7 +2845,11 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
-                remove_npm_claude()
+                if not remove_npm_claude():
+                    _warn_npm_removal_failed()
+                if _check_npm_claude_installed():
+                    warning('npm Claude Code package is STILL installed after removal attempt')
+                    _warn_npm_removal_failed()
                 # Update config to reflect native installation method
                 update_install_method_config('native')
                 return True
@@ -2336,7 +2949,11 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
-                    remove_npm_claude()
+                    if not remove_npm_claude():
+                        _warn_npm_removal_failed()
+                    if _check_npm_claude_installed():
+                        warning('npm Claude Code package is STILL installed after removal attempt')
+                        _warn_npm_removal_failed()
                     update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
@@ -2386,7 +3003,7 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         # Specific version requested - use direct GCS download to bypass buggy installer
         info(f'Specific version {version} requested - using direct GCS download...')
 
-        native_path = Path.home() / '.local' / 'bin' / 'claude'
+        native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
 
         # Try direct download from GCS
         if _download_claude_direct_from_gcs(version, native_path):
@@ -2407,9 +3024,14 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
                 # Remove npm installation to prevent PATH conflicts
-                remove_npm_claude()
+                if not remove_npm_claude():
+                    _warn_npm_removal_failed()
+                if _check_npm_claude_installed():
+                    warning('npm Claude Code package is STILL installed after removal attempt')
+                    _warn_npm_removal_failed()
                 # Update config to reflect native installation method
                 update_install_method_config('native')
+                set_disable_autoupdater()
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2501,7 +3123,11 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
-                    remove_npm_claude()
+                    if not remove_npm_claude():
+                        _warn_npm_removal_failed()
+                    if _check_npm_claude_installed():
+                        warning('npm Claude Code package is STILL installed after removal attempt')
+                        _warn_npm_removal_failed()
                     update_install_method_config('native')
                 return True
             warning('Native installation completed but Claude executable not found')
@@ -2556,7 +3182,7 @@ def install_claude_native_linux(version: str | None = None) -> bool:
     # Specific version requested - use direct GCS download to bypass buggy installer
     info(f'Specific version {version} requested - using direct GCS download...')
 
-    native_path = Path.home() / '.local' / 'bin' / 'claude'
+    native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
 
     # Try direct download from GCS
     if _download_claude_direct_from_gcs(version, native_path):
@@ -2577,9 +3203,14 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         if is_installed and source == 'native':
             success(f'Native installation verified at: {claude_path}')
             # Remove npm installation to prevent PATH conflicts
-            remove_npm_claude()
+            if not remove_npm_claude():
+                _warn_npm_removal_failed()
+            if _check_npm_claude_installed():
+                warning('npm Claude Code package is STILL installed after removal attempt')
+                _warn_npm_removal_failed()
             # Update config to reflect native installation method
             update_install_method_config('native')
+            set_disable_autoupdater()
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -2633,12 +3264,12 @@ def install_claude_native_cross_platform(version: str | None = None) -> bool:
 def ensure_claude() -> bool:
     """Ensure Claude Code is installed (native-first, npm fallback).
 
-    Installation method can be controlled via CLAUDE_INSTALL_METHOD environment variable:
+    Installation method can be controlled via CLAUDE_CODE_TOOLBOX_INSTALL_METHOD environment variable:
     - 'auto' (default): Try native first, fall back to npm if needed
     - 'native': Only use native installer, no npm fallback
     - 'npm': Only use npm installer
 
-    Specific versions can only be installed via npm (set CLAUDE_VERSION environment variable).
+    Specific versions can only be installed via npm (set CLAUDE_CODE_TOOLBOX_VERSION environment variable).
 
     Returns:
         True if Claude Code is installed successfully, False otherwise.
@@ -2646,13 +3277,13 @@ def ensure_claude() -> bool:
     info('Checking Claude Code CLI...')
 
     # Check installation method preference
-    install_method = os.environ.get('CLAUDE_INSTALL_METHOD', 'auto').lower()
+    install_method = os.environ.get('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto').lower()
     if install_method not in ['auto', 'native', 'npm']:
-        warning(f'Invalid CLAUDE_INSTALL_METHOD "{install_method}", using "auto"')
+        warning(f'Invalid CLAUDE_CODE_TOOLBOX_INSTALL_METHOD "{install_method}", using "auto"')
         install_method = 'auto'
 
     # Check if a specific version is requested
-    requested_version = os.environ.get('CLAUDE_VERSION')
+    requested_version = os.environ.get('CLAUDE_CODE_TOOLBOX_VERSION')
 
     # Check if already installed
     current_version = get_claude_version()
@@ -2690,11 +3321,15 @@ def ensure_claude() -> bool:
                     return True
 
                 warning('Native installation failed, falling back to npm...')
-                info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
+                info(
+                    'If this is unexpected, set CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native'
+                    ' to see only native installer output',
+                )
                 if install_claude_npm(upgrade=False, version=requested_version):
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code version {new_version} installed successfully via npm fallback')
+                    update_install_method_config('npm')
                     return True
 
                 error(f'Failed to install specific version {requested_version} with all methods')
@@ -2723,8 +3358,19 @@ def ensure_claude() -> bool:
                         if post_install and post_source == 'native':
                             success('Successfully migrated from npm to native installation')
                             info(f'Version maintained: {requested_version}')
+                            # Verify the requested version was actually installed
+                            post_version = get_claude_version()
+                            if post_version and post_version != requested_version:
+                                warning(
+                                    f'Requested version {requested_version} but got {post_version} '
+                                    f'after migration',
+                                )
                             # Remove npm installation to prevent PATH conflicts
-                            remove_npm_claude()
+                            if not remove_npm_claude():
+                                _warn_npm_removal_failed()
+                            if _check_npm_claude_installed():
+                                warning('npm Claude Code package is STILL installed after removal attempt')
+                                _warn_npm_removal_failed()
                             # Update config to reflect native installation method
                             update_install_method_config('native')
                             return True
@@ -2736,6 +3382,9 @@ def ensure_claude() -> bool:
                     return True  # Don't fail, npm still works
 
             return True
+
+        # No version pin -- remove DISABLE_AUTOUPDATER if previously set
+        unset_disable_autoupdater()
 
         # Check if migration from npm to native is beneficial
         # Only auto-migrate if: (1) auto mode, (2) no specific version, (3) currently npm
@@ -2759,8 +3408,19 @@ def ensure_claude() -> bool:
                         info(f'Previous version: {pre_migration_version}')
                         new_version = get_claude_version()
                         info(f'Current version: {new_version}')
+                        # Verify migration installed a reasonable version
+                        if new_version and pre_migration_version and not compare_versions(new_version, pre_migration_version):
+                            warning(
+                                f'Post-migration version ({new_version}) is older than '
+                                f'pre-migration version ({pre_migration_version})',
+                            )
+                            info('The native installer may have installed an earlier stable release')
                         # Remove npm installation to prevent PATH conflicts
-                        remove_npm_claude()
+                        if not remove_npm_claude():
+                            _warn_npm_removal_failed()
+                        if _check_npm_claude_installed():
+                            warning('npm Claude Code package is STILL installed after removal attempt')
+                            _warn_npm_removal_failed()
                         # Update config to reflect native installation method
                         update_install_method_config('native')
                         return True
@@ -2821,6 +3481,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -2840,6 +3501,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -2847,7 +3509,18 @@ def ensure_claude() -> bool:
             # npm or winget source - use npm
             if upgrade_source in ('npm', 'winget'):
                 info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
-            info(f'Upgrading to {latest_version} via npm...')
+                info(f'Upgrading to {latest_version} via npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version}')
+                    return True
+                warning('Upgrade failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            # Unexpected source - handle gracefully
+            warning(f'Unexpected installation source: {upgrade_source}')
+            info(f'Attempting npm upgrade to {latest_version} as fallback...')
             if install_claude_npm(upgrade=True, version=latest_version):
                 new_version = get_claude_version()
                 if new_version:
@@ -2857,8 +3530,7 @@ def ensure_claude() -> bool:
             return True  # Don't fail the entire installation
 
         # Cannot determine latest version - keep current
-        warning('Cannot determine latest version from npm')
-        success(f'Claude Code version {current_version} is already installed')
+        info(f'Claude Code version {current_version} is installed (could not check for updates)')
         return True
 
     # Fresh installation - Claude not found
@@ -2871,9 +3543,9 @@ def ensure_claude() -> bool:
         if install_claude_npm(upgrade=False, version=requested_version):
             # Verify with retries to handle PATH synchronization delays
             for attempt in range(3):
-                claude_path = find_command_robust('claude')
+                claude_path = find_command('claude')
                 if claude_path:
-                    new_version = get_claude_version()
+                    new_version = get_claude_version(claude_path)
                     if new_version:
                         success(f'Claude Code version {new_version} installed successfully')
                     return True
@@ -2891,7 +3563,7 @@ def ensure_claude() -> bool:
             return True
 
         error('Native installation failed and npm fallback is disabled (method: native)')
-        info('To enable npm fallback, use: export CLAUDE_INSTALL_METHOD=auto')
+        info('To enable npm fallback, use: export CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=auto')
         return False
 
     # auto mode (default) - try native first, npm fallback
@@ -2900,15 +3572,19 @@ def ensure_claude() -> bool:
         return True
 
     warning('Native installation failed, falling back to npm...')
-    info('If this is unexpected, set CLAUDE_INSTALL_METHOD=native to see only native installer output')
+    info(
+        'If this is unexpected, set CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native'
+        ' to see only native installer output',
+    )
     if install_claude_npm(upgrade=False, version=requested_version):
         # Verify with retries to handle PATH synchronization delays
         for attempt in range(3):
-            claude_path = find_command_robust('claude')
+            claude_path = find_command('claude')
             if claude_path:
-                new_version = get_claude_version()
+                new_version = get_claude_version(claude_path)
                 if new_version:
                     success(f'Claude Code version {new_version} installed successfully via npm fallback')
+                update_install_method_config('npm')
                 return True
             if attempt < 2:
                 info(f'Waiting for PATH synchronization... (attempt {attempt + 1}/3)')
@@ -2922,8 +3598,8 @@ def ensure_claude() -> bool:
         info(f'  1. Try native installer directly: irm {CLAUDE_INSTALLER_URL} | iex')
         info(f'  2. Try npm: npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  3. Force specific method:')
-        info('       $env:CLAUDE_INSTALL_METHOD="native"  (skip npm)')
-        info('       $env:CLAUDE_INSTALL_METHOD="npm"     (skip native)')
+        info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"  (skip npm)')
+        info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="npm"     (skip native)')
     else:
         info('  1. Try native installer directly:')
         info('     curl -fsSL https://claude.ai/install.sh | bash')
@@ -2934,8 +3610,8 @@ def ensure_claude() -> bool:
         info('     export PATH=~/.npm-global/bin:$PATH')
         info(f'     npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  4. Force specific method:')
-        info('     CLAUDE_INSTALL_METHOD=native  (skip npm)')
-        info('     CLAUDE_INSTALL_METHOD=npm     (skip native)')
+        info('     CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native  (skip npm)')
+        info('     CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm     (skip native)')
 
     return False
 
@@ -2966,7 +3642,7 @@ def ensure_local_bin_in_path_windows() -> bool:
     success = True
     if sys.platform == 'win32':
         try:
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             # Import winreg here to avoid import errors on non-Windows platforms
@@ -3007,9 +3683,9 @@ def ensure_local_bin_in_path_windows() -> bool:
 
                     # Broadcast WM_SETTINGCHANGE to notify other processes
                     # Use setx with a temporary variable to trigger the broadcast
-                    run_command(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True)
+                    run_command(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True)
                     run_command(
-                        ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                        ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                         capture_output=True,
                     )
 
@@ -3036,7 +3712,7 @@ def main() -> None:
     # Refuse to run as root on Unix unless explicitly allowed
     if platform.system() != 'Windows':
         geteuid = getattr(os, 'geteuid', None)
-        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
             print()
             warning('Running as root creates configuration under /root/,')
@@ -3047,7 +3723,7 @@ def main() -> None:
                  'claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash')
             print()
             info('The installer will request sudo only when needed (e.g., npm).')
-            info('To force root execution: CLAUDE_ALLOW_ROOT=1 bash <script>')
+            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 bash <script>')
             sys.exit(1)
 
     system = platform.system()
@@ -3060,17 +3736,17 @@ def main() -> None:
             if not bash_path:
                 raise Exception('Git Bash unavailable after installation attempts')
 
-            # Set CLAUDE_CODE_GIT_BASH_PATH if bash not in PATH
-            if not find_command('bash.exe'):
-                info('bash.exe is not on PATH, configuring CLAUDE_CODE_GIT_BASH_PATH...')
-                set_windows_env_var('CLAUDE_CODE_GIT_BASH_PATH', bash_path)
+            # Set CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH if bash not in PATH
+            if not shutil.which('bash.exe'):
+                info('bash.exe is not on PATH, configuring CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH...')
+                set_windows_env_var('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH', bash_path)
 
         # Step 2: Check/Install Node.js (only if npm method will be used)
         step_num = '2/4' if system == 'Windows' else '1/3'
         info(f'Step {step_num}: Checking Node.js...')
 
         # Determine if we'll need Node.js based on installation method
-        install_method = os.environ.get('CLAUDE_INSTALL_METHOD', 'auto').lower()
+        install_method = os.environ.get('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto').lower()
         will_need_nodejs = install_method == 'npm'
 
         if will_need_nodejs:
@@ -3079,7 +3755,11 @@ def main() -> None:
                 error('Node.js installation failed')
                 raise Exception(f'Node.js >= {MIN_NODE_VERSION} unavailable after installation attempts')
         else:
-            info('Skipping Node.js installation (native method will be used)')
+            if install_method == 'native':
+                info('Skipping Node.js installation (native-only mode)')
+            else:
+                # auto mode: native will be tried first, npm is a potential fallback
+                info('Skipping Node.js pre-installation (native installer will be tried first)')
 
         # Step 3: Configure environment (Windows only)
         if system == 'Windows':

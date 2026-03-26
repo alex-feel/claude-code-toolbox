@@ -1,314 +1,134 @@
 # Claude Code Toolbox
 
+<p align="center">
+  <img src=".github/images/banner.jpg" alt="Claude Code Toolbox - automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux" width="100%">
+</p>
+
 [![GitHub License](https://img.shields.io/github/license/alex-feel/claude-code-toolbox)](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-toolbox)
 
-A community toolbox for Claude Code - automated installers and environment configuration framework for Windows, macOS, and Linux.
+Automated installers and an environment configuration framework for Claude Code on Windows, macOS, and Linux.
 
-## 📋 Quick Overview
+Define your complete Claude Code environment in a single YAML file -- custom agents, MCP servers, slash commands, hooks, skills, model settings, and more -- and install everything with one command.
 
-**Two installation options:**
-- **Environment Configurations** - Complete custom environments with agents, MCP servers, slash commands, and tools. Perfect for teams or any specialized workflow (development, research, finance, etc.).
-- **Claude Code Only** - Just the Claude Code CLI without additional configuration. Choose this for a minimal installation.
+## Features
 
-> 💡 **Not sure which to choose?** If you want a custom environment with specialized tools and agents, choose Environment Configurations. For just the CLI, skip to [Claude Code Only Installation](#-only-claude-code-installation).
+- **Custom agents** -- specialized subagents for code review, research, debugging, and any workflow you design
+- **MCP servers** -- HTTP, SSE, and stdio transports with automatic permission pre-allowing
+- **Slash commands** -- custom commands for frequently used workflows
+- **Skills** -- multi-file skill packages for complex agent capabilities
+- **System prompts** -- replace or append to the default Claude Code prompt
+- **Hooks** -- event-driven scripts triggered on PreToolUse, PostToolUse, Notification, and other events
+- **Model and reasoning control** -- model selection, effort levels (low, medium, high, max), thinking mode
+- **Configuration inheritance** -- extend and override parent configurations
+- **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
+- **Private repository support** -- GitHub and GitLab authentication with token-based access
+- **Cross-platform** -- consistent behavior across Windows, macOS, and Linux
+- **One-command setup** -- everything from a single YAML configuration file
 
-## 🎯 Example Use Cases
+## Quick Start
 
-This framework can configure environments for any purpose. Here are some examples of what you could build:
+### Example Configuration
 
-- **Python Development**: Create a configuration with Python tools, linters, formatters, testing frameworks, and specialized Python agents
-- **Web Development**: Set up Node.js, npm, frontend tooling, and web development agents
-- **Research Environment**: Configure data analysis tools, Jupyter integration, and research-focused MCP servers
-- **Finance Workflows**: Add financial APIs, market data servers, and analysis agents
-- **Team Standardization**: Share your team's custom configuration via private repository to ensure consistent environments
-- **Custom Workflows**: Build any specialized environment with the exact MCP servers, agents, and tools you need
+```yaml
+name: "My Development Environment"
 
-## 🚀 Environment Configurations Installation
+command-names:
+  - "my-env"
 
-Set up your custom environment with specialized configurations:
+# Base URL for downloading agents, commands, hooks, and other files
+base-url: "https://raw.githubusercontent.com/my-org/my-configs/main"
 
-### Windows
+agents:
+  - "agents/code-reviewer.md"
 
-#### Option 1: One-liner (recommended)
+slash-commands:
+  - "commands/review.md"
 
-> **Note:** Replace `https://raw.githubusercontent.com/org/repo/main/config.yaml` with your actual configuration URL. The command sets your configuration source and runs the installer in one line.
+mcp-servers:
+  - name: "context-server"
+    transport: "http"
+    url: "http://localhost:8000/mcp"
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+model: "sonnet"
+effort-level: "high"
+
+command-defaults:
+  system-prompt: "prompts/system-prompt.md"
+  mode: "append"
+
+hooks:
+  files:
+    - "hooks/linter.py"
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit|MultiEdit|Write"
+      type: "command"
+      command: "linter.py"
 ```
 
-#### Option 2: Using local configuration (for sensitive configs)
-```powershell
-# Use a local file containing API keys or other sensitive data
-$env:CLAUDE_ENV_CONFIG='./my-custom-env.yaml'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-```
+This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all 26 configuration keys.
 
-#### Option 3: Using private repository configurations
+### Install Your Environment
 
-**For Private GitLab Repositories (One-liner recommended):**
-```powershell
-# One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml'; `$env:GITLAB_TOKEN='glpat-<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+Host your YAML configuration in a repository, then run a single command to set everything up:
 
-# Alternative: Two-step approach (if already in PowerShell)
-$env:CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/path/to/config.yaml'
-$env:GITLAB_TOKEN='glpat-<your-token>'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-```
-
-**For Private GitHub Repositories (One-liner recommended):**
-```powershell
-# One-liner (recommended) - works from any shell, Run dialog, or shortcuts
-powershell -NoProfile -NoExit -ExecutionPolicy Bypass -Command "`$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; `$env:GITHUB_TOKEN='ghp_<your-token>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
-
-# Alternative: Two-step approach (if already in PowerShell)
-$env:CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'
-$env:GITHUB_TOKEN='ghp_<your-token>'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
-```
-
-**💡 Pro Tips:**
-- Use `-NoExit` flag to keep the window open and see any errors
-- GitLab web URLs (`/-/raw/`) are automatically converted to API format
-- Query parameters (like `?ref_type=heads`) are handled automatically
-- The script only uses authentication when needed (public repos work without tokens)
-
-### macOS
-```bash
-# Public repository config
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
-
-# Local config file
-export CLAUDE_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
-
-# Private GitLab repository
-export CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
-
-# Private GitHub repository
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
-```
-
-### Linux
-```bash
-# Public repository config
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-
-# Local config file
-export CLAUDE_ENV_CONFIG=./my-env.yaml && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-
-# Private GitLab repository
-export CLAUDE_ENV_CONFIG='https://gitlab.company.com/namespace/project/-/raw/main/config.yaml' && export GITLAB_TOKEN='glpat-<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-
-# Private GitHub repository
-export CLAUDE_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml' && export GITHUB_TOKEN='ghp_<your-token>' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
-```
-
-> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed. Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
-
-**✅ After setup, use the simple command:**
-```bash
-<command-name>  # Works in all Windows shells (PowerShell, CMD, Git Bash)
-```
-
-The setup automatically creates properly escaped wrappers for each Windows shell, ensuring your environment configuration loads correctly regardless of which shell you use.
-
----
-
-### ⚠️ Security Warning: Environment Configurations
-
-**IMPORTANT:** Environment configurations can contain:
-- 🔑 **API Keys** for MCP servers
-- 📝 **System commands** that will be executed during setup
-- 🪝 **Hook scripts** that run automatically on Claude Code events
-- 🌐 **Remote dependencies** that will be downloaded and installed
-
-**Only use environment configurations from trusted sources!**
-
-When loading configurations:
-- ✅ **Repository configs** - Reviewed and maintained by the community
-- ✅ **Your local files** (`./my-config.yaml`) - Under your control
-- ⚠️ **Remote URLs** (`https://example.com/config.yaml`) - **VERIFY THE SOURCE FIRST!**
-
-The setup script will warn you when loading from remote URLs. Always review the configuration content before proceeding.
-
-### 🔐 Using Private Repository Configurations
-
-For configurations stored in private repositories, you need to provide authentication.
-
-#### Authentication Details
-
-**GitLab Authentication:**
-- Create a personal access token with `read_repository` scope
-- Use `GITLAB_TOKEN` environment variable
-- GitLab web URLs (`/-/raw/`) are automatically converted to API format
-- Query parameters (like `?ref_type=heads`) are handled automatically
-
-**GitHub Authentication:**
-- Create a personal access token with `repo` scope
-- Use `GITHUB_TOKEN` environment variable
-- Use raw.githubusercontent.com URLs
-
-**Additional Options:**
-- `REPO_TOKEN` - Generic token that auto-detects repository type
-- `CLAUDE_ENV_AUTH` - Custom header format: `Header-Name:token-value`
-
-#### Pro Tips
-
-- **Windows**: Always use `-NoExit` flag to see any errors
-- **All platforms**: The script tries public access first, only using tokens when needed
-- **GitLab**: Both web (`/-/raw/`) and API URLs work - web URLs are auto-converted
-- **Tokens**: Never commit tokens to repositories - use environment variables instead
-
----
-
-## ⏬ Only Claude Code Installation
-
-### Installation Methods
-
-The installer supports two installation methods for Claude Code:
-
-#### 🎯 Native Installation (Default)
-
-- Uses official installers from Anthropic
-- No Node.js dependency required
-- More reliable auto-updates
-- Resolves Node.js v25+ compatibility issues
-- Recommended for most users
-
-#### 📦 NPM Installation (Fallback)
-- Installs via npm package manager
-- Requires Node.js 18+
-- Used automatically if native installation fails
-- Can be forced via environment variable
-
-### Windows (PowerShell)
-
-The Windows installer automatically:
-- ✅ Installs Git for Windows (Git Bash) if not present
-- ✅ Installs Node.js LTS (v18+) only if needed for npm method
-- ✅ Handles dependencies (Microsoft.UI.Xaml) for winget if needed
-- ✅ Falls back to direct downloads if winget is unavailable
-- ✅ Configures `CLAUDE_CODE_GIT_BASH_PATH` if bash.exe is not on PATH
-- ✅ Installs Claude Code CLI using native installer (with npm fallback)
-
-**Reliability Features:**
-- Native-first installation approach (bypasses Node.js dependency)
-- Smart dependency resolution for winget/App Installer
-- Automatic fallback to npm if native installation fails
-- Cached availability checks to prevent redundant attempts
-- Comprehensive PATH refresh for immediate command availability
-
-Run this command in PowerShell (as regular user, it will elevate if needed):
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')"
-```
-
-### macOS
+**Linux:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/install-claude-macos.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 ```
 
-The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
-
-### Linux
+**macOS:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' && curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 ```
 
-The installer uses the native shell installer from Anthropic with automatic npm fallback if needed.
-
-> **Important:** Do not run the setup scripts as root or with `sudo`. The scripts will request elevated permissions only when needed (e.g., for npm global installs). Running as root creates configuration under `/root/` instead of your home directory. For Docker/CI environments, set `CLAUDE_ALLOW_ROOT=1`.
-
-### Environment Variables
-
-Control the installation behavior with these environment variables:
-
-#### CLAUDE_INSTALL_METHOD
-
-- `auto` (default) - Try native installation first, fall back to npm if needed
-- `native` - Use only native installation, no npm fallback
-- `npm` - Use only npm installation method
-
-#### CLAUDE_VERSION
-
-- Specify a particular version to install (e.g., `1.0.128`)
-- Forces npm installation method (native installers don't support version selection)
-
-#### CLAUDE_ALLOW_ROOT
-
-- Set to `1` to allow running as root on Linux/macOS (default: scripts refuse to run as root)
-- Only the exact value `1` is accepted (`true`, `yes`, or empty strings do not bypass the guard)
-- Use for Docker containers, CI/CD pipelines, or other legitimate root execution environments
-
-**Examples:**
+**Windows:**
 
 ```powershell
-# Windows - Force npm installation
-$env:CLAUDE_INSTALL_METHOD='npm'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
-
-# Windows - Install specific version
-$env:CLAUDE_VERSION='1.0.128'
-iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1')
-
-# Linux/macOS - Force native installation only
-export CLAUDE_INSTALL_METHOD=native
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
-
-# Linux/macOS - Install specific version
-export CLAUDE_VERSION=1.0.128
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/install-claude-linux.sh | bash
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
-### Troubleshooting
+You can also use a local file (`./my-config.yaml`) or a configuration from a private repository. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all options including authentication.
 
-#### Native installation fails on Windows
+### Ready-Made Configurations
 
-- The installer will automatically fall back to npm method
-- Check Windows firewall or corporate proxy settings
-- Try manual installation: `irm https://claude.ai/install.ps1 | iex`
+Browse the [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository for ready-made environment configurations. Find a configuration you like, copy its raw URL, and use it as the `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` value in the commands above.
 
-#### Native installation fails on macOS/Linux
+See [Ready-Made Configurations](docs/environment-configuration-guide.md#ready-made-configurations) for installation examples.
 
-- The installer will automatically fall back to npm method
-- Ensure you have `curl` and `bash` installed
-- Check sudo permissions if needed
-- Try manual installation: `curl -fsSL https://claude.ai/install.sh | bash`
+## Installing Claude Code
 
-#### Node.js v25+ compatibility issues
+If you just need the Claude Code CLI without a custom environment configuration, the toolbox includes standalone installers that use the official Anthropic native installer with automatic npm fallback.
 
-- Native installation bypasses this issue entirely
-- If you must use npm method, downgrade to Node.js v18 or v20 LTS
+See the [Installing Claude Code](docs/installing-claude-code.md) guide for platform-specific commands and options.
 
-#### Switching from npm to native installation
+## Documentation
 
-- Uninstall npm version: `npm uninstall -g @anthropic-ai/claude-code`
-- Run the installer again (it will use native method by default)
-- Your configurations are preserved (both methods use the same config directory)
+- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all 26 keys, authentication, inheritance, and more
+- [Installing Claude Code](docs/installing-claude-code.md) -- standalone Claude Code installation, methods, and troubleshooting
 
-#### Script refuses to run as root
+## Security
 
-- This is intentional - running as root creates configuration under `/root/` instead of your home directory
-- Run as your regular user instead (the script requests sudo only when needed)
-- For Docker/CI: set `CLAUDE_ALLOW_ROOT=1` before running the script
+Environment configurations can execute commands on your system, download files, and configure MCP servers. Only use configurations from sources you trust.
 
-## 🤝 Contributing
+Local files are under your control. Remote URLs should be verified before use. The setup script displays a confirmation prompt and flags sensitive paths before proceeding.
+
+See the [Security Considerations](docs/environment-configuration-guide.md#security-considerations) section for details.
+
+## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## 📄 License
+## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License -- see [LICENSE](LICENSE) for details.
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 This is a community project and is not officially affiliated with Anthropic. Claude Code is a product of Anthropic, PBC.
 
-## 🆘 Getting Help
+## Getting Help
 
 - **Bug reports**: [Open an issue](https://github.com/alex-feel/claude-code-toolbox/issues)
-- **Claude Code documentation**: [Official docs](https://docs.anthropic.com/claude-code)

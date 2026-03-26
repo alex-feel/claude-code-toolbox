@@ -7,7 +7,12 @@
       "release-type": "python",
       "path": ".",
       "changelog-path": "CHANGELOG.md",
-      "extra-files": [],
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "CITATION.cff"
+        }
+      ],
       "bump-minor-pre-major": false,
       "bump-patch-for-minor-pre-major": false,
       "draft": false,

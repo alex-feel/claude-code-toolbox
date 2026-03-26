@@ -1,0 +1,22 @@
+# Sync Configuration for Claude Code Toolbox
+# Syncs the EnvironmentConfig validation model to target repositories.
+# The model is placed in .github/ of each target for CI usage.
+
+version: "1"
+
+defaults:
+  commit_message_prefix: "chore: sync model from toolbox"
+  delete_orphaned: false
+
+repositories:
+  - name: alex-feel/claude-code-artifacts
+    branch: main
+    files:
+      - source: scripts/models/environment_config.py
+        dest: .github/environment_config.py
+
+  - name: alex-feel/claude-code-artifacts-public
+    branch: main
+    files:
+      - source: scripts/models/environment_config.py
+        dest: .github/environment_config.py

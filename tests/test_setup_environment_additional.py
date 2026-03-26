@@ -556,7 +556,7 @@ class TestMCPServerConfigurationEdgeCases:
     """Test MCP server configuration edge cases."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value=None)
+    @patch('setup_environment.find_command', return_value=None)
     @patch('pathlib.Path.exists')
     def test_configure_mcp_server_claude_not_found(self, mock_exists, mock_find, _mock_system):
         """Test MCP configuration when claude command not found."""
@@ -570,7 +570,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_find_in_npm_path(self, mock_find, mock_system):
         """Test finding claude in npm path on Windows."""
         del mock_find  # Unused but required for patch
@@ -593,7 +593,7 @@ class TestMCPServerConfigurationEdgeCases:
             assert mock_bash.call_count == 4
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_find_in_unix_paths(self, mock_find, _mock_system):
         """Test finding claude in Unix paths."""
         del mock_find  # Unused but required for patch
@@ -615,7 +615,7 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_missing_transport_details(self, mock_find):
         """Test MCP configuration with missing transport details."""
         del mock_find  # Unused but required for patch
@@ -624,7 +624,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_already_exists(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration removes existing server before adding."""
@@ -647,7 +647,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert mock_run.call_count == 4
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_final_failure(self, mock_run, mock_find, mock_system):
         """Test MCP configuration failure on first attempt (no retry)."""
@@ -670,7 +670,7 @@ class TestMCPServerConfigurationEdgeCases:
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_windows_npx_command(self, mock_run, mock_find, mock_bash, _mock_system):
         """Test MCP configuration with npx command on Windows uses bash."""
@@ -697,7 +697,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert 'export PATH=' in bash_cmd
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_exception(self, mock_find, _mock_system):
         """Test MCP configuration with exception."""
         del mock_find  # Unused but required for patch
@@ -718,7 +718,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_env_single_string(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with single env string (backward compatibility)."""
@@ -745,7 +745,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert cmd[env_idx + 1] == 'API_KEY=secret123'
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_env_multiple_list(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with multiple env vars as list."""
@@ -780,7 +780,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert 'LOG_LEVEL=info' in cmd
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_env_empty_list(self, mock_run, mock_find, _mock_system):
         """Test MCP configuration with empty env list."""
@@ -804,7 +804,7 @@ class TestMCPServerConfigurationEdgeCases:
         # No --env flags should be present
         assert '--env' not in cmd
 
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_env_invalid_type(self, mock_find):
         """Test MCP configuration with invalid env type returns False."""
         del mock_find  # Unused but required for patch
@@ -819,7 +819,7 @@ class TestMCPServerConfigurationEdgeCases:
         assert result is False
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_with_env_list(self, mock_run, mock_bash, mock_find, _mock_system):
@@ -1320,18 +1320,21 @@ class TestMainFunctionErrorPaths:
         """Test main with config loading exception."""
         mock_load.side_effect = Exception('Config load failed')
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), pytest.raises(SystemExit) as exc_info:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), pytest.raises(SystemExit) as exc_info:
             setup_environment.main()
         assert exc_info.value.code == 1
 
     @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.find_command_robust', return_value=None)
+    @patch('setup_environment.find_command', return_value=None)
     def test_main_skip_install_claude_not_found(self, mock_find, mock_load):
         """Test main with --skip-install but Claude not found."""
         del mock_find  # Unused but required for patch
         mock_load.return_value = ({'name': 'Test'}, 'test.yaml')
 
-        with patch('sys.argv', ['setup_environment.py', 'test', '--skip-install']), pytest.raises(SystemExit) as exc_info:
+        with (
+            patch('sys.argv', ['setup_environment.py', 'test', '--skip-install', '--yes']),
+            pytest.raises(SystemExit) as exc_info,
+        ):
             setup_environment.main()
         assert exc_info.value.code == 1
 
@@ -1384,12 +1387,12 @@ class TestMainFunctionErrorPaths:
             'test.yaml',
         )
 
-        with patch('sys.argv', ['setup_environment.py', 'test']), patch('sys.exit') as mock_exit:
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
             setup_environment.main()
             mock_exit.assert_not_called()  # Should continue despite launcher failure
 
     @patch('setup_environment.is_admin', return_value=True)
-    @patch.dict('os.environ', {'CLAUDE_ENV_CONFIG': 'env-config'})
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'env-config'})
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude', return_value=True)
     @patch('setup_environment.install_dependencies', return_value=True)
@@ -1415,7 +1418,7 @@ class TestMainFunctionErrorPaths:
         mock_load,
         mock_is_admin,
     ):
-        """Test main using CLAUDE_ENV_CONFIG environment variable."""
+        """Test main using CLAUDE_CODE_TOOLBOX_ENV_CONFIG environment variable."""
         assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
         del mock_register  # Unused but required for patch
@@ -1428,7 +1431,7 @@ class TestMainFunctionErrorPaths:
         mock_launcher.return_value = Path('/tmp/launcher')
 
         with (
-            patch('sys.argv', ['setup_environment.py']),  # No config argument
+            patch('sys.argv', ['setup_environment.py', '--yes']),  # No config argument, uses env var
             patch('sys.exit') as mock_exit,
         ):
             setup_environment.main()
@@ -1476,7 +1479,7 @@ class TestMainFunctionErrorPaths:
         mock_load.return_value = (
             {
                 'name': 'Full Test',
-                'command-name': 'full-test',
+                'command-names': ['full-test'],
                 'base-url': 'https://example.com/base/{path}',
                 'model': 'claude-3-opus',
                 'permissions': {
@@ -1518,7 +1521,7 @@ class TestMainFunctionErrorPaths:
         mock_launcher.return_value = Path('/tmp/launcher')
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123']),
+            patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123', '--yes']),
             patch('sys.exit') as mock_exit,
         ):
             setup_environment.main()
@@ -2792,7 +2795,7 @@ class TestMCPProfileScope:
             assert result is False
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     def test_configure_mcp_server_profile_scope_removes_from_all_scopes(
         self,
         mock_find: MagicMock,
@@ -2833,7 +2836,7 @@ class TestMCPProfileScope:
             assert scopes_removed == {'user', 'local', 'project'}
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_separates_profile(
         self,
@@ -2870,7 +2873,7 @@ class TestMCPProfileScope:
             assert 'profile-server' in config['mcpServers']
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_profile_only_triggers_removal(
         self,
@@ -2929,7 +2932,7 @@ class TestMCPProfileScope:
             assert stats['combined_count'] == 0
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_multi_scope_triggers_removal_and_add(
         self,
@@ -2981,7 +2984,7 @@ class TestMCPProfileScope:
             assert stats['combined_count'] == 1
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_user_scope_unchanged(
         self,
@@ -3021,7 +3024,7 @@ class TestMCPProfileScope:
             assert not profile_config.exists()
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_multiple_profile_only_servers(
         self,
@@ -3077,7 +3080,7 @@ class TestMCPProfileScope:
             assert stats['combined_count'] == 0
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_comprehensive_scope_mix(
         self,
@@ -3211,7 +3214,7 @@ class TestMCPProfileScope:
         assert len(profile_servers) == 1
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_configure_all_mcp_servers_mixed_scopes(
         self,
@@ -3517,7 +3520,7 @@ class TestCombinedScopeSupport:
     # ========== Integration Tests: configure_all_mcp_servers() ==========
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     @patch('setup_environment.run_bash_command')
     def test_combined_scope_adds_to_both_locations(
@@ -3561,7 +3564,7 @@ class TestCombinedScopeSupport:
             assert mock_run.call_count >= 3  # At least 3 removal calls
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     @patch('setup_environment.run_bash_command')
     def test_combined_scope_project_profile(
@@ -3598,7 +3601,7 @@ class TestCombinedScopeSupport:
             assert profile_config.exists()
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     @patch('setup_environment.run_bash_command')
     def test_combined_scope_with_multiple_servers(
@@ -3645,7 +3648,7 @@ class TestCombinedScopeSupport:
         """Test that WARNING is logged for [user, local, profile] combination."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3675,7 +3678,7 @@ class TestCombinedScopeSupport:
         """Test that ERROR is logged for invalid [user, local] combination."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3706,7 +3709,7 @@ class TestCombinedScopeSupport:
         """Test backward compatibility: string scope still works."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3728,7 +3731,7 @@ class TestCombinedScopeSupport:
         """Test backward compatibility: missing scope defaults to user."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3750,7 +3753,7 @@ class TestCombinedScopeSupport:
         """Test backward compatibility: 'profile' string scope still works."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3775,7 +3778,7 @@ class TestCombinedScopeSupport:
         """Test comma-separated string scope parsing."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3802,7 +3805,7 @@ class TestCombinedScopeSupport:
         """Test that scope values are case-insensitive."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -3828,7 +3831,7 @@ class TestCombinedScopeSupport:
         """Test universal server with all four scopes."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
             patch('setup_environment.warning'),  # Suppress warning output
         ):
@@ -3857,7 +3860,7 @@ class TestCombinedScopeSupport:
         """Test that profile-only scope does NOT call claude mcp add."""
         with (
             patch('platform.system', return_value='Linux'),
-            patch('setup_environment.find_command_robust', return_value='claude'),
+            patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.run_command') as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -4141,7 +4144,7 @@ class TestConfigureAllMcpServersStats:
     """Test configure_all_mcp_servers stats tracking (Bug 2 fix)."""
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_stats_combined_scope_server(
         self,
@@ -4177,7 +4180,7 @@ class TestConfigureAllMcpServersStats:
             assert stats['combined_count'] == 1
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_stats_profile_only_server(
         self,
@@ -4213,7 +4216,7 @@ class TestConfigureAllMcpServersStats:
             assert stats['combined_count'] == 0
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_stats_user_only_server(
         self,
@@ -4249,7 +4252,7 @@ class TestConfigureAllMcpServersStats:
             assert stats['combined_count'] == 0
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_stats_mixed_servers(
         self,
@@ -4291,7 +4294,7 @@ class TestConfigureMcpServerWindowsRemoval:
     """Test configure_mcp_server Windows vs Unix removal branching (Bug 1 fix)."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     def test_windows_removal_uses_bash(
@@ -4327,7 +4330,7 @@ class TestConfigureMcpServerWindowsRemoval:
         assert len(removal_calls) >= 3
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_unix_removal_uses_run_command(
         self,
@@ -4360,7 +4363,7 @@ class TestConfigureMcpServerWindowsRemoval:
         assert len(removal_calls) == 3
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.run_command')
     def test_windows_removal_all_scopes(
@@ -4403,7 +4406,7 @@ class TestConfigureMcpServerBestEffortRemoval:
     """Test configure_mcp_server best-effort removal (ignores exit codes)."""
 
     @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_bash_command')
     def test_windows_best_effort_removal_non_existent_server(
         self,
@@ -4437,7 +4440,7 @@ class TestConfigureMcpServerBestEffortRemoval:
         assert len(removal_calls) == 3  # user, local, project
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_unix_best_effort_removal_non_existent_server(
         self,
@@ -4470,7 +4473,7 @@ class TestConfigureMcpServerBestEffortRemoval:
         assert result is True  # Should succeed despite removal returning non-zero
 
     @patch('platform.system', return_value='Linux')
-    @patch('setup_environment.find_command_robust', return_value='claude')
+    @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
     def test_removal_attempts_all_scopes_regardless_of_exit_codes(
         self,
@@ -4589,3 +4592,66 @@ class TestMcpServersSummaryDisplay:
         captured = capsys.readouterr()
         assert '3 global' in captured.out
         assert '5 profile-only' in captured.out
+
+
+class TestNodejsDirThreading:
+    """Test nodejs_dir parameter threading through MCP server configuration."""
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment._prepare_windows_bash_env')
+    def test_configure_mcp_server_passes_nodejs_dir_to_prepare_env(
+        self,
+        mock_prepare: MagicMock,
+        mock_bash: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+    ) -> None:
+        """Test that configure_mcp_server passes nodejs_dir to _prepare_windows_bash_env."""
+        del mock_find  # Unused but required for patch
+        del _mock_system  # Unused but required for patch
+        mock_prepare.return_value = setup_environment._WindowsBashEnv(
+            unix_explicit_path='/usr/bin:/c/Windows',
+            unix_claude_cmd='/c/Users/test/.local/bin/claude',
+        )
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'command': 'uvx test-server',
+        }
+
+        setup_environment.configure_mcp_server(server, nodejs_dir=r'C:\Program Files\nodejs')
+
+        # Verify _prepare_windows_bash_env was called with the nodejs_dir
+        assert mock_prepare.call_count >= 1
+        for call in mock_prepare.call_args_list:
+            assert call[0][1] == r'C:\Program Files\nodejs'
+
+    @patch('setup_environment.configure_mcp_server')
+    @patch('setup_environment.create_mcp_config_file')
+    def test_configure_all_mcp_servers_threads_nodejs_dir(
+        self,
+        mock_create_config: MagicMock,
+        mock_configure: MagicMock,
+    ) -> None:
+        """Test that configure_all_mcp_servers passes nodejs_dir to configure_mcp_server."""
+        del mock_create_config  # Unused but required for patch
+        mock_configure.return_value = True
+
+        servers = [
+            {'name': 'server-a', 'command': 'uvx server-a'},
+            {'name': 'server-b', 'command': 'uvx server-b'},
+        ]
+
+        setup_environment.configure_all_mcp_servers(
+            servers,
+            profile_mcp_config_path=None,
+            nodejs_dir=r'C:\custom\nodejs',
+        )
+
+        # Both configure_mcp_server calls must receive the nodejs_dir
+        assert mock_configure.call_count == 2
+        for call in mock_configure.call_args_list:
+            assert call[1]['nodejs_dir'] == r'C:\custom\nodejs'

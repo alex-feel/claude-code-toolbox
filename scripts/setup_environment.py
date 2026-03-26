@@ -28,14 +28,22 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import field
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import NamedTuple
+from typing import TextIO
 from typing import TypeVar
 from typing import cast
 from urllib.request import Request
 from urllib.request import urlopen
+from urllib.request import urlretrieve
 
 import yaml
 
@@ -47,6 +55,51 @@ if sys.platform != 'win32':
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
+
+# Node.js installation constants (standalone -- no imports from install_claude.py)
+MIN_NODE_VERSION = '18.0.0'
+NODE_LTS_API = 'https://nodejs.org/dist/index.json'
+
+# All valid top-level configuration keys for unknown key detection
+KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
+    'name',
+    'version',
+    'inherit',
+    'command-names',
+    'base-url',
+    'claude-code-version',
+    'install-nodejs',
+    'dependencies',
+    'agents',
+    'slash-commands',
+    'skills',
+    'files-to-download',
+    'global-config',
+    'hooks',
+    'mcp-servers',
+    'model',
+    'permissions',
+    'env-variables',
+    'os-env-variables',
+    'command-defaults',
+    'user-settings',
+    'always-thinking-enabled',
+    'effort-level',
+    'company-announcements',
+    'attribution',
+    'status-line',
+})
+
+# Path prefixes indicating sensitive filesystem destinations
+SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
+    '~/.ssh/',
+    '~/.gnupg/',
+    '~/.bashrc',
+    '~/.bash_profile',
+    '~/.profile',
+    '~/.zshrc',
+    '~/.config/',
+)
 
 # OS environment variables constants
 OS_ENV_VARIABLES_KEY = 'os-env-variables'
@@ -75,6 +128,13 @@ USER_SETTINGS_EXCLUDED_KEYS: set[str] = {
     'hooks',       # Path resolution issues; profile-specific event handlers
     'statusLine',  # Path resolution issues; profile-specific display config
 }
+
+# Keys that are NOT allowed in the global-config section
+# OAuth credentials must not appear in version-controlled YAML files
+GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
+    'oauthSession',
+    'oauthAccount',
+})
 
 # Mapping from root-level YAML keys to their user-settings equivalents
 # Used for conflict detection between profile settings and user settings
@@ -139,18 +199,18 @@ R = TypeVar('R')
 type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
 
 
-# Default number of parallel workers - can be overridden via CLAUDE_PARALLEL_WORKERS env var
+# Default number of parallel workers - can be overridden via CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS env var
 # Reduced from 5 to 2 to decrease likelihood of hitting GitHub secondary rate limits
-DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_PARALLEL_WORKERS', '2'))
+DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
 
 
 def is_parallel_mode_enabled() -> bool:
     """Check if parallel execution is enabled.
 
     Returns:
-        True if parallel mode is enabled (default), False if CLAUDE_SEQUENTIAL_MODE=1
+        True if parallel mode is enabled (default), False if CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1
     """
-    sequential_mode = os.environ.get('CLAUDE_SEQUENTIAL_MODE', '').lower()
+    sequential_mode = os.environ.get('CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE', '').lower()
     return sequential_mode not in ('1', 'true', 'yes')
 
 
@@ -163,7 +223,7 @@ def execute_parallel(
     """Execute a function on items in parallel with error isolation.
 
     Processes items using ThreadPoolExecutor when parallel mode is enabled,
-    or sequentially when CLAUDE_SEQUENTIAL_MODE=1.
+    or sequentially when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1.
 
     Args:
         items: List of items to process
@@ -312,11 +372,11 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         # Collect critical environment variables to pass to elevated process
         env_vars_to_pass: list[str] = []
         critical_env_vars = [
-            'CLAUDE_ENV_CONFIG',
+            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
             'GITHUB_TOKEN',
             'GITLAB_TOKEN',
             'REPO_TOKEN',
-            'CLAUDE_VERSION',
+            'CLAUDE_CODE_TOOLBOX_VERSION',
         ]
 
         for var_name in critical_env_vars:
@@ -441,6 +501,102 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
 
 
 # ANSI color codes for pretty output
+
+
+@dataclass(frozen=True)
+class InheritanceChainEntry:
+    """Single entry in the configuration inheritance chain."""
+
+    source: str
+    source_type: str  # 'url', 'local', 'repo'
+    name: str
+
+
+@dataclass
+class InstallationPlan:
+    """Structured representation of what the setup will install.
+
+    Separates data collection from display logic, enabling testability
+    and reuse between pre-install summary and post-install report.
+    """
+
+    # Config metadata
+    config_name: str
+    config_source: str
+    config_source_type: str  # 'url', 'local', 'repo'
+    config_version: str | None
+
+    # Inheritance chain (root ancestor first, current config last)
+    inheritance_chain: list[InheritanceChainEntry] = field(
+        default_factory=lambda: list[InheritanceChainEntry](),
+    )
+
+    # Resources by category
+    agents: list[str] = field(default_factory=lambda: list[str]())
+    slash_commands: list[str] = field(default_factory=lambda: list[str]())
+    skills: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
+    files_to_download: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+    hooks_files: list[str] = field(default_factory=lambda: list[str]())
+    hooks_events: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+    mcp_servers: list[dict[str, Any]] = field(
+        default_factory=lambda: list[dict[str, Any]](),
+    )
+
+    # Dependency commands by platform
+    dependency_commands: dict[str, list[str]] = field(
+        default_factory=lambda: dict[str, list[str]](),
+    )
+
+    # Settings
+    model: str | None = None
+    system_prompt: str | None = None
+    system_prompt_mode: str = 'replace'
+    command_names: list[str] = field(default_factory=lambda: list[str]())
+    claude_code_version: str | None = None
+    install_nodejs: bool = False
+    skip_install: bool = False
+    permissions: dict[str, Any] | None = None
+    env_variables: dict[str, str] | None = None
+    os_env_variables: dict[str, Any] | None = None
+    user_settings: dict[str, Any] | None = None
+    global_config: dict[str, Any] | None = None
+    always_thinking_enabled: bool | None = None
+    effort_level: str | None = None
+    company_announcements: list[str] | None = None
+    attribution: dict[str, str] | None = None
+    status_line: dict[str, Any] | None = None
+
+    # Security analysis
+    unknown_keys: list[str] = field(default_factory=lambda: list[str]())
+    sensitive_paths: list[str] = field(default_factory=lambda: list[str]())
+
+    @property
+    def total_resources(self) -> int:
+        """Total count of downloadable resources."""
+        return (
+            len(self.agents)
+            + len(self.slash_commands)
+            + len(self.skills)
+            + len(self.files_to_download)
+            + len(self.hooks_files)
+            + len(self.mcp_servers)
+        )
+
+    @property
+    def has_security_concerns(self) -> bool:
+        """Whether any security attention items exist."""
+        return bool(
+            self.dependency_commands
+            or self.unknown_keys
+            or self.sensitive_paths
+            or self.hooks_events,
+        )
+
+
 class Colors:
     """ANSI color codes for terminal output."""
 
@@ -524,13 +680,12 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
         return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
 
 
-def find_command(cmd: str) -> str | None:
-    """Find a command in PATH."""
-    return shutil.which(cmd)
-
-
-def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
+def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
     """Find a command with robust platform-specific fallback search.
+
+    For the 'claude' command, checks the native installer target path first
+    to ensure the native binary is preferred over npm even when PATH ordering
+    would resolve to the npm binary first.
 
     Args:
         cmd: Command name to find (e.g., 'claude', 'node')
@@ -539,6 +694,20 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
     Returns:
         Full path to command if found, None otherwise
     """
+    # For 'claude' command: check native installer target FIRST
+    # This ensures the native binary is preferred over npm even when
+    # PATH ordering would resolve to the npm binary first.
+    if cmd == 'claude':
+        if sys.platform == 'win32':
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
+        else:
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+        try:
+            if native_path.exists() and native_path.stat().st_size > 1000:
+                return str(native_path)
+        except (OSError, ValueError, TypeError):
+            pass  # Path inaccessible or invalid
+
     # Primary: Use standard PATH search with retry for PATH synchronization
     for attempt in range(2):
         cmd_path = shutil.which(cmd)
@@ -600,7 +769,9 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
         # Unix-like systems
         if cmd == 'claude':
             common_paths = [
-                str(Path.home() / '.npm-global' / 'bin' / 'claude'),
+                # Native installer target (checked first for correct precedence)
+                str(get_real_user_home() / '.local' / 'bin' / 'claude'),
+                str(get_real_user_home() / '.npm-global' / 'bin' / 'claude'),
                 '/usr/local/bin/claude',
                 '/usr/bin/claude',
             ]
@@ -616,7 +787,6 @@ def find_command_robust(cmd: str, fallback_paths: list[str] | None = None) -> st
             ]
 
     # Check common locations
-
     for path in common_paths:
         expanded = os.path.expandvars(path)
         expanded_path = Path(expanded)
@@ -661,9 +831,9 @@ def find_bash_windows() -> str | None:
     """
     debug_log('find_bash_windows() called')
 
-    # Check CLAUDE_CODE_GIT_BASH_PATH env var first
-    env_path = os.environ.get('CLAUDE_CODE_GIT_BASH_PATH')
-    debug_log(f'CLAUDE_CODE_GIT_BASH_PATH={env_path}')
+    # Check CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH env var first
+    env_path = os.environ.get('CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH')
+    debug_log(f'CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH={env_path}')
     if env_path and Path(env_path).exists():
         debug_log(f'Found via env var: {env_path}')
         return str(Path(env_path).resolve())
@@ -688,7 +858,7 @@ def find_bash_windows() -> str | None:
             return str(Path(expanded).resolve())
 
     # Fall back to PATH search (may find Git Bash if installed elsewhere)
-    bash_path = find_command('bash.exe')
+    bash_path = shutil.which('bash.exe')
     debug_log(f'PATH search result: {bash_path}')
     if bash_path:
         # Skip WSL bash in System32/SysWOW64
@@ -910,7 +1080,7 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     Key invariant: A tilde path (~...) is ALWAYS local, never a URL.
     After expansion, tilde paths become absolute local paths.
 
-    Uses Path.home() for tilde expansion instead of os.path.expanduser()
+    Uses get_real_user_home() for tilde expansion instead of os.path.expanduser()
     to avoid WSL HOME contamination, where os.path.expanduser() may
     return a Windows home path (C:\\Users\\user) instead of the correct
     Linux home (/home/user).
@@ -942,12 +1112,12 @@ def normalize_tilde_path(path: str, resolve: bool = False) -> str:
     if not path:
         return path
 
-    # Step 1: Expand tilde (~, ~username) using Path.home() for reliability
+    # Step 1: Expand tilde (~, ~username) using get_real_user_home() for reliability
     if path.startswith('~'):
         if path == '~' or path.startswith(('~/', '~\\')):
-            # Current user's home directory - use Path.home() to avoid
+            # Current user's home directory - use get_real_user_home() to avoid
             # WSL HOME contamination from os.path.expanduser()
-            home_str = str(Path.home())
+            home_str = str(get_real_user_home())
             # path[2:] skips the ~/ or ~\ prefix (no-op when path == '~')
             expanded = home_str if path == '~' else str(Path(home_str) / path[2:])
         else:
@@ -1159,13 +1329,72 @@ def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _write_merged_json(
+    target_file: Path,
+    new_settings: dict[str, Any],
+    array_union_keys: set[str] | None = None,
+    *,
+    ensure_parent: bool = True,
+) -> tuple[bool, dict[str, Any]]:
+    """Read-merge-write JSON file with deep merge.
+
+    Implements the three-step merge process:
+    1. READ existing JSON file (or empty dict if not exists/invalid)
+    2. DEEP MERGE new settings into existing
+    3. WRITE merged result back to file
+
+    Args:
+        target_file: Path to the JSON file to update.
+        new_settings: New settings to deep-merge into existing content.
+        array_union_keys: Key paths where arrays should be unioned.
+            Defaults to DEFAULT_ARRAY_UNION_KEYS if None.
+            Pass set() to disable array union behavior.
+        ensure_parent: If True, create parent directories if needed.
+
+    Returns:
+        Tuple of (success, merged_dict). success is True if settings were
+        written successfully, False on write failure. merged_dict contains
+        the merged content (useful for post-write checks).
+    """
+    # Step 1: READ existing settings
+    existing: dict[str, Any] = {}
+    if target_file.exists():
+        try:
+            file_content = target_file.read_text(encoding='utf-8')
+            if file_content.strip():
+                parsed = json.loads(file_content)
+                if isinstance(parsed, dict):
+                    existing = cast(dict[str, Any], parsed)
+                else:
+                    warning(f'Existing {target_file} is not a dict, starting fresh')
+        except json.JSONDecodeError as e:
+            warning(f'Invalid JSON in {target_file}: {e}, starting fresh')
+
+    # Step 2: DEEP MERGE new settings into existing
+    merged = deep_merge_settings(existing, new_settings, array_union_keys=array_union_keys)
+
+    # Step 3: WRITE merged result back to file
+    try:
+        if ensure_parent:
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+
+        target_file.write_text(
+            json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
+        return True, merged
+    except OSError as e:
+        warning(f'Failed to write to {target_file}: {e}')
+        return False, merged
+
+
 def write_user_settings(
     settings: dict[str, Any],
     claude_user_dir: Path,
 ) -> bool:
     """Write user settings to ~/.claude/settings.json with deep merge.
 
-    Implements the three-step merge process:
+    Implements the three-step merge process via _write_merged_json():
     1. READ existing ~/.claude/settings.json (or empty dict if not exists)
     2. DEEP MERGE new settings values into existing
     3. WRITE merged result back to file
@@ -1186,33 +1415,11 @@ def write_user_settings(
     # Step 0: Platform-conditional tilde handling in command keys
     expanded_settings = _expand_tilde_keys_in_settings(settings)
 
-    # Step 1: READ existing settings
-    existing: dict[str, Any] = {}
-    if settings_file.exists():
-        try:
-            file_content = settings_file.read_text(encoding='utf-8')
-            if file_content.strip():  # Only parse non-empty files
-                parsed = json.loads(file_content)
-                if isinstance(parsed, dict):
-                    existing = cast(dict[str, Any], parsed)
-                else:
-                    warning(f'Existing {settings_file} is not a dict, starting fresh')
-        except json.JSONDecodeError as e:
-            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
+    # Delegate to shared READ-MERGE-WRITE helper
+    # Uses default array_union_keys (permissions.allow/deny/ask)
+    ok, merged = _write_merged_json(settings_file, expanded_settings)
 
-    # Step 2: DEEP MERGE new settings into existing
-    merged = deep_merge_settings(existing, expanded_settings)
-
-    # Step 3: WRITE merged result back to file
-    try:
-        # Ensure directory exists
-        claude_user_dir.mkdir(parents=True, exist_ok=True)
-
-        # Write with pretty formatting
-        settings_file.write_text(
-            json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
-            encoding='utf-8',
-        )
+    if ok:
         success(f'Wrote user settings to {settings_file}')
 
         # Warn about potential WSL path issues
@@ -1228,11 +1435,10 @@ def write_user_settings(
                             'Consider re-running setup from within WSL.',
                         )
                         break
+    else:
+        warning(f'Failed to write user settings to {settings_file}')
 
-        return True
-    except OSError as e:
-        warning(f'Failed to write user settings to {settings_file}: {e}')
-        return False
+    return ok
 
 
 def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
@@ -1263,6 +1469,60 @@ def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
         for key in user_settings
         if key in USER_SETTINGS_EXCLUDED_KEYS
     ]
+
+
+def validate_global_config(global_config: dict[str, Any]) -> list[str]:
+    """Validate global-config section for excluded keys.
+
+    Checks that the global-config section does not contain OAuth credential
+    keys that should never appear in YAML configuration files.
+
+    Args:
+        global_config: Dict from YAML global-config section.
+
+    Returns:
+        List of error messages. Empty list if validation passes.
+    """
+    return [
+        f"Key '{key}' is not allowed in global-config (OAuth credentials)"
+        for key in global_config
+        if key in GLOBAL_CONFIG_EXCLUDED_KEYS
+    ]
+
+
+def write_global_config(
+    global_config: dict[str, Any],
+) -> bool:
+    """Write global configuration to ~/.claude.json with deep merge.
+
+    Implements the three-step merge process via _write_merged_json():
+    1. READ existing ~/.claude.json (or empty dict if not exists)
+    2. DEEP MERGE new config values into existing (no array union)
+    3. WRITE merged result back to file
+
+    Uses array_union_keys=set() because ~/.claude.json has no
+    permissions.allow/deny/ask paths (those are settings.json-specific).
+
+    Args:
+        global_config: Global config dict from YAML global-config section.
+
+    Returns:
+        True if config was written successfully, False on write failure.
+    """
+    config_file = get_real_user_home() / '.claude.json'
+
+    ok, _ = _write_merged_json(
+        config_file,
+        global_config,
+        array_union_keys=set(),
+    )
+
+    if ok:
+        success(f'Wrote global config to {config_file}')
+    else:
+        warning(f'Failed to write global config to {config_file}')
+
+    return ok
 
 
 def detect_settings_conflicts(
@@ -1349,6 +1609,25 @@ def build_platform_aware_command(command: str) -> list[str]:
         return ['cmd', '/c', executable] + args
 
     return [executable] + args
+
+
+def _command_starts_with_npx(command: str) -> bool:
+    """Check if a command's first token is 'npx'.
+
+    Uses shell-aware tokenization to avoid false positives from
+    substring matching (e.g., 'run_npx_wrapper.py' does not match).
+
+    Args:
+        command: MCP server command string.
+
+    Returns:
+        True if the first executable token is 'npx'.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    return bool(tokens) and tokens[0] == 'npx'
 
 
 def parse_mcp_command(command_str: str) -> dict[str, Any]:
@@ -1443,8 +1722,8 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
                 )
 
             # Validate it's the expected .local\bin directory
-            expected_local_bin = str(Path.home() / '.local' / 'bin')
-            if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(Path.home()).lower()):
+            expected_local_bin = str(get_real_user_home() / '.local' / 'bin')
+            if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(get_real_user_home()).lower()):
                 # Allow only paths under user's home directory
                 return (
                     False,
@@ -1520,9 +1799,9 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             # Broadcast WM_SETTINGCHANGE to notify other processes
             # This is done via setx which broadcasts the change
             # We use a dummy variable to trigger the broadcast without modifying anything
-            subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+            subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
             subprocess.run(
-                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                 capture_output=True,
                 check=False,
             )
@@ -1554,7 +1833,7 @@ def ensure_local_bin_in_path() -> None:
     if platform.system() != 'Windows':
         return
 
-    local_bin = Path.home() / '.local' / 'bin'
+    local_bin = get_real_user_home() / '.local' / 'bin'
     local_bin.mkdir(parents=True, exist_ok=True)
 
     path_success, path_message = add_directory_to_windows_path(str(local_bin))
@@ -1634,9 +1913,9 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
                 winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
 
                 # Broadcast WM_SETTINGCHANGE to notify other processes
-                subprocess.run(['setx', 'CLAUDE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
+                subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
                 subprocess.run(
-                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_TOOLBOX_TEMP', '/f'],
+                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
                     capture_output=True,
                     check=False,
                 )
@@ -2048,7 +2327,7 @@ def validate_all_config_files(
         is_valid, method = validator.validate(resolved_path, is_remote)
         return (file_type, original_path, is_valid, method)
 
-    # Execute validation in parallel (or sequential if CLAUDE_SEQUENTIAL_MODE=1)
+    # Execute validation in parallel (or sequential if CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE=1)
     results = execute_parallel(files_to_check, validate_single_file)
 
     # Process results and print status messages
@@ -2272,7 +2551,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
             return url  # Unexpected format
 
         project_path = parts[0]  # e.g., "ai/claude-code-configs"
-        remainder = parts[1]  # e.g., "main/environments/library/file.yaml"
+        remainder = parts[1]  # e.g., "main/configs/my-config.yaml"
 
         # Split remainder into branch and file path
         # The branch is the first part before /
@@ -2450,13 +2729,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         if repo_type == 'github':
             return build_github_headers(env_token)
 
-    # Method 3: Auth config file (future expansion)
-    # auth_file = Path.home() / '.claude' / 'auth.yaml'
-    # if auth_file.exists():
-    #     # Implementation for auth file would go here
-    #     pass
-
-    # Method 4: Interactive prompt (only if repo type detected and terminal is interactive)
+    # Method 3: Interactive prompt (only if repo type detected and terminal is interactive)
     if repo_type and sys.stdin.isatty():
         warning(f'Private {repo_type.title()} repository detected but no authentication found')
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
@@ -2689,7 +2962,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     if not config_spec.endswith('.yaml'):
         config_spec += '.yaml'
 
-    config_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/environments/library/{config_spec}'
+    config_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/{config_spec}'
     info(f'Loading configuration from repository: {config_spec}')
 
     try:
@@ -2701,11 +2974,11 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
     except urllib.error.HTTPError as e:
         if e.code == 404:
             error(f'Configuration not found in repository: {config_spec}')
-            info('Available configurations:')
-            info('  - python: Python development environment')
+            info('Configuration not found in the configurations repository.')
+            info('Browse available configurations at:')
+            info('  https://github.com/alex-feel/claude-code-artifacts-public')
             info('')
             info('You can also:')
-            info('  - Create custom configs in environments/library/')
             info('  - Use a local file: ./my-config.yaml')
             info('  - Use a URL: https://example.com/config.yaml')
             raise Exception(f'Configuration not found: {config_spec}') from None
@@ -2715,6 +2988,54 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         if 'Configuration not found' not in str(e):
             error(f'Failed to load repository configuration: {e}')
         raise
+
+
+def classify_config_source(config_source: str) -> str:
+    """Classify the configuration source type.
+
+    Determines how the configuration was loaded based on the source string
+    returned by load_config_from_source().
+
+    Args:
+        config_source: The source path/URL returned by load_config_from_source()
+
+    Returns:
+        One of: "url", "local", "repo"
+    """
+    if config_source.startswith(('http://', 'https://')):
+        return 'url'
+    # Local files are resolved to absolute paths by load_config_from_source()
+    if os.path.isabs(config_source) or os.sep in config_source or '/' in config_source:
+        return 'local'
+    return 'repo'
+
+
+def resolve_config_source_url(config_source: str, config_source_type: str) -> str | None:
+    """Resolve the fetch URL for a configuration source.
+
+    For remote sources, returns the URL that can be used to re-fetch the config.
+    For local sources, returns None (no remote to check against).
+
+    Args:
+        config_source: The source path/URL from load_config_from_source()
+        config_source_type: The classified type ("url", "local", "repo")
+
+    Returns:
+        The fetchable URL, or None for local sources.
+    """
+    if config_source_type == 'url':
+        return config_source
+    if config_source_type == 'repo':
+        # Reconstruct the GitHub raw URL (same logic as load_config_from_source)
+        name = config_source
+        if not name.endswith('.yaml'):
+            name += '.yaml'
+        return (
+            f'https://raw.githubusercontent.com/alex-feel/'
+            f'claude-code-artifacts-public/main/{name}'
+        )
+    # Local sources have no remote URL
+    return None
 
 
 def _normalize_source_for_comparison(source: str) -> str:
@@ -2804,7 +3125,8 @@ def resolve_config_inheritance(
     auth_param: str | None = None,
     visited: set[str] | None = None,
     depth: int = 0,
-) -> dict[str, Any]:
+    chain: list[InheritanceChainEntry] | None = None,
+) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
     """Resolve configuration inheritance by loading and merging parent configs.
 
     Implements top-level key override semantics: child config values completely
@@ -2825,10 +3147,13 @@ def resolve_config_inheritance(
             Used internally for recursion tracking. Callers should not provide this.
         depth: Current recursion depth for safety limits.
             Used internally. Callers should not provide this.
+        chain: Accumulator for the inheritance chain entries.
+            Used internally. Callers should not provide this.
 
     Returns:
-        dict[str, Any]: Merged configuration with inheritance resolved.
-            The 'inherit' key is removed from the result.
+        Tuple of (merged_config, inheritance_chain) where merged_config is the
+        configuration with inheritance resolved and inheritance_chain is the
+        list of InheritanceChainEntry from root ancestor to immediate parent.
 
     Raises:
         ValueError: If circular dependency is detected, maximum inheritance
@@ -2839,17 +3164,21 @@ def resolve_config_inheritance(
     Examples:
         >>> # Simple inheritance
         >>> child = {'inherit': 'base.yaml', 'name': 'Child'}
-        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
         >>> # resolved contains parent's keys + child's 'name' override
 
         >>> # Chain: grandparent -> parent -> child
         >>> child = {'inherit': 'parent.yaml', 'model': 'claude-3'}
-        >>> resolved = resolve_config_inheritance(child, 'child.yaml')
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
         >>> # resolved contains all ancestors' keys, child overrides take precedence
     """
     # Initialize visited set for circular dependency detection
     if visited is None:
         visited = set()
+
+    # Initialize chain accumulator
+    if chain is None:
+        chain = []
 
     # Check for maximum depth exceeded
     if depth > MAX_INHERITANCE_DEPTH:
@@ -2864,7 +3193,7 @@ def resolve_config_inheritance(
     inherit_value = config.get(INHERIT_KEY)
     if inherit_value is None:
         # No inheritance - return config as-is (without the inherit key if present)
-        return {k: v for k, v in config.items() if k != INHERIT_KEY}
+        return {k: v for k, v in config.items() if k != INHERIT_KEY}, chain
 
     # Validate inherit value is a string
     if not isinstance(inherit_value, str):
@@ -2916,21 +3245,390 @@ def resolve_config_inheritance(
         error(f'Error: {e}')
         raise
 
-    # Recursively resolve parent's inheritance
-    resolved_parent = resolve_config_inheritance(
+    # Recursively resolve parent's inheritance (chain accumulates ancestors)
+    resolved_parent, chain = resolve_config_inheritance(
         parent_config,
         actual_parent_source,
         auth_param=auth_param,
         visited=visited,
         depth=depth + 1,
+        chain=chain,
     )
+
+    # Append the parent entry to the chain after recursion resolves deeper ancestors
+    chain.append(InheritanceChainEntry(
+        source=actual_parent_source,
+        source_type=classify_config_source(actual_parent_source),
+        name=parent_config.get('name', inherit_value),
+    ))
 
     # Merge: parent first, then child overrides (top-level key override)
     merged = _merge_configs(resolved_parent, config)
 
     success(f'Inherited from: {inherit_value}')
 
-    return merged
+    return merged, chain
+
+
+def collect_installation_plan(
+    config: dict[str, Any],
+    config_source: str,
+    config_name: str,
+    config_version: str | None,
+    inheritance_chain: list[InheritanceChainEntry],
+    args: argparse.Namespace,
+) -> InstallationPlan:
+    """Collect all installation artifacts into a structured plan.
+
+    Extracts resource lists, dependency commands, settings, and security
+    analysis from the fully resolved configuration without executing
+    any installation steps.
+
+    Args:
+        config: Fully resolved configuration dictionary (inheritance merged).
+        config_source: Source path/URL of the configuration.
+        config_name: Original config name as specified by user.
+        config_version: Pre-extracted config version from the root config
+            (before inheritance resolution). None if root config has no version.
+        inheritance_chain: Resolved inheritance chain entries.
+        args: Parsed CLI arguments.
+
+    Returns:
+        InstallationPlan containing all artifacts to be installed.
+    """
+    config_source_type = classify_config_source(config_source)
+
+    # Extract resources
+    hooks_dict: dict[str, Any] = config.get('hooks') or {}
+    hooks_files: list[str] = hooks_dict.get('files') or []
+    hooks_events_list: list[Any] = hooks_dict.get('events') or []
+    hooks_events: list[dict[str, Any]] = [
+        cast(dict[str, Any], e) for e in hooks_events_list if isinstance(e, dict)
+    ]
+
+    # Extract files-to-download
+    ftd_raw: list[Any] = config.get('files-to-download') or []
+    files_to_download: list[dict[str, Any]] = [
+        cast(dict[str, Any], f) for f in ftd_raw if isinstance(f, dict)
+    ]
+
+    # Extract skills
+    skills_raw: list[Any] = config.get('skills') or []
+    skills_list: list[dict[str, Any]] = [
+        cast(dict[str, Any], s) for s in skills_raw if isinstance(s, dict)
+    ]
+
+    # Extract MCP servers
+    mcp_raw: list[Any] = config.get('mcp-servers') or []
+    mcp_servers: list[dict[str, Any]] = [
+        cast(dict[str, Any], s) for s in mcp_raw if isinstance(s, dict)
+    ]
+
+    # Extract dependency commands by platform
+    dependency_commands: dict[str, list[str]] = {}
+    deps_raw: dict[str, Any] = config.get('dependencies') or {}
+    for platform_key in ('common', 'windows', 'linux', 'macos'):
+        dep_cmds: list[Any] = deps_raw.get(platform_key) or []
+        if dep_cmds:
+            dependency_commands[platform_key] = [str(c) for c in dep_cmds]
+
+    # Extract command defaults
+    cmd_defaults: dict[str, Any] = config.get('command-defaults') or {}
+    system_prompt: str | None = cmd_defaults.get('system-prompt')
+    system_prompt_mode: str = cmd_defaults.get('mode') or 'replace'
+
+    # Extract command names
+    command_names_raw = config.get('command-names')
+    command_names: list[str] = []
+    if isinstance(command_names_raw, str):
+        command_names = [command_names_raw]
+    elif isinstance(command_names_raw, list):
+        command_names = [str(item) for item in cast(list[object], command_names_raw)]
+
+    # Unknown key detection
+    unknown_keys = sorted(k for k in config if k not in KNOWN_CONFIG_KEYS)
+
+    # Sensitive path detection
+    sensitive_paths: list[str] = []
+    for ftd in files_to_download:
+        dest = ftd.get('dest', '')
+        if isinstance(dest, str):
+            for prefix in SENSITIVE_PATH_PREFIXES:
+                if dest.startswith(prefix):
+                    sensitive_paths.append(dest)
+                    break
+
+    return InstallationPlan(
+        config_name=config.get('name', config_name),
+        config_source=config_source,
+        config_source_type=config_source_type,
+        config_version=config_version,
+        inheritance_chain=inheritance_chain,
+        agents=config.get('agents', []) or [],
+        slash_commands=config.get('slash-commands', []) or [],
+        skills=skills_list,
+        files_to_download=files_to_download,
+        hooks_files=hooks_files,
+        hooks_events=hooks_events,
+        mcp_servers=mcp_servers,
+        dependency_commands=dependency_commands,
+        model=config.get('model'),
+        system_prompt=system_prompt,
+        system_prompt_mode=system_prompt_mode,
+        command_names=command_names,
+        claude_code_version=config.get('claude-code-version'),
+        install_nodejs=bool(config.get('install-nodejs')),
+        skip_install=args.skip_install,
+        permissions=config.get('permissions'),
+        env_variables=config.get('env-variables'),
+        os_env_variables=config.get('os-env-variables'),
+        user_settings=config.get('user-settings'),
+        global_config=config.get('global-config'),
+        always_thinking_enabled=config.get('always-thinking-enabled'),
+        effort_level=config.get('effort-level'),
+        company_announcements=config.get('company-announcements'),
+        attribution=config.get('attribution'),
+        status_line=config.get('status-line'),
+        unknown_keys=unknown_keys,
+        sensitive_paths=sensitive_paths,
+    )
+
+
+def display_installation_summary(
+    plan: InstallationPlan,
+    output: TextIO | None = None,
+) -> None:
+    """Display a human-readable installation summary.
+
+    Renders the installation plan as a formatted terminal summary with
+    color-coded sections. When stdout is piped, output goes to stderr
+    so users still see the summary.
+
+    Args:
+        plan: The installation plan to display.
+        output: Output stream. If None, uses stderr when stdout is piped,
+            otherwise stdout.
+    """
+    out = output if output is not None else (
+        sys.stderr if not sys.stdout.isatty() else sys.stdout
+    )
+
+    def _print(*args: object) -> None:
+        print(*args, file=out)
+
+    _print()
+    _print(f'{Colors.CYAN}========================================================================{Colors.NC}')
+    _print(f'{Colors.CYAN}                    Installation Summary{Colors.NC}')
+    _print(f'{Colors.CYAN}========================================================================{Colors.NC}')
+    _print()
+
+    # Config metadata
+    _print(f'{Colors.BOLD}Configuration:{Colors.NC} {plan.config_name}')
+    _print(f'{Colors.BOLD}Source:{Colors.NC} {plan.config_source} ({plan.config_source_type})')
+    _print(f'{Colors.BOLD}Version:{Colors.NC} {plan.config_version or "not specified"}')
+
+    # Inheritance chain
+    if len(plan.inheritance_chain) > 1:
+        _print()
+        _print(f'{Colors.BOLD}Inheritance Chain:{Colors.NC}')
+        for i, entry in enumerate(plan.inheritance_chain, 1):
+            marker = '  <-- current' if i == len(plan.inheritance_chain) else ''
+            _print(f'  {i}. {entry.name} ({entry.source_type}){marker}')
+
+    # Resources
+    _print()
+    _print(f'{Colors.BOLD}Resources:{Colors.NC}')
+    _print(f'  * Agents: {len(plan.agents)}')
+    _print(f'  * Slash commands: {len(plan.slash_commands)}')
+    _print(f'  * Skills: {len(plan.skills)}')
+    _print(f'  * Files to download: {len(plan.files_to_download)}')
+    _print(f'  * Hook files: {len(plan.hooks_files)}')
+    _print(f'  * Hook events: {len(plan.hooks_events)}')
+    _print(f'  * MCP servers: {len(plan.mcp_servers)}')
+
+    # Claude Code installation
+    _print()
+    if plan.skip_install:
+        _print('  * Claude Code: skip (--skip-install)')
+    else:
+        version_str = plan.claude_code_version or 'latest'
+        _print(f'  * Claude Code: install (version: {version_str})')
+    if plan.install_nodejs:
+        _print('  * Node.js: install if needed')
+
+    # Settings
+    settings_items: list[str] = []
+    if plan.model:
+        settings_items.append(f'Model: {plan.model}')
+    if plan.system_prompt:
+        settings_items.append(f'System prompt: {plan.system_prompt_mode}')
+    if plan.permissions:
+        perm_parts: list[str] = []
+        if 'defaultMode' in plan.permissions:
+            perm_parts.append(f"defaultMode={plan.permissions['defaultMode']}")
+        if 'allow' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['allow'])} allow")
+        if 'deny' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['deny'])} deny")
+        if 'ask' in plan.permissions:
+            perm_parts.append(f"{len(plan.permissions['ask'])} ask")
+        settings_items.append(f"Permissions: {', '.join(perm_parts)}")
+    if plan.env_variables:
+        settings_items.append(f'Environment variables: {len(plan.env_variables)}')
+    if plan.os_env_variables:
+        settings_items.append(f'OS environment variables: {len(plan.os_env_variables)}')
+    if plan.effort_level:
+        settings_items.append(f'Effort level: {plan.effort_level}')
+    if plan.always_thinking_enabled is not None:
+        settings_items.append(f'Always thinking: {plan.always_thinking_enabled}')
+    if plan.user_settings:
+        settings_items.append('User settings: configured')
+    if plan.global_config:
+        settings_items.append('Global config: configured')
+    if plan.company_announcements:
+        settings_items.append(f'Company announcements: {len(plan.company_announcements)}')
+    if plan.command_names:
+        settings_items.append(f"Command names: {', '.join(plan.command_names)}")
+
+    if settings_items:
+        _print()
+        _print(f'{Colors.BOLD}Settings:{Colors.NC}')
+        for item in settings_items:
+            _print(f'  * {item}')
+
+    # Dependency commands (highlighted in yellow -- most dangerous)
+    if plan.dependency_commands:
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}Dependencies (shell commands):{Colors.NC}')
+        for platform_key, cmds in plan.dependency_commands.items():
+            _print(f'  {Colors.YELLOW}[{platform_key}]{Colors.NC}')
+            for cmd in cmds:
+                _print(f'    $ {cmd}')
+
+    # Attention section (red)
+    has_attention = plan.sensitive_paths or plan.unknown_keys
+    if has_attention:
+        _print()
+        _print(f'{Colors.RED}{Colors.BOLD}[!] ATTENTION:{Colors.NC}')
+        for path in plan.sensitive_paths:
+            _print(f'  {Colors.RED}[!] Sensitive path: {path}{Colors.NC}')
+        for key in plan.unknown_keys:
+            _print(f'  {Colors.YELLOW}[?] Unknown config key: {key!r}{Colors.NC}')
+
+
+def _dev_tty_available() -> bool:
+    """Check if /dev/tty is available for interactive input."""
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _get_user_confirmation(prompt: str) -> str:
+    """Get user input with /dev/tty fallback for piped stdin.
+
+    On Unix systems, when stdin is not a TTY (e.g., curl | bash),
+    attempts to read from /dev/tty as a best-effort fallback. This is
+    a standard pattern used by sudo, ssh, and gpg.
+
+    Args:
+        prompt: The prompt string to display.
+
+    Returns:
+        User's input string (stripped), or empty string on EOF/error.
+    """
+    # Try stdin first if it's a TTY
+    if sys.stdin.isatty():
+        try:
+            return input(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            return ''
+
+    # Best-effort /dev/tty fallback (Unix only)
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty') as tty:
+                # Write prompt to stderr (stdout may be piped)
+                sys.stderr.write(prompt)
+                sys.stderr.flush()
+                return tty.readline().strip()
+        except (OSError, EOFError):
+            pass
+
+    # No interactive input available
+    return ''
+
+
+def confirm_installation(
+    plan: InstallationPlan,
+    auto_confirm: bool = False,
+    dry_run: bool = False,
+) -> bool:
+    """Gate installation execution on explicit user consent.
+
+    Implements the confirmation flow:
+    1. --dry-run: display summary, return False (caller exits 0)
+    2. --yes or CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1: display summary, return True
+    3. Interactive TTY: prompt user with [y/N]
+    4. /dev/tty available: prompt via /dev/tty
+    5. Non-interactive: display summary + guidance, return False (caller exits 1)
+
+    Args:
+        plan: The installation plan to confirm.
+        auto_confirm: Whether to auto-confirm (--yes flag or env var).
+        dry_run: Whether this is a dry-run (show plan, do not install).
+
+    Returns:
+        True if installation should proceed, False otherwise.
+    """
+    # Always display summary (audit trail for auto-confirm, info for dry-run)
+    display_installation_summary(plan)
+
+    # Dry run: show summary and signal caller to exit 0
+    if dry_run:
+        print()
+        info('Dry run complete. No changes were made.')
+        return False
+
+    # Auto-confirm: show summary, proceed
+    if auto_confirm:
+        print()
+        info('Auto-confirmed via --yes flag or CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
+        return True
+
+    # Check if ANY interactive input is possible
+    can_interact = sys.stdin.isatty()
+
+    # Try /dev/tty fallback on Unix when stdin is piped
+    can_tty_fallback = False
+    if not can_interact and sys.platform != 'win32':
+        can_tty_fallback = _dev_tty_available()
+
+    if not can_interact and not can_tty_fallback:
+        # Non-interactive mode: refuse with guidance
+        print()
+        error('Cannot proceed: no interactive terminal available')
+        print()
+        info('To auto-confirm in non-interactive mode, use one of:')
+        info('  1. Pass --yes flag: setup_environment.py <config> --yes')
+        info('  2. Set environment variable: CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
+        info('  3. Preview only: setup_environment.py <config> --dry-run')
+        return False
+
+    # Interactive confirmation
+    print()
+    response = _get_user_confirmation(
+        f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}',
+    )
+
+    if response.lower() in ('y', 'yes'):
+        return True
+
+    info('Installation cancelled by user.')
+    return False
 
 
 def get_real_user_home() -> Path:
@@ -2993,16 +3691,12 @@ def get_all_shell_config_files() -> list[Path]:
         ]
 
         # On Linux, only include zsh files if zsh is installed
-        if platform.system() == 'Linux':
-            zsh_path = shutil.which('zsh')
-            if not zsh_path:
-                # Filter out zsh-specific files if zsh is not installed
-                config_files = [f for f in config_files if not f.name.startswith('.zsh')]
+        if platform.system() == 'Linux' and not shutil.which('zsh'):
+            config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
-            # Only include fish config if fish is installed
-            fish_path = shutil.which('fish')
-            if not fish_path:
-                config_files = [f for f in config_files if 'fish' not in str(f)]
+        # On both Linux and macOS, only include fish config if fish is installed
+        if not shutil.which('fish'):
+            config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
 
@@ -3445,7 +4139,7 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
 
     # Provide reload instructions for Unix systems
     if sys.platform != 'win32' and (set_count > 0 or delete_count > 0):
-        info('Note: Open a new terminal or run "source ~/.bashrc" to apply changes')
+        info('Note: Open a new terminal to apply changes')
         # Provide explicit unset instructions for deleted variables
         if deleted_names:
             unset_cmds = ' '.join(f'unset {n};' for n in deleted_names)
@@ -3454,11 +4148,395 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     return failed_count == 0
 
 
+# --- Standalone Node.js installation functions ---
+# These functions provide Node.js installation capability without importing
+# from install_claude.py. Both scripts MUST be fully standalone.
+
+
+def _parse_node_version(version_str: str) -> tuple[int, int, int] | None:
+    """Parse version string to tuple."""
+    match = re.match(r'v?(\d+)\.(\d+)\.(\d+)', version_str)
+    if match:
+        major = int(match.group(1))
+        minor = int(match.group(2))
+        patch = int(match.group(3))
+        return (major, minor, patch)
+    return None
+
+
+def _compare_node_versions(current: str, required: str) -> bool:
+    """Check if current version meets required version."""
+    current_tuple = _parse_node_version(current)
+    required_tuple = _parse_node_version(required)
+    if not current_tuple or not required_tuple:
+        return False
+    return current_tuple >= required_tuple
+
+
+def _get_node_version() -> str | None:
+    """Get installed Node.js version."""
+    node_path = shutil.which('node')
+    if not node_path:
+        return None
+
+    result = run_command([node_path, '--version'])
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def _check_winget_available() -> bool:
+    """Check if winget is available on Windows."""
+    return shutil.which('winget') is not None
+
+
+def _install_nodejs_winget(scope: str = 'user') -> bool:
+    """Install Node.js using winget on Windows."""
+    if not _check_winget_available():
+        return False
+
+    info(f'Installing Node.js LTS via winget, scope: {scope}')
+    result = run_command([
+        'winget',
+        'install',
+        '--id',
+        'OpenJS.NodeJS.LTS',
+        '-e',
+        '--source',
+        'winget',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity',
+        '--scope',
+        scope,
+    ])
+
+    if result.returncode == 0:
+        success('Node.js LTS installed via winget')
+        return True
+    warning(f'winget exited with code {result.returncode}')
+    return False
+
+
+def _install_nodejs_direct() -> bool:
+    """Install Node.js by direct download."""
+    try:
+        info('Downloading Node.js LTS installer...')
+
+        # Get LTS version info (with SSL fallback)
+        try:
+            with urlopen(NODE_LTS_API) as response:
+                versions = json.loads(response.read())
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with urlopen(NODE_LTS_API, context=ctx) as response:
+                    versions = json.loads(response.read())
+            else:
+                raise
+
+        lts_version = None
+        for v in versions:
+            if v.get('lts'):
+                lts_version = v['version']
+                break
+
+        if not lts_version:
+            raise Exception('Could not determine LTS version')
+
+        # Determine installer URL based on OS
+        system = platform.system()
+        machine = platform.machine().lower()
+
+        if system == 'Windows':
+            ext = 'msi'
+            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'x86'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-{arch}.{ext}'
+        elif system == 'Darwin':  # macOS
+            arch = 'arm64' if machine == 'arm64' else 'x64'
+            ext = 'pkg'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-darwin-{arch}.{ext}'
+        else:  # Linux
+            arch = 'x64' if machine in ['amd64', 'x86_64'] else 'armv7l'
+            ext = 'tar.xz'
+            installer_url = f'https://nodejs.org/dist/{lts_version}/node-{lts_version}-linux-{arch}.{ext}'
+
+        # Download installer
+        with tempfile.NamedTemporaryFile(suffix=f'.{ext}', delete=False) as tmp:
+            temp_path = tmp.name
+
+        info(f'Downloading {installer_url}')
+        try:
+            urlretrieve(installer_url, temp_path)
+        except urllib.error.URLError as e:
+            if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                warning('SSL certificate verification failed, trying with unverified context')
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+                saved_opener = getattr(urllib.request, '_opener', None) or urllib.request.build_opener()
+                urllib.request.install_opener(opener)
+                try:
+                    urlretrieve(installer_url, temp_path)
+                finally:
+                    urllib.request.install_opener(saved_opener)
+            else:
+                raise
+
+        # Install based on OS
+        if system == 'Windows':
+            # Create log directory for MSI installation
+            log_dir = Path(tempfile.gettempdir()) / 'claude-installer-logs'
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / f'nodejs-install-{int(time.time())}.log'
+
+            info('Installing Node.js silently...')
+
+            result = run_command([
+                'msiexec',
+                '/i',
+                temp_path,
+                '/qn',
+                '/norestart',
+                '/l*v',
+                str(log_file),
+            ])
+
+            # After MSI installation, add Node.js to PATH for current process
+            if result.returncode == 0:
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH for current session')
+            else:
+                error(f'Node.js installer exited with code {result.returncode}')
+
+                if log_file.exists():
+                    warning(f'Installation log available at: {log_file}')
+                    try:
+                        log_content = log_file.read_text(encoding='utf-16-le', errors='ignore')
+                        lines = log_content.splitlines()
+                        if lines:
+                            error_context = '\n'.join(lines[-50:])
+                            info('Last 50 lines of installation log:')
+                            print(error_context)
+                    except Exception as e:
+                        warning(f'Could not read log file: {e}')
+
+                info('Troubleshooting steps:')
+                info('1. Check if Node.js is already partially installed')
+                info('2. Remove Node.js from Control Panel if present')
+                info('3. Clear Node.js entries from registry (regedit)')
+                info('4. Remove Node.js from PATH environment variable')
+                info('5. Rerun installer as Administrator')
+
+                return False
+        elif system == 'Darwin':
+            info('Installing Node.js (may require password)...')
+            result = run_command(['sudo', 'installer', '-pkg', temp_path, '-target', '/'])
+        else:
+            error('Direct Linux installation not yet implemented - use package manager')
+            return False
+
+        # Clean up
+        with contextlib.suppress(Exception):
+            os.unlink(temp_path)
+
+        if result.returncode == 0:
+            success('Node.js installed via direct download')
+            return True
+        error(f'Node.js installer exited with code {result.returncode}')
+        return False
+
+    except Exception as e:
+        error(f'Failed to install Node.js by download: {e}')
+        return False
+
+
+def _install_nodejs_homebrew() -> bool:
+    """Install Node.js LTS using Homebrew on macOS."""
+    if not shutil.which('brew'):
+        info('Installing Homebrew first...')
+        result = run_command([
+            '/bin/bash',
+            '-c',
+            '$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)',
+        ])
+        if result.returncode != 0:
+            return False
+
+    info('Installing Node.js LTS (v22) using Homebrew...')
+    run_command(['brew', 'update'])
+    result = run_command(['brew', 'install', 'node@22'])
+
+    if result.returncode != 0:
+        return False
+
+    # node@22 is keg-only; create symlinks so node is available in PATH
+    link_result = run_command(['brew', 'link', '--force', '--overwrite', 'node@22'])
+    if link_result.returncode != 0:
+        warning('brew link failed for node@22; node may not be in PATH')
+
+    success('Node.js LTS installed via Homebrew')
+    return True
+
+
+def _install_nodejs_apt() -> bool:
+    """Install Node.js using apt on Debian/Ubuntu."""
+    info('Installing Node.js LTS for Debian/Ubuntu...')
+
+    # Update and install prerequisites
+    run_command(['sudo', 'apt-get', 'update'])
+    run_command(['sudo', 'apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'])
+
+    # Add NodeSource repository
+    result = run_command([
+        'bash',
+        '-c',
+        'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -',
+    ])
+
+    if result.returncode != 0:
+        return False
+
+    # Install Node.js
+    result = run_command(['sudo', 'apt-get', 'install', '-y', 'nodejs'])
+
+    if result.returncode == 0:
+        success('Node.js installed via NodeSource')
+        return True
+    return False
+
+
+def _verify_nodejs_version() -> bool:
+    """Verify installed Node.js meets minimum version requirements.
+
+    Returns:
+        True if Node.js version is acceptable, False otherwise.
+    """
+    node_version = _get_node_version()
+    if not node_version:
+        return False
+    return _compare_node_versions(node_version, MIN_NODE_VERSION)
+
+
+def _ensure_nodejs() -> bool:
+    """Ensure Node.js is installed and meets minimum version.
+
+    Provides standalone Node.js installation for general purposes
+    (e.g., npx-based MCP servers). Does not check Claude Code npm
+    compatibility since this script does not install Claude Code.
+
+    Returns:
+        True if Node.js is installed and meets requirements, False otherwise.
+    """
+    info('Checking Node.js installation...')
+
+    # On Windows, check standard installation location even if not in PATH
+    if platform.system() == 'Windows':
+        nodejs_path = r'C:\Program Files\nodejs'
+        if Path(nodejs_path).exists():
+            current_path = os.environ.get('PATH', '')
+            if nodejs_path not in current_path:
+                os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                info(f'Found Node.js at {nodejs_path}, adding to PATH')
+
+    current_version = _get_node_version()
+    if current_version:
+        info(f'Node.js {current_version} found')
+
+        if _compare_node_versions(current_version, MIN_NODE_VERSION):
+            success(f'Node.js version meets minimum requirement (>= {MIN_NODE_VERSION})')
+            return True
+        warning(f'Node.js {current_version} is below minimum required version {MIN_NODE_VERSION}')
+    else:
+        info('Node.js not found')
+
+    # Install Node.js based on OS
+    system = platform.system()
+
+    if system == 'Windows':
+        # Try winget first
+        if _check_winget_available():
+            if _install_nodejs_winget('user'):
+                time.sleep(2)
+                # Update PATH after winget installation
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
+                if _verify_nodejs_version():
+                    return True
+
+            if is_admin() and _install_nodejs_winget('machine'):
+                time.sleep(2)
+                # Update PATH after winget installation (machine scope)
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after winget installation')
+
+                if _verify_nodejs_version():
+                    return True
+
+        # Fallback to direct download
+        if _install_nodejs_direct():
+            time.sleep(2)
+            # After installation, check standard location on Windows
+            if platform.system() == 'Windows':
+                nodejs_path = r'C:\Program Files\nodejs'
+                if Path(nodejs_path).exists():
+                    current_path = os.environ.get('PATH', '')
+                    if nodejs_path not in current_path:
+                        os.environ['PATH'] = f'{nodejs_path};{current_path}'
+                        info(f'Added {nodejs_path} to PATH after installation')
+
+            if _verify_nodejs_version():
+                return True
+
+    elif system == 'Darwin':
+        # Try Homebrew first
+        if _install_nodejs_homebrew() and _verify_nodejs_version():
+            return True
+
+        # Fallback to direct download
+        if _install_nodejs_direct():
+            time.sleep(2)
+            if _verify_nodejs_version():
+                return True
+
+    else:  # Linux
+        # Detect distro and use package manager
+        if (
+            Path('/etc/debian_version').exists()
+            and _install_nodejs_apt()
+            and _verify_nodejs_version()
+        ):
+            return True
+        warning('Unsupported Linux distribution - please install Node.js manually')
+        return False
+
+    error(f'Could not install Node.js >= {MIN_NODE_VERSION}')
+    return False
+
+
 def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
     """Install Node.js LTS if requested in configuration.
 
     Checks the 'install-nodejs' config parameter and installs Node.js
-    if set to True. Uses the existing ensure_nodejs() function which:
+    if set to True. Uses the standalone _ensure_nodejs() function which:
     - Checks if Node.js is already installed (prevents duplicate installation)
     - Tries multiple installation methods with fallbacks
     - Updates PATH after installation
@@ -3477,12 +4555,7 @@ def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
 
     info('Node.js installation requested (install-nodejs: true)')
 
-    # Late import to avoid circular dependency (install_claude imports from setup_environment)
-    from install_claude import ensure_nodejs as _ensure_nodejs
-
-    # Node.js is needed for general purposes (e.g., npx MCP servers),
-    # not for Claude Code's npm package itself.
-    if not _ensure_nodejs(check_claude_compat=False):
+    if not _ensure_nodejs():
         error('Node.js installation failed')
         return False
 
@@ -3536,7 +4609,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
     # Platform mapping: platform.system() returns -> config key
     platform_map = {
         'Windows': 'windows',
-        'Darwin': 'mac',  # macOS
+        'Darwin': 'macos',
         'Linux': 'linux',
     }
 
@@ -4095,7 +5168,7 @@ def process_resources(
 ) -> bool:
     """Process resources (download from URL or copy from local) based on configuration.
 
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         resources: List of resource paths from config
@@ -4146,7 +5219,7 @@ def process_file_downloads(
 
     Downloads files from URLs or copies from local paths to specified destinations.
     Supports cross-platform path expansion using ~ and environment variables.
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         file_specs: List of file specifications with 'source' and 'dest' keys.
@@ -4190,10 +5263,8 @@ def process_file_downloads(
             invalid_count += 1
             continue
 
-        # Expand destination path (~ and environment variables)
-        # This makes it work cross-platform: ~/.config, %USERPROFILE%\\bin, $HOME/.local
-        expanded_dest = os.path.expanduser(str(dest))
-        expanded_dest = os.path.expandvars(expanded_dest)
+        # Expand destination path using normalize_tilde_path for WSL-safe tilde expansion
+        expanded_dest = normalize_tilde_path(str(dest))
         dest_path = Path(expanded_dest)
 
         # Handle both file and directory destinations
@@ -4341,7 +5412,7 @@ def process_skills(
     """Process all skills from configuration.
 
     Iterates through all skill configurations and installs each one to the
-    skills directory. Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    skills directory. Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         skills_config: List of skill configuration dictionaries
@@ -4404,7 +5475,7 @@ def install_claude(version: str | None = None) -> bool:
     if version:
         info(f'Installing Claude Code version {version}...')
         # Set environment variable for the installer scripts to use
-        os.environ['CLAUDE_VERSION'] = version
+        os.environ['CLAUDE_CODE_TOOLBOX_VERSION'] = version
     else:
         info('Installing Claude Code (latest version)...')
 
@@ -4487,17 +5558,21 @@ def install_claude(version: str | None = None) -> bool:
         return False
 
 
-def verify_nodejs_available() -> bool:
+def verify_nodejs_available() -> str | None:
     """Verify Node.js is available before MCP configuration.
 
     Uses shutil.which() to find Node.js in PATH, supporting all installation methods
     (official installer, nvm, fnm, volta, scoop, chocolatey, etc.).
 
     Returns:
-        True if Node.js is available, False otherwise.
+        Parent directory of the verified Node.js executable, or None if not found.
     """
     if platform.system() != 'Windows':
-        return True  # Assume available on Unix
+        node_path = shutil.which('node')
+        if node_path:
+            return str(Path(node_path).parent)
+        warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
+        return None
 
     # Primary: Use shutil.which for proper PATH-based detection
     node_path = shutil.which('node')
@@ -4512,12 +5587,12 @@ def verify_nodejs_available() -> bool:
             )
             if result.returncode == 0:
                 success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return True
+                return str(Path(node_path).parent)
         except (subprocess.TimeoutExpired, OSError):
             pass
 
-    # Secondary: Try find_command_robust with common installation paths
-    node_path = find_command_robust('node')
+    # Secondary: Try find_command with common installation paths
+    node_path = find_command('node')
     if node_path:
         # Verify node actually works
         try:
@@ -4535,12 +5610,12 @@ def verify_nodejs_available() -> bool:
                     os.environ['PATH'] = f'{node_dir};{current_path}'
                     info(f'Added {node_dir} to PATH')
                 success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return True
+                return str(Path(node_path).parent)
         except (subprocess.TimeoutExpired, OSError):
             pass
 
     error('Node.js not found in PATH')
-    return False
+    return None
 
 
 def validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
@@ -4657,7 +5732,50 @@ def normalize_scope(scope_value: str | list[str] | None) -> list[str]:
     return result
 
 
-def configure_mcp_server(server: dict[str, Any]) -> bool:
+class _WindowsBashEnv(NamedTuple):
+    """Pre-computed Windows Git Bash environment for MCP server configuration.
+
+    Encapsulates PATH construction with Node.js injection and Claude command
+    resolution for Git Bash execution.
+    """
+
+    unix_explicit_path: str
+    unix_claude_cmd: str
+
+
+def _prepare_windows_bash_env(
+    claude_cmd: str | Path,
+    nodejs_dir: str | None,
+) -> _WindowsBashEnv:
+    """Prepare Windows Git Bash environment for MCP server subprocess execution.
+
+    Builds a Unix-style PATH with Node.js directory prepended (if available)
+    and resolves the Claude command to a Git Bash-compatible path.
+
+    Args:
+        claude_cmd: Path to the Claude CLI executable.
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
+
+    Returns:
+        _WindowsBashEnv with unix_explicit_path and unix_claude_cmd.
+    """
+    current_path = os.environ.get('PATH', '')
+    if nodejs_dir and Path(nodejs_dir).exists() and nodejs_dir not in current_path:
+        windows_explicit_path = f'{nodejs_dir};{current_path}'
+    else:
+        windows_explicit_path = current_path
+
+    unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
+    bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
+    unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
+
+    return _WindowsBashEnv(
+        unix_explicit_path=unix_explicit_path,
+        unix_claude_cmd=unix_claude_cmd,
+    )
+
+
+def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
@@ -4690,7 +5808,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
     claude_cmd = None
 
     # Use robust command discovery with built-in retry and fallback paths
-    claude_cmd = find_command_robust('claude')
+    claude_cmd = find_command('claude')
 
     if not claude_cmd:
         error('Claude command not accessible after installation!')
@@ -4710,22 +5828,12 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
             # Windows: Use bash execution for consistency with add operation
             # This ensures removal uses the same environment (PATH, shell, MSYS settings)
             # as the add operation, preventing "not found" errors due to asymmetric execution
-            nodejs_path = r'C:\Program Files\nodejs'
-            current_path = os.environ.get('PATH', '')
-
-            if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                windows_explicit_path = f'{nodejs_path};{current_path}'
-            else:
-                windows_explicit_path = current_path
-
-            unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-            bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-            unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
+            env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
 
             for remove_scope in ['user', 'local', 'project']:
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
                 )
                 # Best-effort: ignore exit code, server may not exist in this scope
                 run_bash_command(bash_cmd, capture_output=True, login_shell=True)
@@ -4767,24 +5875,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 debug_log(f'=== MCP Server Configuration: {name} ===')
                 debug_log(f'claude_cmd: {claude_cmd}')
 
-                # Build explicit PATH including Node.js location
-                nodejs_path = r'C:\Program Files\nodejs'
-                current_path = os.environ.get('PATH', '')
-
-                # Build Windows PATH first, then convert to Unix format
-                if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    windows_explicit_path = f'{nodejs_path};{current_path}'
-                else:
-                    windows_explicit_path = current_path
-
-                # Convert Windows paths to Git Bash Unix-style paths
-                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
-                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
-
-                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
-                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
+                debug_log(f'unix_claude_cmd: {env.unix_claude_cmd}')
+                explicit_path = env.unix_explicit_path
+                path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
@@ -4792,8 +5886,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 header_part = f' --header "{header}"' if header else ''
 
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp add --scope {scope}{env_part} '
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
                     f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
@@ -4835,24 +5929,10 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 debug_log(f'=== MCP Server Configuration (STDIO): {name} ===')
                 debug_log(f'claude_cmd: {claude_cmd}')
 
-                # Build explicit PATH including Node.js location
-                nodejs_path = r'C:\Program Files\nodejs'
-                current_path = os.environ.get('PATH', '')
-
-                # Build Windows PATH first, then convert to Unix format
-                if Path(nodejs_path).exists() and nodejs_path not in current_path:
-                    windows_explicit_path = f'{nodejs_path};{current_path}'
-                else:
-                    windows_explicit_path = current_path
-
-                # Convert Windows paths to Git Bash Unix-style paths
-                unix_explicit_path = convert_path_env_to_unix(windows_explicit_path)
-                # Prefer shell script over .cmd for Git Bash to avoid CMD.exe & parsing issues
-                bash_preferred_cmd = get_bash_preferred_command(str(claude_cmd))
-                unix_claude_cmd = convert_to_unix_path(bash_preferred_cmd)
-
-                debug_log(f'unix_claude_cmd: {unix_claude_cmd}')
-                path_preview = unix_explicit_path[:200] + '...' if len(unix_explicit_path) > 200 else unix_explicit_path
+                env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
+                debug_log(f'unix_claude_cmd: {env.unix_claude_cmd}')
+                explicit_path = env.unix_explicit_path
+                path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
                 env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
@@ -4866,8 +5946,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
-                    f'export PATH="{unix_explicit_path}:$PATH" && '
-                    f'"{unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
+                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
+                    f'"{env.unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
                     f'-- {command_str}'
                 )
 
@@ -4884,7 +5964,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
                 info(f'Configuring stdio MCP server {name}...')
 
                 # Apply tilde expansion to command (same as Windows path)
-                # This ensures ~/ paths in MCP server commands work on Mac/Linux
+                # This ensures ~/ paths in MCP server commands work on macOS/Linux
                 if command:
                     expanded_command = expand_tildes_in_command(command)
                     # Rebuild base_cmd with expanded command if tilde was expanded
@@ -4914,8 +5994,8 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
         stderr_text = str(result.stderr) if result.stderr else ''
         if 'TypeError' in stderr_text and 'prototype' in stderr_text:
             error('This appears to be a Node.js v25 incompatibility issue')
-            error('Claude Code is not yet compatible with Node.js v25+')
-            info('Node.js v25 removed the SlowBuffer API that Claude Code depends on')
+            error('npm-installed Claude Code is not yet compatible with Node.js v25+')
+            info('Node.js v25 removed the SlowBuffer API that npm-installed Claude Code depends on')
             info('Please downgrade to Node.js v22 or v20 (LTS)')
 
         return False
@@ -4928,6 +6008,7 @@ def configure_mcp_server(server: dict[str, Any]) -> bool:
 def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
+    nodejs_dir: str | None = None,
 ) -> tuple[bool, list[dict[str, Any]], dict[str, int]]:
     """Configure all MCP servers from configuration.
 
@@ -4939,6 +6020,7 @@ def configure_all_mcp_servers(
     Args:
         servers: List of MCP server configurations from YAML
         profile_mcp_config_path: Path for profile-scoped servers JSON file
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
 
     Returns:
         Tuple of (success: bool, profile_servers: list, stats: dict)
@@ -4994,13 +6076,13 @@ def configure_all_mcp_servers(
             if not has_global:
                 server_copy = server.copy()
                 server_copy['scope'] = 'profile'
-                configure_mcp_server(server_copy)
+                configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
 
         # Configure for each non-profile scope via claude mcp add
         for scope in non_profile_scopes:
             server_copy = server.copy()
             server_copy['scope'] = scope
-            configure_mcp_server(server_copy)
+            configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
 
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:
@@ -5112,7 +6194,7 @@ def download_hook_files(
 ) -> bool:
     """Download hook files from configuration.
 
-    Uses parallel execution when CLAUDE_SEQUENTIAL_MODE is not set.
+    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
 
     Args:
         hooks: Hooks configuration dictionary with 'files' key
@@ -5166,7 +6248,6 @@ def create_additional_settings(
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
-    include_co_authored_by: bool | None = None,
     always_thinking_enabled: bool | None = None,
     company_announcements: list[str] | None = None,
     attribution: dict[str, str] | None = None,
@@ -5185,19 +6266,17 @@ def create_additional_settings(
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
-        include_co_authored_by: DEPRECATED - Optional flag to include co-authored-by in commits.
-            Use 'attribution' parameter instead.
         always_thinking_enabled: Optional flag to enable always-on thinking mode
         company_announcements: Optional list of company announcement strings
         attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
-            Empty strings hide attribution. Takes precedence over include_co_authored_by.
+            Empty strings hide attribution.
         status_line: Optional dict with 'file' key for status line script path, optional
             'padding' key, and optional 'config' key for config file reference.
             Both the script and config file are downloaded to ~/.claude/hooks/ and
             the config path is appended as a command line argument.
         effort_level: Optional effort level for adaptive reasoning.
-            Valid values: 'low', 'medium', 'high'. Controls how much thinking
-            is allocated based on task complexity.
+            Valid values: 'low', 'medium', 'high', 'max'. The 'max' level is
+            only available for Opus models.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -5231,24 +6310,12 @@ def create_additional_settings(
         for key in env:
             info(f'  - {key}')
 
-    # Handle attribution settings (new format takes precedence)
+    # Handle attribution settings
     if attribution is not None:
         settings['attribution'] = attribution
         commit_preview = repr(attribution.get('commit', ''))[:30]
         pr_preview = repr(attribution.get('pr', ''))[:30]
         info(f'Setting attribution: commit={commit_preview}, pr={pr_preview}')
-        if include_co_authored_by is not None:
-            warning('Both "attribution" and deprecated "include-co-authored-by" specified. Using "attribution".')
-    elif include_co_authored_by is not None:
-        # DEPRECATED: Convert to new format
-        warning('Config key "include-co-authored-by" is deprecated. Use "attribution" instead.')
-        if include_co_authored_by is False:
-            # false -> hide attribution
-            settings['attribution'] = {'commit': '', 'pr': ''}
-            info('Setting attribution: hiding all (converted from include-co-authored-by: false)')
-        # Note: true -> don't set anything, let Claude Code use defaults
-        else:
-            info('include-co-authored-by: true -> using Claude Code defaults (no attribution override)')
 
     # Add alwaysThinkingEnabled if explicitly set (None means not configured, leave as default)
     if always_thinking_enabled is not None:
@@ -5484,6 +6551,96 @@ def create_additional_settings(
         return False
 
 
+def write_manifest(
+    claude_user_dir: Path,
+    command_name: str,
+    config_version: str | None,
+    config_source: str,
+    config_source_type: str,
+    config_source_url: str | None,
+    command_names: list[str],
+) -> bool:
+    """Write installation manifest for the environment configuration.
+
+    Creates {command_name}-manifest.json containing metadata about the installed
+    configuration. Used by version checking hooks to determine if updates are available.
+
+    Args:
+        claude_user_dir: Path to ~/.claude directory
+        command_name: Primary command name
+        config_version: Optional semantic version from config (e.g., "1.3.0")
+        config_source: Raw config source as provided by user
+        config_source_type: Classified source type ("url", "local", "repo")
+        config_source_url: Resolved fetch URL, or None for local sources
+        command_names: List of all command names (primary + aliases)
+
+    Returns:
+        True if manifest was written successfully, False otherwise.
+    """
+    manifest_path = claude_user_dir / f'{command_name}-manifest.json'
+
+    manifest: dict[str, Any] = {
+        'name': command_name,
+        'version': config_version,
+        'config_source': config_source,
+        'config_source_url': config_source_url,
+        'config_source_type': config_source_type,
+        'installed_at': datetime.now(UTC).isoformat(),
+        'last_checked_at': None,
+        'command_names': command_names,
+    }
+
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2)
+        success(f'Created {command_name}-manifest.json')
+        return True
+    except Exception as e:
+        warning(f'Failed to write manifest: {e}')
+        return False
+
+
+def cleanup_stale_marker(claude_user_dir: Path, command_name: str) -> None:
+    """Remove stale update-available marker file during re-installation.
+
+    When setup_environment.py runs, any existing update marker is no longer valid
+    because the user is actively installing/updating the configuration.
+
+    Args:
+        claude_user_dir: Path to ~/.claude directory
+        command_name: Primary command name
+    """
+    marker_path = claude_user_dir / f'{command_name}-update-available.json'
+    if marker_path.exists():
+        try:
+            marker_path.unlink()
+            info(f'Removed stale update marker: {marker_path.name}')
+        except OSError as e:
+            warning(f'Failed to remove stale update marker: {e}')
+
+
+def _get_update_check_snippet(command_name: str) -> str:
+    """Generate bash snippet for configuration update notification.
+
+    Produces a shell script fragment that checks for the update marker file
+    and prints a colored warning if a new configuration version is available.
+
+    Args:
+        command_name: Command name for the marker file path
+
+    Returns:
+        Bash script snippet that checks for update marker file.
+    """
+    return f'''# Check for configuration update notification
+UPDATE_MARKER="$HOME/.claude/{command_name}-update-available.json"
+if [ -f "$UPDATE_MARKER" ]; then
+  echo -e "\\\\033[1;33m[UPDATE] A new version of the {command_name} configuration is available.\\\\033[0m"
+  echo -e "\\\\033[1;33m         Re-run the installer to update.\\\\033[0m"
+fi
+
+'''
+
+
 def create_launcher_script(
     claude_user_dir: Path,
     command_name: str,
@@ -5656,6 +6813,9 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
+                # Inject update check snippet before mode-specific logic
+                shared_sh_content += _get_update_check_snippet(command_name)
+
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -5726,6 +6886,7 @@ fi
 '''
             else:
                 # No system prompt, only settings
+                update_snippet = _get_update_check_snippet(command_name)
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
@@ -5741,7 +6902,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
 fi
 
-exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+{update_snippet}exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -5836,6 +6997,9 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
+                # Inject update check snippet before mode-specific logic
+                launcher_content += _get_update_check_snippet(command_name)
+
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -5913,6 +7077,7 @@ else
 fi
 '''
             else:
+                update_snippet_unix = _get_update_check_snippet(command_name)
                 launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
@@ -5927,7 +7092,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
 fi
 
-echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+{update_snippet_unix}echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
 claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
@@ -5965,7 +7130,7 @@ def register_global_command(
     try:
         if system == 'Windows':
             # Create batch file in .local/bin
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             # Create wrappers for all Windows shells
@@ -6062,7 +7227,7 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
         else:
             # Create symlink in ~/.local/bin
-            local_bin = Path.home() / '.local' / 'bin'
+            local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
             symlink_path = local_bin / command_name
@@ -6082,8 +7247,9 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 
             # Ensure ~/.local/bin is in PATH
             info('Make sure ~/.local/bin is in your PATH')
-            info('Add this to your ~/.bashrc or ~/.zshrc if needed:')
-            info('  export PATH="$HOME/.local/bin:$PATH"')
+            info('Add this to your shell config if needed:')
+            info('  Bash/Zsh: export PATH="$HOME/.local/bin:$PATH"')
+            info('  Fish: fish_add_path ~/.local/bin')
 
         if system == 'Windows':
             if additional_names:
@@ -6161,7 +7327,7 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
 
     if '--debug-elevation' in sys.argv:
         print(f'[DEBUG] Cleaned sys.argv: {remaining_args}')
-        print(f"[DEBUG] CLAUDE_ENV_CONFIG: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
+        print(f"[DEBUG] CLAUDE_CODE_TOOLBOX_ENV_CONFIG: {os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'NOT SET')}")
         print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
     return remaining_args, was_elevated_via_uac
@@ -6183,7 +7349,7 @@ def main() -> None:
         if '--debug-elevation' in original_argv:
             print('[DEBUG] Elevated process started successfully')
             print(f'[DEBUG] Admin status: {is_admin()}')
-            print(f"[DEBUG] Config from env: {os.environ.get('CLAUDE_ENV_CONFIG', 'NOT SET')}")
+            print(f"[DEBUG] Config from env: {os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'NOT SET')}")
             print(f'[DEBUG] Was elevated via UAC: {was_elevated_via_uac}')
 
         # Show that we're running elevated (only if via UAC)
@@ -6197,7 +7363,7 @@ def main() -> None:
     # Refuse to run as root on Unix unless explicitly allowed
     if platform.system() != 'Windows':
         geteuid = getattr(os, 'geteuid', None)
-        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_ALLOW_ROOT') != '1':
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
             print()
             warning('Running as root creates configuration under /root/,')
@@ -6208,7 +7374,7 @@ def main() -> None:
                  'claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash')
             print()
             info('The installer will request sudo only when needed (e.g., npm).')
-            info('To force root execution: CLAUDE_ALLOW_ROOT=1 <command>')
+            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
             sys.exit(1)
 
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
@@ -6216,15 +7382,25 @@ def main() -> None:
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
     parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
     parser.add_argument('--no-admin', action='store_true', help='Do not request admin elevation even if needed')
+    parser.add_argument(
+        '--yes', '-y',
+        action='store_true',
+        help='Auto-confirm installation (skip interactive confirmation)',
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Show installation plan and exit without installing',
+    )
     args = parser.parse_args()
 
     # Get configuration from args or environment
-    config_name = args.config or os.environ.get('CLAUDE_ENV_CONFIG')
+    config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')
 
     if not config_name:
         error('No configuration specified!')
         info('Usage: setup_environment.py <config_name>')
-        info('   or: CLAUDE_ENV_CONFIG=<config_name> setup_environment.py')
+        info('   or: CLAUDE_CODE_TOOLBOX_ENV_CONFIG=<config_name> setup_environment.py')
         info('Example: setup_environment.py python')
         sys.exit(1)
 
@@ -6247,11 +7423,37 @@ def main() -> None:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
 
+        # Extract version from root config BEFORE inheritance resolution.
+        # The version field identifies THIS specific config file's version,
+        # not a behavioral setting inherited from parent configs.
+        config_version: str | None = None
+        raw_version = config.get('version')
+        if raw_version is not None:
+            version_str = str(raw_version).strip()
+            if version_str:
+                config_version = version_str
+                info(f'Configuration version: {config_version}')
+
         # Resolve configuration inheritance if present
+        inheritance_chain: list[InheritanceChainEntry] = []
         if INHERIT_KEY in config:
             info('Configuration uses inheritance, resolving parent configs...')
-            config = resolve_config_inheritance(config, config_source, auth_param=args.auth)
+            config, inheritance_chain = resolve_config_inheritance(
+                config, config_source, auth_param=args.auth,
+            )
+            # Append current config as the last entry in the chain
+            inheritance_chain.append(InheritanceChainEntry(
+                source=config_source,
+                source_type=classify_config_source(config_source),
+                name=config.get('name', config_name),
+            ))
             success('Configuration inheritance resolved successfully')
+        else:
+            inheritance_chain = [InheritanceChainEntry(
+                source=config_source,
+                source_type=classify_config_source(config_source),
+                name=config.get('name', config_name),
+            )]
 
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
@@ -6296,16 +7498,12 @@ def main() -> None:
 
         environment_name = config.get('name', 'Development')
 
-        # Extract command-names (new format, array)
+        # Extract command-names
         command_names_raw = config.get('command-names')
 
-        # Handle deprecated command-name (singular)
-        command_name_deprecated = config.get('command-name')
-
-        # Normalize to list and handle deprecation
+        # Normalize to list
         command_names: list[str] | None = None
         if command_names_raw is not None:
-            # New format: ensure it's a list
             if isinstance(command_names_raw, str):
                 command_names = [command_names_raw]
             elif isinstance(command_names_raw, list):
@@ -6314,12 +7512,6 @@ def main() -> None:
             else:
                 error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
                 sys.exit(1)
-            if command_name_deprecated is not None:
-                warning('Both "command-names" and deprecated "command-name" specified. Using "command-names".')
-        elif command_name_deprecated is not None:
-            # DEPRECATED: Convert singular to list
-            warning('Config key "command-name" is deprecated. Use "command-names" (array) instead.')
-            command_names = [str(command_name_deprecated)]
 
         # Validate command names
         if command_names:
@@ -6359,16 +7551,13 @@ def main() -> None:
         # Extract OS-level environment variables configuration
         os_env_variables = config.get('os-env-variables')
 
-        # Extract include_co_authored_by configuration
-        include_co_authored_by = config.get('include-co-authored-by')
-
         # Extract always_thinking_enabled configuration
         always_thinking_enabled = config.get('always-thinking-enabled')
 
         # Extract company_announcements configuration
         company_announcements = config.get('company-announcements')
 
-        # Extract attribution configuration (new format, takes precedence over include-co-authored-by)
+        # Extract attribution configuration
         attribution = config.get('attribution')
 
         # Extract status_line configuration
@@ -6377,7 +7566,7 @@ def main() -> None:
         # Extract and validate effort_level configuration
         effort_level = config.get('effort-level')
         if effort_level is not None:
-            valid_effort_levels = ('low', 'medium', 'high')
+            valid_effort_levels = ('low', 'medium', 'high', 'max')
             if effort_level not in valid_effort_levels:
                 warning(
                     f'Invalid effort-level value: {effort_level!r}. '
@@ -6387,6 +7576,9 @@ def main() -> None:
 
         # Extract user-settings configuration (global user-level settings)
         user_settings = config.get('user-settings')
+
+        # Extract global-config configuration (global Claude Code settings)
+        global_config = config.get('global-config')
 
         # Extract claude-code-version configuration
         claude_code_version = config.get('claude-code-version')
@@ -6414,6 +7606,14 @@ def main() -> None:
             user_settings_errors = validate_user_settings(user_settings)
             if user_settings_errors:
                 for err in user_settings_errors:
+                    error(err)
+                sys.exit(1)
+
+        # Validate global-config section for excluded keys
+        if global_config:
+            global_config_errors = validate_global_config(global_config)
+            if global_config_errors:
+                for err in global_config_errors:
                     error(err)
                 sys.exit(1)
 
@@ -6450,8 +7650,37 @@ def main() -> None:
         else:
             success('All configuration files validated successfully!')
 
+        # Collect installation plan and confirm
+        plan = collect_installation_plan(
+            config=config,
+            config_source=config_source,
+            config_name=config_name,
+            config_version=config_version,
+            inheritance_chain=inheritance_chain,
+            args=args,
+        )
+
+        # Determine auto-confirm from --yes flag or environment variable
+        auto_confirm = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
+
+        # Confirmation gate
+        confirmed = confirm_installation(
+            plan=plan,
+            auto_confirm=auto_confirm,
+            dry_run=args.dry_run,
+        )
+
+        if not confirmed:
+            if args.dry_run:
+                sys.exit(0)
+            # Interactive cancellation: exit 0 (user's deliberate choice)
+            # Non-interactive refusal: exit 1 (missing prerequisite)
+            if sys.stdin.isatty() or _dev_tty_available():
+                sys.exit(0)
+            sys.exit(1)
+
         # Set up directories
-        home = Path.home()
+        home = get_real_user_home()
         claude_user_dir = home / '.claude'
         agents_dir = claude_user_dir / 'agents'
         commands_dir = claude_user_dir / 'commands'
@@ -6468,7 +7697,7 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
 
             # Verify Claude Code is available
-            if not find_command_robust('claude'):
+            if not find_command('claude'):
                 error('Claude Code is not available in PATH')
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
@@ -6584,22 +7813,27 @@ def main() -> None:
         # Check if any MCP server needs Node.js (npx-based stdio transport)
         # HTTP/SSE transport servers do NOT require Node.js
         needs_nodejs = any(
-            'npx' in str(server.get('command', ''))
+            _command_starts_with_npx(str(server.get('command', '')))
             for server in mcp_servers
             if server.get('command')
         )
 
-        if needs_nodejs and platform.system() == 'Windows' and not verify_nodejs_available():
-            warning('Node.js not available - npx-based MCP servers may fail')
-            warning('Please ensure Node.js is installed and in PATH')
-            # Don't fail hard, let user see the issue
+        nodejs_dir: str | None = None
+        if needs_nodejs:
+            nodejs_dir = verify_nodejs_available()
+            if not nodejs_dir:
+                warning('Node.js not available - npx-based MCP servers may fail')
+                warning('Please ensure Node.js is installed and in PATH')
+                # Don't fail hard, let user see the issue
 
         # Calculate profile MCP config path for profile-scoped servers
         profile_mcp_config_path: Path | None = None
         if primary_command_name:
             profile_mcp_config_path = claude_user_dir / f'{primary_command_name}-mcp.json'
 
-        _, profile_servers, mcp_stats = configure_all_mcp_servers(mcp_servers, profile_mcp_config_path)
+        _, profile_servers, mcp_stats = configure_all_mcp_servers(
+            mcp_servers, profile_mcp_config_path, nodejs_dir=nodejs_dir,
+        )
         has_profile_mcp_servers = len(profile_servers) > 0
 
         # Step 12: Write user settings
@@ -6613,18 +7847,29 @@ def main() -> None:
         else:
             info('No user settings to configure')
 
+        # Step 13: Write global config
+        print()
+        print(f'{Colors.CYAN}Step 13: Writing global config...{Colors.NC}')
+        if global_config:
+            if write_global_config(global_config):
+                success('Global config written successfully')
+            else:
+                warning('Failed to write global config (non-fatal)')
+        else:
+            info('No global config to write')
+
         # Check if command creation is needed
         if primary_command_name:
-            # Step 13: Download hooks
+            # Step 14: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 13: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 14: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth):
                 download_failures.append('hook files')
 
-            # Step 14: Configure settings
+            # Step 15: Configure settings
             print()
-            print(f'{Colors.CYAN}Step 14: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 15: Configuring settings...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -6637,7 +7882,6 @@ def main() -> None:
                 model,
                 permissions,
                 env_variables,
-                include_co_authored_by,
                 always_thinking_enabled,
                 company_announcements,
                 attribution,
@@ -6645,9 +7889,25 @@ def main() -> None:
                 effort_level,
             )
 
-            # Step 15: Create launcher script
+            # Step 16: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 15: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Writing installation manifest...{Colors.NC}')
+            cleanup_stale_marker(claude_user_dir, primary_command_name)
+            config_source_type = classify_config_source(config_source)
+            config_source_url = resolve_config_source_url(config_source, config_source_type)
+            write_manifest(
+                claude_user_dir=claude_user_dir,
+                command_name=primary_command_name,
+                config_version=config_version,
+                config_source=config_name,
+                config_source_type=config_source_type,
+                config_source_url=config_source_url,
+                command_names=command_names or [primary_command_name],
+            )
+
+            # Step 17: Create launcher script
+            print()
+            print(f'{Colors.CYAN}Step 17: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -6657,21 +7917,21 @@ def main() -> None:
                 claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 16: Register global command(s)
+            # Step 18: Register global command(s)
             if launcher_path:
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 16: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 18: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 16: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 18: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 13-16: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 14-18: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -6775,6 +8035,8 @@ def main() -> None:
                 print(f'   * OS environment variables: {del_vars} deleted')
         if user_settings:
             print('   * User settings: configured in ~/.claude/settings.json')
+        if global_config:
+            print('   * Global config: configured in ~/.claude.json')
         # Only show hooks count if command was specified (hooks was defined)
         if command_names:
             hooks = config.get('hooks', {})

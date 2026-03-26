@@ -34,21 +34,42 @@ The installer uses a native-first approach with automatic npm fallback:
 - `install_claude_native_cross_platform()` - Platform dispatcher
 - `ensure_claude()` - Main orchestrator with native-first logic
 
+### Standalone Script Policy
+
+`install_claude.py` and `setup_environment.py` MUST be fully standalone. They MUST NEVER import from each other. No cross-imports of any kind are permitted. Both scripts are downloaded and executed independently -- users may run either script without the other being present.
+
+**Identical Code Parts:** The following code elements MUST be kept identical between both scripts (CI tests in `tests/test_standalone_policy.py` enforce this):
+- `Colors` class -- ANSI color codes for terminal output
+- `find_command()` function -- comprehensive command discovery with PATHEXT normalization, retry logic, native-path-first, and platform-specific fallback paths
+- `get_real_user_home()` function -- sudo-aware home directory resolution (EXACT body match)
+- Shell config file list -- the set of 7 shell config files (.bashrc, .bash_profile, .profile, .zshenv, .zprofile, .zshrc, config.fish) and conditional filtering logic
+- Fish config detection -- the `'fish' in str()` pattern for identifying Fish shell configs
+- Marker block constants -- `# >>> claude-code-toolbox >>>` / `# <<< claude-code-toolbox <<<` strings
+
+**Intentionally Different Code:** The following functions exist in both scripts but are INTENTIONALLY different and MUST NOT be synchronized:
+- `info()`, `success()`, `warning()`, `error()` -- different output formatting per script
+- `run_command()` -- different encoding/error handling per script needs
+- `find_bash_windows()` -- setup_environment.py version has debug_log calls
+- `is_admin()` -- different implementations per script context
+
+**Native Path Priority:** Both `find_command()` and `verify_claude_installation()` check the native installer target path (`~/.local/bin/claude` on Unix, `~/.local/bin/claude.exe` on Windows) explicitly first, before falling back to PATH search via `shutil.which()`. This ensures the native binary is preferred over an npm binary even when PATH ordering would resolve to the npm binary first (e.g., `/usr/local/bin` preceding `~/.local/bin` on macOS). The check validates the file exists and has `st_size > 1000` to skip empty or corrupt files.
+
 **Environment Variables:**
-- `CLAUDE_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
-- `CLAUDE_VERSION` - Forces specific version via npm (native installers don't support version selection)
-- `CLAUDE_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
+- `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` - Controls installation method: `auto` (default), `native`, or `npm`. In `auto` mode, unknown/unrecognized installation sources are routed to native-first with npm fallback
+- `CLAUDE_CODE_TOOLBOX_VERSION` - Forces specific version via npm (native installers don't support version selection)
+- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` - Allows running as root on Linux/macOS: `1` (only exact value `'1'` is accepted)
 
 **Native Path Detection (Non-Windows):**
 
 The `verify_claude_installation()` function classifies the Claude binary location to determine the upgrade strategy:
 
-| Path Pattern | Detected Source | Upgrade Method |
-| ------------ | --------------- | -------------- |
-| Contains `npm` or `.npm-global` | `npm` | npm directly |
-| Contains `.local/bin`, `/usr/local/bin`, or `.claude/bin` | `native` | Native installer |
-| Any other path | `unknown` | Native-first, npm fallback |
-| Not found | `none` | Fresh install |
+| Path Pattern                           | Detected Source | Upgrade Method             |
+|----------------------------------------|-----------------|----------------------------|
+| Contains `npm` or `.npm-global`        | `npm`           | npm directly               |
+| Contains `.local/bin` or `.claude/bin` | `native`        | Native installer           |
+| Contains `/usr/local/bin`              | `unknown`       | Native-first, npm fallback |
+| Any other path                         | `unknown`       | Native-first, npm fallback |
+| Not found                              | `none`          | Fresh install              |
 
 In `auto` mode, both `native` and `unknown` sources attempt the native installer first. If native fails, npm is used as fallback. Only confirmed `npm` or `winget` sources go directly to npm.
 
@@ -69,7 +90,7 @@ The `ensure_nodejs()` function accepts a `check_claude_compat` parameter:
 
 **Usage contexts:**
 - `install_claude.py` main() calls `ensure_nodejs()` (default `True`) -- Claude Code npm runtime needs compatible Node.js
-- `setup_environment.py` `install_nodejs_if_requested()` calls `ensure_nodejs(check_claude_compat=False)` -- `install-nodejs: true` config needs Node.js for general purposes (MCP servers, npx tools), not for Claude Code itself
+- `setup_environment.py` `install_nodejs_if_requested()` calls the standalone `_ensure_nodejs()` which checks only minimum version (>= 18.0.0) -- `install-nodejs: true` config needs Node.js for general purposes (MCP servers, npx tools), not for Claude Code itself
 
 ### Version-Aware Compatibility
 
@@ -91,10 +112,43 @@ The check works as follows:
 All Linux and macOS scripts (both bash bootstrap scripts and Python entry points) refuse to run as root/sudo by default:
 
 - **Detection:** Checks `id -u == 0` (shell scripts) or `os.geteuid() == 0` (Python scripts)
-- **Override:** Set `CLAUDE_ALLOW_ROOT=1` to bypass the guard (only exact value `1` is accepted; `true`, `yes`, or empty strings do NOT work)
+- **Override:** Set `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1` to bypass the guard (only exact value `1` is accepted; `true`, `yes`, or empty strings do NOT work)
 - **Scope:** Applies to all 6 entry points: `install-claude-linux.sh`, `setup-environment.sh` (both Linux and macOS), `install_claude.py`, and `setup_environment.py`
 - **Rationale:** Running as root creates configuration under `/root/` instead of the regular user's home directory, causing environment setup to target the wrong user
 - **When to use override:** Docker containers, CI/CD pipelines, or other legitimate root execution environments
+
+### Installation Confirmation
+
+The setup script requires explicit user confirmation before installing any resources. This prevents unintended installations from untrusted configurations.
+
+**CLI Flags:**
+
+- `--yes` / `-y`: Auto-confirm installation (skip interactive prompt)
+- `--dry-run`: Show installation plan and exit without installing
+
+**Environment Variable:**
+
+- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1`: Auto-confirm (only exact value `'1'` accepted)
+
+**Default Behavior:**
+
+- Interactive terminal: Prompts user with `[y/N]` (default deny)
+- Piped stdin with `/dev/tty` available: Prompts via `/dev/tty` (best-effort fallback)
+- Non-interactive without `/dev/tty`: Refuses with guidance, exits 1
+
+**Exit Codes:**
+
+- `0`: Successful installation, `--dry-run`, or interactive user cancellation
+- `1`: Errors or non-interactive refusal
+
+**Bootstrap Scripts:**
+All bootstrap scripts (`setup-environment.sh` for Linux/macOS, `setup-environment.ps1` for Windows) forward `--yes` and `--dry-run` flags to the Python script. The `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` environment variable propagates automatically via environment inheritance.
+
+**Known Config Keys:**
+The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
+
+**Sensitive Path Detection:**
+Files-to-download destinations are checked against `SENSITIVE_PATH_PREFIXES`. Sensitive paths (e.g., `~/.ssh/`, `~/.bashrc`) are flagged with `[!]` in the installation summary.
 
 ### Environment Configuration System
 
@@ -105,6 +159,19 @@ YAML configurations define complete development environments including:
 - Slash commands
 - System prompts (with configurable mode: append or replace)
 - Hooks (event-driven scripts)
+- Global config (`~/.claude.json` settings via deep merge)
+
+### Global Config (`global-config`)
+
+The `global-config` YAML key writes settings to `~/.claude.json` (the Claude Code global configuration file at `Path.home() / '.claude.json'`).
+
+**Merge strategy:** Uses `deep_merge_settings()` with `array_union_keys=set()` (no array union -- arrays are replaced, not unioned). This differs from `user-settings` which uses the default `DEFAULT_ARRAY_UNION_KEYS` for `permissions.allow/deny/ask` union behavior.
+
+**Excluded keys:** Only `oauthSession` and `oauthAccount` are blocked (via `GLOBAL_CONFIG_EXCLUDED_KEYS`). These OAuth credential keys must not appear in version-controlled YAML configuration files.
+
+**Relationship with `install_claude.py`:** The `update_install_method_config()` function in `install_claude.py` also writes to `~/.claude.json`. Both functions use a resilient read-merge-write pattern that preserves existing keys, ensuring they coexist without data loss. The `install_claude.py` function does not import from `setup_environment.py` (standalone script with different dependency chain).
+
+**DRY infrastructure:** Both `write_user_settings()` and `write_global_config()` delegate to the shared `_write_merged_json()` helper that implements the READ-MERGE-WRITE pattern. This eliminates the previous code duplication.
 
 ### Platform-Conditional Tilde Expansion in Settings
 
@@ -134,9 +201,70 @@ The setup creates global commands (e.g., `claude-python`) that work across all W
 - CMD wrapper (`~/.local/bin/{command}.cmd`)
 - Git Bash wrapper (`~/.local/bin/{command}`)
 
+### Validation Models
+
+The repository includes a Pydantic validation model for environment YAML configurations.
+
+**Model location:** `scripts/models/environment_config.py`
+
+**Purpose:** Provides a Pydantic schema (`EnvironmentConfig`) that defines the complete structure and types for environment YAML configurations. The model validates field names, types, and constraints for all supported configuration keys.
+
+**Canonical source:** This repository (claude-code-toolbox) is the authoritative home for the model. Changes to the model are made here and synced to downstream repositories via the sync mechanism described below.
+
+**Maintenance rule:** When adding new config keys to `setup_environment.py` (by extending `KNOWN_CONFIG_KEYS`), the `EnvironmentConfig` model in `scripts/models/environment_config.py` MUST be updated simultaneously with the corresponding field definition (and vice versa). The parity test enforces this at CI time.
+
+**KNOWN_CONFIG_KEYS alignment:** The test `tests/scripts/models/test_known_config_keys_parity.py` enforces a STRICT BIDIRECTIONAL match between `KNOWN_CONFIG_KEYS` in `setup_environment.py` and `EnvironmentConfig.model_fields`. There are ZERO exceptions -- every key must exist in both places, and every model field must have a corresponding `KNOWN_CONFIG_KEYS` entry.
+
+**Deprecated keys policy:** Deprecated configuration keys must be DELETED from both `KNOWN_CONFIG_KEYS` and the model, not kept with exceptions or backward compatibility shims. The parity test will fail if a key exists in one place but not the other.
+
+**Test location:** `tests/scripts/models/` contains:
+
+- `test_environment_config.py` -- model field validation, type checking, edge cases
+- `test_mcp_server_scope.py` -- MCP server configuration scope validation
+- `test_known_config_keys_parity.py` -- strict bidirectional parity enforcement
+
+**Sync mechanism:** The `.github/` directory contains the sync infrastructure:
+
+- `sync_to_repos.py` -- script that pushes model changes to target repositories
+- `sync_config.py` -- Pydantic model for sync configuration
+- `sync-config.yaml` -- configuration defining target repos and file mappings
+- The workflow `.github/workflows/sync-to-repos.yml` triggers on changes to `scripts/models/environment_config.py` and syncs to `alex-feel/claude-code-artifacts` and `alex-feel/claude-code-artifacts-public`, placing the model at `.github/environment_config.py` in each target
+
+**Runtime integration status:** The model is NOT imported or used at runtime in `setup_environment.py`. The `KNOWN_CONFIG_KEYS` frozenset is the active runtime mechanism for unknown-key detection. The model serves as a schema definition for CI validation and documentation, and the parity test ensures the two stay permanently synchronized.
+
+**UserSettings policy:** The `UserSettings` class is a free-form open model (`extra='allow'`) with ZERO hardcoded fields. It passes through all user-provided settings to `settings.json` without field-level validation. The only structural guard is a blocklist validator (`check_excluded_keys`) that prevents `hooks` and `statusLine` keys from appearing in user-settings (these are profile-specific and must be configured at the root level of the environment YAML).
+
+## Documentation Maintenance
+
+When changing validation models or other core functionality, review and update the relevant documentation:
+
+- **`docs/environment-configuration-guide.md`** -- Update when:
+  - `KNOWN_CONFIG_KEYS` or `EnvironmentConfig` model changes (new, renamed, or removed config keys)
+  - MCP server transport types, scope options, or permission behavior changes
+  - Hooks structure, event types, or file consistency rules change
+  - `command-defaults` modes or system prompt behavior changes
+  - Environment variable handling or authentication flow changes
+
+- **`docs/installing-claude-code.md`** -- Update when:
+  - Installation methods or upgrade behavior changes
+  - `install_claude.py` functions or environment variables change
+  - Node.js compatibility checks or version detection changes
+  - Root guard behavior or sudo handling changes
+
+**Trigger review checklist:**
+1. Did you add/remove/rename any config keys in `setup_environment.py`?
+2. Did you modify `scripts/models/environment_config.py`?
+3. Did you change how `install_claude.py` detects installation sources or handles upgrades?
+4. Did you add new environment variables or change their behavior?
+
+If any answer is yes, check the corresponding doc file and update it before committing.
+
 ## Development Commands
 
 ### Testing Commands
+
+**CRITICAL: ALWAYS run the full test suite after making ANY changes. All tests must pass (100% pass rate). Never skip the test suite.**
+
 ```bash
 # Run all tests
 uv run pytest
@@ -155,46 +283,24 @@ uv run pytest -k "test_colors"
 uv run pytest -v
 ```
 
+**Mandatory workflow after code changes:**
+1. Make your code changes
+2. Run `uv run pytest` to check all tests pass
+3. Fix any failing tests immediately
+4. Run `uv run pre-commit run --all-files` for code quality validation
+5. Only commit when ALL tests pass and all pre-commit hooks pass
+
 ### E2E Testing
 
 The project includes a comprehensive End-to-End (E2E) testing framework that verifies the complete setup workflow on all platforms.
 
-#### Directory Structure
+#### Key Files
 
-```text
-tests/e2e/
-├── __init__.py
-├── conftest.py              # E2E fixtures (isolated_home, golden_config, mock_repo_path)
-├── golden_config.yaml       # Comprehensive config with ALL supported YAML keys
-├── validators.py            # Composable validation functions
-├── expected/                # Platform-specific expected outputs
-│   ├── __init__.py
-│   ├── common.py            # Shared expected values
-│   ├── linux.py             # Linux expectations
-│   ├── macos.py             # macOS expectations
-│   └── windows.py           # Windows expectations
-├── fixtures/
-│   ├── __init__.py
-│   └── mock_repo/           # Mock source files for testing
-│       ├── configs/         # Mock YAML configurations
-│       ├── hooks/           # Mock hook scripts
-│       ├── agents/
-│       ├── commands/
-│       ├── prompts/
-│       └── skills/
-├── test_full_setup.py       # Main E2E workflow tests
-├── test_output_files.py     # JSON file content verification
-├── test_launcher_scripts.py # Platform-specific launcher tests
-├── test_path_handling.py    # Tilde expansion and path format tests
-├── test_path_normalization.py # Path separator consistency tests
-├── test_cleanup.py          # Artifact cleanup verification
-├── test_env_variable_handling.py  # OS environment variable tests
-├── test_javascript_hooks.py # JavaScript hook event tests
-├── test_npm_fallback.py     # npm installation and sudo fallback tests
-├── test_root_guard.py       # Root detection guard tests
-├── test_upgrade_source_detection.py # Source-aware upgrade routing tests
-└── test_version_detection.py # Claude Code version detection tests
-```
+- `tests/e2e/conftest.py` -- E2E fixtures (`isolated_home`, `golden_config`, `mock_repo_path`)
+- `tests/e2e/golden_config.yaml` -- Comprehensive config exercising ALL supported YAML keys
+- `tests/e2e/validators.py` -- Composable validation functions
+- `tests/e2e/expected/` -- Platform-specific expected outputs (linux, macOS, windows)
+- `tests/e2e/fixtures/mock_repo/` -- Mock source files (agents, commands, hooks, prompts, skills)
 
 #### Running E2E Tests
 
@@ -214,21 +320,7 @@ uv run pytest tests/e2e/ -k "test_launcher" -v
 
 #### Golden Configuration Purpose
 
-The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as:
-
-1. **Single source of truth** for testing - exercises every configuration option
-2. **Regression prevention** - ensures all config keys work correctly on all platforms
-3. **Documentation by example** - demonstrates the complete configuration schema
-
-The golden config includes:
-- Core settings: `name`, `command-names`, `base-url`, `claude-code-version`
-- Dependencies: `dependencies` (with platform-specific variants)
-- Resources: `agents`, `slash-commands`, `skills`, `files-to-download`
-- Hooks: `hooks` (files and events with command/prompt types)
-- MCP Servers: `mcp-servers` (http, sse, stdio transports)
-- Settings: `model`, `permissions`, `env-variables`, `os-env-variables`
-- Advanced: `command-defaults`, `user-settings`, `always-thinking-enabled`, `effort-level`
-- Extras: `company-announcements`, `attribution`, `status-line`
+The `tests/e2e/golden_config.yaml` is a comprehensive configuration file that includes ALL supported YAML keys. It serves as the single source of truth for testing (exercises every option), regression prevention (all platforms), and documentation by example. Open the file directly to see all supported configuration keys.
 
 #### Key Design Principles
 
@@ -237,14 +329,6 @@ The golden config includes:
 - **Composable validators**: Return all errors, not just the first
 - **Platform-specific expectations**: Separate modules for Linux, macOS, Windows
 - **CI cleanup verification**: Dedicated step verifies no artifacts leak to real home
-
-#### CI Integration
-
-E2E tests run as a dedicated job in GitHub Actions with:
-- **Platform matrix**: Ubuntu, Windows, macOS
-- **Independent execution**: `fail-fast: false` - each platform runs to completion
-- **Artifact upload**: Debug artifacts on failure for troubleshooting
-- **Cleanup verification**: Post-test check for leaked artifacts
 
 ### Code Quality & Linting
 
@@ -273,38 +357,6 @@ uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
 - End-of-file and trailing whitespace fixes
 - Markdown linting
 - Commitizen for commit message validation
-
-**DO NOT use these commands directly:**
-- ❌ `uv run ruff format` - Not part of pre-commit configuration
-- ❌ `uv run ruff check --fix` - Use pre-commit instead
-
-**Use pre-commit for all code quality validation:**
-- ✅ `uv run pre-commit run --all-files` - Correct approach
-
-## CRITICAL: Test Suite Requirements
-
-**ALWAYS run the full test suite after making ANY changes to the codebase:**
-
-```bash
-# Run the complete test suite
-uv run pytest
-
-# If any tests fail, they MUST be fixed before proceeding
-# The codebase must maintain 100% test pass rate at all times
-```
-
-**Testing workflow after code changes:**
-1. Make your code changes
-2. Run `uv run pytest` to check all tests pass
-3. Fix any failing tests immediately
-4. Run `uv run pre-commit run --all-files` for code quality validation
-5. Only commit when ALL tests pass and all pre-commit hooks pass
-
-**IMPORTANT:**
-- All tests must pass (100% pass rate)
-- Use ONLY `uv run pre-commit run --all-files` for code quality checks
-
-**Important:** Never skip the test suite. Even small changes can have unexpected impacts.
 
 ## E2E Testing Requirements for New Features
 
@@ -413,23 +465,23 @@ When configuring MCP servers, permissions are automatically added to `additional
 The setup scripts support these environment variables for debugging and customization:
 
 - `CLAUDE_CODE_TOOLBOX_DEBUG`: Set to `1`, `true`, or `yes` to enable verbose debug logging during MCP server configuration and other operations
-- `CLAUDE_CODE_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
-- `CLAUDE_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
-- `CLAUDE_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
-- `CLAUDE_ALLOW_ROOT`: Set to `1` to allow running setup scripts as root on Linux/macOS. By default, all Linux/macOS scripts refuse to run as root to prevent configuration being created under `/root/` instead of the user's home directory. The installer will request `sudo` only when needed (e.g., for npm global installs). Use this override for Docker containers, CI/CD environments, or other legitimate root use cases.
+- `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`: Override the Git Bash executable path (useful for non-standard installations where Git Bash is not in the default location)
+- `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS`: Override the number of concurrent download workers (default: 2)
+- `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`: Set to `1`, `true`, or `yes` to disable parallel downloads entirely
+- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: Set to `1` to allow running as root on Linux/macOS (see Root Detection Guard section)
+- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: Set to `1` to auto-confirm installation (see Installation Confirmation section)
 
-### npm Sudo Handling (Non-Interactive Mode)
+### npm Sudo Handling (Three-Tier Fallback)
 
-When `install_claude_npm()` or `remove_npm_claude()` needs elevated permissions for global npm operations, sudo attempts are gated on TTY availability and cached credentials BEFORE attempting sudo:
+When `install_claude_npm()` or `remove_npm_claude()` needs elevated permissions for global npm operations, both functions delegate to the shared `_run_with_sudo_fallback()` helper which implements a three-tier strategy:
 
-1. **Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password)
-2. **Non-interactive mode** (e.g., `curl | bash`):
-   - Runs `sudo -n true` to check for cached sudo credentials
-   - If cached credentials exist: sudo is attempted
-   - If no cached credentials: sudo is SKIPPED entirely, guidance is provided immediately
-3. **Missing sudo binary**: `FileNotFoundError` is caught gracefully
+1. **Tier 1 -- Interactive mode** (`sys.stdin.isatty()` is True): Sudo is attempted directly (user can enter password via stdin)
+2. **Tier 2 -- Cached credentials** (non-interactive): Runs `sudo -n true` to check for cached sudo credentials. If cached credentials exist, sudo is attempted without prompting
+3. **Tier 3 -- `/dev/tty` fallback** (non-interactive with terminal): If Tiers 1 and 2 fail but `/dev/tty` is available (checked via `_dev_tty_sudo_available()`), sudo is invoked with stdin redirected from `/dev/tty`, allowing the user to type their password even in piped mode (`curl | bash`)
 
-This pattern is applied consistently to both npm install and npm uninstall operations, preventing visible EACCES permission errors and the 30-second timeout waste in `curl | bash` piped installations. The `remove_npm_claude()` function also captures npm output (no `capture_output=False`) to suppress noisy error stack traces from reaching the user's terminal.
+If all three tiers are exhausted, `_run_with_sudo_fallback()` returns `None` and the caller provides guidance text. `FileNotFoundError` (missing sudo binary) and `subprocess.TimeoutExpired` are caught gracefully at each tier. The `/dev/tty` tier uses a longer timeout (`tty_timeout=60`) to give the user time to type their password.
+
+This pattern is applied consistently to both `install_claude_npm()` and `remove_npm_claude()` via the shared helper, eliminating the previous code duplication. The `remove_npm_claude()` function also captures npm output to suppress noisy error stack traces from reaching the user's terminal.
 
 ### Download Retry Configuration
 
@@ -474,6 +526,15 @@ command-defaults:
 
 **Important:** If `mode` is not specified, it defaults to `"replace"` for a clean slate experience.
 
+### Step Numbering Convention
+
+Step comments and print statements in `main()` (e.g., `# Step N:`, `Step N: ...`) **MUST** use only whole integers. The sequence must be continuous with no gaps: Step 1, Step 2, ..., Step N.
+
+**Rules:**
+- Fractional/decimal step numbers (e.g., `Step 14.5`, `Step 3.1`) are **PROHIBITED**
+- When inserting a new step between existing steps, **renumber all subsequent steps** to maintain a continuous integer sequence
+- Update ALL references to renumbered steps (comments, print statements, test assertions, skip-range messages like `Steps 13-17`)
+
 ## Testing Workflows
 
 ### When modifying setup_environment.py
@@ -492,6 +553,25 @@ command-defaults:
    - `%LOCALAPPDATA%\Claude\additional-settings.json` on Windows
 5. Ensure hooks trigger correctly
 
+### Mock Target Alignment Rule
+
+When production code is refactored to change which function a call site uses (e.g., replacing `find_command('node')` with `shutil.which('node')`), ALL test mocks that target the old function MUST be updated to target the new function. Stale mock targets cause tests to pass locally but fail on CI.
+
+Key patterns to verify:
+- `@patch('module.find_command')` -- confirm the production code still calls `find_command()` at that call site
+- `@patch('shutil.which')` -- confirm the production code actually calls `shutil.which()` at the mocked call site
+- When `shutil.which` replaces `find_command`, mock `Path.exists()` to return `False` for common-path checks that precede the `shutil.which` fallback
+
+### Platform-Specific Path Behavior in Tests
+
+Tests that create or assert on Windows-style paths (using backslashes) MUST be marked as Windows-only:
+
+```python
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
+```
+
+`Path(r'C:\Program Files\nodejs\node.exe')` on Linux becomes `PosixPath('C:\\Program Files\\nodejs\\node.exe')` (a single path component), so `Path(...).parent` returns `PosixPath('.')` instead of the expected Windows parent directory. `Path` uses the running OS's path semantics, not the path's apparent format.
+
 ## Script Dependencies
 
 - **Python 3.12** required for all Python scripts
@@ -505,6 +585,21 @@ command-defaults:
 - Release Please automatically manages versioning based on conventional commits
 - Version bumps happen when release PRs are merged
 
+### SECURITY.md Maintenance
+
+When creating any commit that triggers a major version bump, SECURITY.md **must** be updated in the same PR:
+- Any commit type with `!` suffix: `feat!:`, `fix!:`, `refactor!:`, `chore!:`, etc.
+- Any commit with `BREAKING CHANGE:` in the body or footer
+
+Update the "Supported Versions" table to reflect the new major version as the only supported version:
+
+```markdown
+| Version | Supported          |
+|---------|--------------------|
+| X.x     | :white_check_mark: |
+| < X.0   | :x:                |
+```
+
 ## Security Considerations
 
 When loading environment configurations:
@@ -513,56 +608,51 @@ When loading environment configurations:
 - Remote URLs show warning messages (verify source first)
 - Never commit configurations with sensitive data to the repo
 
-## Windows PATH Management Architecture
+### GitHub Actions Security Policy
 
-### Critical Implementation Details
+When adding or updating GitHub Actions in workflow files (`.github/workflows/*.yml`):
 
-**Platform-Specific Patterns:**
+1. **NEVER use mutable branch references** (`@main`, `@master`, `@develop`) for third-party actions
+   - Mutable references allow upstream supply chain attacks (e.g., the [trivy-action incident of March 2026](https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack))
+   - Always pin to immutable version tags: `@v5`, `@v0.35.0`, etc.
+   - First-party GitHub actions (`actions/*`, `github/*`) and composite/docker actions may use major version tags (`@v5`)
 
-When writing Windows-specific functions that should no-op on other platforms:
+2. **Version tag pinning** is the project standard (not SHA pinning)
+   - Version tags balance security with maintainability
+   - SHA pinning is disproportionate overhead for this project's threat model
+
+3. **Verify action runtimes** before updating to ensure Node.js 24 compatibility:
+   ```bash
+   # Check the runtime of an action at a specific tag
+   gh api repos/{owner}/{repo}/contents/action.yml?ref={tag} \
+     --jq '.content' | base64 -d | grep -A1 "^runs:"
+   ```
+   - `node24` -- compatible, preferred
+   - `composite` or `docker` -- node-agnostic, always compatible
+   - `node20` -- deprecated, will stop working after June 2, 2026
+   - Note: some actions use `action.yaml` instead of `action.yml`
+
+## Platform-Specific Code Patterns (MyPy)
+
+**CRITICAL:** MyPy on Linux CI analyzes platform checks differently than on Windows locally. Negative checks with early returns cause "unreachable code" errors in CI even though the code runs fine on Windows. MyPy may pass locally but fail in CI on the same code.
+
+**Always use positive platform checks:**
 
 ```python
 # CORRECT: Use positive platform check (MyPy-friendly)
 def windows_specific_function() -> ReturnType:
     if sys.platform == 'win32':
-        # Main Windows-specific logic here
-        # ...
-        return result
+        # All Windows-specific logic inside this block
+        # (e.g., add_directory_to_windows_path(), cleanup_temp_paths_from_registry())
+        return windows_result
     # Non-Windows platforms
     return default_value
 
-# INCORRECT: Avoid negative checks with early returns (causes MyPy "unreachable" errors in CI)
+# INCORRECT: Causes MyPy "unreachable" errors on Linux CI
 def windows_specific_function() -> ReturnType:
     if sys.platform != 'win32':
         return default_value  # MyPy on Linux CI considers code after this unreachable
-    # This code becomes "unreachable" in MyPy's analysis on Linux
-    try:
-        # Windows logic
-        pass
-```
-
-**Why this matters:** MyPy on Linux CI (GitHub Actions) performs static analysis differently than on Windows. Using `if sys.platform != 'win32':` with early returns causes MyPy to conclude that subsequent code is unreachable, even though it's reachable on Windows. Always use positive platform checks with the main logic inside the conditional block.
-
-## MyPy Platform-Specific Behavior
-
-**CRITICAL:** MyPy's static analysis behaves differently across platforms when analyzing platform-specific code:
-
-- **Local Testing (Windows):** MyPy may pass locally even with negative platform checks
-- **CI Testing (Linux):** MyPy on Linux uses different control flow analysis and will fail on the same code
-
-**Best Practice:**
-- Always use positive platform checks: `if sys.platform == 'win32':`
-- Avoid early returns with negative checks: `if sys.platform != 'win32': return ...`
-- Test with `uv run mypy scripts/` before pushing
-- Expect CI to catch platform-specific analysis issues that local testing might miss
-
-**Pattern to Follow:**
-```python
-# In add_directory_to_windows_path(), cleanup_temp_paths_from_registry(), etc.
-if sys.platform == 'win32':
-    # All Windows-specific logic inside this block
     # ...
-    return windows_result
-# Fallback for other platforms
-return default_result
 ```
+
+Test with `uv run mypy scripts/` before pushing. Expect CI to catch issues local testing might miss.

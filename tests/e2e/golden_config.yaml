@@ -4,6 +4,9 @@
 
 name: "E2E Test Environment"
 
+# Configuration version for update checking
+version: "1.0.0"
+
 # Command names (PRIMARY format - array)
 command-names:
   - "e2e-test-cmd"
@@ -173,6 +176,13 @@ user-settings:
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
 
+# Global config (merged into ~/.claude.json)
+global-config:
+  autoConnectIde: true
+  editorMode: "vim"
+  showTurnDuration: true
+  terminalProgressBarEnabled: false
+
 # Always-thinking mode
 always-thinking-enabled: true
 
@@ -188,9 +198,6 @@ company-announcements:
 attribution:
   commit: "E2E Test Attribution for Commits"
   pr: "E2E Test Attribution for Pull Requests"
-
-# DEPRECATED: include-co-authored-by (for backward compatibility testing)
-# include-co-authored-by: true
 
 # Status line configuration
 status-line:

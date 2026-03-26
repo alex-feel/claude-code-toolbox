@@ -88,7 +88,7 @@ feat: add automatic Git Bash installation for Windows
 
 - Detect existing Git installation
 - Install via winget or direct download
-- Configure CLAUDE_CODE_GIT_BASH_PATH environment variable
+- Configure CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH environment variable
 - Verify installation with claude doctor
 ```
 
@@ -310,7 +310,7 @@ claude-code-toolbox/
 ├── tests/                           # Test suite
 │   ├── test_install_claude.py       # Tests for installer
 │   └── test_setup_environment.py    # Tests for environment setup
-├── technical-docs/                  # Technical documentation
+├── docs/                            # Technical documentation
 ├── .github/                         # GitHub workflows and templates
 │   └── workflows/
 │       ├── lint.yml                 # Linting and validation
@@ -348,7 +348,7 @@ claude-code-toolbox/
 ## Documentation Requirements
 
 - Update README.md for user-facing changes
-- Add/update technical-docs/ for detailed technical documentation
+- Add/update docs/ for detailed technical documentation
 - Include inline comments for complex logic
 - Update CLAUDE.md if changing development workflows
 
