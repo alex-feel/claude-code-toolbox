@@ -74,8 +74,8 @@ fi
 # Read prompt and get Windows path for settings
 PROMPT_CONTENT=$(tr -d '\r' < "$PROMPT_PATH")
 # Try to get Windows path format; fallback to Unix path if cygpath is not available
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/additional-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/settings.json")"
 
 exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" "$@"
 ```
@@ -183,11 +183,11 @@ PROMPT_CONTENT=$(tr -d '\r' < "$PROMPT_PATH")
 Using `cygpath -m` provides Windows-compatible paths with forward slashes:
 
 ```bash
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/additional-settings.json")"
-# Result: C:/Users/username/.claude/additional-settings.json
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/settings.json")"
+# Result: C:/Users/username/.claude/settings.json
 ```
 
-> **Current Implementation:** The actual settings file path is `$HOME/.claude/{command_name}-additional-settings.json` (e.g., `python-additional-settings.json`), prefixed with the command name for environment isolation.
+> **Current Implementation:** The actual settings file path is `$HOME/.claude/{command_name}-settings.json` (e.g., `python-settings.json`), prefixed with the command name for environment isolation.
 
 ### Technical Deep Dive
 
@@ -348,7 +348,7 @@ claude-my-env --debug 2>&1 | grep -i settings
 Check the resolved paths:
 
 ```bash
-bash -c 'echo "Home: $HOME"; cygpath -m "$HOME/.claude/additional-settings.json"'
+bash -c 'echo "Home: $HOME"; cygpath -m "$HOME/.claude/settings.json"'
 ```
 
 #### Script Permissions

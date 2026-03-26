@@ -6287,7 +6287,7 @@ def download_hook_files(
     return all(results)
 
 
-def create_additional_settings(
+def create_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
     command_name: str,
@@ -6300,7 +6300,7 @@ def create_additional_settings(
     status_line: dict[str, Any] | None = None,
     effort_level: str | None = None,
 ) -> bool:
-    """Create {command_name}-additional-settings.json with environment-specific settings.
+    """Create {command_name}-settings.json with environment-specific settings.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
@@ -6327,7 +6327,7 @@ def create_additional_settings(
     Returns:
         bool: True if successful, False otherwise.
     """
-    info(f'Creating {command_name}-additional-settings.json...')
+    info(f'Creating {command_name}-settings.json...')
 
     # Create fresh settings structure for this environment
     settings: dict[str, Any] = {}
@@ -6585,15 +6585,15 @@ def create_additional_settings(
                 matcher_hooks_list = cast(list[object], matcher_hooks_raw)
                 matcher_hooks_list.append(hook_config)
 
-    # Save additional settings (always overwrite)
-    additional_settings_path = claude_user_dir / f'{command_name}-additional-settings.json'
+    # Save settings (always overwrite)
+    settings_path = claude_user_dir / f'{command_name}-settings.json'
     try:
-        with open(additional_settings_path, 'w') as f:
+        with open(settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
-        success(f'Created {command_name}-additional-settings.json')
+        success(f'Created {command_name}-settings.json')
         return True
     except Exception as e:
-        error(f'Failed to save {command_name}-additional-settings.json: {e}')
+        error(f'Failed to save {command_name}-settings.json: {e}')
         return False
 
 
@@ -6781,8 +6781,8 @@ if "%~1"=="" (
 set -euo pipefail
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}-additional-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}-settings.json")"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
@@ -6937,8 +6937,8 @@ fi
 set -euo pipefail
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-additional-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}-additional-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-settings.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}-settings.json")"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
@@ -6966,7 +6966,7 @@ fi
 # This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
-SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
+SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-settings.json"
 PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
 
 # MCP configuration for profile-scoped servers
@@ -7129,7 +7129,7 @@ fi
 # This script starts Claude Code with the configured environment
 
 CLAUDE_USER_DIR="$HOME/.claude"
-SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-additional-settings.json"
+SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-settings.json"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$CLAUDE_USER_DIR/{command_name}-mcp.json"
@@ -7922,7 +7922,7 @@ def main() -> None:
             if status_line is not None and isinstance(status_line, dict):
                 status_line_arg = cast(dict[str, Any], status_line)
 
-            create_additional_settings(
+            create_settings(
                 hooks,
                 claude_user_dir,
                 primary_command_name,

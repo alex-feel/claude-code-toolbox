@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.setup_environment import create_additional_settings
+from scripts.setup_environment import create_settings
 
 
 class TestJavaScriptHooks:
@@ -30,7 +30,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -45,7 +45,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         # Find .js hook and verify node prefix
@@ -78,7 +78,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -93,7 +93,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -121,7 +121,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -136,7 +136,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -164,7 +164,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -179,7 +179,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -219,7 +219,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -234,7 +234,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         python_hooks_found = 0
@@ -275,7 +275,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_additional_settings(
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -290,7 +290,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []

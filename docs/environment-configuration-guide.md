@@ -448,7 +448,7 @@ Sets an HTTP header for both `http` and `sse` transports.
 
 #### Automatic Permission Pre-Allowing
 
-MCP server names are automatically added to the `permissions.allow` list as `mcp__servername` in the additional settings file. You do not need to manually add MCP server permissions.
+MCP server names are automatically added to the `permissions.allow` list as `mcp__servername` in the settings file. You do not need to manually add MCP server permissions.
 
 ### Model and Reasoning
 
@@ -529,7 +529,7 @@ permissions:
 
 #### `env-variables`
 
-Claude-level environment variables set in the additional settings file. These are available within Claude Code sessions only.
+Claude-level environment variables set in the settings file. These are available within Claude Code sessions only.
 
 - **Type:** `dict[str, str] | None`
 - **Default:** `None`
@@ -863,7 +863,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 12. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
 13. **Write global config** -- Merges `global-config` into `~/.claude.json`.
 14. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-15. **Configure settings** -- Creates the additional settings file for the command.
+15. **Configure settings** -- Creates the settings file for the command.
 16. **Write manifest** -- Creates an installation tracking manifest.
 17. **Create launcher** -- Creates the launcher script for the command.
 18. **Register commands** -- Creates global command wrappers.

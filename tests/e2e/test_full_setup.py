@@ -9,9 +9,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_launcher_script
 from scripts.setup_environment import create_mcp_config_file
+from scripts.setup_environment import create_settings
 from scripts.setup_environment import register_global_command
 from tests.e2e.expected import EXPECTED_FILES
 
@@ -84,8 +84,8 @@ class TestE2EFullSetup:
         # This test verifies file creation logic
         claude_dir = paths['claude_dir']
 
-        # Create additional-settings.json
-        create_additional_settings(
+        # Create settings.json
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -147,7 +147,7 @@ class TestE2EFullSetup:
         """Verify ALL config keys from golden_config are processed.
 
         This test validates that:
-        - model, permissions, env-variables are in additional-settings.json
+        - model, permissions, env-variables are in settings.json
         - mcp-servers are in {cmd}-mcp.json
         - hooks events are configured
         - always-thinking-enabled, company-announcements, attribution, status-line are present
@@ -156,8 +156,8 @@ class TestE2EFullSetup:
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        # Create additional settings with ALL config keys
-        create_additional_settings(
+        # Create settings with ALL config keys
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -172,9 +172,9 @@ class TestE2EFullSetup:
             effort_level=golden_config.get('effort-level'),
         )
 
-        # Verify additional-settings file exists (written to claude_user_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        # Verify settings file exists (written to claude_user_dir)
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
-        assert settings_path.exists(), f'additional-settings.json not created: {settings_path}'
+        assert settings_path.exists(), f'settings.json not created: {settings_path}'
 
         # Content validation is done in test_output_files.py

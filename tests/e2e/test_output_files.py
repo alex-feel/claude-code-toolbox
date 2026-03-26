@@ -13,26 +13,26 @@ from typing import Any
 import pytest
 
 from scripts.setup_environment import configure_all_mcp_servers
-from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_mcp_config_file
+from scripts.setup_environment import create_settings
 from scripts.setup_environment import write_user_settings
 from tests.e2e.expected.common import EXPECTED_JSON_KEYS
-from tests.e2e.validators import validate_additional_settings
 from tests.e2e.validators import validate_mcp_json
+from tests.e2e.validators import validate_settings
 from tests.e2e.validators import validate_settings_json
 
 
 class TestOutputFiles:
     """Test output file content and structure."""
 
-    def test_additional_settings_json_structure(
+    def test_settings_json_structure(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify additional-settings.json has correct structure and content.
+        """Verify settings.json has correct structure and content.
 
-        Uses validate_additional_settings from validators.py.
+        Uses validate_settings from validators.py.
         Checks: model, permissions, env, hooks, alwaysThinkingEnabled,
         companyAnnouncements, attribution, statusLine.
         """
@@ -40,8 +40,8 @@ class TestOutputFiles:
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        # Create additional settings
-        create_additional_settings(
+        # Create settings
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -57,27 +57,27 @@ class TestOutputFiles:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         # Validate using validators.py
-        errors = validate_additional_settings(settings_path, golden_config)
-        assert not errors, 'additional-settings.json validation failed:\n' + '\n'.join(errors)
+        errors = validate_settings(settings_path, golden_config)
+        assert not errors, 'settings.json validation failed:\n' + '\n'.join(errors)
 
-    def test_additional_settings_has_expected_keys(
+    def test_settings_has_expected_keys(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify additional-settings.json contains all expected top-level keys.
+        """Verify settings.json contains all expected top-level keys.
 
-        Uses EXPECTED_JSON_KEYS['additional-settings'] for reference.
+        Uses EXPECTED_JSON_KEYS['settings'] for reference.
         """
         paths = e2e_isolated_home
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        # Create additional settings
-        create_additional_settings(
+        # Create settings
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -93,14 +93,14 @@ class TestOutputFiles:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         # Load and check keys
         data = json.loads(settings_path.read_text())
-        expected_keys = EXPECTED_JSON_KEYS['additional-settings']
+        expected_keys = EXPECTED_JSON_KEYS['settings']
 
         missing_keys = [k for k in expected_keys if k not in data]
-        assert not missing_keys, f'Missing expected keys in additional-settings.json: {missing_keys}'
+        assert not missing_keys, f'Missing expected keys in settings.json: {missing_keys}'
 
     def test_mcp_json_structure(
         self,
@@ -193,7 +193,7 @@ class TestOutputFiles:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify permissions in additional-settings has all required arrays.
+        """Verify permissions in settings has all required arrays.
 
         Checks: defaultMode, allow, deny, ask arrays present with expected values.
         """
@@ -201,7 +201,7 @@ class TestOutputFiles:
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        create_additional_settings(
+        create_settings(
             hooks={},
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -217,7 +217,7 @@ class TestOutputFiles:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         data = json.loads(settings_path.read_text())
 

@@ -922,10 +922,10 @@ class TestMCPServerConfigurationEdgeCases:
         assert '--env "REGION=us-west"' in bash_cmd
 
 
-class TestCreateAdditionalSettingsComplex:
-    """Test complex additional settings creation scenarios."""
+class TestCreateSettingsComplex:
+    """Test complex settings creation scenarios."""
 
-    def test_create_additional_settings_with_permissions_merge(self):
+    def test_create_settings_with_permissions_merge(self):
         """Test that only explicit permissions are included, no auto-adding."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -936,7 +936,7 @@ class TestCreateAdditionalSettingsComplex:
                 'ask': ['mcp__server4'],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test',
@@ -944,7 +944,7 @@ class TestCreateAdditionalSettingsComplex:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Only explicitly listed permissions should be present
@@ -954,21 +954,21 @@ class TestCreateAdditionalSettingsComplex:
             assert 'mcp__server2' not in settings['permissions']['allow']
             assert settings['permissions']['allow'].count('mcp__server1') == 1
 
-    def test_create_additional_settings_mcp_in_deny_list(self):
+    def test_create_settings_mcp_in_deny_list(self):
         """Test MCP server in deny list is not auto-allowed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             permissions = {'deny': ['mcp__blocked_server']}
 
-            setup_environment.create_additional_settings(
+            setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test',
                 permissions=permissions,
             )
 
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
@@ -977,27 +977,27 @@ class TestCreateAdditionalSettingsComplex:
                 [],
             )
 
-    def test_create_additional_settings_mcp_in_ask_list(self):
+    def test_create_settings_mcp_in_ask_list(self):
         """Test MCP server in ask list is not auto-allowed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             permissions = {'ask': ['mcp__ask_server']}
 
-            setup_environment.create_additional_settings(
+            setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test',
                 permissions=permissions,
             )
 
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
             assert 'allow' not in settings['permissions'] or 'mcp__ask_server' not in settings['permissions'].get('allow', [])
 
-    def test_create_additional_settings_with_env_variables(self):
+    def test_create_settings_with_env_variables(self):
         """Test creating settings with environment variables."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1007,14 +1007,14 @@ class TestCreateAdditionalSettingsComplex:
                 'DEBUG': 'true',
             }
 
-            setup_environment.create_additional_settings(
+            setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test',
                 env=env_vars,
             )
 
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert settings['env'] == env_vars
@@ -1022,7 +1022,7 @@ class TestCreateAdditionalSettingsComplex:
     @patch('setup_environment.download_file')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value='py')
-    def test_create_additional_settings_hooks_windows_python(self, mock_which, _mock_system, mock_download):
+    def test_create_settings_hooks_windows_python(self, mock_which, _mock_system, mock_download):
         """Test hook configuration with Python scripts on Windows."""
         del mock_which  # Unused but required for patch
         del _mock_system  # Unused but required for patch
@@ -1049,13 +1049,13 @@ class TestCreateAdditionalSettingsComplex:
                 ],
             }
 
-            setup_environment.create_additional_settings(
+            setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Should use py command on Windows
@@ -1065,7 +1065,7 @@ class TestCreateAdditionalSettingsComplex:
 
     @patch('setup_environment.handle_resource')
     @patch('platform.system', return_value='Linux')
-    def test_create_additional_settings_hooks_linux(self, _mock_system, mock_download):
+    def test_create_settings_hooks_linux(self, _mock_system, mock_download):
         """Test hook configuration on Linux."""
         mock_download.return_value = True
 
@@ -1096,8 +1096,8 @@ class TestCreateAdditionalSettingsComplex:
                 config_source='https://example.com/config.yaml',
             )
 
-            # Then create additional settings
-            result = setup_environment.create_additional_settings(
+            # Then create settings
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
@@ -1107,7 +1107,7 @@ class TestCreateAdditionalSettingsComplex:
             # Note: With uv run, executable permissions are no longer needed
             # The script is executed via: uv run --python 3.12 script.py
 
-    def test_create_additional_settings_hooks_invalid(self):
+    def test_create_settings_hooks_invalid(self):
         """Test handling invalid hook configuration."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1121,7 +1121,7 @@ class TestCreateAdditionalSettingsComplex:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
@@ -1130,7 +1130,7 @@ class TestCreateAdditionalSettingsComplex:
             # Should still succeed but skip invalid hook
             assert result is True
 
-    def test_create_additional_settings_non_python_hook(self):
+    def test_create_settings_non_python_hook(self):
         """Test hook configuration with non-Python script."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1146,30 +1146,30 @@ class TestCreateAdditionalSettingsComplex:
                 ],
             }
 
-            setup_environment.create_additional_settings(
+            setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Command should be used as-is
             hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
             assert hook_cmd == 'echo "test"'
 
-    def test_create_additional_settings_save_failure(self):
+    def test_create_settings_save_failure(self):
         """Test handling save failure."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             # Make directory read-only to cause save failure
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings_file.write_text('dummy')
 
             with patch('builtins.open', side_effect=PermissionError('Cannot write')):
-                result = setup_environment.create_additional_settings(
+                result = setup_environment.create_settings(
                     {},
                     claude_dir,
                     'test',
@@ -1419,7 +1419,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_additional_settings', return_value=True)
+    @patch('setup_environment.create_settings', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
     @patch('pathlib.Path.mkdir')
     def test_main_no_launcher_created(
@@ -1471,7 +1471,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_additional_settings', return_value=True)
+    @patch('setup_environment.create_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
     @patch('pathlib.Path.mkdir')
@@ -1519,7 +1519,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_additional_settings', return_value=True)
+    @patch('setup_environment.create_settings', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
     @patch('pathlib.Path.mkdir')
@@ -2528,9 +2528,9 @@ class TestAddDirectoryToWindowsPathLength:
 
 
 class TestHookConfigFileSupport:
-    """Test hook configuration file support in create_additional_settings."""
+    """Test hook configuration file support in create_settings."""
 
-    def test_create_additional_settings_hook_with_config(self) -> None:
+    def test_create_settings_hook_with_config(self) -> None:
         """Test hook configuration with config file reference."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2559,14 +2559,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify command includes config path
@@ -2575,7 +2575,7 @@ class TestHookConfigFileSupport:
             assert 'protect_config.yaml' in hook_cmd
             assert hook_cmd.endswith('protect_config.yaml')
 
-    def test_create_additional_settings_hook_without_config_backward_compat(self) -> None:
+    def test_create_settings_hook_without_config_backward_compat(self) -> None:
         """Test that hooks without config field still work (backward compatibility)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2598,14 +2598,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify command does NOT include config path
@@ -2614,7 +2614,7 @@ class TestHookConfigFileSupport:
             # Command should end with the Python file, not a config
             assert hook_cmd.endswith('test.py')
 
-    def test_create_additional_settings_hook_config_with_query_params(self) -> None:
+    def test_create_settings_hook_config_with_query_params(self) -> None:
         """Test hook config with query parameters in filename."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2642,14 +2642,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify query params are stripped from config path
@@ -2657,7 +2657,7 @@ class TestHookConfigFileSupport:
             assert 'config.yaml' in hook_cmd
             assert '?token=' not in hook_cmd
 
-    def test_create_additional_settings_non_python_hook_with_config(self) -> None:
+    def test_create_settings_non_python_hook_with_config(self) -> None:
         """Test non-Python hook with config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2682,14 +2682,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-additional-settings.json'
+            settings_file = claude_dir / 'test-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Non-Python scripts should also get config appended

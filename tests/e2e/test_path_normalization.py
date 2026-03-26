@@ -6,7 +6,7 @@ These tests verify that paths written to output files have correct format:
    settings.json) should have platform-consistent separators after the
    os.path.normpath fix (backslashes on Windows, forward slashes on Unix).
 
-2. Hook and status-line command strings in additional-settings.json use
+2. Hook and status-line command strings in settings.json use
    POSIX-style paths (forward slashes) by design via Path.as_posix(),
    which avoids JSON backslash escaping issues. These tests verify that
    POSIX consistency is maintained.
@@ -24,8 +24,8 @@ from typing import Any
 import pytest
 
 from scripts.setup_environment import configure_all_mcp_servers
-from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_mcp_config_file
+from scripts.setup_environment import create_settings
 from scripts.setup_environment import write_user_settings
 from tests.e2e.validators import validate_path_separator_consistency
 
@@ -271,7 +271,7 @@ class TestPathSeparatorConsistency:
     ) -> None:
         """Verify hook command paths use POSIX-style forward slashes.
 
-        Hook commands in additional-settings.json are built using
+        Hook commands in settings.json are built using
         Path.as_posix() by design to avoid JSON backslash escaping issues.
         All path tokens within hook commands should use forward slashes
         consistently, even on Windows.
@@ -284,8 +284,8 @@ class TestPathSeparatorConsistency:
         if not hooks_config.get('events'):
             return
 
-        # Create additional settings with hooks
-        create_additional_settings(
+        # Create settings with hooks
+        create_settings(
             hooks=hooks_config,
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -300,7 +300,7 @@ class TestPathSeparatorConsistency:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
         hooks = data.get('hooks', {})
 
@@ -318,7 +318,7 @@ class TestPathSeparatorConsistency:
                     # Extract path tokens from the compound command
                     path_tokens = _extract_paths_from_command(command_str)
                     # Hook paths should use POSIX-style (forward slashes)
-                    # because create_additional_settings uses .as_posix()
+                    # because create_settings uses .as_posix()
                     errors.extend(
                         f'hooks[{event_name}][{idx}].hooks[{hook_idx}].command '
                         f'contains backslash in path token: {path_token}'
@@ -338,7 +338,7 @@ class TestPathSeparatorConsistency:
     ) -> None:
         """Verify statusLine command path uses POSIX-style forward slashes.
 
-        Status line commands in additional-settings.json are built using
+        Status line commands in settings.json are built using
         Path.as_posix() by design, same as hooks.
         """
         paths = e2e_isolated_home
@@ -349,8 +349,8 @@ class TestPathSeparatorConsistency:
         if not status_line_config:
             return
 
-        # Create additional settings with status line
-        create_additional_settings(
+        # Create settings with status line
+        create_settings(
             hooks={},
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -365,7 +365,7 @@ class TestPathSeparatorConsistency:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
         status_line = data.get('statusLine', {})
 
@@ -385,23 +385,23 @@ class TestPathSeparatorConsistency:
             + '\n'.join(errors)
         )
 
-    def test_additional_settings_all_paths_consistent(
+    def test_settings_all_paths_consistent(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Comprehensive check: all path tokens in additional-settings are consistent.
+        """Comprehensive check: all path tokens in settings are consistent.
 
         Hook/status-line paths use POSIX-style (forward slashes) by design.
-        This test creates full additional settings and verifies each path token
+        This test creates full settings and verifies each path token
         within compound command strings uses forward slashes consistently.
         """
         paths = e2e_isolated_home
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        # Create full additional settings
-        create_additional_settings(
+        # Create full settings
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -416,7 +416,7 @@ class TestPathSeparatorConsistency:
             effort_level=golden_config.get('effort-level'),
         )
 
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -446,6 +446,6 @@ class TestPathSeparatorConsistency:
 
         platform_name = 'Windows' if sys.platform == 'win32' else 'Unix'
         assert not errors, (
-            f'Path consistency issues in additional-settings on {platform_name}:\n'
+            f'Path consistency issues in settings on {platform_name}:\n'
             + '\n'.join(errors)
         )

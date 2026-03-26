@@ -286,8 +286,8 @@ def _validate_mcp_server_config(name: str, server: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_additional_settings(path: Path, config: dict[str, Any]) -> list[str]:
-    """Validate {cmd}-additional-settings.json.
+def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
+    """Validate {cmd}-settings.json.
 
     Validates the environment-specific settings file that is loaded via --settings flag.
     Contains: model, permissions, env, hooks, attribution, statusLine, etc.
@@ -305,7 +305,7 @@ def validate_additional_settings(path: Path, config: dict[str, Any]) -> list[str
     - statusLine structure is correct if specified
 
     Args:
-        path: Path to the additional-settings.json file
+        path: Path to the settings.json file
         config: Golden configuration dictionary
 
     Returns:
@@ -328,7 +328,7 @@ def validate_additional_settings(path: Path, config: dict[str, Any]) -> list[str
     # Permissions validation
     if 'permissions' in config:
         if 'permissions' not in data:
-            errors.append("Missing 'permissions' block in additional-settings.json")
+            errors.append("Missing 'permissions' block in settings.json")
         else:
             perm_errors = _validate_permissions(data['permissions'], config['permissions'])
             errors.extend(perm_errors)
@@ -454,7 +454,7 @@ def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> l
 
 
 def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) -> list[str]:
-    """Validate hooks structure in additional-settings.json.
+    """Validate hooks structure in settings.json.
 
     The hooks structure in the generated file is:
     {
@@ -716,8 +716,8 @@ def _validate_unix_launcher(path: Path, content: str, command_name: str) -> list
     if 'claude' not in content.lower():
         errors.append(f'Unix launcher {path.name} missing claude invocation')
 
-    # Should reference the additional-settings file
-    settings_pattern = f'{command_name}-additional-settings.json'
+    # Should reference the settings file
+    settings_pattern = f'{command_name}-settings.json'
     if settings_pattern not in content:
         errors.append(f'Unix launcher {path.name} missing reference to {settings_pattern}')
 

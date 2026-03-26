@@ -29,8 +29,8 @@ EXPECTED_FILES: Final[list[str]] = [
     '{claude_dir}/start-{cmd}.ps1',
     # CMD launcher script
     '{claude_dir}/start-{cmd}.cmd',
-    # Additional settings in claude_dir (written to claude_user_dir by create_additional_settings)
-    '{claude_dir}/{cmd}-additional-settings.json',
+    # Settings in claude_dir (written to claude_user_dir by create_settings)
+    '{claude_dir}/{cmd}-settings.json',
     # MCP config in claude_dir
     '{claude_dir}/{cmd}-mcp.json',
     # Wrapper scripts in local_bin for PATH accessibility
@@ -45,7 +45,7 @@ EXPECTED_PATHS: Final[dict[str, str]] = {
     'launcher_script_posix': '{claude_dir}/launch-{cmd}.sh',
     'launcher_script_ps1': '{claude_dir}/start-{cmd}.ps1',
     'launcher_script_cmd': '{claude_dir}/start-{cmd}.cmd',
-    'additional_settings': '{claude_dir}/{cmd}-additional-settings.json',
+    'settings': '{claude_dir}/{cmd}-settings.json',
     'mcp_config': '{claude_dir}/{cmd}-mcp.json',
     'command_wrapper_cmd': '{local_bin}/{cmd}.cmd',
     'command_wrapper_ps1': '{local_bin}/{cmd}.ps1',
