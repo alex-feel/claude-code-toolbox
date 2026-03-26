@@ -1,5 +1,13 @@
 # Changelog
 
+## [5.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.1.0...v5.1.1) (2026-03-26)
+
+
+### Bug Fixes
+
+* add rm-rf fallback for npm ENOTEMPTY removal failure ([c0d5906](https://github.com/alex-feel/claude-code-toolbox/commit/c0d5906e3dd212ebd21f107331961ea57d5f3816))
+* standardize platform detection in remove_npm_claude to use sys.platform ([af4c693](https://github.com/alex-feel/claude-code-toolbox/commit/af4c693bfc40f6e143b9a062fd8ecdf585c4b17e))
+
 ## [5.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.0.0...v5.1.0) (2026-03-26)
 
 
