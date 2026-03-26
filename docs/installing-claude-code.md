@@ -159,10 +159,16 @@ If you installed the native version but `claude --version` still shows the old n
 
 **Symptoms:** A prominent boxed warning during installation stating "npm Claude Code installation was NOT removed", or `which claude` pointing to a path containing `npm` or `/usr/local/bin` instead of `~/.local/bin`.
 
-**Fix:** Remove the npm installation manually and restart your terminal:
+**Fix:** Remove the npm installation files directly and restart your terminal:
 
 ```bash
-sudo npm uninstall -g @anthropic-ai/claude-code
+# Determine your npm global prefix
+npm config get prefix
+# Output is typically /usr or /usr/local
+
+# Remove using the prefix (replace /usr with your prefix if different)
+sudo rm -rf /usr/lib/node_modules/@anthropic-ai/.claude-code-* /usr/lib/node_modules/@anthropic-ai/claude-code
+sudo rm -f /usr/bin/claude
 ```
 
 On Windows (run as Administrator):
@@ -172,6 +178,30 @@ npm uninstall -g @anthropic-ai/claude-code
 ```
 
 After removal, restart your terminal session so that `claude` resolves to the native binary at `~/.local/bin/claude`.
+
+### npm Removal Fails with ENOTEMPTY
+
+If removing the npm installation fails with an error like `ENOTEMPTY: directory not empty, rename ... -> .../.claude-code-ZjqcDZyQ`, this is a [known npm bug](https://github.com/npm/cli/issues/5825). The npm package manager creates temporary directories during uninstall, and if a stale temporary directory from a prior interrupted operation already exists, the rename fails.
+
+This issue is more common in WSL2 environments due to cross-filesystem interactions and VS Code Remote WSL file watchers holding handles on `node_modules` directories, but it can occur on any platform.
+
+**Fix:** Remove the files directly instead of using `npm uninstall`:
+
+```bash
+# Determine your npm global prefix
+npm config get prefix
+# Output is typically /usr or /usr/local
+
+# Remove using the prefix (replace /usr with your prefix if different)
+sudo rm -rf /usr/lib/node_modules/@anthropic-ai/.claude-code-* /usr/lib/node_modules/@anthropic-ai/claude-code
+sudo rm -f /usr/bin/claude
+# Optionally clean up the empty parent directory
+sudo rmdir /usr/lib/node_modules/@anthropic-ai 2>/dev/null || true
+```
+
+The `.claude-code-*` glob pattern removes stale temporary directories that prevent npm from operating. After removal, restart your terminal.
+
+**Note:** The installer automatically attempts this direct removal when `npm uninstall` fails. This manual procedure is only needed if the automatic fallback also fails (e.g., in non-interactive environments without cached sudo credentials).
 
 ### Claude Command Not Found After Install
 

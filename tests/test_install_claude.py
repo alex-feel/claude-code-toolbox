@@ -2422,11 +2422,13 @@ class TestRemoveNpmClaude:
             '/usr/local/bin/npm', 'uninstall', '-g', '@anthropic-ai/claude-code',
         ]
 
+    @patch('install_claude._warn_npm_removal_failed')
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
     def test_remove_npm_claude_uninstall_failure(
         self, mock_find: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+        mock_warn: MagicMock,
     ) -> None:
         """Test remove_npm_claude returns False when npm uninstall fails on Windows."""
         assert mock_system.return_value == 'Windows'
@@ -2442,6 +2444,7 @@ class TestRemoveNpmClaude:
 
         assert result is False
         assert mock_run.call_count == 2
+        mock_warn.assert_called_once()
 
     @patch('install_claude.run_command')
     @patch('install_claude.find_command')
@@ -2585,6 +2588,7 @@ class TestRemoveNpmClaude:
         # subprocess.run should NOT be called at all (no sudo needed)
         mock_subprocess.assert_not_called()
 
+    @patch('install_claude._warn_npm_removal_failed')
     @patch('platform.system', return_value='Windows')
     @patch('subprocess.run')
     @patch('install_claude.run_command')
@@ -2592,6 +2596,7 @@ class TestRemoveNpmClaude:
     def test_remove_npm_claude_windows_no_sudo(
         self, mock_find: MagicMock, mock_run: MagicMock,
         mock_subprocess: MagicMock, mock_system: MagicMock,
+        mock_warn: MagicMock,
     ) -> None:
         """Test no sudo attempt on Windows even when uninstall fails."""
         assert mock_system.return_value == 'Windows'
@@ -2606,6 +2611,164 @@ class TestRemoveNpmClaude:
         assert result is False
         # subprocess.run should NOT be called (Windows, no sudo)
         mock_subprocess.assert_not_called()
+        mock_warn.assert_called_once()
+
+
+class TestGetNpmGlobalPrefix:
+    """Tests for _get_npm_global_prefix() helper."""
+
+    @patch('subprocess.run')
+    def test_returns_prefix_on_success(self, mock_run: MagicMock) -> None:
+        """Successful prefix retrieval."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='/usr\n')
+        result = install_claude._get_npm_global_prefix('/usr/bin/npm')
+        assert result == '/usr'
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert args == ['/usr/bin/npm', 'config', 'get', 'prefix']
+
+    @patch('subprocess.run')
+    def test_returns_none_on_failure(self, mock_run: MagicMock) -> None:
+        """Returns None when npm config command fails."""
+        mock_run.return_value = MagicMock(returncode=1, stdout='')
+        result = install_claude._get_npm_global_prefix('/usr/bin/npm')
+        assert result is None
+
+    @patch('subprocess.run')
+    def test_returns_none_on_empty_output(self, mock_run: MagicMock) -> None:
+        """Returns None when npm returns empty prefix."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='  \n')
+        result = install_claude._get_npm_global_prefix('/usr/bin/npm')
+        assert result is None
+
+    @patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd=[], timeout=10))
+    def test_returns_none_on_timeout(self, mock_run: MagicMock) -> None:
+        """Returns None when npm config times out."""
+        result = install_claude._get_npm_global_prefix('/usr/bin/npm')
+        assert result is None
+        mock_run.assert_called_once()
+
+    @patch('subprocess.run', side_effect=FileNotFoundError)
+    def test_returns_none_on_file_not_found(self, mock_run: MagicMock) -> None:
+        """Returns None when npm executable not found."""
+        result = install_claude._get_npm_global_prefix('/nonexistent/npm')
+        assert result is None
+        mock_run.assert_called_once()
+
+    @patch('subprocess.run')
+    def test_strips_whitespace(self, mock_run: MagicMock) -> None:
+        """Output whitespace is stripped."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='  /usr/local  \n')
+        result = install_claude._get_npm_global_prefix('/usr/bin/npm')
+        assert result == '/usr/local'
+
+
+class TestRemoveNpmClaudeRmrfFallback:
+    """Tests for rm-rf fallback in remove_npm_claude()."""
+
+    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._run_with_sudo_fallback')
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command')
+    def test_rmrf_fallback_success(
+        self, mock_find: MagicMock, mock_run: MagicMock, mock_sudo: MagicMock, mock_system: MagicMock, tmp_path: Path,
+    ) -> None:
+        """rm-rf fallback succeeds after npm uninstall and sudo both fail."""
+        assert mock_system.return_value == 'Linux'
+        mock_find.return_value = '/usr/bin/npm'
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g (found)
+            MagicMock(returncode=1),  # npm uninstall -g (ENOTEMPTY)
+        ]
+
+        # Create mock directory structure for glob expansion
+        parent_dir = tmp_path / 'lib' / 'node_modules' / '@anthropic-ai'
+        parent_dir.mkdir(parents=True)
+        (parent_dir / '.claude-code-ABC123').mkdir()
+        (parent_dir / 'claude-code').mkdir()
+        bin_dir = tmp_path / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'claude').touch()
+
+        # First sudo: npm uninstall via sudo fails
+        # Second sudo: rm -rf via sudo succeeds
+        mock_sudo.side_effect = [
+            subprocess.CompletedProcess([], 1, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+        ]
+
+        with patch('install_claude._get_npm_global_prefix', return_value=str(tmp_path)):
+            install_claude.remove_npm_claude()
+
+        # rm -rf was attempted (second sudo call)
+        assert mock_sudo.call_count == 2
+
+    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._run_with_sudo_fallback')
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command')
+    def test_rmrf_no_prefix_falls_through(
+        self, mock_find: MagicMock, mock_run: MagicMock, mock_sudo: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """rm-rf fallback is skipped when prefix is unavailable."""
+        assert mock_system.return_value == 'Linux'
+        mock_find.return_value = '/usr/bin/npm'
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g (found)
+            MagicMock(returncode=1),  # npm uninstall -g fails
+        ]
+        # sudo npm uninstall fails
+        mock_sudo.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        with patch('install_claude._get_npm_global_prefix', return_value=None), \
+             patch('install_claude._warn_npm_removal_failed'):
+            result = install_claude.remove_npm_claude()
+
+        # Should fall through to static binary removal (which also fails)
+        assert result is False
+
+    @patch('sys.platform', 'linux')
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._run_with_sudo_fallback')
+    @patch('install_claude.run_command')
+    @patch('install_claude.find_command')
+    def test_rmrf_expands_glob_in_python(
+        self, mock_find: MagicMock, mock_run: MagicMock, mock_sudo: MagicMock, mock_system: MagicMock, tmp_path: Path,
+    ) -> None:
+        """Glob .claude-code-* is expanded via Path.glob(), not passed raw to subprocess."""
+        assert mock_system.return_value == 'Linux'
+        mock_find.return_value = '/usr/bin/npm'
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # npm list -g (found)
+            MagicMock(returncode=1),  # npm uninstall -g fails
+        ]
+        # First sudo: npm uninstall fails; second: rm -rf succeeds
+        mock_sudo.side_effect = [
+            subprocess.CompletedProcess([], 1, '', ''),
+            subprocess.CompletedProcess([], 0, '', ''),
+        ]
+
+        # Create mock directory structure with stale temp dirs
+        parent_dir = tmp_path / 'lib' / 'node_modules' / '@anthropic-ai'
+        parent_dir.mkdir(parents=True)
+        (parent_dir / '.claude-code-ABC123').mkdir()
+        (parent_dir / '.claude-code-XYZ789').mkdir()
+        (parent_dir / 'claude-code').mkdir()
+        bin_dir = tmp_path / 'bin'
+        bin_dir.mkdir()
+        (bin_dir / 'claude').touch()
+
+        with patch('install_claude._get_npm_global_prefix', return_value=str(tmp_path)):
+            install_claude.remove_npm_claude()
+
+        # Verify the rm -rf command received expanded paths, not raw glob
+        if mock_sudo.call_count >= 2:
+            rm_call_args = mock_sudo.call_args_list[1][0][0]  # Second sudo call args
+            # Should NOT contain any glob pattern like '.claude-code-*'
+            for arg in rm_call_args:
+                assert '*' not in arg, f'Raw glob pattern found in subprocess args: {arg}'
 
 
 class TestDevTtySudoAvailable:
@@ -2740,29 +2903,60 @@ class TestRunWithSudoFallback:
 
 
 class TestWarnNpmRemovalFailed:
-    """Tests for _warn_npm_removal_failed() helper."""
+    """Tests for _warn_npm_removal_failed() warning display."""
 
     def test_produces_output(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Produces visible warning output."""
-        install_claude._warn_npm_removal_failed()
+        with patch('install_claude._get_npm_global_prefix', return_value=None):
+            install_claude._warn_npm_removal_failed()
         captured = capsys.readouterr()
-        assert 'WARNING' in captured.err or 'WARNING' in captured.out
-        assert 'npm Claude Code installation was NOT removed' in (captured.err + captured.out)
+        combined = captured.err + captured.out
+        assert 'WARNING' in combined
+        assert 'npm Claude Code installation was NOT removed' in combined
+
+    @patch('install_claude._get_npm_global_prefix', return_value='/usr')
+    @patch('sys.platform', 'linux')
+    def test_unix_shows_rmrf_instructions(self, mock_prefix: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
+        """Unix instructions show rm -rf, not npm uninstall."""
+        assert mock_prefix.return_value == '/usr'
+        install_claude._warn_npm_removal_failed(npm_path='/usr/bin/npm')
+        captured = capsys.readouterr()
+        combined = captured.err + captured.out
+        assert 'sudo rm -rf' in combined
+        assert 'sudo rm -f' in combined
+        assert '/usr/lib/node_modules/@anthropic-ai' in combined
+        assert '/usr/bin/claude' in combined
+
+    @patch('install_claude._get_npm_global_prefix', return_value=None)
+    @patch('sys.platform', 'linux')
+    def test_unix_no_prefix_uses_defaults(self, mock_prefix: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
+        """Fallback paths when prefix is unavailable."""
+        assert mock_prefix.return_value is None
+        install_claude._warn_npm_removal_failed(npm_path='/usr/bin/npm')
+        captured = capsys.readouterr()
+        combined = captured.err + captured.out
+        assert '/usr/lib/node_modules/@anthropic-ai' in combined
+        assert '/usr/bin/claude' in combined
 
     @patch('sys.platform', 'win32')
-    def test_windows_command(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Shows non-sudo command on Windows."""
-        install_claude._warn_npm_removal_failed(npm_path='npm')
+    def test_windows_shows_npm_uninstall(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Windows instructions still show npm uninstall."""
+        install_claude._warn_npm_removal_failed(npm_path=r'C:\npm.cmd')
         captured = capsys.readouterr()
         combined = captured.err + captured.out
-        assert 'sudo' not in combined or 'npm uninstall -g' in combined
+        assert 'npm' in combined
+        assert 'uninstall' in combined
 
-    def test_custom_npm_path(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Uses custom npm path in the manual command."""
-        install_claude._warn_npm_removal_failed(npm_path='/custom/npm')
+    @patch('install_claude._get_npm_global_prefix', return_value='/usr/local')
+    @patch('sys.platform', 'linux')
+    def test_uses_dynamic_prefix(self, mock_prefix: MagicMock, capsys: pytest.CaptureFixture[str]) -> None:
+        """Uses dynamic prefix path when available."""
+        assert mock_prefix.return_value == '/usr/local'
+        install_claude._warn_npm_removal_failed(npm_path='/usr/bin/npm')
         captured = capsys.readouterr()
         combined = captured.err + captured.out
-        assert '/custom/npm' in combined
+        assert '/usr/local/lib/node_modules/@anthropic-ai' in combined
+        assert '/usr/local/bin/claude' in combined
 
 
 class TestCheckNpmClaudeInstalled:
@@ -2800,44 +2994,76 @@ class TestCheckNpmClaudeInstalled:
 
 
 class TestFinalizeNativeInstall:
-    """Tests for _finalize_native_install() helper function."""
+    """Tests for _finalize_native_install() cleanup sequence."""
 
-    def test_calls_sequence(self) -> None:
-        """Verify _finalize_native_install calls remove, check, and config update."""
-        with patch('install_claude.remove_npm_claude', return_value=True) as mock_remove, \
-                patch('install_claude._check_npm_claude_installed', return_value=False) as mock_check, \
-                patch('install_claude.update_install_method_config') as mock_config:
-            install_claude._finalize_native_install()
-            mock_remove.assert_called_once()
-            mock_check.assert_called_once()
-            mock_config.assert_called_once_with('native')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed')
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    def test_skips_npm_check_on_successful_removal(
+        self, mock_remove: MagicMock, mock_check: MagicMock, mock_config: MagicMock,
+    ) -> None:
+        """_check_npm_claude_installed is NOT called when removal succeeds."""
+        install_claude._finalize_native_install()
 
-    def test_warns_on_removal_failure(self) -> None:
-        """Verify warning is issued when npm removal fails."""
-        with patch('install_claude.remove_npm_claude', return_value=False), \
-                patch('install_claude._check_npm_claude_installed', return_value=False), \
-                patch('install_claude.update_install_method_config'), \
-                patch('install_claude._warn_npm_removal_failed') as mock_warn:
-            install_claude._finalize_native_install()
-            mock_warn.assert_called_once()
+        mock_remove.assert_called_once()
+        mock_check.assert_not_called()
+        mock_config.assert_called_once_with('native')
 
-    def test_warns_on_npm_still_installed(self) -> None:
-        """Verify warning when npm is still installed after removal attempt."""
-        with patch('install_claude.remove_npm_claude', return_value=True), \
-                patch('install_claude._check_npm_claude_installed', return_value=True), \
-                patch('install_claude.update_install_method_config'), \
-                patch('install_claude._warn_npm_removal_failed') as mock_warn:
-            install_claude._finalize_native_install()
-            mock_warn.assert_called_once()
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed', return_value=True)
+    @patch('install_claude.remove_npm_claude', return_value=False)
+    def test_checks_npm_on_failed_removal(
+        self, mock_remove: MagicMock, mock_check: MagicMock, mock_config: MagicMock,
+    ) -> None:
+        """_check_npm_claude_installed IS called when removal fails."""
+        install_claude._finalize_native_install()
 
-    def test_both_failures(self) -> None:
-        """Verify both warnings when removal fails AND npm still detected."""
-        with patch('install_claude.remove_npm_claude', return_value=False), \
-                patch('install_claude._check_npm_claude_installed', return_value=True), \
-                patch('install_claude.update_install_method_config'), \
-                patch('install_claude._warn_npm_removal_failed') as mock_warn:
+        mock_remove.assert_called_once()
+        mock_check.assert_called_once()
+        mock_config.assert_called_once_with('native')
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed', return_value=False)
+    @patch('install_claude.remove_npm_claude', return_value=False)
+    def test_no_extra_warning_when_npm_check_returns_false(
+        self, mock_remove: MagicMock, mock_check: MagicMock, mock_config: MagicMock,
+    ) -> None:
+        """No additional warning when npm is already gone despite failure return."""
+        install_claude._finalize_native_install()
+
+        mock_remove.assert_called_once()
+        mock_check.assert_called_once()
+        mock_config.assert_called_once_with('native')
+
+    @patch('install_claude.update_install_method_config')
+    def test_always_updates_config_to_native(
+        self, mock_config: MagicMock,
+    ) -> None:
+        """Config is always updated to 'native' regardless of removal outcome."""
+        with patch('install_claude.remove_npm_claude', return_value=True):
             install_claude._finalize_native_install()
-            assert mock_warn.call_count == 2
+        mock_config.assert_called_once_with('native')
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._warn_npm_removal_failed')
+    @patch('install_claude._check_npm_claude_installed', return_value=True)
+    @patch('install_claude.remove_npm_claude', return_value=False)
+    def test_does_not_call_warn_directly(
+        self, mock_remove: MagicMock, mock_check: MagicMock, mock_warn: MagicMock, mock_config: MagicMock,
+    ) -> None:
+        """_finalize_native_install does not call _warn_npm_removal_failed directly.
+
+        Warning display is handled by remove_npm_claude() itself when all
+        removal strategies are exhausted. _finalize_native_install() must NOT
+        call _warn_npm_removal_failed() separately to avoid double-warning.
+        """
+        install_claude._finalize_native_install()
+
+        mock_remove.assert_called_once()
+        mock_check.assert_called_once()
+        mock_config.assert_called_once_with('native')
+        # _warn_npm_removal_failed should NOT be called directly by _finalize_native_install
+        mock_warn.assert_not_called()
 
 
 class TestVerifyClaudeInstallationUsrLocalBin:

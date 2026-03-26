@@ -344,15 +344,17 @@ class TestRemoveNpmClaudeSudoGatingE2E:
                 ],
             ),
             patch.object(install_claude, '_run_with_sudo_fallback', return_value=None),
+            patch.object(install_claude, '_get_npm_global_prefix', return_value=None),
             patch('pathlib.Path.exists', return_value=False),
+            patch('pathlib.Path.is_symlink', return_value=False),
         ):
             result = install_claude.remove_npm_claude()
 
         assert result is False
         captured = capsys.readouterr()
         combined = captured.out + captured.err
-        assert 'does not affect' in combined.lower(), (
-            'Should reassure that native installation is unaffected'
+        assert 'was not removed' in combined.lower(), (
+            'Should warn that npm installation was NOT removed'
         )
 
     def test_remove_npm_claude_error_output_suppressed(

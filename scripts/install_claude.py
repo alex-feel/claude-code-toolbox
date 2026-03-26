@@ -665,33 +665,35 @@ def _finalize_native_install() -> None:
 
     Performs the standard post-native-install cleanup sequence:
     1. Remove npm Claude Code installation to prevent PATH conflicts
-    2. Verify npm removal was successful (warn if still present)
-    3. Update installation method config to 'native'
+    2. Update installation method config to 'native'
 
-    Should be called after verify_claude_installation() confirms
-    source == 'native'. This function handles all cleanup and config
-    updates as an atomic operation.
+    When remove_npm_claude() reports success (True), the secondary
+    npm-list verification is skipped. Direct file removal may leave
+    stale npm registry metadata causing ``npm list -g`` to falsely
+    report the package as installed, which would trigger a spurious
+    warning.
     """
-    if not remove_npm_claude():
-        _warn_npm_removal_failed()
-    if _check_npm_claude_installed():
+    if not remove_npm_claude() and _check_npm_claude_installed():
         warning('npm Claude Code package is STILL installed after removal attempt')
-        _warn_npm_removal_failed()
     update_install_method_config('native')
 
 
 def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
     """Display a prominent warning when npm Claude Code removal fails.
 
-    Provides clear manual removal instructions that are impossible to miss
-    in terminal output. Called by callers of remove_npm_claude() when
-    it returns False.
+    Provides clear manual removal instructions using direct file deletion
+    rather than ``npm uninstall``, since npm uninstall can also fail with
+    the same ENOTEMPTY error (npm/cli#5825).
 
     Args:
-        npm_path: Path to npm executable for the manual command.
-                  If None, uses 'npm' as default.
+        npm_path: Path to npm executable, used to query the global prefix
+                  for accurate removal paths. If None, uses common defaults.
     """
-    npm_cmd = npm_path or 'npm'
+    # Determine the prefix for accurate paths
+    prefix = None
+    if npm_path:
+        prefix = _get_npm_global_prefix(npm_path)
+
     print()
     warning('=' * 70)
     warning('  WARNING: npm Claude Code installation was NOT removed')
@@ -700,9 +702,17 @@ def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
     warning('')
     warning('  To fix manually, run:')
     if sys.platform == 'win32':
+        npm_cmd = npm_path or 'npm'
         warning(f'    {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
     else:
-        warning(f'    sudo {npm_cmd} uninstall -g {CLAUDE_NPM_PACKAGE}')
+        if prefix:
+            pkg_parent = f'{prefix}/lib/node_modules/@anthropic-ai'
+            warning(f'    sudo rm -rf {pkg_parent}/.claude-code-* {pkg_parent}/claude-code')
+            warning(f'    sudo rm -f {prefix}/bin/claude')
+        else:
+            pkg_parent = '/usr/lib/node_modules/@anthropic-ai'
+            warning(f'    sudo rm -rf {pkg_parent}/.claude-code-* {pkg_parent}/claude-code')
+            warning('    sudo rm -f /usr/bin/claude')
     warning('')
     warning('  After removal, restart your terminal to use the native version.')
     warning('=' * 70)
@@ -747,26 +757,55 @@ def _check_npm_claude_installed() -> bool:
     return result.returncode == 0
 
 
+def _get_npm_global_prefix(npm_path: str) -> str | None:
+    """Determine the npm global installation prefix directory.
+
+    Runs ``npm config get prefix`` to discover where npm stores global
+    packages. This path is used to locate package directories and binary
+    symlinks for direct file removal when ``npm uninstall`` fails.
+
+    Args:
+        npm_path: Absolute path to the npm executable.
+
+    Returns:
+        The npm global prefix path (e.g., ``/usr``, ``/usr/local``),
+        or None if the command fails or returns an empty string.
+    """
+    try:
+        result = subprocess.run(
+            [npm_path, 'config', 'get', 'prefix'],
+            capture_output=True,
+            encoding='utf-8',
+            errors='replace',
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
 def remove_npm_claude() -> bool:
     """Remove npm-installed Claude Code to prevent PATH conflicts.
 
-    Removes npm global installation of @anthropic-ai/claude-code using the
-    standard npm uninstall command. This eliminates PATH precedence issues
-    where npm version shadows native installation.
+    Removes npm global installation of @anthropic-ai/claude-code using a
+    multi-tier strategy:
 
-    On Unix systems, if direct uninstall fails with permission errors, uses
-    the three-tier sudo fallback strategy (interactive, cached credentials,
-    /dev/tty). As a last resort, attempts direct file removal of the npm
-    claude binary.
+    1. ``npm uninstall -g`` (direct, then with sudo on Unix)
+    2. Dynamic prefix ``rm -rf`` fallback using ``npm config get prefix``
+       to locate and remove package files directly
+    3. Static binary removal at common paths as last resort
 
-    Should only be called AFTER verify_claude_installation() confirms
-    native installation success (source == 'native').
+    On total failure, displays manual removal instructions via
+    ``_warn_npm_removal_failed()``.
 
     Returns:
-        True if npm installation was removed or did not exist, False if removal failed.
+        True if npm installation was removed or did not exist, False if
+        removal failed.
 
     Note:
-        Safe to call even if npm is not installed - returns True in that case.
+        Safe to call even if npm is not installed -- returns True in that case.
         Permission failures are handled gracefully without user-facing errors.
     """
     npm_path = find_command('npm')
@@ -808,9 +847,56 @@ def remove_npm_claude() -> bool:
             # No sudo mechanism available -- provide guidance
             warning('Cannot use sudo (non-interactive mode, no terminal available)')
             info('When running via curl | bash, sudo cannot prompt for a password.')
-            info(f'Manual removal may be needed: sudo {npm_path} uninstall -g {CLAUDE_NPM_PACKAGE}')
 
-    # Direct file removal as last resort
+    # Dynamic prefix rm-rf fallback (Unix only)
+    # When npm uninstall fails (e.g., ENOTEMPTY from npm/cli#5825),
+    # remove package files directly using the npm global prefix path.
+    if sys.platform != 'win32':
+        prefix = _get_npm_global_prefix(npm_path)
+        if prefix:
+            parent_dir = Path(prefix) / 'lib' / 'node_modules' / '@anthropic-ai'
+            pkg_dir = parent_dir / 'claude-code'
+            bin_path = Path(prefix) / 'bin' / 'claude'
+
+            # Build rm-rf target list with Python-side glob expansion.
+            # subprocess.run() does NOT expand globs without shell=True,
+            # so we expand .claude-code-* using Path.glob() first.
+            rm_targets: list[str] = []
+
+            # Stale temp directories from interrupted npm operations
+            if parent_dir.exists():
+                rm_targets.extend(str(d) for d in parent_dir.glob('.claude-code-*'))
+
+            # Package directory
+            if pkg_dir.exists():
+                rm_targets.append(str(pkg_dir))
+
+            # Binary symlink
+            if bin_path.exists() or bin_path.is_symlink():
+                rm_targets.append(str(bin_path))
+
+            if rm_targets:
+                info('Attempting direct file removal using npm prefix path...')
+                rm_cmd = ['rm', '-rf'] + rm_targets
+                rm_result = _run_with_sudo_fallback(
+                    rm_cmd,
+                    capture_output=True,
+                    timeout=30,
+                    tty_timeout=60,
+                )
+
+                if rm_result is not None and rm_result.returncode == 0:
+                    # Clean up empty parent directory
+                    if parent_dir.exists() and not any(parent_dir.iterdir()):
+                        with contextlib.suppress(OSError):
+                            parent_dir.rmdir()
+
+                    # Verify removal via file-based check (not npm list)
+                    if not pkg_dir.exists() and not bin_path.exists():
+                        success('Removed npm Claude installation via direct file removal')
+                        return True
+
+    # Direct binary removal as last resort
     # Most effective on Windows where npm globals are user-writable
     if sys.platform == 'win32':
         npm_binary_paths = [
@@ -821,6 +907,7 @@ def remove_npm_claude() -> bool:
     else:
         npm_binary_paths = [
             Path('/usr/local/bin/claude'),
+            Path('/usr/bin/claude'),
             get_real_user_home() / '.npm-global' / 'bin' / 'claude',
         ]
 
@@ -841,10 +928,9 @@ def remove_npm_claude() -> bool:
         info('Note: npm registry may still list the package, but the binary is gone')
         return True
 
-    # All attempts failed - provide guidance
-    warning('Could not remove npm installation automatically')
-    info(f'Manual removal may be needed: sudo {npm_path} uninstall -g {CLAUDE_NPM_PACKAGE}')
-    info('This does not affect your native Claude installation.')
+    # Self-warn on total failure. Callers (e.g., _finalize_native_install())
+    # must NOT call _warn_npm_removal_failed() separately to avoid double-warning.
+    _warn_npm_removal_failed(npm_path)
     return False
 
 
