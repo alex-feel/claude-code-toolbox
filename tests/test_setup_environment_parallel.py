@@ -205,11 +205,15 @@ class TestValidationWithParallelExecution:
             ('https://example.com/file3.md', True),
         ]
 
-        mock_validator.validate.side_effect = [
-            (True, 'HEAD'),
-            (True, 'Range'),
-            (True, 'HEAD'),
-        ]
+        def validate_side_effect(resolved_path: str, _is_remote: bool) -> tuple[bool, str]:
+            responses: dict[str, tuple[bool, str]] = {
+                'https://example.com/file1.md': (True, 'HEAD'),
+                'https://example.com/file2.md': (True, 'Range'),
+                'https://example.com/file3.md': (True, 'HEAD'),
+            }
+            return responses.get(resolved_path, (False, 'None'))
+
+        mock_validator.validate.side_effect = validate_side_effect
 
         config = {'agents': ['file1.md', 'file2.md', 'file3.md']}
 

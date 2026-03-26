@@ -598,6 +598,7 @@ class TestValidateAllConfigFiles:
         assert results == []
         mock_validate.assert_not_called()
 
+    @patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'})
     @patch('setup_environment.resolve_resource_path')
     @patch.object(FileValidator, 'validate')
     def test_validate_all_config_files_with_agents(
@@ -625,6 +626,7 @@ class TestValidateAllConfigFiles:
         assert results[0] == ('agent', 'agent1.md', True, 'HEAD')
         assert results[1] == ('agent', 'agent2.md', True, 'Range')
 
+    @patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'})
     @patch('setup_environment.resolve_resource_path')
     @patch.object(FileValidator, 'validate')
     def test_validate_all_config_files_with_mixed_resources(
@@ -679,6 +681,7 @@ class TestValidateAllConfigFiles:
         assert results[4] == ('hook', 'hook1.py', True, 'Local')
         assert results[5] == ('hook', 'hook2.py', True, 'HEAD')
 
+    @patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'})
     @patch('setup_environment.resolve_resource_path')
     @patch.object(FileValidator, 'validate')
     def test_validate_all_config_files_with_failures(
@@ -733,6 +736,7 @@ class TestValidateAllConfigFiles:
         # Verify base_url was passed to resolve_resource_path
         mock_resolve.assert_called_once_with('agent.md', 'local', 'https://cdn.example.com/files')
 
+    @patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'})
     @patch('setup_environment.info')
     @patch('setup_environment.error')
     @patch('setup_environment.resolve_resource_path')
