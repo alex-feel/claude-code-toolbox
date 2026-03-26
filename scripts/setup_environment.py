@@ -5466,6 +5466,11 @@ def process_skills(
 def install_claude(version: str | None = None) -> bool:
     """Install Claude Code if needed.
 
+    When a local copy of install_claude.py exists in the same directory
+    (typical when launched from setup-environment.sh), it is used directly
+    to avoid redundant downloads. Otherwise, the platform bootstrap script
+    is downloaded and executed.
+
     Args:
         version: Specific Claude Code version to install (e.g., "1.0.128").
                 If None, installs the latest version.
@@ -5505,6 +5510,25 @@ def install_claude(version: str | None = None) -> bool:
     temp_installer: str | None = None
 
     try:
+        # Check for local copy of install_claude.py (available when launched
+        # from setup-environment.sh, which downloads both scripts to an
+        # ephemeral $TEMP_DIR created fresh on every run)
+        local_installer = Path(__file__).resolve().parent / 'install_claude.py'
+        if system != 'Windows' and local_installer.is_file():
+            info('Using local installer script')
+            uv_cmd = shutil.which('uv')
+            if not uv_cmd:
+                warning('uv not found in PATH, falling back to bootstrap download')
+            else:
+                result = run_command(
+                    [uv_cmd, 'run', '--no-project', '--python', '3.12', str(local_installer)],
+                    capture_output=False,
+                )
+                if result.returncode == 0:
+                    success('Claude Code installation complete')
+                    return True
+                raise Exception(f'Installation failed with exit code: {result.returncode}')
+
         # Download the appropriate installer script
         if system == 'Windows':
             installer_url = 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/install-claude-windows.ps1'

@@ -3874,11 +3874,13 @@ class TestInstallClaude:
         mock_is_admin.assert_called()  # Verify is_admin was called
 
     @patch('platform.system', return_value='Darwin')
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.run_command')
-    def test_install_claude_macos(self, mock_run, mock_system):
-        """Test installing Claude on macOS."""
+    def test_install_claude_macos(self, mock_run, mock_is_file, mock_system):
+        """Test installing Claude on macOS via bootstrap download."""
         # Verify mock configuration
         assert mock_system.return_value == 'Darwin'
+        assert mock_is_file.return_value is False
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_claude()

@@ -90,7 +90,7 @@ CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 curl -fsSL https://raw.githubusercontent.com/al
 
 ## What the Installer Does
 
-The bootstrap scripts install `uv` (Astral's Python package manager) and Python 3.12 automatically before running the main installer. The main installer then performs the following steps.
+The bootstrap scripts install `uv` (Astral's Python package manager) and Python 3.12 automatically before running the main installer. The bootstrap scripts download the main installer (`install_claude.py`) to a temporary file before execution. This avoids the Linux kernel `MAX_ARG_STRLEN` limit (128 KiB per argument) that prevents large scripts from being passed via stdin pipe. The main installer then performs the following steps.
 
 **Windows (4 steps):**
 
