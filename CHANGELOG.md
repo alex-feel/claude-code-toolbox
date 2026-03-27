@@ -1,5 +1,15 @@
 # Changelog
 
+## [5.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.1.1...v5.2.0) (2026-03-27)
+
+
+### Features
+
+* add description and post-install-notes config fields ([116ffe1](https://github.com/alex-feel/claude-code-toolbox/commit/116ffe103b4b16c9e17093b633635232592ea367))
+* add oauthAccount null-clearing support in global-config ([1e821d3](https://github.com/alex-feel/claude-code-toolbox/commit/1e821d39a77414790648cbf15fdd9f2d4fe25a92))
+* add RFC 7396 null-as-delete support for user-settings and global-config ([26e64c0](https://github.com/alex-feel/claude-code-toolbox/commit/26e64c024ea981482e81751fda1b2bef34deee81))
+* add rules artifact type support ([f1dbe52](https://github.com/alex-feel/claude-code-toolbox/commit/f1dbe5230e393da84c2e9b606b018f63722c40d6))
+
 ## [5.1.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.1.0...v5.1.1) (2026-03-26)
 
 
