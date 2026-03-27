@@ -174,6 +174,8 @@ The `global-config` YAML key writes settings to `~/.claude.json` (the Claude Cod
 
 **DRY infrastructure:** Both `write_user_settings()` and `write_global_config()` delegate to the shared `_write_merged_json()` helper that implements the READ-MERGE-WRITE pattern. This eliminates the previous code duplication.
 
+**Null-as-delete (RFC 7396):** Setting a key to `null` in either `user-settings` or `global-config` deletes that key from the target JSON file. This applies to both `settings.json` and `~/.claude.json`. `_merge_recursive()` handles deletion during merge via `target.pop(key, None)` -- no post-merge cleanup is needed. Null inside arrays is NOT treated as deletion. Bare YAML keys (e.g., `key:` with no value) also produce Python `None` and trigger deletion -- users must use explicit `key: null` for intentional deletion and `key: ""` for empty strings. The `display_installation_summary()` shows `[DELETE]` markers in RED for null-valued keys in the dry-run summary, providing visibility into which keys will be removed.
+
 ### Platform-Conditional Tilde Expansion in Settings
 
 The `_expand_tilde_keys_in_settings()` function handles tilde (`~`) paths differently based on the platform:

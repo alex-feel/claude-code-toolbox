@@ -88,6 +88,14 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     # Validate user-settings are merged correctly
     user_settings = config.get('user-settings', {})
     for key, expected_value in user_settings.items():
+        # RFC 7396: null-valued keys should be ABSENT from output
+        if expected_value is None:
+            if key in data:
+                errors.append(
+                    f"settings.json key '{key}': expected ABSENT (null-as-delete), "
+                    f"but found {data[key]!r}",
+                )
+            continue
         actual_value = data.get(key)
         if key in tilde_keys:
             if sys.platform == 'win32':
@@ -1055,6 +1063,14 @@ def validate_global_config_output(
         return errors
 
     for key, expected_value in global_config.items():
+        # RFC 7396: null-valued keys should be ABSENT from output
+        if expected_value is None:
+            if key in content:
+                errors.append(
+                    f'Key {key!r} should be ABSENT from ~/.claude.json '
+                    f'(null-as-delete), but found {content[key]!r}',
+                )
+            continue
         if key not in content:
             errors.append(f'Missing key {key!r} in ~/.claude.json')
         elif content[key] != expected_value:

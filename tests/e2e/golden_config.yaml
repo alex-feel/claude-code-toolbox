@@ -179,6 +179,7 @@ user-settings:
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
+  staleSettingToDelete: null  # RFC 7396: this key should be ABSENT from output
 
 # Global config (merged into ~/.claude.json)
 global-config:
@@ -187,6 +188,7 @@ global-config:
   showTurnDuration: true
   terminalProgressBarEnabled: false
   oauthAccount: null
+  staleConfigToDelete: null  # RFC 7396: this key should be ABSENT from output
 
 # Always-thinking mode
 always-thinking-enabled: true

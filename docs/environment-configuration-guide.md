@@ -630,6 +630,32 @@ global-config:
   showTurnDuration: true
 ```
 
+#### Key Deletion (Null-as-Delete)
+
+Both `user-settings` and `global-config` support key deletion via RFC 7396 JSON Merge Patch semantics. Set a key to `null` to remove it from the target JSON file.
+
+```yaml
+user-settings:
+  theme: "dark"
+  staleKey: null  # Removes staleKey from settings.json
+
+global-config:
+  autoConnectIde: true
+  oldSetting: null  # Removes oldSetting from ~/.claude.json
+  oauthAccount: null  # Clears OAuth authentication state
+```
+
+**Behavior:**
+
+- Setting a key to `null` removes it from the target file
+- Setting a nonexistent key to `null` is a silent no-op
+- Nested deletion: `section: {key: null}` removes only `key`, preserving `section`
+- Top-level deletion: `section: null` removes the entire section
+- Null inside arrays is NOT treated as deletion
+- The `--dry-run` summary shows `[DELETE]` markers for null-valued keys
+
+> **Warning:** Bare YAML keys with no value (`key:`) are equivalent to `key: null`. This means accidentally omitting a value will DELETE that key rather than set it to an empty string. Always use explicit values: `key: ""` for empty strings, `key: null` for intentional deletion.
+
 #### `company-announcements`
 
 Announcement strings displayed to users during setup.

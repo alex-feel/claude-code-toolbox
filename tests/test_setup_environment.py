@@ -4852,12 +4852,13 @@ class TestDeepMergeSettings:
 
     # === Edge Cases ===
 
-    def test_none_values(self):
-        """None values are handled correctly."""
-        base = {'a': None}
+    def test_none_values_delete_keys(self):
+        """None values in updates delete keys from result (RFC 7396)."""
+        base = {'a': 1, 'b': 2}
         updates = {'b': None}
         result = setup_environment.deep_merge_settings(base, updates)
-        assert result == {'a': None, 'b': None}
+        assert result == {'a': 1}
+        assert 'b' not in result
 
     def test_boolean_values(self):
         """Boolean values are preserved."""
@@ -4911,6 +4912,73 @@ class TestDeepMergeSettings:
         assert setup_environment._deep_copy_value(True) is True
         assert setup_environment._deep_copy_value(None) is None
         assert setup_environment._deep_copy_value(math.pi) == math.pi
+
+    def test_none_value_nonexistent_key_noop(self):
+        """None value for nonexistent key is a no-op."""
+        base = {'a': 1}
+        updates = {'nonexistent': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1}
+        assert 'nonexistent' not in result
+
+    def test_none_deletes_nested_key(self):
+        """None value deletes a nested key while preserving siblings."""
+        base = {'section': {'keep': 1, 'remove': 2}}
+        updates = {'section': {'remove': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'section': {'keep': 1}}
+        assert 'remove' not in result['section']
+
+    def test_none_deletes_entire_section(self):
+        """Top-level None deletes the entire section."""
+        base = {'keep': 1, 'section': {'a': 1, 'b': 2}}
+        updates = {'section': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'keep': 1}
+        assert 'section' not in result
+
+    def test_none_preserves_empty_parent_dict(self):
+        """Deleting last key in a nested dict preserves parent as empty dict."""
+        base = {'section': {'only_key': 1}}
+        updates = {'section': {'only_key': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'section': {}}
+
+    def test_none_fires_before_array_union(self):
+        """Null-as-delete fires before array union logic (null wins)."""
+        base = {'permissions': {'allow': ['Read', 'Glob']}}
+        updates = {'permissions': {'allow': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert 'allow' not in result['permissions']
+
+    def test_null_inside_array_not_deleted(self):
+        """Null values inside arrays are NOT treated as deletion signals."""
+        base = {'items': [1, 2, 3]}
+        updates = {'items': [None, 4, 5]}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'items': [None, 4, 5]}
+
+    def test_none_in_base_preserved_without_update(self):
+        """None values in base are preserved when no update for that key."""
+        base = {'a': None, 'b': 1}
+        updates = {'c': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': None, 'b': 1, 'c': 2}
+
+    def test_none_base_not_mutated(self):
+        """Null-as-delete does not mutate the base dict."""
+        base = {'a': 1, 'b': 2}
+        base_copy = base.copy()
+        updates = {'b': None}
+        setup_environment.deep_merge_settings(base, updates)
+        assert base == base_copy
+
+    def test_multiple_deletions(self):
+        """Multiple keys can be deleted in a single merge."""
+        base = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+        updates = {'b': None, 'd': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1, 'c': 3}
 
 
 class TestWriteUserSettings:
@@ -5290,6 +5358,21 @@ class TestWriteUserSettings:
         content = settings_file.read_text(encoding='utf-8')
         # Check for indentation (2 spaces)
         assert '  "language"' in content or '  "model"' in content
+
+    def test_write_null_deletes_key(self, tmp_path, monkeypatch):
+        """write_user_settings deletes keys with null values from settings.json."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir()
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('{"theme": "dark", "language": "en"}')
+
+        monkeypatch.setattr(setup_environment, 'is_wsl', lambda: False)
+        result = setup_environment.write_user_settings({'theme': None}, claude_dir)
+
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'theme' not in data
+        assert data['language'] == 'en'
 
 
 class TestExpandTildeKeysInSettings:
@@ -5753,6 +5836,37 @@ class TestWriteGlobalConfig:
         result = setup_environment.write_global_config({'key': 'value'})
 
         assert result is False
+
+    def test_write_null_deletes_key(self, tmp_path, monkeypatch):
+        """write_global_config deletes keys with null values from ~/.claude.json."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{"autoConnectIde": true, "staleKey": "old"}')
+
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        result = setup_environment.write_global_config({'staleKey': None})
+
+        assert result is True
+        data = json.loads(config_file.read_text())
+        assert 'staleKey' not in data
+        assert data['autoConnectIde'] is True
+
+    def test_oauthaccount_null_deletes(self, tmp_path, monkeypatch):
+        """oauthAccount: null passes validation AND is deleted from output."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{"oauthAccount": {"token": "secret"}, "other": 1}')
+
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        # Validation should pass
+        errors = setup_environment.validate_global_config({'oauthAccount': None})
+        assert errors == []
+
+        # Write should delete the key
+        result = setup_environment.write_global_config({'oauthAccount': None})
+        assert result is True
+        data = json.loads(config_file.read_text())
+        assert 'oauthAccount' not in data
+        assert data['other'] == 1
 
 
 class TestDetectSettingsConflicts:
@@ -8142,14 +8256,14 @@ class TestDeepMergeEdgeCases:
         assert result['model'] == 'claude'
 
     def test_deep_merge_null_in_nested_structure(self) -> None:
-        """None/null values at various positions."""
+        """None/null values at various positions (RFC 7396 null-as-delete)."""
         base = {'a': None, 'b': {'c': 'value'}}
         updates = {'a': {'nested': 'now'}, 'b': None}
         result = setup_environment.deep_merge_settings(base, updates)
         # When base has None and updates has dict, dict wins
         assert result['a'] == {'nested': 'now'}
-        # When base has dict and updates has None, None wins
-        assert result['b'] is None
+        # RFC 7396: None in updates deletes the key from result
+        assert 'b' not in result
 
     def test_deep_merge_mixed_types_at_same_path(self) -> None:
         """Different types in base vs updates for nested paths."""
@@ -9144,6 +9258,50 @@ class TestDisplayInstallationSummary:
         output = buf.getvalue()
         assert '$ pip install flask' in output
         assert '$ npm install -g typescript' in output
+
+    def test_display_user_settings_with_delete_markers(self):
+        """User settings summary shows [DELETE] for null-valued keys."""
+        import io
+        plan = self._make_plan(user_settings={'theme': 'dark', 'stale': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' in output
+        assert 'stale' in output
+        assert '1 set' in output
+        assert '1 delete' in output
+
+    def test_display_global_config_with_delete_markers(self):
+        """Global config summary shows [DELETE] for null-valued keys."""
+        import io
+        plan = self._make_plan(global_config={'autoConnectIde': True, 'oauthAccount': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' in output
+        assert 'oauthAccount' in output
+        assert '1 set' in output
+        assert '1 delete' in output
+
+    def test_display_settings_no_delete_markers_when_no_nulls(self):
+        """No [DELETE] markers when no null values exist."""
+        import io
+        plan = self._make_plan(user_settings={'theme': 'dark'})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' not in output
+        assert '1 set' in output
+
+    def test_display_settings_all_deletes(self):
+        """All null values show only delete count, no set count."""
+        import io
+        plan = self._make_plan(user_settings={'a': None, 'b': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '2 delete' in output
+        assert '[DELETE]' in output
 
 
 class TestConfirmInstallation:

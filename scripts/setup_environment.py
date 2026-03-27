@@ -1211,6 +1211,11 @@ def _merge_recursive(
 ) -> None:
     """Recursively merge source into target in-place.
 
+    Null-as-delete (RFC 7396): When a source value is None, the
+    corresponding key is removed from target (no-op if absent).
+    This applies only to object keys -- None values inside arrays
+    are not treated as deletion signals.
+
     Args:
         target: Target dict to merge into (mutated in-place).
         source: Source dict to merge from.
@@ -1221,7 +1226,10 @@ def _merge_recursive(
         # Build dot-notation path for this key
         key_path = f'{current_path}.{key}' if current_path else key
 
-        if key not in target:
+        # RFC 7396: null values signal key deletion
+        if value is None:
+            target.pop(key, None)
+        elif key not in target:
             # Key doesn't exist in target - add it (deep copy)
             target[key] = _deep_copy_value(value)
         elif isinstance(value, dict) and isinstance(target[key], dict):
@@ -1256,6 +1264,7 @@ def deep_merge_settings(
     Key behaviors:
     - Keys NOT in updates: PRESERVED unchanged from base
     - Keys IN updates: UPDATED or ADDED
+    - Keys with None/null value in updates: DELETED from result (RFC 7396)
     - Nested dicts: Recursively merged (not replaced entirely)
     - Arrays at array_union_keys: Additive union with deduplication
 
@@ -1279,6 +1288,11 @@ def deep_merge_settings(
         >>> updates = {"permissions": {"allow": ["Write", "Read"]}}
         >>> deep_merge_settings(base, updates)
         {"permissions": {"allow": ["Read", "Glob", "Write"]}}
+
+        >>> base = {"a": 1, "b": 2}
+        >>> updates = {"b": None}
+        >>> deep_merge_settings(base, updates)
+        {"a": 1}
     """
     # Use default union keys if not specified
     if array_union_keys is None:
@@ -3533,9 +3547,29 @@ def display_installation_summary(
     if plan.always_thinking_enabled is not None:
         settings_items.append(f'Always thinking: {plan.always_thinking_enabled}')
     if plan.user_settings:
-        settings_items.append('User settings: configured')
+        null_keys = [k for k, v in plan.user_settings.items() if v is None]
+        set_keys = [k for k, v in plan.user_settings.items() if v is not None]
+        parts: list[str] = []
+        if set_keys:
+            parts.append(f'{len(set_keys)} set')
+        if null_keys:
+            parts.append(f'{len(null_keys)} delete')
+        settings_items.append(f"User settings: {', '.join(parts)}")
+        settings_items.extend(
+            f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
+        )
     if plan.global_config:
-        settings_items.append('Global config: configured')
+        null_keys = [k for k, v in plan.global_config.items() if v is None]
+        set_keys = [k for k, v in plan.global_config.items() if v is not None]
+        parts = []
+        if set_keys:
+            parts.append(f'{len(set_keys)} set')
+        if null_keys:
+            parts.append(f'{len(null_keys)} delete')
+        settings_items.append(f"Global config: {', '.join(parts)}")
+        settings_items.extend(
+            f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
+        )
     if plan.company_announcements:
         settings_items.append(f'Company announcements: {len(plan.company_announcements)}')
     if plan.command_names:
