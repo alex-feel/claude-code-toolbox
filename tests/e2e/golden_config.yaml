@@ -7,6 +7,11 @@ name: "E2E Test Environment"
 # Configuration version for update checking
 version: "1.0.0"
 
+# Selective merge keys (no-op without inherit; exercises warning path)
+merge-keys:
+  - agents
+  - mcp-servers
+
 # Description shown in installation summary
 description: |
   A comprehensive test environment for validating

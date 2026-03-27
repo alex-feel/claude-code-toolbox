@@ -620,6 +620,12 @@ class EnvironmentConfig(BaseModel):
         description='URL or path to parent configuration to inherit from. '
         'Supports full URLs, local paths, or repository config names.',
     )
+    merge_keys: list[str] | None = Field(
+        None,
+        alias='merge-keys',
+        description='List of top-level keys to merge (extend) from parent during inheritance. '
+        'Only applicable with inherit. Keys not listed here use replace semantics.',
+    )
     os_env_variables: dict[str, str | None] | None = Field(
         None,
         alias='os-env-variables',
@@ -807,6 +813,37 @@ class EnvironmentConfig(BaseModel):
         if '\x00' in v:
             raise ValueError('inherit cannot contain null bytes')
 
+        return v
+
+    @field_validator('merge_keys')
+    @classmethod
+    def validate_merge_keys(cls, v: list[str] | None) -> list[str] | None:
+        """Validate merge-keys entries against the set of mergeable configuration keys.
+
+        Args:
+            v: List of key names to validate.
+
+        Returns:
+            The validated list, or None.
+
+        Raises:
+            ValueError: If any key is not in the set of mergeable keys.
+        """
+        if v is None:
+            return v
+
+        # Inline definition avoids circular import from setup_environment.py
+        mergeable: frozenset[str] = frozenset({
+            'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
+            'files-to-download', 'hooks', 'mcp-servers',
+            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+        })
+        invalid = [k for k in v if k not in mergeable]
+        if invalid:
+            raise ValueError(
+                f'Invalid merge-keys: {invalid}. '
+                f'Valid mergeable keys: {sorted(mergeable)}',
+            )
         return v
 
     @field_validator('os_env_variables')

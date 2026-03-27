@@ -4664,6 +4664,290 @@ class TestMergeConfigs:
         assert 'inherit' not in result
 
 
+class TestMergeKeys:
+    """Tests for merge-keys selective merge feature."""
+
+    # === Helper function tests ===
+
+    def test_merge_string_list_basic(self):
+        """String list merge: parent first, then new child items."""
+        result = setup_environment._merge_string_list(['A', 'B'], ['C', 'D'])
+        assert result == ['A', 'B', 'C', 'D']
+
+    def test_merge_string_list_dedup(self):
+        """String list merge deduplicates by string equality."""
+        result = setup_environment._merge_string_list(['A', 'B'], ['B', 'C'])
+        assert result == ['A', 'B', 'C']
+
+    def test_merge_string_list_empty_parent(self):
+        """String list merge with empty parent."""
+        result = setup_environment._merge_string_list([], ['X', 'Y'])
+        assert result == ['X', 'Y']
+
+    def test_merge_string_list_empty_child(self):
+        """String list merge with empty child."""
+        result = setup_environment._merge_string_list(['X', 'Y'], [])
+        assert result == ['X', 'Y']
+
+    def test_merge_string_list_full_overlap(self):
+        """String list merge with complete overlap keeps parent order."""
+        result = setup_environment._merge_string_list(['A', 'B'], ['B', 'A'])
+        assert result == ['A', 'B']
+
+    def test_merge_named_list_in_position_replacement(self):
+        """Named list: child replaces parent item at parent's position."""
+        parent = [{'name': 'srv1', 'url': 'old'}, {'name': 'srv2', 'url': 'keep'}]
+        child = [{'name': 'srv1', 'url': 'new'}]
+        result = setup_environment._merge_named_list(parent, child, 'name')
+        assert result == [{'name': 'srv1', 'url': 'new'}, {'name': 'srv2', 'url': 'keep'}]
+
+    def test_merge_named_list_new_items_appended(self):
+        """Named list: new child items are appended at the end."""
+        parent = [{'name': 'srv1'}]
+        child = [{'name': 'srv2'}]
+        result = setup_environment._merge_named_list(parent, child, 'name')
+        assert result == [{'name': 'srv1'}, {'name': 'srv2'}]
+
+    def test_merge_named_list_mixed_replace_and_append(self):
+        """Named list: some replaced in-position, some appended."""
+        parent = [{'name': 'A', 'v': 1}, {'name': 'B', 'v': 2}]
+        child = [{'name': 'B', 'v': 20}, {'name': 'C', 'v': 3}]
+        result = setup_environment._merge_named_list(parent, child, 'name')
+        assert result == [{'name': 'A', 'v': 1}, {'name': 'B', 'v': 20}, {'name': 'C', 'v': 3}]
+
+    def test_merge_named_list_empty_lists(self):
+        """Named list: empty parent and child."""
+        result = setup_environment._merge_named_list([], [], 'name')
+        assert result == []
+
+    def test_merge_named_list_missing_identity_key(self):
+        """Named list: items missing identity key are kept and appended independently."""
+        parent = [{'v': 1}]
+        child = [{'v': 2}]
+        result = setup_environment._merge_named_list(parent, child, 'name')
+        # Items without identity key are not matched; both are kept
+        assert len(result) == 2
+        assert result[0] == {'v': 1}
+        assert result[1] == {'v': 2}
+
+    def test_merge_hooks_files_dedup_events_concat(self):
+        """Hooks merge: files deduped, events concatenated."""
+        parent = {'files': ['a.py', 'b.py'], 'events': [{'event': 'E1'}]}
+        child = {'files': ['b.py', 'c.py'], 'events': [{'event': 'E2'}]}
+        result = setup_environment._merge_hooks(parent, child)
+        assert result['files'] == ['a.py', 'b.py', 'c.py']
+        assert result['events'] == [{'event': 'E1'}, {'event': 'E2'}]
+
+    def test_merge_hooks_missing_keys(self):
+        """Hooks merge: missing 'files' or 'events' treated as empty."""
+        result = setup_environment._merge_hooks({}, {'files': ['x.py']})
+        assert result['files'] == ['x.py']
+        assert result['events'] == []
+
+    def test_merge_dependencies_per_platform(self):
+        """Dependencies merge: per-platform sub-key merge with dedup."""
+        parent = {'common': ['echo a'], 'linux': ['apt install x']}
+        child = {'common': ['echo b', 'echo a'], 'windows': ['choco install y']}
+        result = setup_environment._merge_dependencies(parent, child)
+        assert result['common'] == ['echo a', 'echo b']
+        assert result['linux'] == ['apt install x']
+        assert result['windows'] == ['choco install y']
+
+    # === _merge_config_key dispatch tests ===
+
+    def test_merge_config_key_agents(self):
+        """Dispatch: agents uses string list merge."""
+        result = setup_environment._merge_config_key('agents', ['a.md'], ['b.md'])
+        assert result == ['a.md', 'b.md']
+
+    def test_merge_config_key_slash_commands(self):
+        """Dispatch: slash-commands uses string list merge."""
+        result = setup_environment._merge_config_key('slash-commands', ['x.md'], ['y.md'])
+        assert result == ['x.md', 'y.md']
+
+    def test_merge_config_key_rules(self):
+        """Dispatch: rules uses string list merge."""
+        result = setup_environment._merge_config_key('rules', ['r1'], ['r2'])
+        assert result == ['r1', 'r2']
+
+    def test_merge_config_key_mcp_servers(self):
+        """Dispatch: mcp-servers uses named list merge by 'name'."""
+        parent = [{'name': 's1', 'url': 'old'}]
+        child = [{'name': 's1', 'url': 'new'}, {'name': 's2', 'url': 'added'}]
+        result = setup_environment._merge_config_key('mcp-servers', parent, child)
+        assert result == [{'name': 's1', 'url': 'new'}, {'name': 's2', 'url': 'added'}]
+
+    def test_merge_config_key_skills(self):
+        """Dispatch: skills uses named list merge by 'name'."""
+        parent = [{'name': 'sk1', 'base': '/a'}]
+        child = [{'name': 'sk2', 'base': '/b'}]
+        result = setup_environment._merge_config_key('skills', parent, child)
+        assert result == [{'name': 'sk1', 'base': '/a'}, {'name': 'sk2', 'base': '/b'}]
+
+    def test_merge_config_key_files_to_download(self):
+        """Dispatch: files-to-download uses named list merge by 'dest'."""
+        parent = [{'source': 'a', 'dest': '~/.claude/a.txt'}]
+        child = [{'source': 'b', 'dest': '~/.claude/a.txt'}]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [{'source': 'b', 'dest': '~/.claude/a.txt'}]
+
+    def test_merge_config_key_dependencies(self):
+        """Dispatch: dependencies uses per-platform merge."""
+        parent = {'common': ['cmd1']}
+        child = {'common': ['cmd2']}
+        result = setup_environment._merge_config_key('dependencies', parent, child)
+        assert result == {'common': ['cmd1', 'cmd2']}
+
+    def test_merge_config_key_hooks(self):
+        """Dispatch: hooks uses composite merge."""
+        parent = {'files': ['f1'], 'events': [{'e': 1}]}
+        child = {'files': ['f2'], 'events': [{'e': 2}]}
+        result = setup_environment._merge_config_key('hooks', parent, child)
+        assert result['files'] == ['f1', 'f2']
+        assert len(result['events']) == 2
+
+    def test_merge_config_key_global_config(self):
+        """Dispatch: global-config uses deep merge with no array union."""
+        parent = {'a': 1, 'b': {'c': 2}}
+        child = {'b': {'d': 3}, 'e': 4}
+        result = setup_environment._merge_config_key('global-config', parent, child)
+        assert result == {'a': 1, 'b': {'c': 2, 'd': 3}, 'e': 4}
+
+    def test_merge_config_key_user_settings(self):
+        """Dispatch: user-settings uses deep merge with DEFAULT_ARRAY_UNION_KEYS."""
+        parent = {'permissions': {'allow': ['Read']}}
+        child = {'permissions': {'allow': ['Write']}}
+        result = setup_environment._merge_config_key('user-settings', parent, child)
+        assert set(result['permissions']['allow']) == {'Read', 'Write'}
+
+    def test_merge_config_key_env_variables(self):
+        """Dispatch: env-variables uses shallow dict merge with null deletes."""
+        parent = {'A': '1', 'B': '2'}
+        child = {'B': None, 'C': '3'}
+        result = setup_environment._merge_config_key('env-variables', parent, child)
+        assert result == {'A': '1', 'C': '3'}
+
+    def test_merge_config_key_os_env_variables(self):
+        """Dispatch: os-env-variables uses shallow dict merge with null deletes."""
+        parent = {'X': 'val1'}
+        child = {'X': None, 'Y': 'val2'}
+        result = setup_environment._merge_config_key('os-env-variables', parent, child)
+        assert result == {'Y': 'val2'}
+
+    def test_merge_config_key_fallback(self):
+        """Dispatch: unknown key uses replace semantics."""
+        result = setup_environment._merge_config_key('unknown-key', 'old', 'new')
+        assert result == 'new'
+
+    # === _merge_configs with merge_keys parameter ===
+
+    def test_merge_configs_with_merge_keys(self):
+        """Listed keys are merged, unlisted keys are replaced."""
+        parent = {'agents': ['a.md'], 'model': 'old', 'rules': ['r1']}
+        child = {'agents': ['b.md'], 'model': 'new', 'rules': ['r2']}
+        result = setup_environment._merge_configs(
+            parent, child, merge_keys=frozenset({'agents', 'rules'}),
+        )
+        assert result['agents'] == ['a.md', 'b.md']
+        assert result['rules'] == ['r1', 'r2']
+        assert result['model'] == 'new'
+
+    def test_merge_configs_no_merge_keys_backward_compat(self):
+        """Without merge_keys, child replaces parent (backward compatible)."""
+        parent = {'agents': ['a.md']}
+        child = {'agents': ['b.md']}
+        result = setup_environment._merge_configs(parent, child)
+        assert result['agents'] == ['b.md']
+
+    def test_merge_configs_strips_inherit_and_merge_keys(self):
+        """Both inherit and merge-keys are stripped from result."""
+        parent = {'a': 1}
+        child = {'inherit': 'base.yaml', 'merge-keys': ['agents'], 'b': 2}
+        result = setup_environment._merge_configs(parent, child, merge_keys=frozenset({'agents'}))
+        assert 'inherit' not in result
+        assert 'merge-keys' not in result
+        assert result == {'a': 1, 'b': 2}
+
+    def test_merge_configs_key_only_in_child(self):
+        """Merge key present only in child is added (not merged)."""
+        parent = {'model': 'opus'}
+        child = {'agents': ['new.md']}
+        result = setup_environment._merge_configs(
+            parent, child, merge_keys=frozenset({'agents'}),
+        )
+        assert result['agents'] == ['new.md']
+        assert result['model'] == 'opus'
+
+    def test_merge_configs_empty_merge_keys(self):
+        """Empty merge_keys set: all keys use replace semantics."""
+        parent = {'agents': ['a.md']}
+        child = {'agents': ['b.md']}
+        result = setup_environment._merge_configs(parent, child, merge_keys=frozenset())
+        assert result['agents'] == ['b.md']
+
+    # === Validation tests ===
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_validation_invalid_key_in_merge_keys(self, mock_load):
+        """Invalid key in merge-keys raises ValueError."""
+        mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
+        config = {'inherit': 'parent.yaml', 'merge-keys': ['model']}
+        with pytest.raises(ValueError, match='Invalid keys in merge-keys'):
+            setup_environment.resolve_config_inheritance(config, 'child.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_validation_non_list_merge_keys(self, mock_load):
+        """Non-list merge-keys raises ValueError."""
+        mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
+        config = {'inherit': 'parent.yaml', 'merge-keys': 'agents'}
+        with pytest.raises(ValueError, match='must be a list'):
+            setup_environment.resolve_config_inheritance(config, 'child.yaml')
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_validation_non_string_entries(self, mock_load):
+        """Non-string entries in merge-keys list raise ValueError."""
+        mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
+        config = {'inherit': 'parent.yaml', 'merge-keys': [123]}
+        with pytest.raises(ValueError, match='must be a string'):
+            setup_environment.resolve_config_inheritance(config, 'child.yaml')
+
+    def test_merge_keys_without_inherit_warns(self, capsys):
+        """merge-keys without inherit emits warning."""
+        config = {'name': 'test', 'merge-keys': ['agents']}
+        result, chain = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        captured = capsys.readouterr()
+        assert 'has no effect without' in captured.out
+        assert 'merge-keys' not in result
+
+    def test_merge_keys_without_inherit_strips_key(self):
+        """merge-keys is stripped from result when no inherit."""
+        config = {'name': 'test', 'merge-keys': ['agents']}
+        result, _ = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        assert 'merge-keys' not in result
+        assert result == {'name': 'test'}
+
+    def test_empty_merge_keys_list_valid(self):
+        """Empty merge-keys list is valid (no-op)."""
+        parent = {'agents': ['a.md']}
+        child = {'agents': ['b.md']}
+        result = setup_environment._merge_configs(
+            parent, child, merge_keys=frozenset(),
+        )
+        # Empty frozenset = no merge, so replace
+        assert result['agents'] == ['b.md']
+
+    def test_duplicate_entries_in_merge_keys_deduped(self):
+        """Duplicate entries in merge-keys are handled via frozenset."""
+        parent = {'agents': ['a.md']}
+        child = {'agents': ['b.md']}
+        # frozenset automatically deduplicates
+        result = setup_environment._merge_configs(
+            parent, child,
+            merge_keys=frozenset(['agents', 'agents']),
+        )
+        assert result['agents'] == ['a.md', 'b.md']
+
+
 class TestDeepMergeSettings:
     """Tests for deep_merge_settings function and its helpers."""
 

@@ -129,7 +129,7 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 ## Configuration Reference
 
-Quick-reference table of all 29 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
+Quick-reference table of all configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
 | YAML Key                                              | Type                   | Required | Default | Brief Description                          |
 |-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
@@ -138,6 +138,7 @@ Quick-reference table of all 29 configuration keys. Each key links to its detail
 | [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation  |
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
 | [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
+| [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace           |
 | [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths       |
 | [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"` |
@@ -180,6 +181,7 @@ All configuration keys use **kebab-case** (hyphenated lowercase), for example `m
 Display name for the environment, shown in the setup header and summary.
 
 - **Type:** `str` (required)
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:** `name: "Python Development"`
 
 #### `description`
@@ -227,6 +229,7 @@ Configuration version for update checking. Extracted from the root config before
 - **Type:** `str | None`
 - **Default:** `None`
 - **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata)
+- **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
 #### `command-names`
@@ -240,6 +243,7 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Cannot contain spaces
   - Must be alphanumeric, hyphens, and underscores only
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
+- **Inheritance:** Standard override (child replaces parent)
 - **Note:** If empty or not specified, setup steps for hooks download, settings, manifest, launcher, and command registration are skipped. The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
@@ -256,17 +260,19 @@ Base URL for resolving relative resource paths (agents, commands, skills, hooks,
 - **Type:** `str | None`
 - **Default:** `None`
 - **Validation:** Must start with `http://` or `https://`
+- **Inheritance:** Standard override (child replaces parent). Each level's `base-url` applies to that level's own resource paths.
 - **Example:** `base-url: "https://raw.githubusercontent.com/org/repo/main"`
 
 #### `inherit`
 
-URL, local path, or repository config name to inherit from. The child configuration overrides parent values at the top level (no deep merge).
+URL, local path, or repository config name to inherit from. The child configuration overrides parent values at the top level by default. Use `merge-keys` to selectively merge specific keys instead of replacing them.
 
 - **Type:** `str | None`
 - **Default:** `None`
 - **Validation:** Cannot be empty, no null bytes
 - **Max depth:** 10 levels
 - **Circular dependency detection:** Automatic
+- **Inheritance:** Not applicable (structural meta-key consumed during resolution)
 - **Example:**
 
 ```yaml
@@ -279,6 +285,29 @@ inherit: "base-config"  # fetched from artifacts-public repo
 
 See [Configuration Inheritance](#configuration-inheritance) for details.
 
+#### `merge-keys`
+
+List of top-level keys that should be merged (extended from parent) rather than replaced during inheritance resolution. Only effective when `inherit` is also specified.
+
+- **Type:** `list[str] | None`
+- **Default:** `None`
+- **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `env-variables`, `os-env-variables`
+- **Validation:** Non-eligible keys produce an error. Presence without `inherit` produces a warning.
+- **Stripped from output:** Yes (like `inherit`)
+- **Inheritance:** Not applicable. Evaluated at each inheritance level independently; not inherited or accumulated across levels.
+- **Example:**
+
+```yaml
+inherit: base.yaml
+merge-keys:
+  - agents
+  - mcp-servers
+  - dependencies
+  - hooks
+```
+
+See [Selective Merge (merge-keys)](#selective-merge-merge-keys) for details.
+
 ### Installation Control
 
 #### `claude-code-version`
@@ -290,6 +319,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
 
 #### `install-nodejs`
@@ -299,6 +329,7 @@ Install Node.js LTS before processing dependencies. Used when MCP servers or too
 - **Type:** `bool | None`
 - **Default:** `None`
 - **Note:** When `true`, only checks the minimum Node.js version (>= 18.0.0), not Claude Code npm compatibility
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:** `install-nodejs: true`
 
 #### `dependencies`
@@ -312,6 +343,7 @@ Platform-specific shell commands to execute during setup.
   - `common` runs on all platforms
   - Platform-specific keys run only on the matching platform
   - Invalid keys raise a `ValueError`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: per-platform sub-key list concatenation with deduplication. Parent platform commands appear first; child commands are appended. Duplicates are removed by string equality.
 - **Example:**
 
 ```yaml
@@ -335,6 +367,7 @@ Markdown files placed in `~/.claude/agents/` during setup. Values are URLs or re
 
 - **Type:** `list[str] | None`
 - **Default:** `[]`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: parent and child lists are concatenated with deduplication by string equality. Parent items appear first; new child items are appended.
 - **Example:**
 
 ```yaml
@@ -349,6 +382,7 @@ Command files placed in `~/.claude/commands/` during setup. Uses the same path r
 
 - **Type:** `list[str] | None`
 - **Default:** `[]`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: parent and child lists are concatenated with deduplication by string equality. Parent items appear first; new child items are appended.
 - **Example:**
 
 ```yaml
@@ -365,6 +399,7 @@ Rule files placed in `~/.claude/rules/` during setup. Claude Code loads `.md` fi
 - **Default:** `[]`
 - **Scope:** User-scope only (`~/.claude/rules/`). Project-scope rules (`.claude/rules/` in the repository) should be committed directly to version control.
 - **Note:** Only `.md` files are recognized by Claude Code. Rules support optional YAML frontmatter with `description:` and `paths:` for path-scoped rules (glob patterns).
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: parent and child lists are concatenated with deduplication by string equality. Parent items appear first; new child items are appended.
 - **Example:**
 
 ```yaml
@@ -379,6 +414,7 @@ Skill configurations. Each skill is a set of files placed in `~/.claude/skills/{
 
 - **Type:** `list[Skill] | None`
 - **Default:** `[]`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child skills with the same name replace the parent skill in-position (at the parent's original index). New child skills are appended at the end.
 - **Skill fields:**
   - `name` (str, required): Skill identifier
   - `base` (str, required): Base URL or local path for skill files
@@ -405,6 +441,7 @@ Arbitrary files to download during setup. Each entry specifies a source and a de
   - `dest` (str, required): Destination path (supports `~` expansion)
 - **Validation:** Paths cannot be empty or contain null bytes
 - **Security:** Destinations matching sensitive path prefixes (for example, `~/.ssh/`, `~/.bashrc`) are flagged with `[!]` in the installation summary
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `dest` field. Child entries with the same destination replace the parent entry in-position. New child entries are appended at the end.
 - **Example:**
 
 ```yaml
@@ -420,6 +457,7 @@ MCP (Model Context Protocol) servers extend Claude Code with additional capabili
 - **Type:** `list[dict] | None`
 - **Default:** `[]`
 - **Note:** Each server must have a `name` field
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child servers with the same name replace the parent server in-position (at the parent's original index). New child servers are appended at the end.
 
 #### HTTP Transport
 
@@ -517,6 +555,7 @@ Model alias or custom model name for Claude Code.
 - **Default:** `None`
 - **Valid aliases:** `default`, `sonnet`, `opus`, `haiku`, `opus[1m]`, `sonnet[1m]`, `opusplan`
 - **Custom names:** Any model name starting with `claude-` (for example, `claude-3-5-sonnet-20241022`)
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:** `model: "opus"` or `model: "claude-3-5-sonnet-20241022"`
 
 #### `always-thinking-enabled`
@@ -525,6 +564,7 @@ Enable always-on extended thinking mode.
 
 - **Type:** `bool | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:** `always-thinking-enabled: true`
 
 #### `effort-level`
@@ -533,6 +573,7 @@ Controls adaptive reasoning effort.
 
 - **Type:** `str | None` (one of `low`, `medium`, `high`, `max`)
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent)
 - **Values:**
   - `low` -- Minimal reasoning, fastest responses
   - `medium` -- Balanced reasoning and speed
@@ -557,6 +598,7 @@ Permission rules controlling which tools and actions are allowed, denied, or req
 
 - **Type:** `Permissions | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent). Note: MCP server permissions are automatically added during setup regardless of inheritance.
 - **Fields:**
   - `defaultMode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
   - `allow` -- List of explicitly allowed actions
@@ -590,6 +632,7 @@ Claude-level environment variables set in the settings file. These are available
 
 - **Type:** `dict[str, str] | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
 - **Example:**
 
 ```yaml
@@ -606,6 +649,7 @@ OS-level persistent environment variables written to the shell profile (Linux/ma
 - **Default:** `None`
 - **Special value:** Set a value to `null` to delete an existing variable
 - **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
 - **Example:**
 
 ```yaml
@@ -628,6 +672,7 @@ System prompt configuration for the environment command.
     - `replace` -- Completely replaces the default system prompt (`--system-prompt` flag, added in Claude Code v2.0.14)
     - `append` -- Appends to Claude's default development prompt (`--append-system-prompt` flag, added in Claude Code v1.0.55)
 - **Co-dependency:** If specified, `command-names` must also be specified (and vice versa)
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:**
 
 ```yaml
@@ -645,6 +690,7 @@ Free-form settings merged into `~/.claude/settings.json`. Uses deep merge with a
 - **Type:** `UserSettings | None`
 - **Default:** `None`
 - **Excluded keys:** `hooks` and `statusLine` (these are profile-specific and must be configured at the root level of the YAML configuration)
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (`permissions.allow`, `permissions.deny`, `permissions.ask` arrays are unioned with deduplication). Child keys override matching parent keys; `null` values delete keys.
 - **Example:**
 
 ```yaml
@@ -661,6 +707,7 @@ Settings merged into `~/.claude.json` (the Claude Code global configuration file
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
 - **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `array_union_keys=set()` (arrays are replaced, not unioned). Child keys override matching parent keys; `null` values delete keys (RFC 7396).
 - **Example:**
 
 ```yaml
@@ -702,6 +749,7 @@ Announcement strings displayed to users during setup.
 
 - **Type:** `list[str] | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent)
 - **Example:**
 
 ```yaml
@@ -716,6 +764,7 @@ Attribution strings for commits and pull requests. Set a field to an empty strin
 
 - **Type:** `Attribution | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent)
 - **Fields:**
   - `commit` (str) -- Attribution string for commits
   - `pr` (str) -- Attribution string for pull requests
@@ -733,6 +782,7 @@ Status line script configuration. The script file and optional config file are d
 
 - **Type:** `StatusLine | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent)
 - **Fields:**
   - `file` (str, required) -- Script file path
   - `padding` (int, optional) -- Padding value
@@ -753,6 +803,7 @@ Event-driven scripts that run automatically during Claude Code sessions.
 
 - **Type:** `Hooks | None`
 - **Default:** `None`
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: composite merge. `files` lists are concatenated with deduplication by full file path string equality. `events` lists are concatenated without deduplication (each event is unique by its field combination).
 - **Fields:**
   - `files` (list[str]) -- Script files to download to `~/.claude/hooks/`
   - `events` (list[HookEvent]) -- Event configurations
@@ -846,11 +897,12 @@ The `inherit` key allows a configuration to extend a parent configuration.
 
 #### How Inheritance Works
 
-- Child values completely **replace** parent values for the same top-level key (no deep merge)
+- Child values completely **replace** parent values for the same top-level key by default
+- Use `merge-keys` to selectively **merge** (extend) specific keys instead of replacing them -- see [Selective Merge (merge-keys)](#selective-merge-merge-keys)
 - Maximum inheritance depth is 10 levels
 - Circular dependencies are detected automatically
 - The `version` key is extracted from the root config **before** inheritance resolution
-- The `inherit` key is stripped from the final merged configuration
+- Both `inherit` and `merge-keys` are stripped from the final merged configuration
 
 #### Inheritance Path Resolution
 
@@ -880,6 +932,99 @@ agents:                       # Completely REPLACES parent's agents list
 effort-level: "high"          # Added (not in parent)
 # model: "sonnet" is inherited from parent (not overridden)
 ```
+
+### Selective Merge (`merge-keys`)
+
+By default, child configurations completely replace parent values at the top level. The `merge-keys` directive enables selective extension: child values are merged with parent values for specified keys instead of replacing them.
+
+#### Syntax
+
+```yaml
+inherit: base-config.yaml
+merge-keys:
+  - agents
+  - mcp-servers
+  - dependencies
+```
+
+#### Per-Level Evaluation
+
+`merge-keys` is evaluated at each inheritance level independently. It is NOT inherited or accumulated across levels. A replace at level N resets the accumulated value; a merge at level N+1 extends from level N's resolved value only.
+
+Example -- 4-level chain:
+
+```text
+Level 1 (source):  agents: [A, B]
+Level 2 (merge):   merge-keys: [agents], agents: [C]     => [A, B, C]
+Level 3 (replace): agents: [D]                            => [D]
+Level 4 (merge):   merge-keys: [agents], agents: [E]     => [D, E]
+```
+
+If all levels 2-4 use merge: `[A, B, C, D, E]`.
+
+#### Merge Strategies by Key Type
+
+| Type                   | Keys                                | Strategy                                                                             |
+|------------------------|-------------------------------------|--------------------------------------------------------------------------------------|
+| String list            | `agents`, `slash-commands`, `rules` | Concatenate parent + child; deduplicate by string equality; parent items first       |
+| Named list (by `name`) | `mcp-servers`, `skills`             | Identity-based: child overrides parent in-position; new items appended               |
+| Named list (by `dest`) | `files-to-download`                 | Identity-based: child overrides parent in-position; new items appended               |
+| Per-platform dict      | `dependencies`                      | Per-platform sub-key list concatenation with deduplication                           |
+| Composite              | `hooks`                             | `files`: concat + dedup by full path; `events`: concat (no dedup)                    |
+| Deep dict              | `global-config`                     | `deep_merge_settings()` with no array union                                          |
+| Deep dict              | `user-settings`                     | `deep_merge_settings()` with `permissions.*` array union                             |
+| Shallow dict           | `env-variables`, `os-env-variables` | Shallow merge; child overrides; `null` deletes (RFC 7396)                            |
+
+#### Non-Mergeable Keys
+
+Keys not listed in the 12 mergeable keys (such as `name`, `model`, `permissions`, `command-defaults`) always use replace semantics, regardless of `merge-keys`.
+
+#### Complete Merge Example
+
+```yaml
+# base.yaml
+name: "Base Environment"
+agents:
+  - "agents/core-agent.md"
+mcp-servers:
+  - name: "context-server"
+    transport: "http"
+    url: "http://localhost:8000/mcp"
+dependencies:
+  common:
+    - "uv tool install ruff"
+```
+
+```yaml
+# child.yaml
+inherit: "base.yaml"
+merge-keys:
+  - agents
+  - mcp-servers
+  - dependencies
+name: "Extended Environment"  # Replaces (not in merge-keys)
+agents:
+  - "agents/extra-agent.md"  # Appended to parent's list
+mcp-servers:
+  - name: "context-server"   # Replaces parent's context-server in-position
+    transport: "http"
+    url: "http://localhost:9000/mcp"
+  - name: "new-server"       # Appended (new identity)
+    command: "npx @example/new-mcp"
+dependencies:
+  common:
+    - "uv tool install mypy"  # Appended to parent's common list
+  linux:
+    - "sudo apt-get install -y shellcheck"  # New platform
+```
+
+Result after merge:
+
+- `name`: `"Extended Environment"` (replaced)
+- `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` (merged)
+- `mcp-servers`: context-server with updated URL at index 0, new-server appended (merged)
+- `dependencies.common`: `["uv tool install ruff", "uv tool install mypy"]` (merged)
+- `dependencies.linux`: `["sudo apt-get install -y shellcheck"]` (new platform from child)
 
 ### Authentication for Private Repositories
 

@@ -161,6 +161,7 @@ YAML configurations define complete development environments including:
 - System prompts (with configurable mode: append or replace)
 - Hooks (event-driven scripts)
 - Global config (`~/.claude.json` settings via deep merge)
+- Selective merge during inheritance (`merge-keys` directive)
 
 ### Global Config (`global-config`)
 

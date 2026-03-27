@@ -1,0 +1,14 @@
+# Level 1: Source config (no inheritance)
+name: "Chain Level 1"
+
+agents:
+  - "agents/l1-agent.md"
+
+mcp-servers:
+  - name: "l1-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/l1"
+
+rules:
+  - "rules/l1-rule.md"

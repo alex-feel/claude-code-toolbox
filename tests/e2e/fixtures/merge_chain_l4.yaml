@@ -1,0 +1,20 @@
+# Level 4: Merges from L3 (extends L3's replaced values)
+name: "Chain Level 4"
+
+inherit: merge_chain_l3.yaml
+merge-keys:
+  - agents
+  - mcp-servers
+  - rules
+
+agents:
+  - "agents/l4-agent.md"
+
+mcp-servers:
+  - name: "l4-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/l4"
+
+rules:
+  - "rules/l4-rule.md"

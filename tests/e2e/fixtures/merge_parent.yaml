@@ -1,0 +1,56 @@
+# Base config for merge-keys E2E testing
+name: "Merge Parent"
+
+agents:
+  - "agents/parent-agent.md"
+
+rules:
+  - "rules/parent-rule.md"
+
+mcp-servers:
+  - name: "parent-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/parent"
+
+dependencies:
+  common:
+    - "echo parent-common"
+  linux:
+    - "echo parent-linux"
+
+hooks:
+  files:
+    - "hooks/parent-hook.py"
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit"
+      type: "command"
+      command: "parent-hook.py"
+
+global-config:
+  parentKey: "parentValue"
+  sharedKey: "fromParent"
+
+user-settings:
+  language: "english"
+  permissions:
+    allow:
+      - "Read"
+
+env-variables:
+  PARENT_VAR: "parent_val"
+  SHARED_VAR: "from_parent"
+
+os-env-variables:
+  PARENT_OS: "parent_os_val"
+
+skills:
+  - name: "parent-skill"
+    base: "skills/"
+    files:
+      - "SKILL.md"
+
+files-to-download:
+  - source: "configs/parent-file.txt"
+    dest: "~/.claude/parent-file.txt"
