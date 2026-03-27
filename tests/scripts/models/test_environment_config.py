@@ -1036,3 +1036,62 @@ class TestPostInstallNotesField:
             'post-install-notes': notes,
         })
         assert config.post_install_notes == notes
+
+
+class TestMergeKeysField:
+    """Tests for the merge_keys field in EnvironmentConfig."""
+
+    def test_merge_keys_accepts_valid_keys(self) -> None:
+        """Field accepts a list of valid mergeable key names."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'merge-keys': ['agents', 'mcp-servers', 'dependencies'],
+        })
+        assert config.merge_keys == ['agents', 'mcp-servers', 'dependencies']
+
+    def test_merge_keys_default_none(self) -> None:
+        """Field defaults to None when not provided."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.merge_keys is None
+
+    def test_merge_keys_rejects_invalid_key(self) -> None:
+        """Field rejects keys not in the mergeable set."""
+        with pytest.raises(ValidationError, match='Invalid merge-keys'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'merge-keys': ['model'],
+            })
+
+    def test_merge_keys_alias(self) -> None:
+        """Field uses 'merge-keys' as YAML alias."""
+        field_info = EnvironmentConfig.model_fields['merge_keys']
+        assert field_info.alias == 'merge-keys'
+
+    def test_merge_keys_empty_list(self) -> None:
+        """Field accepts an empty list (valid, semantically a no-op)."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'merge-keys': [],
+        })
+        assert config.merge_keys == []
+
+    def test_merge_keys_all_valid_keys(self) -> None:
+        """Field accepts all 12 mergeable keys at once."""
+        all_keys = [
+            'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
+            'files-to-download', 'hooks', 'mcp-servers',
+            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+        ]
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'merge-keys': all_keys,
+        })
+        assert config.merge_keys == all_keys
+
+    def test_merge_keys_rejects_multiple_invalid(self) -> None:
+        """Field error message lists all invalid keys."""
+        with pytest.raises(ValidationError, match='model'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'merge-keys': ['agents', 'model', 'name'],
+            })

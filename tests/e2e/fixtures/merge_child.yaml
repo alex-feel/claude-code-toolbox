@@ -1,0 +1,76 @@
+# Child config that merges selected keys from parent
+name: "Merge Child"
+
+inherit: merge_parent.yaml
+merge-keys:
+  - agents
+  - mcp-servers
+  - rules
+  - dependencies
+  - hooks
+  - global-config
+  - user-settings
+  - env-variables
+  - os-env-variables
+  - skills
+  - files-to-download
+
+agents:
+  - "agents/child-agent.md"
+
+rules:
+  - "rules/child-rule.md"
+
+mcp-servers:
+  - name: "parent-server"
+    scope: "project"
+    transport: "http"
+    url: "http://localhost:3000/child-override"
+  - name: "child-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3001/child"
+
+dependencies:
+  common:
+    - "echo child-common"
+  windows:
+    - "echo child-windows"
+
+hooks:
+  files:
+    - "hooks/child-hook.py"
+  events:
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "command"
+      command: "child-hook.py"
+
+global-config:
+  childKey: "childValue"
+  sharedKey: "fromChild"
+
+user-settings:
+  theme: "dark"
+  permissions:
+    allow:
+      - "Write"
+
+env-variables:
+  CHILD_VAR: "child_val"
+  SHARED_VAR: null
+
+os-env-variables:
+  CHILD_OS: "child_os_val"
+
+skills:
+  - name: "child-skill"
+    base: "skills/"
+    files:
+      - "SKILL.md"
+
+files-to-download:
+  - source: "configs/child-file.txt"
+    dest: "~/.claude/child-file.txt"
+  - source: "configs/override-parent.txt"
+    dest: "~/.claude/parent-file.txt"

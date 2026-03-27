@@ -1,0 +1,16 @@
+# Level 3: Replaces from L2 (no merge-keys)
+name: "Chain Level 3"
+
+inherit: merge_chain_l2.yaml
+
+agents:
+  - "agents/l3-agent.md"
+
+mcp-servers:
+  - name: "l3-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/l3"
+
+rules:
+  - "rules/l3-rule.md"

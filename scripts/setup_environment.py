@@ -55,6 +55,24 @@ if sys.platform != 'win32':
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
+MERGE_KEYS_KEY = 'merge-keys'
+
+# Keys eligible for selective merge during configuration inheritance.
+# Only these top-level keys can be listed in the `merge-keys` directive.
+MERGEABLE_CONFIG_KEYS: frozenset[str] = frozenset({
+    'dependencies',
+    'agents',
+    'slash-commands',
+    'rules',
+    'skills',
+    'files-to-download',
+    'hooks',
+    'mcp-servers',
+    'global-config',
+    'user-settings',
+    'env-variables',
+    'os-env-variables',
+})
 
 # Node.js installation constants (standalone -- no imports from install_claude.py)
 MIN_NODE_VERSION = '18.0.0'
@@ -65,6 +83,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'name',
     'version',
     'inherit',
+    'merge-keys',
     'command-names',
     'base-url',
     'claude-code-version',
@@ -3144,26 +3163,239 @@ def _resolve_inherit_path(inherit_value: str, current_source: str) -> str:
     return inherit_value
 
 
-def _merge_configs(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
-    """Merge parent and child configs with top-level key override semantics.
+def _merge_string_list(
+    parent_list: list[str],
+    child_list: list[str],
+) -> list[str]:
+    """Merge two string lists with deduplication, parent items first.
 
-    Child values completely replace parent values for the same key.
-    No deep merging is performed.
+    Args:
+        parent_list: Base list of strings.
+        child_list: Override list of strings to append.
+
+    Returns:
+        Merged list with parent order preserved and new child items appended.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in parent_list:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    for item in child_list:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _merge_named_list(
+    parent_list: list[dict[str, Any]],
+    child_list: list[dict[str, Any]],
+    identity_key: str,
+) -> list[dict[str, Any]]:
+    """Merge named lists with in-position replacement for matching identities.
+
+    Child items sharing a parent item's identity replace it at the parent's
+    original position. New child items (no matching parent) are appended.
+
+    Args:
+        parent_list: Base list of dicts.
+        child_list: Override list of dicts.
+        identity_key: Dict key used as the identity for matching.
+
+    Returns:
+        Merged list preserving parent ordering with child overrides and appends.
+    """
+    child_by_id: dict[str, dict[str, Any]] = {}
+    for item in child_list:
+        key = item.get(identity_key)
+        if key is not None:
+            child_by_id[str(key)] = item
+
+    consumed: set[str] = set()
+    result: list[dict[str, Any]] = []
+
+    for parent_item in parent_list:
+        parent_key = str(parent_item.get(identity_key, ''))
+        if parent_key in child_by_id:
+            result.append(child_by_id[parent_key])
+            consumed.add(parent_key)
+        else:
+            result.append(parent_item)
+
+    for item in child_list:
+        key = str(item.get(identity_key, ''))
+        if key not in consumed:
+            result.append(item)
+
+    return result
+
+
+def _merge_hooks(
+    parent_hooks: dict[str, Any],
+    child_hooks: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge hooks: files with dedup, events concatenated.
+
+    Args:
+        parent_hooks: Parent hooks configuration.
+        child_hooks: Child hooks configuration.
+
+    Returns:
+        Merged hooks with deduplicated files and concatenated events.
+    """
+    parent_files = parent_hooks.get('files', [])
+    child_files = child_hooks.get('files', [])
+    seen_files: set[str] = set()
+    merged_files: list[str] = []
+    for f in parent_files:
+        if f not in seen_files:
+            seen_files.add(f)
+            merged_files.append(f)
+    for f in child_files:
+        if f not in seen_files:
+            seen_files.add(f)
+            merged_files.append(f)
+
+    parent_events = parent_hooks.get('events', [])
+    child_events = child_hooks.get('events', [])
+    merged_events = list(parent_events) + list(child_events)
+
+    return {'files': merged_files, 'events': merged_events}
+
+
+def _merge_dependencies(
+    parent_deps: dict[str, list[str]],
+    child_deps: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Merge dependency dicts per platform with deduplication.
+
+    Args:
+        parent_deps: Parent per-platform dependency commands.
+        child_deps: Child per-platform dependency commands.
+
+    Returns:
+        Merged dependencies with per-platform list concatenation and dedup.
+    """
+    all_platforms = set(parent_deps.keys()) | set(child_deps.keys())
+    result: dict[str, list[str]] = {}
+    for plat in sorted(all_platforms):
+        parent_cmds = parent_deps.get(plat, [])
+        child_cmds = child_deps.get(plat, [])
+        result[plat] = _merge_string_list(parent_cmds, child_cmds)
+    return result
+
+
+def _merge_config_key(
+    key: str,
+    parent_value: object,
+    child_value: object,
+) -> object:
+    """Dispatch merge for a single key based on its type semantics.
+
+    Args:
+        key: The configuration key name.
+        parent_value: The parent's value for this key.
+        child_value: The child's value for this key.
+
+    Returns:
+        The merged value using the appropriate strategy for the key type.
+    """
+    # String list keys: concat + dedup, parent-first order
+    if key in ('agents', 'slash-commands', 'rules'):
+        p_list = cast(list[str], parent_value) if isinstance(parent_value, list) else []
+        c_list = cast(list[str], child_value) if isinstance(child_value, list) else []
+        return _merge_string_list(p_list, c_list)
+
+    # Named list keys with identity by 'name'
+    if key in ('mcp-servers', 'skills'):
+        p_named = cast(list[dict[str, object]], parent_value) if isinstance(parent_value, list) else []
+        c_named = cast(list[dict[str, object]], child_value) if isinstance(child_value, list) else []
+        return _merge_named_list(p_named, c_named, 'name')
+
+    # Named list key with identity by 'dest'
+    if key == 'files-to-download':
+        p_files = cast(list[dict[str, object]], parent_value) if isinstance(parent_value, list) else []
+        c_files = cast(list[dict[str, object]], child_value) if isinstance(child_value, list) else []
+        return _merge_named_list(p_files, c_files, 'dest')
+
+    # Dependencies: per-platform merge
+    if key == 'dependencies':
+        p_deps = cast(dict[str, list[str]], parent_value) if isinstance(parent_value, dict) else {}
+        c_deps = cast(dict[str, list[str]], child_value) if isinstance(child_value, dict) else {}
+        return _merge_dependencies(p_deps, c_deps)
+
+    # Hooks: composite merge (files dedup + events concat)
+    if key == 'hooks':
+        p_hooks = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
+        c_hooks = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
+        return _merge_hooks(p_hooks, c_hooks)
+
+    # Global-config: deep merge with no array union
+    if key == 'global-config':
+        p_gc = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
+        c_gc = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
+        return deep_merge_settings(p_gc, c_gc, array_union_keys=set())
+
+    # User-settings: deep merge with default array union keys
+    if key == 'user-settings':
+        p_us = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
+        c_us = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
+        return deep_merge_settings(p_us, c_us, array_union_keys=DEFAULT_ARRAY_UNION_KEYS)
+
+    # Env-variables and os-env-variables: shallow dict merge, null deletes
+    if key in ('env-variables', 'os-env-variables'):
+        p_env = cast(dict[str, str | None], parent_value) if isinstance(parent_value, dict) else {}
+        c_env = cast(dict[str, str | None], child_value) if isinstance(child_value, dict) else {}
+        merged_env: dict[str, str | None] = dict(p_env)
+        for env_k, env_v in c_env.items():
+            if env_v is None:
+                merged_env.pop(env_k, None)
+            else:
+                merged_env[env_k] = env_v
+        return merged_env
+
+    # Fallback: replace semantics
+    return child_value
+
+
+def _merge_configs(
+    parent: dict[str, Any],
+    child: dict[str, Any],
+    merge_keys: frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Merge parent and child configs with optional per-key merge semantics.
+
+    When merge_keys is None (default), child values completely replace parent
+    values (backward-compatible behavior). When merge_keys is provided, keys
+    listed in it are merged using type-aware strategies instead of replaced.
 
     Args:
         parent: The parent configuration (base).
         child: The child configuration (overrides parent).
+        merge_keys: Optional set of key names to merge instead of replace.
 
     Returns:
-        dict[str, Any]: Merged configuration.
+        Merged configuration with inherit and merge-keys stripped.
     """
-    # Start with parent's keys
     result = parent.copy()
 
-    # Override with child's keys (excluding 'inherit')
     for key, value in child.items():
-        if key != INHERIT_KEY:
+        if key in (INHERIT_KEY, MERGE_KEYS_KEY):
+            continue
+        if (
+            merge_keys is not None
+            and key in merge_keys
+            and key in result
+        ):
+            result[key] = _merge_config_key(key, result[key], value)
+        else:
             result[key] = value
+
+    # Defensive strip of meta-keys from result
+    result.pop(INHERIT_KEY, None)
+    result.pop(MERGE_KEYS_KEY, None)
 
     return result
 
@@ -3178,13 +3410,15 @@ def resolve_config_inheritance(
 ) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
     """Resolve configuration inheritance by loading and merging parent configs.
 
-    Implements top-level key override semantics: child config values completely
-    replace parent values for the same key. No deep merging is performed.
+    Implements top-level key override semantics by default: child config values
+    completely replace parent values for the same key. When 'merge-keys' is
+    specified, listed keys are merged using type-aware strategies instead.
 
     The inheritance chain is resolved recursively:
     1. If config has 'inherit' key, load the parent config
     2. If parent also has 'inherit', load its parent (recursive)
     3. Merge configs from oldest ancestor to newest child
+    4. If 'merge-keys' is present, listed keys use merge instead of replace
 
     Args:
         config: The configuration dictionary to resolve inheritance for.
@@ -3241,8 +3475,14 @@ def resolve_config_inheritance(
     # Check if this config has inheritance
     inherit_value = config.get(INHERIT_KEY)
     if inherit_value is None:
-        # No inheritance - return config as-is (without the inherit key if present)
-        return {k: v for k, v in config.items() if k != INHERIT_KEY}, chain
+        # Warn if merge-keys present without inherit
+        if config.get(MERGE_KEYS_KEY) is not None:
+            warning(
+                "Warning: 'merge-keys' has no effect without 'inherit'. "
+                "Did you mean to add an 'inherit' key?",
+            )
+        # No inheritance - return config as-is (without meta-keys)
+        return {k: v for k, v in config.items() if k not in (INHERIT_KEY, MERGE_KEYS_KEY)}, chain
 
     # Validate inherit value is a string
     if not isinstance(inherit_value, str):
@@ -3311,8 +3551,41 @@ def resolve_config_inheritance(
         name=parent_config.get('name', inherit_value),
     ))
 
-    # Merge: parent first, then child overrides (top-level key override)
-    merged = _merge_configs(resolved_parent, config)
+    # Extract and validate merge-keys from child config
+    merge_keys_value = config.get(MERGE_KEYS_KEY)
+    validated_merge_keys: frozenset[str] | None = None
+
+    if merge_keys_value is not None:
+        if not isinstance(merge_keys_value, list):
+            error(f"Invalid 'merge-keys' value: expected list, got {type(merge_keys_value).__name__}")
+            raise ValueError(
+                f"The 'merge-keys' key must be a list of strings, "
+                f"got {type(merge_keys_value).__name__}: {merge_keys_value!r}",
+            )
+
+        # Cast to list[object] for Pyright after isinstance narrowing
+        merge_keys_list = cast(list[object], merge_keys_value)
+
+        # Validate all entries are strings
+        for i, entry in enumerate(merge_keys_list):
+            if not isinstance(entry, str):
+                error(f'Invalid merge-keys[{i}]: expected string, got {type(entry).__name__}')
+                raise ValueError(f'merge-keys[{i}] must be a string, got {type(entry).__name__}')
+
+        # Validate entries against MERGEABLE_CONFIG_KEYS
+        merge_keys_str = cast(list[str], merge_keys_list)
+        invalid_keys = [k for k in merge_keys_str if k not in MERGEABLE_CONFIG_KEYS]
+        if invalid_keys:
+            error(f'Invalid merge-keys: {invalid_keys}')
+            raise ValueError(
+                f'Invalid keys in merge-keys: {invalid_keys}. '
+                f'Valid mergeable keys: {sorted(MERGEABLE_CONFIG_KEYS)}',
+            )
+
+        validated_merge_keys = frozenset(merge_keys_str)
+
+    # Merge: parent first, then child overrides
+    merged = _merge_configs(resolved_parent, config, merge_keys=validated_merge_keys)
 
     success(f'Inherited from: {inherit_value}')
 

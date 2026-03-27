@@ -1,0 +1,20 @@
+# Level 2: Merges from L1
+name: "Chain Level 2"
+
+inherit: merge_chain_l1.yaml
+merge-keys:
+  - agents
+  - mcp-servers
+  - rules
+
+agents:
+  - "agents/l2-agent.md"
+
+mcp-servers:
+  - name: "l2-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/l2"
+
+rules:
+  - "rules/l2-rule.md"

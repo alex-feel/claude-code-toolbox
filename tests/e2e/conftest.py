@@ -144,6 +144,7 @@ def golden_config() -> dict[str, Any]:
 
     The golden config includes:
     - version: Configuration version for update checking
+    - merge-keys: Selective merge keys (exercises warning path without inherit)
     - command-names: Array of command names/aliases
     - base-url: Resource URL (uses local mock_repo)
     - claude-code-version: Version specification
