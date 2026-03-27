@@ -70,6 +70,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'claude-code-version',
     'install-nodejs',
     'dependencies',
+    'description',
     'agents',
     'slash-commands',
     'rules',
@@ -80,6 +81,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'mcp-servers',
     'model',
     'permissions',
+    'post-install-notes',
     'env-variables',
     'os-env-variables',
     'command-defaults',
@@ -525,6 +527,7 @@ class InstallationPlan:
     config_source: str
     config_source_type: str  # 'url', 'local', 'repo'
     config_version: str | None
+    config_description: str | None = None
 
     # Inheritance chain (root ancestor first, current config last)
     inheritance_chain: list[InheritanceChainEntry] = field(
@@ -3409,6 +3412,7 @@ def collect_installation_plan(
         config_source=config_source,
         config_source_type=config_source_type,
         config_version=config_version,
+        config_description=config.get('description'),
         inheritance_chain=inheritance_chain,
         agents=config.get('agents', []) or [],
         slash_commands=config.get('slash-commands', []) or [],
@@ -3488,6 +3492,9 @@ def display_installation_summary(
 
     # Config metadata
     _print(f'{Colors.BOLD}Configuration:{Colors.NC} {plan.config_name}')
+    if plan.config_description:
+        for line in plan.config_description.splitlines():
+            _print(f'  {line}')
     _print(f'{Colors.BOLD}Source:{Colors.NC} {plan.config_source} ({plan.config_source_type})')
     _print(f'{Colors.BOLD}Version:{Colors.NC} {plan.config_version or "not specified"}')
 
@@ -8180,6 +8187,14 @@ def main() -> None:
         print('   * Setup Guide: https://github.com/alex-feel/claude-code-toolbox')
         print('   * Claude Code Docs: https://code.claude.com/docs')
         print()
+
+        # Post-install notes from configuration author
+        post_install_notes = config.get('post-install-notes')
+        if post_install_notes and isinstance(post_install_notes, str) and post_install_notes.strip():
+            print(f'{Colors.YELLOW}Notes from the configuration author:{Colors.NC}')
+            for line in post_install_notes.splitlines():
+                print(f'  {line}')
+            print()
 
         # If running elevated via UAC, add a pause so user can see the results
         if was_elevated_via_uac and not is_running_in_pytest():

@@ -129,11 +129,13 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 ## Configuration Reference
 
-Quick-reference table of all 27 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
+Quick-reference table of all 29 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
 | YAML Key                                              | Type                   | Required | Default | Brief Description                          |
 |-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
 | [`name`](#name)                                       | `str`                  | **Yes**  | --      | Display name for the environment           |
+| [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)      |
+| [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation  |
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
 | [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
 | [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
@@ -179,6 +181,44 @@ Display name for the environment, shown in the setup header and summary.
 
 - **Type:** `str` (required)
 - **Example:** `name: "Python Development"`
+
+#### `description`
+
+Description of the environment configuration. Shown in the installation summary immediately after the configuration name, providing context about the environment's purpose.
+
+- **Type:** `str | None`
+- **Default:** `None`
+- **Multiline:** Supported via YAML `|` (literal block) or `>` (folded block) scalars
+- **Display:** In installation summary, after "Configuration:" and before "Source:", with 2-space indent per line. No "Description:" label prefix.
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+description: |
+  A comprehensive development environment for AI-powered coding
+  with pre-configured MCP servers, custom agents, and debugging tools.
+```
+
+#### `post-install-notes`
+
+Notes displayed after successful installation. Use for next steps, setup instructions, API key configuration, or any guidance the configuration author wants to communicate after the environment is installed.
+
+- **Type:** `str | None`
+- **Default:** `None`
+- **Multiline:** Supported via YAML `|` (literal block) or `>` (folded block) scalars
+- **Display:** After successful installation only (not on failure, not in dry-run). Rendered after the "Documentation:" section with a yellow header "Notes from the configuration author:" and 2-space indent per line.
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+post-install-notes: |
+  Next steps:
+  1. Set your API key: export ANTHROPIC_API_KEY=sk-...
+  2. Start the environment: my-env
+  3. Run /help to see available commands
+
+  Documentation: https://docs.example.com/my-env
+```
 
 #### `version`
 
@@ -922,6 +962,15 @@ A realistic configuration demonstrating most keys:
 # Python Development Environment Configuration
 name: "Python Development"
 version: "1.0.0"
+
+description: |
+  Full-featured Python environment with linting, type checking,
+  and AI-powered MCP servers pre-configured.
+
+post-install-notes: |
+  Next steps:
+  1. Run: claude-python
+  2. Try: /help to see available commands
 
 command-names:
   - "claude-python"   # Primary command name

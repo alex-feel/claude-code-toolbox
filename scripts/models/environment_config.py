@@ -512,6 +512,16 @@ class EnvironmentConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True, str_strip_whitespace=True)
 
     name: str = Field(..., description='Display name for the environment')
+    description: str | None = Field(
+        None,
+        description='Description of the environment configuration, shown in the installation summary.',
+    )
+    post_install_notes: str | None = Field(
+        None,
+        alias='post-install-notes',
+        description='Notes displayed after successful installation. '
+        'Supports multiline content via YAML literal block (|) or folded block (>) scalars.',
+    )
     command_names: list[str] | None = Field(
         default_factory=lambda: [],
         alias='command-names',

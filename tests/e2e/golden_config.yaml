@@ -7,6 +7,16 @@ name: "E2E Test Environment"
 # Configuration version for update checking
 version: "1.0.0"
 
+# Description shown in installation summary
+description: |
+  A comprehensive test environment for validating
+  all supported configuration keys and behaviors.
+
+# Notes displayed after successful installation
+post-install-notes: |
+  E2E test post-install notes.
+  These notes verify that post-install rendering works correctly.
+
 # Command names (PRIMARY format - array)
 command-names:
   - "e2e-test-cmd"

@@ -984,3 +984,55 @@ class TestRulesField:
             'rules': ['https://example.com/rule.md', 'local-rule.md'],
         })
         assert len(config.rules) == 2
+
+
+class TestDescriptionField:
+    """Test description field in EnvironmentConfig."""
+
+    def test_description_field_optional(self) -> None:
+        """Config validates without description."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.description is None
+
+    def test_description_field_accepted(self) -> None:
+        """Config accepts a description string."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'description': 'A test environment for demos.',
+        })
+        assert config.description == 'A test environment for demos.'
+
+    def test_description_multiline(self) -> None:
+        """Config accepts multiline description."""
+        desc = 'Line one\nLine two\nLine three'
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'description': desc,
+        })
+        assert config.description == desc
+
+
+class TestPostInstallNotesField:
+    """Test post-install-notes field in EnvironmentConfig."""
+
+    def test_post_install_notes_field_optional(self) -> None:
+        """Config validates without post-install-notes."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.post_install_notes is None
+
+    def test_post_install_notes_field_with_alias(self) -> None:
+        """Config accepts post-install-notes via kebab-case alias."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'post-install-notes': 'Run setup commands after install.',
+        })
+        assert config.post_install_notes == 'Run setup commands after install.'
+
+    def test_post_install_notes_multiline(self) -> None:
+        """Config accepts multiline post-install-notes."""
+        notes = 'Step 1: Do X\nStep 2: Do Y'
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'post-install-notes': notes,
+        })
+        assert config.post_install_notes == notes

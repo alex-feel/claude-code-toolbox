@@ -9139,6 +9139,60 @@ class TestCollectInstallationPlan:
         )
         assert plan.total_resources == 2
 
+    def test_description_extracted_into_plan(self) -> None:
+        """config description is extracted to plan.config_description."""
+        config: dict[str, Any] = {
+            'name': 'test-env',
+            'description': 'A test environment for demos.',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description == 'A test environment for demos.'
+
+    def test_description_none_when_absent(self) -> None:
+        """config_description is None when not in config."""
+        config: dict[str, Any] = {'name': 'test-env'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description is None
+
+    def test_description_empty_string(self) -> None:
+        """Empty string description is passed through to plan."""
+        config: dict[str, Any] = {
+            'name': 'test-env',
+            'description': '',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description == ''
+
 
 class TestCollectSimpleListFiles:
     """Test _collect_simple_list_files() helper."""
@@ -9302,6 +9356,54 @@ class TestDisplayInstallationSummary:
         output = buf.getvalue()
         assert '2 delete' in output
         assert '[DELETE]' in output
+
+    def test_display_with_description(self) -> None:
+        """Description lines appear after Configuration: and before Source:."""
+        import io
+        plan = self._make_plan(config_description='A test environment.')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        desc_idx = next(i for i, ln in enumerate(lines) if 'A test environment.' in ln)
+        assert config_idx < desc_idx < source_idx
+
+    def test_display_without_description(self) -> None:
+        """No extra lines between Configuration: and Source: when description is None."""
+        import io
+        plan = self._make_plan(config_description=None)
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        assert source_idx == config_idx + 1
+
+    def test_display_multiline_description(self) -> None:
+        """Each description line is 2-space indented."""
+        import io
+        plan = self._make_plan(config_description='Line one\nLine two\nLine three')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '  Line one' in output
+        assert '  Line two' in output
+        assert '  Line three' in output
+
+    def test_display_empty_description(self) -> None:
+        """Empty string description is skipped (no extra lines)."""
+        import io
+        plan = self._make_plan(config_description='')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        assert source_idx == config_idx + 1
 
 
 class TestConfirmInstallation:
