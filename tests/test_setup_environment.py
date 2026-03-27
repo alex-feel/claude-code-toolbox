@@ -7733,10 +7733,10 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 14-18 skipped
+        # Verify output shows Steps 15-19 skipped
         captured = capsys.readouterr()
-        assert 'Steps 14-18: Skipping command creation' in captured.out
-        assert 'Step 12: Writing user settings' in captured.out
+        assert 'Steps 15-19: Skipping command creation' in captured.out
+        assert 'Step 13: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -7800,13 +7800,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 12 and Steps 14-18
+        # Verify output shows Step 13 and Steps 15-19
         captured = capsys.readouterr()
-        assert 'Step 12: Writing user settings' in captured.out
-        assert 'Step 14: Downloading hooks' in captured.out
-        assert 'Step 15: Configuring settings' in captured.out
-        assert 'Step 17: Creating launcher script' in captured.out
-        assert 'Step 18: Registering global' in captured.out
+        assert 'Step 13: Writing user settings' in captured.out
+        assert 'Step 15: Downloading hooks' in captured.out
+        assert 'Step 16: Configuring settings' in captured.out
+        assert 'Step 18: Creating launcher script' in captured.out
+        assert 'Step 19: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(
@@ -8825,6 +8825,7 @@ class TestCollectInstallationPlan:
             'version': '2.0.0',
             'agents': ['agent1.md', 'agent2.md'],
             'slash-commands': ['cmd1.md'],
+            'rules': ['rule1.md'],
             'skills': [{'name': 'skill1', 'files': ['s.md']}],
             'files-to-download': [{'source': 'f.txt', 'dest': '~/.claude/f.txt'}],
             'hooks': {
@@ -8851,6 +8852,7 @@ class TestCollectInstallationPlan:
         )
         assert len(plan.agents) == 2
         assert len(plan.slash_commands) == 1
+        assert len(plan.rules) == 1
         assert len(plan.skills) == 1
         assert len(plan.files_to_download) == 1
         assert len(plan.hooks_files) == 1
@@ -8970,6 +8972,86 @@ class TestCollectInstallationPlan:
         )
         assert plan_clean.has_security_concerns is False
         assert plan_deps.has_security_concerns is True
+
+    def test_collect_plan_with_rules(self) -> None:
+        """Rules are extracted into plan.rules."""
+        config: dict[str, Any] = {
+            'name': 'rules-env',
+            'rules': ['rule1.md', 'rule2.md'],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='rules-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.rules == ['rule1.md', 'rule2.md']
+        assert plan.total_resources == 2
+
+    def test_total_resources_includes_rules(self) -> None:
+        """total_resources property counts rules alongside other resource types."""
+        config: dict[str, Any] = {
+            'agents': ['a.md'],
+            'rules': ['r.md'],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.total_resources == 2
+
+
+class TestCollectSimpleListFiles:
+    """Test _collect_simple_list_files() helper."""
+
+    def test_empty_config(self) -> None:
+        """Empty config returns no files."""
+        result = setup_environment._collect_simple_list_files(
+            config={}, config_key='rules', file_type='rule',
+            config_source='test', base_url=None,
+        )
+        assert result == []
+
+    def test_collects_string_items(self) -> None:
+        """String items are collected with resolved paths."""
+        config: dict[str, Any] = {'rules': ['rule1.md', 'rule2.md']}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='rules', file_type='rule',
+            config_source='/path/to/config.yaml', base_url=None,
+        )
+        assert len(result) == 2
+        assert result[0][0] == 'rule'
+        assert result[0][1] == 'rule1.md'
+
+    def test_skips_non_string_items(self) -> None:
+        """Non-string items are silently skipped."""
+        config: dict[str, Any] = {'agents': ['agent.md', 123, None]}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='agents', file_type='agent',
+            config_source='test', base_url=None,
+        )
+        assert len(result) == 1
+
+    def test_non_list_value_returns_empty(self) -> None:
+        """Non-list config value returns empty list."""
+        config: dict[str, Any] = {'rules': 'not-a-list'}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='rules', file_type='rule',
+            config_source='test', base_url=None,
+        )
+        assert result == []
 
 
 class TestDisplayInstallationSummary:

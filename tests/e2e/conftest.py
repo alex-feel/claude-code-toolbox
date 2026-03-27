@@ -151,6 +151,7 @@ def golden_config() -> dict[str, Any]:
     - dependencies: Platform-specific dependencies
     - agents: Agent markdown files
     - slash-commands: Slash command files
+    - rules: Rule markdown files (user-scope)
     - skills: Skills configuration with name, base, files
     - files-to-download: Additional files with source/dest
     - hooks: Files and events configuration
@@ -215,6 +216,8 @@ def mock_repo_path() -> Path:
         │   └── e2e-test-agent.md
         ├── commands/
         │   └── e2e-test-command.md
+        ├── rules/
+        │   └── e2e-test-rule.md
         ├── skills/
         │   ├── SKILL.md
         │   └── e2e-test-skill.md

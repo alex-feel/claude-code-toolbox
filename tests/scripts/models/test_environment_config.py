@@ -942,3 +942,29 @@ class TestVersionValidation:
                 'name': 'Test',
                 'version': 'latest',
             })
+
+
+class TestRulesField:
+    """Test rules field in EnvironmentConfig model."""
+
+    def test_rules_field_valid(self) -> None:
+        """Rules field accepts list of strings."""
+        config = EnvironmentConfig.model_validate({'rules': ['rule1.md', 'rule2.md']})
+        assert config.rules == ['rule1.md', 'rule2.md']
+
+    def test_rules_field_default_empty_list(self) -> None:
+        """Rules field defaults to empty list."""
+        config = EnvironmentConfig.model_validate({})
+        assert config.rules == []
+
+    def test_rules_field_none_accepted(self) -> None:
+        """Rules field accepts None value."""
+        config = EnvironmentConfig.model_validate({'rules': None})
+        assert config.rules is None
+
+    def test_rules_included_in_validate_file_paths(self) -> None:
+        """Rules field is covered by validate_file_paths validator."""
+        config = EnvironmentConfig.model_validate({
+            'rules': ['https://example.com/rule.md', 'local-rule.md'],
+        })
+        assert len(config.rules) == 2

@@ -66,7 +66,7 @@ hooks:
       command: "linter.py"
 ```
 
-This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all 26 configuration keys.
+This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all 27 configuration keys.
 
 ### Install Your Environment
 

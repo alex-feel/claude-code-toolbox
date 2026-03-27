@@ -40,6 +40,10 @@ agents:
 slash-commands:
   - "commands/e2e-test-command.md"
 
+# Rule markdown files (user-scope only: ~/.claude/rules/)
+rules:
+  - "rules/e2e-test-rule.md"
+
 # Skills configuration
 skills:
   - name: "e2e-test-skill"

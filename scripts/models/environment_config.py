@@ -538,6 +538,10 @@ class EnvironmentConfig(BaseModel):
         alias='slash-commands',
         description='Slash command files',
     )
+    rules: list[str] | None = Field(
+        default_factory=lambda: [],
+        description='Rule markdown files placed in ~/.claude/rules/ (user-scope)',
+    )
     skills: list[Skill] | None = Field(
         default_factory=lambda: [],
         description='Skill configurations for Claude Code skills',
@@ -971,7 +975,7 @@ class EnvironmentConfig(BaseModel):
 
         return self
 
-    @field_validator('agents', 'slash_commands')
+    @field_validator('agents', 'slash_commands', 'rules')
     @classmethod
     def validate_file_paths(cls, v: list[str] | None) -> list[str] | None:
         """Validate file paths for security issues.

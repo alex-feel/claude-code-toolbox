@@ -72,6 +72,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'dependencies',
     'agents',
     'slash-commands',
+    'rules',
     'skills',
     'files-to-download',
     'global-config',
@@ -534,6 +535,7 @@ class InstallationPlan:
     # Resources by category
     agents: list[str] = field(default_factory=lambda: list[str]())
     slash_commands: list[str] = field(default_factory=lambda: list[str]())
+    rules: list[str] = field(default_factory=lambda: list[str]())
     skills: list[dict[str, Any]] = field(default_factory=lambda: list[dict[str, Any]]())
     files_to_download: list[dict[str, Any]] = field(
         default_factory=lambda: list[dict[str, Any]](),
@@ -580,6 +582,7 @@ class InstallationPlan:
         return (
             len(self.agents)
             + len(self.slash_commands)
+            + len(self.rules)
             + len(self.skills)
             + len(self.files_to_download)
             + len(self.hooks_files)
@@ -2213,6 +2216,39 @@ class FileValidator:
         self._validation_results.clear()
 
 
+def _collect_simple_list_files(
+    config: dict[str, Any],
+    config_key: str,
+    file_type: str,
+    config_source: str,
+    base_url: str | None,
+) -> list[tuple[str, str, str, bool]]:
+    """Collect files from a simple list config key for validation.
+
+    Handles the common pattern of extracting string items from a list-type
+    config key and resolving their paths for file validation.
+
+    Args:
+        config: Environment configuration dictionary.
+        config_key: The YAML key to read (e.g., 'agents', 'slash-commands', 'rules').
+        file_type: Label for validation results (e.g., 'agent', 'slash_command', 'rule').
+        config_source: Source of the configuration (URL or path).
+        base_url: Optional base URL override from config.
+
+    Returns:
+        List of (file_type, original_path, resolved_path, is_remote) tuples.
+    """
+    files: list[tuple[str, str, str, bool]] = []
+    raw = config.get(config_key, [])
+    if isinstance(raw, list):
+        items = cast(list[object], raw)
+        for item in items:
+            if isinstance(item, str):
+                resolved_path, is_remote = resolve_resource_path(item, config_source, base_url)
+                files.append((file_type, item, resolved_path, is_remote))
+    return files
+
+
 def validate_all_config_files(
     config: dict[str, Any],
     config_source: str,
@@ -2240,24 +2276,19 @@ def validate_all_config_files(
     base_url = config.get('base-url')
 
     # Agents
-    agents_raw = config.get('agents', [])
-    if isinstance(agents_raw, list):
-        # Cast to typed list for pyright
-        agents_list = cast(list[object], agents_raw)
-        for agent_item in agents_list:
-            if isinstance(agent_item, str):
-                resolved_path, is_remote = resolve_resource_path(agent_item, config_source, base_url)
-                files_to_check.append(('agent', agent_item, resolved_path, is_remote))
+    files_to_check.extend(
+        _collect_simple_list_files(config, 'agents', 'agent', config_source, base_url),
+    )
 
     # Slash commands
-    commands_raw = config.get('slash-commands', [])
-    if isinstance(commands_raw, list):
-        # Cast to typed list for pyright
-        commands_list = cast(list[object], commands_raw)
-        for cmd_item in commands_list:
-            if isinstance(cmd_item, str):
-                resolved_path, is_remote = resolve_resource_path(cmd_item, config_source, base_url)
-                files_to_check.append(('slash_command', cmd_item, resolved_path, is_remote))
+    files_to_check.extend(
+        _collect_simple_list_files(config, 'slash-commands', 'slash_command', config_source, base_url),
+    )
+
+    # Rules
+    files_to_check.extend(
+        _collect_simple_list_files(config, 'rules', 'rule', config_source, base_url),
+    )
 
     # System prompts from command-defaults
     command_defaults = config.get('command-defaults', {})
@@ -3366,6 +3397,7 @@ def collect_installation_plan(
         inheritance_chain=inheritance_chain,
         agents=config.get('agents', []) or [],
         slash_commands=config.get('slash-commands', []) or [],
+        rules=config.get('rules', []) or [],
         skills=skills_list,
         files_to_download=files_to_download,
         hooks_files=hooks_files,
@@ -3457,6 +3489,7 @@ def display_installation_summary(
     _print(f'{Colors.BOLD}Resources:{Colors.NC}')
     _print(f'  * Agents: {len(plan.agents)}')
     _print(f'  * Slash commands: {len(plan.slash_commands)}')
+    _print(f'  * Rules: {len(plan.rules)}')
     _print(f'  * Skills: {len(plan.skills)}')
     _print(f'  * Files to download: {len(plan.files_to_download)}')
     _print(f'  * Hook files: {len(plan.hooks_files)}')
@@ -7731,6 +7764,7 @@ def main() -> None:
         claude_user_dir = home / '.claude'
         agents_dir = claude_user_dir / 'agents'
         commands_dir = claude_user_dir / 'commands'
+        rules_dir = claude_user_dir / 'rules'
         prompts_dir = claude_user_dir / 'prompts'
         hooks_dir = claude_user_dir / 'hooks'
         skills_dir = claude_user_dir / 'skills'
@@ -7752,7 +7786,7 @@ def main() -> None:
         # Step 2: Create directories
         print()
         print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        for dir_path in [claude_user_dir, agents_dir, commands_dir, prompts_dir, hooks_dir, skills_dir]:
+        for dir_path in [claude_user_dir, agents_dir, commands_dir, rules_dir, prompts_dir, hooks_dir, skills_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
@@ -7812,9 +7846,19 @@ def main() -> None:
         else:
             info('No slash commands to process')
 
-        # Step 9: Process skills
+        # Step 9: Process rules
         print()
-        print(f'{Colors.CYAN}Step 9: Processing skills...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Processing rules...{Colors.NC}')
+        rules = config.get('rules', [])
+        if rules:
+            if not process_resources(rules, rules_dir, 'rules', config_source, base_url, args.auth):
+                download_failures.append('rules')
+        else:
+            info('No rules to process')
+
+        # Step 10: Process skills
+        print()
+        print(f'{Colors.CYAN}Step 10: Processing skills...{Colors.NC}')
         skills_raw = config.get('skills', [])
         # Convert to properly typed list using cast and list comprehension
         skills: list[dict[str, Any]] = (
@@ -7828,9 +7872,9 @@ def main() -> None:
         else:
             info('No skills configured')
 
-        # Step 10: Process system prompt (if specified)
+        # Step 11: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 10: Processing system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 11: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
@@ -7842,9 +7886,9 @@ def main() -> None:
         else:
             info('No additional system prompt configured')
 
-        # Step 11: Configure MCP servers
+        # Step 12: Configure MCP servers
         print()
-        print(f'{Colors.CYAN}Step 11: Configuring MCP servers...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 12: Configuring MCP servers...{Colors.NC}')
         mcp_servers_raw = config.get('mcp-servers', [])
         # Convert to properly typed list for type safety
         mcp_servers: list[dict[str, Any]] = (
@@ -7883,9 +7927,9 @@ def main() -> None:
         )
         has_profile_mcp_servers = len(profile_servers) > 0
 
-        # Step 12: Write user settings
+        # Step 13: Write user settings
         print()
-        print(f'{Colors.CYAN}Step 12: Writing user settings...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 13: Writing user settings...{Colors.NC}')
         if user_settings:
             if write_user_settings(user_settings, claude_user_dir):
                 success('User settings configured successfully')
@@ -7894,9 +7938,9 @@ def main() -> None:
         else:
             info('No user settings to configure')
 
-        # Step 13: Write global config
+        # Step 14: Write global config
         print()
-        print(f'{Colors.CYAN}Step 13: Writing global config...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 14: Writing global config...{Colors.NC}')
         if global_config:
             if write_global_config(global_config):
                 success('Global config written successfully')
@@ -7907,16 +7951,16 @@ def main() -> None:
 
         # Check if command creation is needed
         if primary_command_name:
-            # Step 14: Download hooks
+            # Step 15: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 14: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 15: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth):
                 download_failures.append('hook files')
 
-            # Step 15: Configure settings
+            # Step 16: Configure settings
             print()
-            print(f'{Colors.CYAN}Step 15: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Configuring settings...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -7936,9 +7980,9 @@ def main() -> None:
                 effort_level,
             )
 
-            # Step 16: Write installation manifest
+            # Step 17: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 16: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 17: Writing installation manifest...{Colors.NC}')
             cleanup_stale_marker(claude_user_dir, primary_command_name)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -7952,9 +7996,9 @@ def main() -> None:
                 command_names=command_names or [primary_command_name],
             )
 
-            # Step 17: Create launcher script
+            # Step 18: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 17: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 18: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -7964,21 +8008,21 @@ def main() -> None:
                 claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 18: Register global command(s)
+            # Step 19: Register global command(s)
             if launcher_path:
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 18: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 19: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 18: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 19: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(launcher_path, primary_command_name, additional_command_names)
             else:
                 warning('Launcher script was not created')
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 14-18: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 15-19: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -8020,6 +8064,7 @@ def main() -> None:
         print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
+        print(f'   * Rules: {len(rules)} installed')
         print(f'   * Skills: {len(skills)} installed')
         if files_to_download:
             print(f'   * Files downloaded: {len(files_to_download)} processed')

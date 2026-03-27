@@ -129,7 +129,7 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 ## Configuration Reference
 
-Quick-reference table of all 26 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
+Quick-reference table of all 27 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
 | YAML Key                                              | Type                   | Required | Default | Brief Description                          |
 |-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
@@ -143,6 +143,7 @@ Quick-reference table of all 26 configuration keys. Each key links to its detail
 | [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands      |
 | [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                  |
 | [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                   |
+| [`rules`](#rules)                                     | `list[str]`            | No       | `[]`    | Rule markdown file paths (user-scope)      |
 | [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                       |
 | [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup             |
 | [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`              |
@@ -314,6 +315,22 @@ Command files placed in `~/.claude/commands/` during setup. Uses the same path r
 slash-commands:
   - "commands/review.md"
   - "commands/deploy.md"
+```
+
+#### `rules`
+
+Rule files placed in `~/.claude/rules/` during setup. Claude Code loads `.md` files from this directory recursively as user-scope rules that apply across all projects.
+
+- **Type:** `list[str] | None`
+- **Default:** `[]`
+- **Scope:** User-scope only (`~/.claude/rules/`). Project-scope rules (`.claude/rules/` in the repository) should be committed directly to version control.
+- **Note:** Only `.md` files are recognized by Claude Code. Rules support optional YAML frontmatter with `description:` and `paths:` for path-scoped rules (glob patterns).
+- **Example:**
+
+```yaml
+rules:
+  - "rules/coding-standards.md"
+  - "rules/security-policy.md"
 ```
 
 #### `skills`
@@ -850,25 +867,26 @@ For the full technical architecture, see [Cross-Shell Launcher Architecture](cro
 Here is a conceptual overview of what the setup script does when you run it with a configuration:
 
 1. **Install Claude Code** -- Uses the native installer with npm fallback. Skipped with `--skip-install`.
-2. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `prompts/`, `hooks/`, and `skills/` directories.
+2. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
 3. **Download custom files** -- Processes `files-to-download` entries.
 4. **Install Node.js** -- If `install-nodejs: true` is set in the config.
 5. **Install dependencies** -- Runs platform-specific dependency commands.
 6. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`.
 7. **Process agents** -- Downloads agent markdown files to `~/.claude/agents/`.
 8. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
-9. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
-10. **Process system prompt** -- Downloads the prompt file if configured.
-11. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
-12. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
-13. **Write global config** -- Merges `global-config` into `~/.claude.json`.
-14. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-15. **Configure settings** -- Creates the settings file for the command.
-16. **Write manifest** -- Creates an installation tracking manifest.
-17. **Create launcher** -- Creates the launcher script for the command.
-18. **Register commands** -- Creates global command wrappers.
+9. **Process rules** -- Downloads rule markdown files to `~/.claude/rules/`.
+10. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
+11. **Process system prompt** -- Downloads the prompt file if configured.
+12. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
+13. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
+14. **Write global config** -- Merges `global-config` into `~/.claude.json`.
+15. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
+16. **Configure settings** -- Creates the settings file for the command.
+17. **Write manifest** -- Creates an installation tracking manifest.
+18. **Create launcher** -- Creates the launcher script for the command.
+19. **Register commands** -- Creates global command wrappers.
 
-Steps 14 through 18 are skipped if `command-names` is not specified.
+Steps 15 through 19 are skipped if `command-names` is not specified.
 
 ## Complete Annotated Example
 
@@ -908,6 +926,10 @@ agents:
 slash-commands:
   - "commands/lint.md"
   - "commands/test.md"
+
+# User-scope rules (placed in ~/.claude/rules/)
+rules:
+  - "rules/coding-standards.md"
 
 # Skills
 skills:
