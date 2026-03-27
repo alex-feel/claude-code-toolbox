@@ -3,9 +3,9 @@
 These values represent files and JSON keys that are identical regardless
 of the operating system.
 
-Note: The actual additional-settings.json location differs by platform:
-- Linux/macOS: {config_claude}/{cmd}-additional-settings.json
-- Windows: {localappdata_claude}/{cmd}-additional-settings.json
+Note: The actual settings.json location differs by platform:
+- Linux/macOS: {config_claude}/{cmd}-settings.json
+- Windows: {localappdata_claude}/{cmd}-settings.json
 
 The MCP config file is always in {claude_dir}/{cmd}-mcp.json.
 """
@@ -23,7 +23,7 @@ COMMON_FILES: Final[list[str]] = [
 
 # Expected keys in generated JSON files
 EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
-    'additional-settings': [
+    'settings': [
         'permissions',
         'env',
         'hooks',

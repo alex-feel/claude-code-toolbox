@@ -18,8 +18,8 @@ import pytest
 
 from scripts import setup_environment
 from scripts.setup_environment import configure_all_mcp_servers
-from scripts.setup_environment import create_additional_settings
 from scripts.setup_environment import create_mcp_config_file
+from scripts.setup_environment import create_settings
 from scripts.setup_environment import write_user_settings
 from tests.e2e.validators import validate_all_paths_expanded
 from tests.e2e.validators import validate_path_expanded
@@ -85,22 +85,22 @@ class TestTildeExpansion:
 
         assert not errors, 'MCP server paths contain unexpanded tildes:\n' + '\n'.join(errors)
 
-    def test_additional_settings_paths_expanded(
+    def test_settings_paths_expanded(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify additional-settings.json paths have no unexpanded tildes.
+        """Verify settings.json paths have no unexpanded tildes.
 
-        Checks that any path-like values in additional-settings.json
+        Checks that any path-like values in settings.json
         are properly expanded.
         """
         paths = e2e_isolated_home
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        # Create additional settings
-        create_additional_settings(
+        # Create settings
+        create_settings(
             hooks=golden_config.get('hooks', {}),
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -116,7 +116,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         data = json.loads(settings_path.read_text())
 
@@ -126,7 +126,7 @@ class TestTildeExpansion:
         path_keys = ['statusLine', 'hooks']
         errors = validate_all_paths_expanded(data, path_keys)
 
-        assert not errors, 'additional-settings.json paths contain unexpanded tildes:\n' + '\n'.join(
+        assert not errors, 'settings.json paths contain unexpanded tildes:\n' + '\n'.join(
             errors,
         )
 
@@ -213,7 +213,7 @@ class TestTildeExpansion:
     ) -> None:
         """Verify hook command paths have no unexpanded tildes.
 
-        Checks that hooks.events[].command paths in additional-settings
+        Checks that hooks.events[].command paths in settings
         are properly expanded.
         """
         paths = e2e_isolated_home
@@ -225,8 +225,8 @@ class TestTildeExpansion:
             # No hooks to test
             return
 
-        # Create additional settings with hooks
-        create_additional_settings(
+        # Create settings with hooks
+        create_settings(
             hooks=hooks_config,
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -242,7 +242,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         data = json.loads(settings_path.read_text())
         hooks = data.get('hooks', {})
@@ -282,8 +282,8 @@ class TestTildeExpansion:
             # No status line to test
             return
 
-        # Create additional settings with status line
-        create_additional_settings(
+        # Create settings with status line
+        create_settings(
             hooks={},
             claude_user_dir=claude_dir,
             command_name=cmd,
@@ -299,7 +299,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-additional-settings.json'
+        settings_path = claude_dir / f'{cmd}-settings.json'
 
         data = json.loads(settings_path.read_text())
         status_line = data.get('statusLine', {})

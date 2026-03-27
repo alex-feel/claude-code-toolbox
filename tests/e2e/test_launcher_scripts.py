@@ -237,7 +237,7 @@ class TestLauncherScriptsPlatformAgnostic:
     ) -> None:
         """Verify launcher script references the settings file.
 
-        The launcher should reference {cmd}-additional-settings.json
+        The launcher should reference {cmd}-settings.json
         to load environment-specific configuration.
         """
         paths = e2e_isolated_home
@@ -257,10 +257,10 @@ class TestLauncherScriptsPlatformAgnostic:
         assert launcher_path.exists(), f'Launcher script not created: {launcher_path}'
 
         content = launcher_path.read_text(encoding='utf-8')
-        settings_pattern = f'{cmd}-additional-settings.json'
+        settings_pattern = f'{cmd}-settings.json'
 
         # Note: On Windows, the launcher .sh file may not directly reference
-        # additional-settings if it's using a different invocation path
+        # settings if it's using a different invocation path
         if sys.platform == 'win32':
             # On Windows, check for settings reference OR claude invocation
             has_settings_ref = settings_pattern in content or '--settings' in content

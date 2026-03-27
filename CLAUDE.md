@@ -452,7 +452,7 @@ For private repository access:
 
 ### MCP Server Permissions
 
-When configuring MCP servers, permissions are automatically added to `additional-settings.json`:
+When configuring MCP servers, permissions are automatically added to `settings.json`:
 ```json
 {
   "permissions": {
@@ -543,16 +543,16 @@ Step comments and print statements in `main()` (e.g., `# Step N:`, `Step N: ...`
 1. Test with local file: Create test YAML, run with `./test.yaml`
 2. Test with remote URL to verify warning messages appear
 3. Verify global command registration works
-4. Verify additional-settings.json structure
+4. Verify settings.json structure
 5. Check that hooks execute properly after setup
 
 ### When creating custom environment configs
 1. Create your YAML configuration file
 2. Test local installation flow with your config
 3. Verify all referenced files are accessible
-4. Verify additional-settings.json structure is correct:
-   - `~/.config/claude/additional-settings.json` on Linux/macOS
-   - `%LOCALAPPDATA%\Claude\additional-settings.json` on Windows
+4. Verify settings.json structure is correct:
+   - `~/.config/claude/settings.json` on Linux/macOS
+   - `%LOCALAPPDATA%\Claude\settings.json` on Windows
 5. Ensure hooks trigger correctly
 
 ### Mock Target Alignment Rule

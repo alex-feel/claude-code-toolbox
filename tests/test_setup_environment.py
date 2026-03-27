@@ -2898,15 +2898,15 @@ class TestMCPTildeExpansionUnix:
         assert any('/Users/test/.claude' in str(arg) for arg in cmd_list)
 
 
-class TestCreateAdditionalSettings:
-    """Test additional settings creation."""
+class TestCreateSettings:
+    """Test settings creation."""
 
-    def test_create_additional_settings_basic(self):
-        """Test creating basic additional settings."""
+    def test_create_settings_basic(self):
+        """Test creating basic settings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -2914,25 +2914,25 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             assert settings_file.exists()
 
             settings = json.loads(settings_file.read_text())
             assert settings['model'] == 'claude-3-opus'
 
-    def test_create_additional_settings_with_mcp_permissions(self):
+    def test_create_settings_with_mcp_permissions(self):
         """Test creating settings without automatic MCP server permissions."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # MCP servers should NOT be automatically added to permissions
@@ -2941,7 +2941,7 @@ class TestCreateAdditionalSettings:
                 and 'mcp__server2' not in settings.get('permissions', {}).get('allow', [])
             )
 
-    def test_create_additional_settings_with_explicit_permissions(self):
+    def test_create_settings_with_explicit_permissions(self):
         """Test that explicit permissions are still preserved."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2951,7 +2951,7 @@ class TestCreateAdditionalSettings:
                 'deny': ['mcp__server3'],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -2959,7 +2959,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Explicit permissions should be preserved exactly as provided
@@ -2971,7 +2971,7 @@ class TestCreateAdditionalSettings:
             assert 'mcp__server3' in settings['permissions']['deny']
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_with_hooks(self, mock_download):
+    def test_create_settings_with_hooks(self, mock_download):
         """Test creating settings with hooks."""
         mock_download.return_value = True
 
@@ -2997,22 +2997,22 @@ class TestCreateAdditionalSettings:
                 config_source='https://example.com/config.yaml',
             )
 
-            # Then create additional settings
-            result = setup_environment.create_additional_settings(
+            # Then create settings
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'hooks' in settings
             assert 'PostToolUse' in settings['hooks']
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_with_javascript_hooks(self, mock_download):
+    def test_create_settings_with_javascript_hooks(self, mock_download):
         """Test creating settings with JavaScript hooks includes node prefix."""
         mock_download.return_value = True
 
@@ -3033,14 +3033,14 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'hooks' in settings
@@ -3052,7 +3052,7 @@ class TestCreateAdditionalSettings:
             assert 'quality-check.js' in hook_command
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_with_mjs_hooks(self, mock_download):
+    def test_create_settings_with_mjs_hooks(self, mock_download):
         """Test creating settings with .mjs ES module hooks includes node prefix."""
         mock_download.return_value = True
 
@@ -3073,14 +3073,14 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             hook_command = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
@@ -3088,7 +3088,7 @@ class TestCreateAdditionalSettings:
             assert 'validator.mjs' in hook_command
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_with_cjs_hooks(self, mock_download):
+    def test_create_settings_with_cjs_hooks(self, mock_download):
         """Test creating settings with .cjs CommonJS hooks includes node prefix."""
         mock_download.return_value = True
 
@@ -3109,14 +3109,14 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
@@ -3124,7 +3124,7 @@ class TestCreateAdditionalSettings:
             assert 'legacy-hook.cjs' in hook_command
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_javascript_hook_with_config(self, mock_download):
+    def test_create_settings_javascript_hook_with_config(self, mock_download):
         """Test JavaScript hooks with config file path appended correctly."""
         mock_download.return_value = True
 
@@ -3146,14 +3146,14 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
@@ -3162,7 +3162,7 @@ class TestCreateAdditionalSettings:
             assert 'js-hook-config.yaml' in hook_command
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_mixed_python_javascript_hooks(self, mock_download):
+    def test_create_settings_mixed_python_javascript_hooks(self, mock_download):
         """Test mixed Python and JavaScript hooks get correct prefixes."""
         mock_download.return_value = True
 
@@ -3189,14 +3189,14 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Find Python and JavaScript hooks
@@ -3210,7 +3210,7 @@ class TestCreateAdditionalSettings:
                         assert hook['command'].startswith('node ')
 
     @patch('setup_environment.handle_resource')
-    def test_create_additional_settings_javascript_case_insensitive(self, mock_download):
+    def test_create_settings_javascript_case_insensitive(self, mock_download):
         """Test JavaScript extension detection is case-insensitive."""
         mock_download.return_value = True
 
@@ -3231,25 +3231,25 @@ class TestCreateAdditionalSettings:
                 ],
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 hooks,
                 claude_dir,
                 'test-env',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
             assert hook_command.startswith('node ')
 
-    def test_create_additional_settings_always_thinking_enabled_true(self):
+    def test_create_settings_always_thinking_enabled_true(self):
         """Test alwaysThinkingEnabled set to true."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3257,18 +3257,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'alwaysThinkingEnabled' in settings
             assert settings['alwaysThinkingEnabled'] is True
 
-    def test_create_additional_settings_always_thinking_enabled_false(self):
+    def test_create_settings_always_thinking_enabled_false(self):
         """Test alwaysThinkingEnabled set to false."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3276,18 +3276,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'alwaysThinkingEnabled' in settings
             assert settings['alwaysThinkingEnabled'] is False
 
-    def test_create_additional_settings_always_thinking_enabled_none_not_included(self):
+    def test_create_settings_always_thinking_enabled_none_not_included(self):
         """Test alwaysThinkingEnabled not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3295,17 +3295,17 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'alwaysThinkingEnabled' not in settings
 
-    def test_create_additional_settings_effort_level_low(self):
+    def test_create_settings_effort_level_low(self):
         """Test effortLevel set to low."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3313,18 +3313,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'low'
 
-    def test_create_additional_settings_effort_level_medium(self):
+    def test_create_settings_effort_level_medium(self):
         """Test effortLevel set to medium."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3332,18 +3332,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'medium'
 
-    def test_create_additional_settings_effort_level_high(self):
+    def test_create_settings_effort_level_high(self):
         """Test effortLevel set to high."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3351,18 +3351,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'high'
 
-    def test_create_additional_settings_effort_level_max(self):
+    def test_create_settings_effort_level_max(self):
         """Test effortLevel set to max."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3370,18 +3370,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'max'
 
-    def test_create_additional_settings_effort_level_none_not_included(self):
+    def test_create_settings_effort_level_none_not_included(self):
         """Test effortLevel not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3389,12 +3389,12 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'effortLevel' not in settings
 
-    def test_create_additional_settings_company_announcements(self):
+    def test_create_settings_company_announcements(self):
         """Test companyAnnouncements set with multiple items."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3403,7 +3403,7 @@ class TestCreateAdditionalSettings:
                 'Code reviews required for all PRs',
             ]
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3411,20 +3411,20 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'companyAnnouncements' in settings
             assert settings['companyAnnouncements'] == announcements
             assert len(settings['companyAnnouncements']) == 2
 
-    def test_create_additional_settings_company_announcements_single(self):
+    def test_create_settings_company_announcements_single(self):
         """Test companyAnnouncements with single announcement."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
             announcements = ['Single announcement']
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3432,18 +3432,18 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'companyAnnouncements' in settings
             assert settings['companyAnnouncements'] == announcements
 
-    def test_create_additional_settings_company_announcements_empty_list(self):
+    def test_create_settings_company_announcements_empty_list(self):
         """Test companyAnnouncements with empty list."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3451,19 +3451,19 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             # Empty list should still be included (explicit configuration)
             assert 'companyAnnouncements' in settings
             assert settings['companyAnnouncements'] == []
 
-    def test_create_additional_settings_company_announcements_none_not_included(self):
+    def test_create_settings_company_announcements_none_not_included(self):
         """Test companyAnnouncements not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3471,12 +3471,12 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'companyAnnouncements' not in settings
 
-    def test_create_additional_settings_attribution_full(self):
+    def test_create_settings_attribution_full(self):
         """Test attribution with both commit and pr values."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3485,7 +3485,7 @@ class TestCreateAdditionalSettings:
                 'pr': 'Custom PR attribution',
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3493,20 +3493,20 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'attribution' in settings
             assert settings['attribution']['commit'] == 'Custom commit attribution'
             assert settings['attribution']['pr'] == 'Custom PR attribution'
 
-    def test_create_additional_settings_attribution_hide_all(self):
+    def test_create_settings_attribution_hide_all(self):
         """Test attribution with empty strings to hide all."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
             attribution = {'commit': '', 'pr': ''}
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3514,17 +3514,17 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert settings['attribution'] == {'commit': '', 'pr': ''}
 
-    def test_create_additional_settings_attribution_none_not_included(self):
+    def test_create_settings_attribution_none_not_included(self):
         """Test attribution not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3532,12 +3532,12 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'attribution' not in settings
 
-    def test_create_additional_settings_status_line_python(self):
+    def test_create_settings_status_line_python(self):
         """Test statusLine with Python script."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3550,7 +3550,7 @@ class TestCreateAdditionalSettings:
                 'padding': 0,
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3558,7 +3558,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -3567,7 +3567,7 @@ class TestCreateAdditionalSettings:
             assert 'statusline.py' in settings['statusLine']['command']
             assert settings['statusLine']['padding'] == 0
 
-    def test_create_additional_settings_status_line_shell(self):
+    def test_create_settings_status_line_shell(self):
         """Test statusLine with shell script."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3578,7 +3578,7 @@ class TestCreateAdditionalSettings:
                 'file': 'statusline.sh',
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3586,7 +3586,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -3595,12 +3595,12 @@ class TestCreateAdditionalSettings:
             assert 'statusline.sh' in settings['statusLine']['command']
             assert 'padding' not in settings['statusLine']
 
-    def test_create_additional_settings_status_line_none_not_included(self):
+    def test_create_settings_status_line_none_not_included(self):
         """Test statusLine not included when None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3608,12 +3608,12 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' not in settings
 
-    def test_create_additional_settings_status_line_with_query_params(self):
+    def test_create_settings_status_line_with_query_params(self):
         """Test statusLine file with query parameters stripped."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3624,7 +3624,7 @@ class TestCreateAdditionalSettings:
                 'file': 'statusline.py?ref_type=heads',
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3632,14 +3632,14 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
             assert '?' not in settings['statusLine']['command']
             assert 'statusline.py' in settings['statusLine']['command']
 
-    def test_create_additional_settings_status_line_with_config(self):
+    def test_create_settings_status_line_with_config(self):
         """Test statusLine with Python script and config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3656,7 +3656,7 @@ class TestCreateAdditionalSettings:
                 'padding': 0,
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3664,7 +3664,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -3675,7 +3675,7 @@ class TestCreateAdditionalSettings:
             assert settings['statusLine']['command'].endswith('config.yaml')
             assert settings['statusLine']['padding'] == 0
 
-    def test_create_additional_settings_status_line_config_with_query_params(self):
+    def test_create_settings_status_line_config_with_query_params(self):
         """Test statusLine config with query parameters stripped."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3690,7 +3690,7 @@ class TestCreateAdditionalSettings:
                 'config': 'config.yaml?token=abc123',
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3698,7 +3698,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -3706,7 +3706,7 @@ class TestCreateAdditionalSettings:
             assert 'statusline.py' in settings['statusLine']['command']
             assert 'config.yaml' in settings['statusLine']['command']
 
-    def test_create_additional_settings_status_line_shell_with_config(self):
+    def test_create_settings_status_line_shell_with_config(self):
         """Test statusLine with shell script and config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3721,7 +3721,7 @@ class TestCreateAdditionalSettings:
                 'config': 'config.yaml',
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3729,7 +3729,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -3737,7 +3737,7 @@ class TestCreateAdditionalSettings:
             assert 'statusline.sh' in settings['statusLine']['command']
             assert 'config.yaml' in settings['statusLine']['command']
 
-    def test_create_additional_settings_status_line_without_config_backward_compat(self):
+    def test_create_settings_status_line_without_config_backward_compat(self):
         """Test that status-line without config field still works (backward compatibility)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -3752,7 +3752,7 @@ class TestCreateAdditionalSettings:
                 # No 'config' field - backward compatibility
             }
 
-            result = setup_environment.create_additional_settings(
+            result = setup_environment.create_settings(
                 {},
                 claude_dir,
                 'test-env',
@@ -3760,7 +3760,7 @@ class TestCreateAdditionalSettings:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-env-additional-settings.json'
+            settings_file = claude_dir / 'test-env-settings.json'
             settings = json.loads(settings_file.read_text())
 
             assert 'statusLine' in settings
@@ -4014,7 +4014,7 @@ class TestMainFunction:
     @patch('setup_environment.install_dependencies')
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -4107,7 +4107,7 @@ class TestMainFunction:
 
         with (
             patch('sys.argv', ['setup_environment.py', 'test', '--skip-install', '--yes']),
-            patch('setup_environment.create_additional_settings', return_value=True),
+            patch('setup_environment.create_settings', return_value=True),
             patch('setup_environment.create_launcher_script', return_value=Path('/tmp/launcher')),
             patch('setup_environment.register_global_command', return_value=True),
             patch('sys.exit') as mock_exit,
@@ -4122,7 +4122,7 @@ class TestMainFunction:
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -4169,7 +4169,7 @@ class TestMainFunction:
         assert 'Invalid effort-level value' in captured.out
         assert "'extreme'" in captured.out
 
-        # Verify create_additional_settings was called with effort_level=None
+        # Verify create_settings was called with effort_level=None
         # (the invalid value should have been reset to None)
         mock_settings.assert_called_once()
         call_args = mock_settings.call_args
@@ -4190,7 +4190,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.download_hook_files')
     @patch('setup_environment.handle_resource')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -4253,7 +4253,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.download_hook_files')
     @patch('setup_environment.handle_resource')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -4316,7 +4316,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.download_hook_files')
     @patch('setup_environment.handle_resource')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -4389,7 +4389,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.download_hook_files')
     @patch('setup_environment.handle_resource')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -6296,7 +6296,7 @@ class TestCommandNames:
     @patch('setup_environment.install_dependencies')
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -6355,7 +6355,7 @@ class TestCommandNames:
     @patch('setup_environment.install_dependencies')
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -7746,7 +7746,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.write_user_settings')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -7842,7 +7842,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.write_user_settings')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -7903,7 +7903,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.write_user_settings')
-    @patch('setup_environment.create_additional_settings')
+    @patch('setup_environment.create_settings')
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
@@ -8189,7 +8189,7 @@ class TestUserSettingsIntegration:
     def test_integration_combined_mode_writes_both_files(
         self, tmp_path: Path,
     ) -> None:
-        """Verify combined mode writes to both settings.json AND additional-settings.json."""
+        """Verify combined mode writes to both settings.json AND settings.json."""
         claude_dir = tmp_path / '.claude'
         claude_dir.mkdir(parents=True)
 
@@ -8207,8 +8207,8 @@ class TestUserSettingsIntegration:
         result1 = setup_environment.write_user_settings(user_settings, claude_dir)
         assert result1 is True
 
-        # Write profile settings (simulating additional-settings behavior)
-        result2 = setup_environment.create_additional_settings(
+        # Write profile settings (simulating settings file behavior)
+        result2 = setup_environment.create_settings(
             hooks={},  # Empty hooks
             claude_user_dir=claude_dir,
             command_name='mydev',
@@ -8219,7 +8219,7 @@ class TestUserSettingsIntegration:
 
         # Verify both files exist
         assert (claude_dir / 'settings.json').exists()
-        assert (claude_dir / 'mydev-additional-settings.json').exists()
+        assert (claude_dir / 'mydev-settings.json').exists()
 
     def test_integration_existing_settings_preserved_during_merge(
         self, tmp_path: Path,

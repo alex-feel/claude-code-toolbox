@@ -19,8 +19,8 @@ from typing import Final
 EXPECTED_FILES: Final[list[str]] = [
     # Launcher script in claude_dir
     '{claude_dir}/start-{cmd}.sh',
-    # Additional settings in claude_dir (written to claude_user_dir by create_additional_settings)
-    '{claude_dir}/{cmd}-additional-settings.json',
+    # Settings in claude_dir (written to claude_user_dir by create_settings)
+    '{claude_dir}/{cmd}-settings.json',
     # MCP config in claude_dir
     '{claude_dir}/{cmd}-mcp.json',
     # Symlink in local_bin
@@ -31,7 +31,7 @@ EXPECTED_FILES: Final[list[str]] = [
 # Uses fixture keys that will be resolved at test runtime
 EXPECTED_PATHS: Final[dict[str, str]] = {
     'launcher_script': '{claude_dir}/start-{cmd}.sh',
-    'additional_settings': '{claude_dir}/{cmd}-additional-settings.json',
+    'settings': '{claude_dir}/{cmd}-settings.json',
     'mcp_config': '{claude_dir}/{cmd}-mcp.json',
     'command_symlink': '{local_bin}/{cmd}',
     'hooks_dir': '{claude_dir}/hooks',
