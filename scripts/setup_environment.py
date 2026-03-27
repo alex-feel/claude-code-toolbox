@@ -6267,23 +6267,24 @@ def create_mcp_config_file(
 def download_hook_files(
     hooks: dict[str, Any],
     claude_user_dir: Path,
-    config_source: str | None = None,
+    config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
 ) -> bool:
     """Download hook files from configuration.
 
-    Uses parallel execution when CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE is not set.
+    Extracts the file list from hooks configuration and delegates
+    download/parallel logic to process_resources().
 
     Args:
         hooks: Hooks configuration dictionary with 'files' key
         claude_user_dir: Path to Claude user directory
-        config_source: Optional config source for resolving resource paths
+        config_source: Config source for resolving resource paths
         base_url: Optional base URL for resolving resources
         auth_param: Optional authentication parameter
 
     Returns:
-        bool: True if successful, False otherwise.
+        bool: True if all downloads successful, False otherwise.
     """
     hook_files = hooks.get('files', [])
 
@@ -6291,33 +6292,8 @@ def download_hook_files(
         info('No hook files to download')
         return True
 
-    if not config_source:
-        error('No config source provided for hook files')
-        return False
-
     hooks_dir = claude_user_dir / 'hooks'
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-
-    # Prepare download tasks
-    download_tasks: list[tuple[str, Path]] = []
-    for file in hook_files:
-        # Strip query parameters from URL to get clean filename
-        clean_file = file.split('?')[0] if '?' in file else file
-        filename = Path(clean_file).name
-        destination = hooks_dir / filename
-        download_tasks.append((file, destination))
-
-    # Per-batch coordinator shares rate-limit state across download threads
-    rate_limiter = RateLimitCoordinator()
-
-    def download_single_hook(task: tuple[str, Path]) -> bool:
-        """Download a single hook file and return success status."""
-        file, destination = task
-        return handle_resource(file, destination, config_source, base_url, auth_param, rate_limiter)
-
-    # Execute downloads in parallel with stagger delay to avoid rate limiting
-    results = execute_parallel_safe(download_tasks, download_single_hook, False, stagger_delay=0.5)
-    return all(results)
+    return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param)
 
 
 def create_settings(
