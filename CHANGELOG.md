@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.2.0...v5.3.0) (2026-03-27)
+
+
+### Features
+
+* add merge-keys directive for selective config inheritance ([446d4a0](https://github.com/alex-feel/claude-code-toolbox/commit/446d4a09b18e0663778be8fb1ff5c5d56dc34413))
+
 ## [5.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.1.1...v5.2.0) (2026-03-27)
 
 
