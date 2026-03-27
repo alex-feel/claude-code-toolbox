@@ -129,11 +129,13 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 ## Configuration Reference
 
-Quick-reference table of all 26 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
+Quick-reference table of all 29 configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
 | YAML Key                                              | Type                   | Required | Default | Brief Description                          |
 |-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
 | [`name`](#name)                                       | `str`                  | **Yes**  | --      | Display name for the environment           |
+| [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)      |
+| [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation  |
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
 | [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
 | [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
@@ -143,6 +145,7 @@ Quick-reference table of all 26 configuration keys. Each key links to its detail
 | [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands      |
 | [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                  |
 | [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                   |
+| [`rules`](#rules)                                     | `list[str]`            | No       | `[]`    | Rule markdown file paths (user-scope)      |
 | [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                       |
 | [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup             |
 | [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`              |
@@ -178,6 +181,44 @@ Display name for the environment, shown in the setup header and summary.
 
 - **Type:** `str` (required)
 - **Example:** `name: "Python Development"`
+
+#### `description`
+
+Description of the environment configuration. Shown in the installation summary immediately after the configuration name, providing context about the environment's purpose.
+
+- **Type:** `str | None`
+- **Default:** `None`
+- **Multiline:** Supported via YAML `|` (literal block) or `>` (folded block) scalars
+- **Display:** In installation summary, after "Configuration:" and before "Source:", with 2-space indent per line. No "Description:" label prefix.
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+description: |
+  A comprehensive development environment for AI-powered coding
+  with pre-configured MCP servers, custom agents, and debugging tools.
+```
+
+#### `post-install-notes`
+
+Notes displayed after successful installation. Use for next steps, setup instructions, API key configuration, or any guidance the configuration author wants to communicate after the environment is installed.
+
+- **Type:** `str | None`
+- **Default:** `None`
+- **Multiline:** Supported via YAML `|` (literal block) or `>` (folded block) scalars
+- **Display:** After successful installation only (not on failure, not in dry-run). Rendered after the "Documentation:" section with a yellow header "Notes from the configuration author:" and 2-space indent per line.
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+post-install-notes: |
+  Next steps:
+  1. Set your API key: export ANTHROPIC_API_KEY=sk-...
+  2. Start the environment: my-env
+  3. Run /help to see available commands
+
+  Documentation: https://docs.example.com/my-env
+```
 
 #### `version`
 
@@ -314,6 +355,22 @@ Command files placed in `~/.claude/commands/` during setup. Uses the same path r
 slash-commands:
   - "commands/review.md"
   - "commands/deploy.md"
+```
+
+#### `rules`
+
+Rule files placed in `~/.claude/rules/` during setup. Claude Code loads `.md` files from this directory recursively as user-scope rules that apply across all projects.
+
+- **Type:** `list[str] | None`
+- **Default:** `[]`
+- **Scope:** User-scope only (`~/.claude/rules/`). Project-scope rules (`.claude/rules/` in the repository) should be committed directly to version control.
+- **Note:** Only `.md` files are recognized by Claude Code. Rules support optional YAML frontmatter with `description:` and `paths:` for path-scoped rules (glob patterns).
+- **Example:**
+
+```yaml
+rules:
+  - "rules/coding-standards.md"
+  - "rules/security-policy.md"
 ```
 
 #### `skills`
@@ -603,7 +660,7 @@ Settings merged into `~/.claude.json` (the Claude Code global configuration file
 
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
-- **Excluded keys:** `oauthSession` and `oauthAccount` (OAuth credentials must not appear in YAML configuration files)
+- **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
 - **Example:**
 
 ```yaml
@@ -612,6 +669,32 @@ global-config:
   editorMode: "vim"
   showTurnDuration: true
 ```
+
+#### Key Deletion (Null-as-Delete)
+
+Both `user-settings` and `global-config` support key deletion via RFC 7396 JSON Merge Patch semantics. Set a key to `null` to remove it from the target JSON file.
+
+```yaml
+user-settings:
+  theme: "dark"
+  staleKey: null  # Removes staleKey from settings.json
+
+global-config:
+  autoConnectIde: true
+  oldSetting: null  # Removes oldSetting from ~/.claude.json
+  oauthAccount: null  # Clears OAuth authentication state
+```
+
+**Behavior:**
+
+- Setting a key to `null` removes it from the target file
+- Setting a nonexistent key to `null` is a silent no-op
+- Nested deletion: `section: {key: null}` removes only `key`, preserving `section`
+- Top-level deletion: `section: null` removes the entire section
+- Null inside arrays is NOT treated as deletion
+- The `--dry-run` summary shows `[DELETE]` markers for null-valued keys
+
+> **Warning:** Bare YAML keys with no value (`key:`) are equivalent to `key: null`. This means accidentally omitting a value will DELETE that key rather than set it to an empty string. Always use explicit values: `key: ""` for empty strings, `key: null` for intentional deletion.
 
 #### `company-announcements`
 
@@ -850,25 +933,26 @@ For the full technical architecture, see [Cross-Shell Launcher Architecture](cro
 Here is a conceptual overview of what the setup script does when you run it with a configuration:
 
 1. **Install Claude Code** -- Uses the native installer with npm fallback. Skipped with `--skip-install`.
-2. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `prompts/`, `hooks/`, and `skills/` directories.
+2. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
 3. **Download custom files** -- Processes `files-to-download` entries.
 4. **Install Node.js** -- If `install-nodejs: true` is set in the config.
 5. **Install dependencies** -- Runs platform-specific dependency commands.
 6. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`.
 7. **Process agents** -- Downloads agent markdown files to `~/.claude/agents/`.
 8. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
-9. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
-10. **Process system prompt** -- Downloads the prompt file if configured.
-11. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
-12. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
-13. **Write global config** -- Merges `global-config` into `~/.claude.json`.
-14. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-15. **Configure settings** -- Creates the settings file for the command.
-16. **Write manifest** -- Creates an installation tracking manifest.
-17. **Create launcher** -- Creates the launcher script for the command.
-18. **Register commands** -- Creates global command wrappers.
+9. **Process rules** -- Downloads rule markdown files to `~/.claude/rules/`.
+10. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
+11. **Process system prompt** -- Downloads the prompt file if configured.
+12. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
+13. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
+14. **Write global config** -- Merges `global-config` into `~/.claude.json`.
+15. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
+16. **Configure settings** -- Creates the settings file for the command.
+17. **Write manifest** -- Creates an installation tracking manifest.
+18. **Create launcher** -- Creates the launcher script for the command.
+19. **Register commands** -- Creates global command wrappers.
 
-Steps 14 through 18 are skipped if `command-names` is not specified.
+Steps 15 through 19 are skipped if `command-names` is not specified.
 
 ## Complete Annotated Example
 
@@ -878,6 +962,15 @@ A realistic configuration demonstrating most keys:
 # Python Development Environment Configuration
 name: "Python Development"
 version: "1.0.0"
+
+description: |
+  Full-featured Python environment with linting, type checking,
+  and AI-powered MCP servers pre-configured.
+
+post-install-notes: |
+  Next steps:
+  1. Run: claude-python
+  2. Try: /help to see available commands
 
 command-names:
   - "claude-python"   # Primary command name
@@ -908,6 +1001,10 @@ agents:
 slash-commands:
   - "commands/lint.md"
   - "commands/test.md"
+
+# User-scope rules (placed in ~/.claude/rules/)
+rules:
+  - "rules/coding-standards.md"
 
 # Skills
 skills:
@@ -1175,7 +1272,7 @@ Never commit authentication tokens to repositories. Use environment variables (`
 
 ### Protected Configuration Keys
 
-The `global-config` key excludes `oauthSession` and `oauthAccount` to prevent OAuth credentials from appearing in YAML configuration files.
+The `global-config` key blocks non-null `oauthAccount` values to prevent OAuth credentials from appearing in YAML configuration files. Setting `oauthAccount: null` is allowed to support clearing authentication state (useful for account switching and auth recovery).
 
 ### Installation Confirmation
 

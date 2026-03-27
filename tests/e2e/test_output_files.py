@@ -410,3 +410,42 @@ class TestGlobalConfigOutput:
         assert data['installMethod'] == 'native', 'installMethod was lost during merge'
         for key, expected in global_config.items():
             assert data.get(key) == expected, f'Key {key!r}: expected {expected!r}, got {data.get(key)!r}'
+
+
+class TestRulesOutput:
+    """Test rules files are processed into ~/.claude/rules/."""
+
+    def test_rules_directory_and_file(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify rules files are processed into ~/.claude/rules/."""
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        rules_dir = claude_dir / 'rules'
+        rules_dir.mkdir(parents=True, exist_ok=True)
+
+        rules = golden_config.get('rules', [])
+        if not rules:
+            pytest.skip('No rules in golden_config')
+
+        mock_repo = Path(__file__).parent / 'fixtures' / 'mock_repo'
+        config_source = str(mock_repo / 'config.yaml')
+
+        from scripts.setup_environment import process_resources
+        result = process_resources(
+            rules, rules_dir, 'rules', config_source, None, None,
+        )
+        assert result, 'process_resources() failed for rules'
+
+        errors: list[str] = []
+        for rule_path in rules:
+            filename = Path(rule_path).name
+            dest = rules_dir / filename
+            if not dest.exists():
+                errors.append(f'Rule file not found: {dest}')
+            elif dest.stat().st_size == 0:
+                errors.append(f'Rule file is empty: {dest}')
+
+        assert not errors, 'Rules E2E validation failed:\n' + '\n'.join(errors)

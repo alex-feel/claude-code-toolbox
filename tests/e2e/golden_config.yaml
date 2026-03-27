@@ -7,6 +7,16 @@ name: "E2E Test Environment"
 # Configuration version for update checking
 version: "1.0.0"
 
+# Description shown in installation summary
+description: |
+  A comprehensive test environment for validating
+  all supported configuration keys and behaviors.
+
+# Notes displayed after successful installation
+post-install-notes: |
+  E2E test post-install notes.
+  These notes verify that post-install rendering works correctly.
+
 # Command names (PRIMARY format - array)
 command-names:
   - "e2e-test-cmd"
@@ -39,6 +49,10 @@ agents:
 # Slash command files
 slash-commands:
   - "commands/e2e-test-command.md"
+
+# Rule markdown files (user-scope only: ~/.claude/rules/)
+rules:
+  - "rules/e2e-test-rule.md"
 
 # Skills configuration
 skills:
@@ -175,6 +189,7 @@ user-settings:
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
+  staleSettingToDelete: null  # RFC 7396: this key should be ABSENT from output
 
 # Global config (merged into ~/.claude.json)
 global-config:
@@ -182,6 +197,8 @@ global-config:
   editorMode: "vim"
   showTurnDuration: true
   terminalProgressBarEnabled: false
+  oauthAccount: null
+  staleConfigToDelete: null  # RFC 7396: this key should be ABSENT from output
 
 # Always-thinking mode
 always-thinking-enabled: true

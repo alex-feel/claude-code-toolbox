@@ -609,30 +609,31 @@ class TestGlobalConfig:
         assert config.model_extra.get('editorMode') == 'vim'
         assert config.model_extra.get('showTurnDuration') is True
 
-    def test_global_config_rejects_oauth_session(self) -> None:
-        """GlobalConfig with 'oauthSession' key raises ValueError."""
-        from scripts.models.environment_config import GlobalConfig
-        with pytest.raises(ValidationError) as exc_info:
-            GlobalConfig.model_validate({'oauthSession': 'token123'})
-        assert 'oauthSession' in str(exc_info.value)
-        assert 'not allowed in global-config' in str(exc_info.value)
-
-    def test_global_config_rejects_oauth_account(self) -> None:
-        """GlobalConfig with 'oauthAccount' key raises ValueError."""
+    def test_global_config_rejects_non_null_oauth_account(self) -> None:
+        """GlobalConfig with non-null 'oauthAccount' value raises ValueError."""
         from scripts.models.environment_config import GlobalConfig
         with pytest.raises(ValidationError) as exc_info:
             GlobalConfig.model_validate({'oauthAccount': 'account123'})
         assert 'oauthAccount' in str(exc_info.value)
-        assert 'not allowed in global-config' in str(exc_info.value)
+        assert 'non-null' in str(exc_info.value)
 
-    def test_global_config_rejects_both_oauth_keys(self) -> None:
-        """GlobalConfig with both OAuth keys raises ValueError."""
+    def test_global_config_allows_null_oauth_account(self) -> None:
+        """GlobalConfig with null oauthAccount is accepted for clearing auth state."""
         from scripts.models.environment_config import GlobalConfig
-        with pytest.raises(ValidationError):
-            GlobalConfig.model_validate({
-                'oauthSession': 'token',
-                'oauthAccount': 'account',
-            })
+        config = GlobalConfig.model_validate({'oauthAccount': None})
+        assert config.model_extra is not None
+        assert config.model_extra.get('oauthAccount') is None
+
+    def test_global_config_allows_null_oauth_with_other_keys(self) -> None:
+        """GlobalConfig with null oauthAccount alongside valid keys passes."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({
+            'oauthAccount': None,
+            'editorMode': 'vim',
+        })
+        assert config.model_extra is not None
+        assert config.model_extra.get('oauthAccount') is None
+        assert config.model_extra.get('editorMode') == 'vim'
 
     def test_global_config_accepts_mcp_servers(self) -> None:
         """GlobalConfig allows mcpServers dict-of-dicts."""
@@ -692,18 +693,33 @@ class TestGlobalConfigInEnvironmentConfig:
         })
         assert config.global_config is None
 
-    def test_environment_config_global_config_oauth_rejected(self) -> None:
-        """EnvironmentConfig rejects oauthSession in global-config."""
+    def test_environment_config_global_config_oauth_non_null_rejected(self) -> None:
+        """EnvironmentConfig rejects non-null oauthAccount in global-config."""
         with pytest.raises(ValidationError) as exc_info:
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'global-config': {
                     'autoConnectIde': True,
-                    'oauthSession': 'token',
+                    'oauthAccount': 'account123',
                 },
             })
-        assert 'oauthSession' in str(exc_info.value)
-        assert 'not allowed in global-config' in str(exc_info.value)
+        assert 'oauthAccount' in str(exc_info.value)
+        assert 'non-null' in str(exc_info.value)
+
+    def test_environment_config_allows_null_oauth_in_global_config(self) -> None:
+        """EnvironmentConfig accepts null oauthAccount in global-config."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'global-config': {
+                'autoConnectIde': True,
+                'oauthAccount': None,
+            },
+        })
+        assert config.global_config is not None
+        extras = config.global_config.model_extra
+        assert extras is not None
+        assert extras.get('oauthAccount') is None
+        assert extras.get('autoConnectIde') is True
 
     def test_environment_config_with_both_settings_types(self) -> None:
         """EnvironmentConfig with both user-settings and global-config."""
@@ -942,3 +958,81 @@ class TestVersionValidation:
                 'name': 'Test',
                 'version': 'latest',
             })
+
+
+class TestRulesField:
+    """Test rules field in EnvironmentConfig model."""
+
+    def test_rules_field_valid(self) -> None:
+        """Rules field accepts list of strings."""
+        config = EnvironmentConfig.model_validate({'rules': ['rule1.md', 'rule2.md']})
+        assert config.rules == ['rule1.md', 'rule2.md']
+
+    def test_rules_field_default_empty_list(self) -> None:
+        """Rules field defaults to empty list."""
+        config = EnvironmentConfig.model_validate({})
+        assert config.rules == []
+
+    def test_rules_field_none_accepted(self) -> None:
+        """Rules field accepts None value."""
+        config = EnvironmentConfig.model_validate({'rules': None})
+        assert config.rules is None
+
+    def test_rules_included_in_validate_file_paths(self) -> None:
+        """Rules field is covered by validate_file_paths validator."""
+        config = EnvironmentConfig.model_validate({
+            'rules': ['https://example.com/rule.md', 'local-rule.md'],
+        })
+        assert len(config.rules) == 2
+
+
+class TestDescriptionField:
+    """Test description field in EnvironmentConfig."""
+
+    def test_description_field_optional(self) -> None:
+        """Config validates without description."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.description is None
+
+    def test_description_field_accepted(self) -> None:
+        """Config accepts a description string."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'description': 'A test environment for demos.',
+        })
+        assert config.description == 'A test environment for demos.'
+
+    def test_description_multiline(self) -> None:
+        """Config accepts multiline description."""
+        desc = 'Line one\nLine two\nLine three'
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'description': desc,
+        })
+        assert config.description == desc
+
+
+class TestPostInstallNotesField:
+    """Test post-install-notes field in EnvironmentConfig."""
+
+    def test_post_install_notes_field_optional(self) -> None:
+        """Config validates without post-install-notes."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.post_install_notes is None
+
+    def test_post_install_notes_field_with_alias(self) -> None:
+        """Config accepts post-install-notes via kebab-case alias."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'post-install-notes': 'Run setup commands after install.',
+        })
+        assert config.post_install_notes == 'Run setup commands after install.'
+
+    def test_post_install_notes_multiline(self) -> None:
+        """Config accepts multiline post-install-notes."""
+        notes = 'Step 1: Do X\nStep 2: Do Y'
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'post-install-notes': notes,
+        })
+        assert config.post_install_notes == notes

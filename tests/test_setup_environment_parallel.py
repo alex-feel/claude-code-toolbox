@@ -344,22 +344,6 @@ class TestDownloadsWithParallelExecution:
         assert mock_handle.call_count == 3
 
     @patch('setup_environment.handle_resource')
-    def test_download_hook_files_no_config_source(self, mock_handle: MagicMock) -> None:
-        """Test download_hook_files returns False when no config_source."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            hooks = {'files': ['hook1.py']}
-
-            result = setup_environment.download_hook_files(
-                hooks,
-                claude_dir,
-                config_source=None,
-            )
-
-        assert result is False
-        mock_handle.assert_not_called()
-
-    @patch('setup_environment.handle_resource')
     def test_process_file_downloads_parallel(self, mock_handle: MagicMock) -> None:
         """Test that process_file_downloads uses parallel execution."""
         mock_handle.return_value = True

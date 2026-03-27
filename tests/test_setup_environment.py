@@ -4852,12 +4852,13 @@ class TestDeepMergeSettings:
 
     # === Edge Cases ===
 
-    def test_none_values(self):
-        """None values are handled correctly."""
-        base = {'a': None}
+    def test_none_values_delete_keys(self):
+        """None values in updates delete keys from result (RFC 7396)."""
+        base = {'a': 1, 'b': 2}
         updates = {'b': None}
         result = setup_environment.deep_merge_settings(base, updates)
-        assert result == {'a': None, 'b': None}
+        assert result == {'a': 1}
+        assert 'b' not in result
 
     def test_boolean_values(self):
         """Boolean values are preserved."""
@@ -4911,6 +4912,73 @@ class TestDeepMergeSettings:
         assert setup_environment._deep_copy_value(True) is True
         assert setup_environment._deep_copy_value(None) is None
         assert setup_environment._deep_copy_value(math.pi) == math.pi
+
+    def test_none_value_nonexistent_key_noop(self):
+        """None value for nonexistent key is a no-op."""
+        base = {'a': 1}
+        updates = {'nonexistent': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1}
+        assert 'nonexistent' not in result
+
+    def test_none_deletes_nested_key(self):
+        """None value deletes a nested key while preserving siblings."""
+        base = {'section': {'keep': 1, 'remove': 2}}
+        updates = {'section': {'remove': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'section': {'keep': 1}}
+        assert 'remove' not in result['section']
+
+    def test_none_deletes_entire_section(self):
+        """Top-level None deletes the entire section."""
+        base = {'keep': 1, 'section': {'a': 1, 'b': 2}}
+        updates = {'section': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'keep': 1}
+        assert 'section' not in result
+
+    def test_none_preserves_empty_parent_dict(self):
+        """Deleting last key in a nested dict preserves parent as empty dict."""
+        base = {'section': {'only_key': 1}}
+        updates = {'section': {'only_key': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'section': {}}
+
+    def test_none_fires_before_array_union(self):
+        """Null-as-delete fires before array union logic (null wins)."""
+        base = {'permissions': {'allow': ['Read', 'Glob']}}
+        updates = {'permissions': {'allow': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert 'allow' not in result['permissions']
+
+    def test_null_inside_array_not_deleted(self):
+        """Null values inside arrays are NOT treated as deletion signals."""
+        base = {'items': [1, 2, 3]}
+        updates = {'items': [None, 4, 5]}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'items': [None, 4, 5]}
+
+    def test_none_in_base_preserved_without_update(self):
+        """None values in base are preserved when no update for that key."""
+        base = {'a': None, 'b': 1}
+        updates = {'c': 2}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': None, 'b': 1, 'c': 2}
+
+    def test_none_base_not_mutated(self):
+        """Null-as-delete does not mutate the base dict."""
+        base = {'a': 1, 'b': 2}
+        base_copy = base.copy()
+        updates = {'b': None}
+        setup_environment.deep_merge_settings(base, updates)
+        assert base == base_copy
+
+    def test_multiple_deletions(self):
+        """Multiple keys can be deleted in a single merge."""
+        base = {'a': 1, 'b': 2, 'c': 3, 'd': 4}
+        updates = {'b': None, 'd': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1, 'c': 3}
 
 
 class TestWriteUserSettings:
@@ -5291,6 +5359,21 @@ class TestWriteUserSettings:
         # Check for indentation (2 spaces)
         assert '  "language"' in content or '  "model"' in content
 
+    def test_write_null_deletes_key(self, tmp_path, monkeypatch):
+        """write_user_settings deletes keys with null values from settings.json."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir()
+        settings_file = claude_dir / 'settings.json'
+        settings_file.write_text('{"theme": "dark", "language": "en"}')
+
+        monkeypatch.setattr(setup_environment, 'is_wsl', lambda: False)
+        result = setup_environment.write_user_settings({'theme': None}, claude_dir)
+
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'theme' not in data
+        assert data['language'] == 'en'
+
 
 class TestExpandTildeKeysInSettings:
     """Tests for _expand_tilde_keys_in_settings helper function."""
@@ -5611,27 +5694,34 @@ class TestValidateGlobalConfig:
         })
         assert result == []
 
-    def test_oauth_session_rejected(self) -> None:
-        """oauthSession key is rejected."""
-        result = setup_environment.validate_global_config({'oauthSession': 'token'})
-        assert len(result) == 1
-        assert 'oauthSession' in result[0]
-        assert 'not allowed' in result[0]
-
-    def test_oauth_account_rejected(self) -> None:
-        """oauthAccount key is rejected."""
+    def test_oauth_account_non_null_rejected(self) -> None:
+        """Non-null oauthAccount value is rejected."""
         result = setup_environment.validate_global_config({'oauthAccount': 'account'})
         assert len(result) == 1
         assert 'oauthAccount' in result[0]
-        assert 'not allowed' in result[0]
+        assert 'non-null' in result[0]
 
-    def test_both_oauth_keys_rejected(self) -> None:
-        """Both OAuth keys are reported."""
+    def test_oauth_account_null_accepted(self) -> None:
+        """Null oauthAccount value is accepted for clearing authentication state."""
+        result = setup_environment.validate_global_config({'oauthAccount': None})
+        assert result == []
+
+    def test_oauth_account_with_other_keys_rejected(self) -> None:
+        """Non-null oauthAccount alongside valid keys is rejected."""
         result = setup_environment.validate_global_config({
-            'oauthSession': 'token',
             'oauthAccount': 'account',
+            'editorMode': 'vim',
         })
-        assert len(result) == 2
+        assert len(result) == 1
+        assert 'oauthAccount' in result[0]
+
+    def test_mixed_null_and_non_null_keys(self) -> None:
+        """Null oauthAccount with other valid keys passes validation."""
+        result = setup_environment.validate_global_config({
+            'oauthAccount': None,
+            'editorMode': 'vim',
+        })
+        assert result == []
 
     def test_empty_config_passes(self) -> None:
         """Empty config passes validation."""
@@ -5639,11 +5729,17 @@ class TestValidateGlobalConfig:
         assert result == []
 
     def test_excluded_keys_constant_used(self) -> None:
-        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant."""
+        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant for non-null values."""
         for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
             result = setup_environment.validate_global_config({key: 'test_value'})
             assert len(result) == 1
             assert key in result[0]
+
+    def test_excluded_keys_constant_null_accepted(self) -> None:
+        """All excluded keys accept null values."""
+        for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
+            result = setup_environment.validate_global_config({key: None})
+            assert result == []
 
 
 class TestWriteGlobalConfig:
@@ -5740,6 +5836,37 @@ class TestWriteGlobalConfig:
         result = setup_environment.write_global_config({'key': 'value'})
 
         assert result is False
+
+    def test_write_null_deletes_key(self, tmp_path, monkeypatch):
+        """write_global_config deletes keys with null values from ~/.claude.json."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{"autoConnectIde": true, "staleKey": "old"}')
+
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        result = setup_environment.write_global_config({'staleKey': None})
+
+        assert result is True
+        data = json.loads(config_file.read_text())
+        assert 'staleKey' not in data
+        assert data['autoConnectIde'] is True
+
+    def test_oauthaccount_null_deletes(self, tmp_path, monkeypatch):
+        """oauthAccount: null passes validation AND is deleted from output."""
+        config_file = tmp_path / '.claude.json'
+        config_file.write_text('{"oauthAccount": {"token": "secret"}, "other": 1}')
+
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        # Validation should pass
+        errors = setup_environment.validate_global_config({'oauthAccount': None})
+        assert errors == []
+
+        # Write should delete the key
+        result = setup_environment.write_global_config({'oauthAccount': None})
+        assert result is True
+        data = json.loads(config_file.read_text())
+        assert 'oauthAccount' not in data
+        assert data['other'] == 1
 
 
 class TestDetectSettingsConflicts:
@@ -7733,10 +7860,10 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 14-18 skipped
+        # Verify output shows Steps 15-19 skipped
         captured = capsys.readouterr()
-        assert 'Steps 14-18: Skipping command creation' in captured.out
-        assert 'Step 12: Writing user settings' in captured.out
+        assert 'Steps 15-19: Skipping command creation' in captured.out
+        assert 'Step 13: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -7800,13 +7927,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 12 and Steps 14-18
+        # Verify output shows Step 13 and Steps 15-19
         captured = capsys.readouterr()
-        assert 'Step 12: Writing user settings' in captured.out
-        assert 'Step 14: Downloading hooks' in captured.out
-        assert 'Step 15: Configuring settings' in captured.out
-        assert 'Step 17: Creating launcher script' in captured.out
-        assert 'Step 18: Registering global' in captured.out
+        assert 'Step 13: Writing user settings' in captured.out
+        assert 'Step 15: Downloading hooks' in captured.out
+        assert 'Step 16: Configuring settings' in captured.out
+        assert 'Step 18: Creating launcher script' in captured.out
+        assert 'Step 19: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(
@@ -8129,14 +8256,14 @@ class TestDeepMergeEdgeCases:
         assert result['model'] == 'claude'
 
     def test_deep_merge_null_in_nested_structure(self) -> None:
-        """None/null values at various positions."""
+        """None/null values at various positions (RFC 7396 null-as-delete)."""
         base = {'a': None, 'b': {'c': 'value'}}
         updates = {'a': {'nested': 'now'}, 'b': None}
         result = setup_environment.deep_merge_settings(base, updates)
         # When base has None and updates has dict, dict wins
         assert result['a'] == {'nested': 'now'}
-        # When base has dict and updates has None, None wins
-        assert result['b'] is None
+        # RFC 7396: None in updates deletes the key from result
+        assert 'b' not in result
 
     def test_deep_merge_mixed_types_at_same_path(self) -> None:
         """Different types in base vs updates for nested paths."""
@@ -8825,6 +8952,7 @@ class TestCollectInstallationPlan:
             'version': '2.0.0',
             'agents': ['agent1.md', 'agent2.md'],
             'slash-commands': ['cmd1.md'],
+            'rules': ['rule1.md'],
             'skills': [{'name': 'skill1', 'files': ['s.md']}],
             'files-to-download': [{'source': 'f.txt', 'dest': '~/.claude/f.txt'}],
             'hooks': {
@@ -8851,6 +8979,7 @@ class TestCollectInstallationPlan:
         )
         assert len(plan.agents) == 2
         assert len(plan.slash_commands) == 1
+        assert len(plan.rules) == 1
         assert len(plan.skills) == 1
         assert len(plan.files_to_download) == 1
         assert len(plan.hooks_files) == 1
@@ -8971,6 +9100,140 @@ class TestCollectInstallationPlan:
         assert plan_clean.has_security_concerns is False
         assert plan_deps.has_security_concerns is True
 
+    def test_collect_plan_with_rules(self) -> None:
+        """Rules are extracted into plan.rules."""
+        config: dict[str, Any] = {
+            'name': 'rules-env',
+            'rules': ['rule1.md', 'rule2.md'],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='rules-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.rules == ['rule1.md', 'rule2.md']
+        assert plan.total_resources == 2
+
+    def test_total_resources_includes_rules(self) -> None:
+        """total_resources property counts rules alongside other resource types."""
+        config: dict[str, Any] = {
+            'agents': ['a.md'],
+            'rules': ['r.md'],
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.total_resources == 2
+
+    def test_description_extracted_into_plan(self) -> None:
+        """config description is extracted to plan.config_description."""
+        config: dict[str, Any] = {
+            'name': 'test-env',
+            'description': 'A test environment for demos.',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description == 'A test environment for demos.'
+
+    def test_description_none_when_absent(self) -> None:
+        """config_description is None when not in config."""
+        config: dict[str, Any] = {'name': 'test-env'}
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description is None
+
+    def test_description_empty_string(self) -> None:
+        """Empty string description is passed through to plan."""
+        config: dict[str, Any] = {
+            'name': 'test-env',
+            'description': '',
+        }
+        chain = [setup_environment.InheritanceChainEntry(
+            source='test', source_type='repo', name='test-env',
+        )]
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=chain,
+            args=self._make_args(),
+        )
+        assert plan.config_description == ''
+
+
+class TestCollectSimpleListFiles:
+    """Test _collect_simple_list_files() helper."""
+
+    def test_empty_config(self) -> None:
+        """Empty config returns no files."""
+        result = setup_environment._collect_simple_list_files(
+            config={}, config_key='rules', file_type='rule',
+            config_source='test', base_url=None,
+        )
+        assert result == []
+
+    def test_collects_string_items(self) -> None:
+        """String items are collected with resolved paths."""
+        config: dict[str, Any] = {'rules': ['rule1.md', 'rule2.md']}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='rules', file_type='rule',
+            config_source='/path/to/config.yaml', base_url=None,
+        )
+        assert len(result) == 2
+        assert result[0][0] == 'rule'
+        assert result[0][1] == 'rule1.md'
+
+    def test_skips_non_string_items(self) -> None:
+        """Non-string items are silently skipped."""
+        config: dict[str, Any] = {'agents': ['agent.md', 123, None]}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='agents', file_type='agent',
+            config_source='test', base_url=None,
+        )
+        assert len(result) == 1
+
+    def test_non_list_value_returns_empty(self) -> None:
+        """Non-list config value returns empty list."""
+        config: dict[str, Any] = {'rules': 'not-a-list'}
+        result = setup_environment._collect_simple_list_files(
+            config=config, config_key='rules', file_type='rule',
+            config_source='test', base_url=None,
+        )
+        assert result == []
+
 
 class TestDisplayInstallationSummary:
     """Test display_installation_summary() output formatting."""
@@ -9049,6 +9312,98 @@ class TestDisplayInstallationSummary:
         output = buf.getvalue()
         assert '$ pip install flask' in output
         assert '$ npm install -g typescript' in output
+
+    def test_display_user_settings_with_delete_markers(self):
+        """User settings summary shows [DELETE] for null-valued keys."""
+        import io
+        plan = self._make_plan(user_settings={'theme': 'dark', 'stale': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' in output
+        assert 'stale' in output
+        assert '1 set' in output
+        assert '1 delete' in output
+
+    def test_display_global_config_with_delete_markers(self):
+        """Global config summary shows [DELETE] for null-valued keys."""
+        import io
+        plan = self._make_plan(global_config={'autoConnectIde': True, 'oauthAccount': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' in output
+        assert 'oauthAccount' in output
+        assert '1 set' in output
+        assert '1 delete' in output
+
+    def test_display_settings_no_delete_markers_when_no_nulls(self):
+        """No [DELETE] markers when no null values exist."""
+        import io
+        plan = self._make_plan(user_settings={'theme': 'dark'})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '[DELETE]' not in output
+        assert '1 set' in output
+
+    def test_display_settings_all_deletes(self):
+        """All null values show only delete count, no set count."""
+        import io
+        plan = self._make_plan(user_settings={'a': None, 'b': None})
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '2 delete' in output
+        assert '[DELETE]' in output
+
+    def test_display_with_description(self) -> None:
+        """Description lines appear after Configuration: and before Source:."""
+        import io
+        plan = self._make_plan(config_description='A test environment.')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        desc_idx = next(i for i, ln in enumerate(lines) if 'A test environment.' in ln)
+        assert config_idx < desc_idx < source_idx
+
+    def test_display_without_description(self) -> None:
+        """No extra lines between Configuration: and Source: when description is None."""
+        import io
+        plan = self._make_plan(config_description=None)
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        assert source_idx == config_idx + 1
+
+    def test_display_multiline_description(self) -> None:
+        """Each description line is 2-space indented."""
+        import io
+        plan = self._make_plan(config_description='Line one\nLine two\nLine three')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert '  Line one' in output
+        assert '  Line two' in output
+        assert '  Line three' in output
+
+    def test_display_empty_description(self) -> None:
+        """Empty string description is skipped (no extra lines)."""
+        import io
+        plan = self._make_plan(config_description='')
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        lines = output.splitlines()
+        config_idx = next(i for i, ln in enumerate(lines) if 'Configuration:' in ln)
+        source_idx = next(i for i, ln in enumerate(lines) if 'Source:' in ln)
+        assert source_idx == config_idx + 1
 
 
 class TestConfirmInstallation:
