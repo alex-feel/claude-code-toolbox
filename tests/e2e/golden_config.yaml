@@ -186,6 +186,7 @@ global-config:
   editorMode: "vim"
   showTurnDuration: true
   terminalProgressBarEnabled: false
+  oauthAccount: null
 
 # Always-thinking mode
 always-thinking-enabled: true

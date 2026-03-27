@@ -620,7 +620,7 @@ Settings merged into `~/.claude.json` (the Claude Code global configuration file
 
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
-- **Excluded keys:** `oauthSession` and `oauthAccount` (OAuth credentials must not appear in YAML configuration files)
+- **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
 - **Example:**
 
 ```yaml
@@ -1197,7 +1197,7 @@ Never commit authentication tokens to repositories. Use environment variables (`
 
 ### Protected Configuration Keys
 
-The `global-config` key excludes `oauthSession` and `oauthAccount` to prevent OAuth credentials from appearing in YAML configuration files.
+The `global-config` key blocks non-null `oauthAccount` values to prevent OAuth credentials from appearing in YAML configuration files. Setting `oauthAccount: null` is allowed to support clearing authentication state (useful for account switching and auth recovery).
 
 ### Installation Confirmation
 

@@ -133,7 +133,6 @@ USER_SETTINGS_EXCLUDED_KEYS: set[str] = {
 # Keys that are NOT allowed in the global-config section
 # OAuth credentials must not appear in version-controlled YAML files
 GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
-    'oauthSession',
     'oauthAccount',
 })
 
@@ -1477,8 +1476,9 @@ def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
 def validate_global_config(global_config: dict[str, Any]) -> list[str]:
     """Validate global-config section for excluded keys.
 
-    Checks that the global-config section does not contain OAuth credential
-    keys that should never appear in YAML configuration files.
+    Checks that the global-config section does not contain non-null OAuth
+    credential values. Null values are allowed to support clearing
+    authentication state (e.g., oauthAccount: null).
 
     Args:
         global_config: Dict from YAML global-config section.
@@ -1487,9 +1487,10 @@ def validate_global_config(global_config: dict[str, Any]) -> list[str]:
         List of error messages. Empty list if validation passes.
     """
     return [
-        f"Key '{key}' is not allowed in global-config (OAuth credentials)"
+        f"Key '{key}' cannot be set to a non-null value in global-config "
+        '(OAuth credentials)'
         for key in global_config
-        if key in GLOBAL_CONFIG_EXCLUDED_KEYS
+        if key in GLOBAL_CONFIG_EXCLUDED_KEYS and global_config[key] is not None
     ]
 
 

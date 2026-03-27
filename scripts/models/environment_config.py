@@ -29,7 +29,6 @@ USER_SETTINGS_EXCLUDED_KEYS: frozenset[str] = frozenset({
 # Keys that are NOT allowed in global-config section
 # OAuth credentials must not appear in version-controlled YAML files
 GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
-    'oauthSession',
     'oauthAccount',
 })
 
@@ -180,9 +179,10 @@ class GlobalConfig(BaseModel):
     global configuration schema. No specific keys are hardcoded -- the model
     passes through all provided settings without field-level validation.
 
-    The only structural guard is the exclusion of OAuth credential keys
-    (oauthSession, oauthAccount) to prevent accidental credential exposure
-    in version-controlled YAML configuration files.
+    The only structural guard is the exclusion of the OAuth credential key
+    (oauthAccount): non-null values are rejected to prevent credential
+    exposure in version-controlled YAML configuration files. Null values
+    are allowed to support clearing authentication state.
     """
 
     model_config = ConfigDict(extra='allow')
@@ -190,13 +190,13 @@ class GlobalConfig(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def check_excluded_keys(cls, data: dict[str, object]) -> dict[str, object]:
-        """Validate that excluded keys are not present."""
+        """Reject non-null values for excluded OAuth keys; null values are allowed for clearing auth state."""
         for key in GLOBAL_CONFIG_EXCLUDED_KEYS:
-            if key in data:
+            if key in data and data[key] is not None:
                 raise ValueError(
-                    f"Key '{key}' is not allowed in global-config (OAuth credentials). "
-                    'OAuth credentials are managed by Claude Code and must not appear '
-                    'in environment configuration files.',
+                    f"Key '{key}' cannot be set to a non-null value in global-config "
+                    '(OAuth credentials). Set to null to clear authentication state, '
+                    'or omit the key entirely.',
                 )
         return data
 

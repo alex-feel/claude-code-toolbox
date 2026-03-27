@@ -5611,27 +5611,34 @@ class TestValidateGlobalConfig:
         })
         assert result == []
 
-    def test_oauth_session_rejected(self) -> None:
-        """oauthSession key is rejected."""
-        result = setup_environment.validate_global_config({'oauthSession': 'token'})
-        assert len(result) == 1
-        assert 'oauthSession' in result[0]
-        assert 'not allowed' in result[0]
-
-    def test_oauth_account_rejected(self) -> None:
-        """oauthAccount key is rejected."""
+    def test_oauth_account_non_null_rejected(self) -> None:
+        """Non-null oauthAccount value is rejected."""
         result = setup_environment.validate_global_config({'oauthAccount': 'account'})
         assert len(result) == 1
         assert 'oauthAccount' in result[0]
-        assert 'not allowed' in result[0]
+        assert 'non-null' in result[0]
 
-    def test_both_oauth_keys_rejected(self) -> None:
-        """Both OAuth keys are reported."""
+    def test_oauth_account_null_accepted(self) -> None:
+        """Null oauthAccount value is accepted for clearing authentication state."""
+        result = setup_environment.validate_global_config({'oauthAccount': None})
+        assert result == []
+
+    def test_oauth_account_with_other_keys_rejected(self) -> None:
+        """Non-null oauthAccount alongside valid keys is rejected."""
         result = setup_environment.validate_global_config({
-            'oauthSession': 'token',
             'oauthAccount': 'account',
+            'editorMode': 'vim',
         })
-        assert len(result) == 2
+        assert len(result) == 1
+        assert 'oauthAccount' in result[0]
+
+    def test_mixed_null_and_non_null_keys(self) -> None:
+        """Null oauthAccount with other valid keys passes validation."""
+        result = setup_environment.validate_global_config({
+            'oauthAccount': None,
+            'editorMode': 'vim',
+        })
+        assert result == []
 
     def test_empty_config_passes(self) -> None:
         """Empty config passes validation."""
@@ -5639,11 +5646,17 @@ class TestValidateGlobalConfig:
         assert result == []
 
     def test_excluded_keys_constant_used(self) -> None:
-        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant."""
+        """Function uses GLOBAL_CONFIG_EXCLUDED_KEYS constant for non-null values."""
         for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
             result = setup_environment.validate_global_config({key: 'test_value'})
             assert len(result) == 1
             assert key in result[0]
+
+    def test_excluded_keys_constant_null_accepted(self) -> None:
+        """All excluded keys accept null values."""
+        for key in setup_environment.GLOBAL_CONFIG_EXCLUDED_KEYS:
+            result = setup_environment.validate_global_config({key: None})
+            assert result == []
 
 
 class TestWriteGlobalConfig:

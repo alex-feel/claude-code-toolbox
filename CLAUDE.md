@@ -168,7 +168,7 @@ The `global-config` YAML key writes settings to `~/.claude.json` (the Claude Cod
 
 **Merge strategy:** Uses `deep_merge_settings()` with `array_union_keys=set()` (no array union -- arrays are replaced, not unioned). This differs from `user-settings` which uses the default `DEFAULT_ARRAY_UNION_KEYS` for `permissions.allow/deny/ask` union behavior.
 
-**Excluded keys:** Only `oauthSession` and `oauthAccount` are blocked (via `GLOBAL_CONFIG_EXCLUDED_KEYS`). These OAuth credential keys must not appear in version-controlled YAML configuration files.
+**Excluded keys:** Only `oauthAccount` is blocked from non-null values (via `GLOBAL_CONFIG_EXCLUDED_KEYS`). Setting `oauthAccount: null` is allowed to support clearing OAuth authentication state. Non-null OAuth credential values must not appear in version-controlled YAML configuration files.
 
 **Relationship with `install_claude.py`:** The `update_install_method_config()` function in `install_claude.py` also writes to `~/.claude.json`. Both functions use a resilient read-merge-write pattern that preserves existing keys, ensuring they coexist without data loss. The `install_claude.py` function does not import from `setup_environment.py` (standalone script with different dependency chain).
 
