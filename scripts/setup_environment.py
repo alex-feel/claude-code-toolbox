@@ -6586,12 +6586,40 @@ def create_mcp_config_file(
         return False
 
 
+# Pattern matching EnvironmentConfig.validate_command_names behavior:
+# first character must be alphanumeric; subsequent characters may be alphanumeric, hyphens, or underscores
+_SAFE_COMMAND_NAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+
+
+def validate_command_name_for_path(name: str) -> bool:
+    """Validate that a command name is safe for use as a directory name.
+
+    Rejects names containing path separators, traversal patterns, or
+    characters outside the allowed set (alphanumeric, hyphens, underscores).
+    The first character must be alphanumeric (no leading hyphens/underscores).
+
+    Args:
+        name: Command name to validate.
+
+    Returns:
+        True if safe, False otherwise.
+    """
+    if not name or not name.strip():
+        return False
+    if '/' in name or '\\' in name or '..' in name:
+        return False
+    if name.startswith('.'):
+        return False
+    return bool(_SAFE_COMMAND_NAME_PATTERN.match(name))
+
+
 def download_hook_files(
     hooks: dict[str, Any],
     claude_user_dir: Path,
     config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
+    hooks_base_dir: Path | None = None,
 ) -> bool:
     """Download hook files from configuration.
 
@@ -6604,6 +6632,9 @@ def download_hook_files(
         config_source: Config source for resolving resource paths
         base_url: Optional base URL for resolving resources
         auth_param: Optional authentication parameter
+        hooks_base_dir: Optional base directory for hook files.
+            When provided, hook files are downloaded to this directory
+            instead of claude_user_dir / 'hooks'.
 
     Returns:
         bool: True if all downloads successful, False otherwise.
@@ -6614,7 +6645,7 @@ def download_hook_files(
         info('No hook files to download')
         return True
 
-    hooks_dir = claude_user_dir / 'hooks'
+    hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
     return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param)
 
 
@@ -6654,6 +6685,7 @@ def create_settings(
     attribution: dict[str, str] | None = None,
     status_line: dict[str, Any] | None = None,
     effort_level: str | None = None,
+    hooks_base_dir: Path | None = None,
 ) -> bool:
     """Create {command_name}-settings.json with environment-specific settings.
 
@@ -6673,15 +6705,21 @@ def create_settings(
             Empty strings hide attribution.
         status_line: Optional dict with 'file' key for status line script path, optional
             'padding' key, and optional 'config' key for config file reference.
-            Both the script and config file are downloaded to ~/.claude/hooks/ and
+            Both the script and config file are downloaded to the hooks directory and
             the config path is appended as a command line argument.
         effort_level: Optional effort level for adaptive reasoning.
             Valid values: 'low', 'medium', 'high', 'max'. The 'max' level is
             only available for Opus models.
+        hooks_base_dir: Optional base directory for hook files.
+            When provided, hook file paths are resolved relative to this directory
+            instead of claude_user_dir / 'hooks'.
 
     Returns:
         bool: True if successful, False otherwise.
     """
+    # Determine hooks directory: use hooks_base_dir if provided, else default
+    hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
+
     info(f'Creating {command_name}-settings.json...')
 
     # Create fresh settings structure for this environment
@@ -6737,11 +6775,11 @@ def create_settings(
     if status_line is not None:
         status_line_file = status_line.get('file')
         if status_line_file:
-            # Build absolute path to the hook file in .claude/hooks/
+            # Build absolute path to the hook file in hooks directory
             # Strip query parameters from filename
             clean_filename = status_line_file.split('?')[0] if '?' in status_line_file else status_line_file
             filename = Path(clean_filename).name
-            hook_path = claude_user_dir / 'hooks' / filename
+            hook_path = hooks_dir / filename
             hook_path_str = hook_path.as_posix()
 
             # Extract optional config file reference
@@ -6756,7 +6794,7 @@ def create_settings(
                 if config:
                     # Strip query parameters from config filename
                     clean_config = config.split('?')[0] if '?' in config else config
-                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path = hooks_dir / Path(clean_config).name
                     config_path_str = config_path.as_posix()
                     status_line_command = f'{status_line_command} {config_path_str}'
             else:
@@ -6767,7 +6805,7 @@ def create_settings(
                 if config:
                     # Strip query parameters from config filename
                     clean_config = config.split('?')[0] if '?' in config else config
-                    config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                    config_path = hooks_dir / Path(clean_config).name
                     config_path_str = config_path.as_posix()
                     status_line_command = f'{status_line_command} {config_path_str}'
 
@@ -6867,8 +6905,8 @@ def create_settings(
 
                 if is_python_script:
                     # Python script - use uv run for cross-platform execution
-                    # Build absolute path to the hook file in .claude/hooks/
-                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    # Build absolute path to the hook file in hooks directory
+                    hook_path = hooks_dir / Path(clean_command).name
                     # Use POSIX-style path (forward slashes) for cross-platform compatibility
                     # This works on Windows, macOS, and Linux, and avoids JSON escaping issues
                     hook_path_str = hook_path.as_posix()
@@ -6882,7 +6920,7 @@ def create_settings(
                     if config:
                         # Strip query parameters from config filename
                         clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path = hooks_dir / Path(clean_config).name
                         config_path_str = config_path.as_posix()
                         full_command = f'{full_command} {config_path_str}'
 
@@ -6891,7 +6929,7 @@ def create_settings(
                     # node.exe is a binary (not batch script), works directly on all platforms
                     # Windows: .js files are associated with WSH (JScript), NOT Node.js
                     # Unix: .js files have no default handler
-                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    hook_path = hooks_dir / Path(clean_command).name
                     hook_path_str = hook_path.as_posix()
                     full_command = f'node {hook_path_str}'
 
@@ -6899,14 +6937,14 @@ def create_settings(
                     if config:
                         # Strip query parameters from config filename
                         clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path = hooks_dir / Path(clean_config).name
                         config_path_str = config_path.as_posix()
                         full_command = f'{full_command} {config_path_str}'
 
                 else:
                     # Other file - build absolute path and use as-is
                     # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
-                    hook_path = claude_user_dir / 'hooks' / Path(clean_command).name
+                    hook_path = hooks_dir / Path(clean_command).name
                     hook_path_str = hook_path.as_posix()
                     full_command = hook_path_str
 
@@ -6914,7 +6952,7 @@ def create_settings(
                     if config:
                         # Strip query parameters from config filename
                         clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = claude_user_dir / 'hooks' / Path(clean_config).name
+                        config_path = hooks_dir / Path(clean_config).name
                         config_path_str = config_path.as_posix()
                         full_command = f'{full_command} {config_path_str}'
             else:
@@ -7958,6 +7996,12 @@ def main() -> None:
                 if ' ' in cmd_name:
                     error(f'Invalid command name: "{cmd_name}" contains spaces')
                     sys.exit(1)
+                # Validate path safety (rejects path separators, traversal, leading dots)
+                if not validate_command_name_for_path(cmd_name):
+                    error(f'Invalid command name for isolation: "{cmd_name}"')
+                    error('Command names must contain only alphanumeric characters, hyphens, and underscores.')
+                    error('Leading dots, path separators, and traversal patterns are not allowed.')
+                    sys.exit(1)
 
         # Get primary command name (first in list) for file naming
         primary_command_name = command_names[0] if command_names else None
@@ -7982,7 +8026,7 @@ def main() -> None:
         permissions = config.get('permissions')
 
         # Extract environment variables configuration
-        env_variables = config.get('env-variables')
+        env_variables: dict[str, str] | None = config.get('env-variables')
 
         # Extract OS-level environment variables configuration
         os_env_variables = config.get('os-env-variables')
@@ -8119,12 +8163,38 @@ def main() -> None:
         # Set up directories
         home = get_real_user_home()
         claude_user_dir = home / '.claude'
-        agents_dir = claude_user_dir / 'agents'
-        commands_dir = claude_user_dir / 'commands'
-        rules_dir = claude_user_dir / 'rules'
-        prompts_dir = claude_user_dir / 'prompts'
-        hooks_dir = claude_user_dir / 'hooks'
-        skills_dir = claude_user_dir / 'skills'
+
+        # Compute artifact base directory for environment isolation
+        # When command-names is set, artifacts are isolated in ~/.claude/{primary_command_name}/
+        # When not set, artifacts go to the standard ~/.claude/ directory
+        isolated_config_dir: Path | None = None
+        artifact_base_dir: Path
+
+        if primary_command_name:
+            # Check if user explicitly set CLAUDE_CONFIG_DIR in env-variables
+            user_config_dir = env_variables.get('CLAUDE_CONFIG_DIR') if env_variables else None
+            if user_config_dir:
+                # User overrides isolation path -- use their value
+                info('Using user-specified CLAUDE_CONFIG_DIR for artifact isolation')
+                if user_config_dir.startswith('~'):
+                    isolated_config_dir = Path(user_config_dir).expanduser()
+                else:
+                    isolated_config_dir = Path(user_config_dir)
+                artifact_base_dir = isolated_config_dir
+            else:
+                # Auto-compute isolation directory from primary command name
+                isolated_config_dir = claude_user_dir / primary_command_name
+                artifact_base_dir = isolated_config_dir
+        else:
+            artifact_base_dir = claude_user_dir
+
+        # Derive all artifact directories from artifact_base_dir
+        agents_dir = artifact_base_dir / 'agents'
+        commands_dir = artifact_base_dir / 'commands'
+        rules_dir = artifact_base_dir / 'rules'
+        prompts_dir = artifact_base_dir / 'prompts'
+        hooks_dir = artifact_base_dir / 'hooks'
+        skills_dir = artifact_base_dir / 'skills'
 
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
         if not args.skip_install:
@@ -8143,7 +8213,10 @@ def main() -> None:
         # Step 2: Create directories
         print()
         print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        for dir_path in [claude_user_dir, agents_dir, commands_dir, rules_dir, prompts_dir, hooks_dir, skills_dir]:
+        # Always create standard claude_user_dir first
+        claude_user_dir.mkdir(parents=True, exist_ok=True)
+        # Create artifact directories (may be under isolated path when artifact_base_dir != claude_user_dir)
+        for dir_path in [agents_dir, commands_dir, rules_dir, prompts_dir, hooks_dir, skills_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
             success(f'Created: {dir_path}')
 
@@ -8312,8 +8385,30 @@ def main() -> None:
             print()
             print(f'{Colors.CYAN}Step 15: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
-            if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth):
+            hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
+            if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
+                                       hooks_base_dir=hooks_base_dir_arg):
                 download_failures.append('hook files')
+
+            # Inject CLAUDE_CONFIG_DIR for environment isolation
+            if isolated_config_dir is not None:
+                if env_variables is None:
+                    env_variables = {}
+                if 'CLAUDE_CONFIG_DIR' not in env_variables:
+                    # Platform-dependent path format:
+                    # - Windows: absolute path (Windows shell does not resolve ~)
+                    # - Linux/macOS/WSL: tilde-based path for portability
+                    if sys.platform == 'win32':
+                        config_dir_value = str(isolated_config_dir)
+                    else:
+                        home_str = str(home)
+                        isolated_str = str(isolated_config_dir)
+                        if isolated_str.startswith(home_str):
+                            config_dir_value = '~' + isolated_str[len(home_str):]
+                        else:
+                            config_dir_value = isolated_str
+                    env_variables['CLAUDE_CONFIG_DIR'] = config_dir_value
+                    info(f'Environment isolation active for "{primary_command_name}"')
 
             # Step 16: Configure settings
             print()
@@ -8335,6 +8430,7 @@ def main() -> None:
                 attribution,
                 status_line_arg,
                 effort_level,
+                hooks_base_dir=hooks_base_dir_arg,
             )
 
             # Step 17: Write installation manifest
