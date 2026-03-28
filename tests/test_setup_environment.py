@@ -3767,6 +3767,476 @@ class TestCreateSettings:
             # Command should end with the Python file, not a config
             assert settings['statusLine']['command'].endswith('statusline.py')
 
+    def test_create_settings_http_hook(self):
+        """Test creating settings with HTTP hook passes through all fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Write',
+                        'type': 'http',
+                        'url': 'http://localhost:8080/hook',
+                        'headers': {'Authorization': 'Bearer $TOKEN'},
+                        'allowedEnvVars': ['TOKEN'],
+                        'timeout': 15,
+                        'statusMessage': 'Sending webhook...',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PostToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'http'
+            assert hook['url'] == 'http://localhost:8080/hook'
+            assert hook['headers'] == {'Authorization': 'Bearer $TOKEN'}
+            assert hook['allowedEnvVars'] == ['TOKEN']
+            assert hook['timeout'] == 15
+            assert hook['statusMessage'] == 'Sending webhook...'
+
+    def test_create_settings_agent_hook(self):
+        """Test creating settings with agent hook passes through all fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Bash',
+                        'type': 'agent',
+                        'prompt': 'Verify security implications',
+                        'model': 'sonnet',
+                        'timeout': 60,
+                        'if': 'Bash(rm *)',
+                        'once': True,
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'agent'
+            assert hook['prompt'] == 'Verify security implications'
+            assert hook['model'] == 'sonnet'
+            assert hook['timeout'] == 60
+            assert hook['if'] == 'Bash(rm *)'
+            assert hook['once'] is True
+
+    def test_create_settings_prompt_hook_with_model(self):
+        """Test creating settings with prompt hook includes model field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Edit',
+                        'type': 'prompt',
+                        'prompt': 'Review this edit',
+                        'model': 'haiku',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'prompt'
+            assert hook['prompt'] == 'Review this edit'
+            assert hook['model'] == 'haiku'
+
+    @patch('setup_environment.handle_resource')
+    def test_create_settings_command_hook_with_async_and_shell(self, mock_download):
+        """Test creating settings with command hook async and shell fields."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/notify.py'],
+                'events': [
+                    {
+                        'event': 'Notification',
+                        'matcher': '',
+                        'type': 'command',
+                        'command': 'notify.py',
+                        'async': True,
+                        'shell': 'bash',
+                        'statusMessage': 'Running...',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['Notification'][0]['hooks'][0]
+            assert hook['type'] == 'command'
+            assert hook['async'] is True
+            assert hook['shell'] == 'bash'
+            assert hook['statusMessage'] == 'Running...'
+            assert 'uv run' in hook['command']
+
+    def test_create_settings_common_fields_on_prompt_hook(self):
+        """Test creating settings with prompt hook includes common fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Bash',
+                        'type': 'prompt',
+                        'prompt': 'Check security',
+                        'timeout': 30,
+                        'if': 'Bash(*)',
+                        'statusMessage': 'Checking...',
+                        'once': True,
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['timeout'] == 30
+            assert hook['if'] == 'Bash(*)'
+            assert hook['statusMessage'] == 'Checking...'
+            assert hook['once'] is True
+
+
+class TestValidateCommandNameForPath:
+    """Test validate_command_name_for_path() function."""
+
+    def test_valid_names(self):
+        """Test that valid command names are accepted."""
+        valid_names = ['aegis', 'my-env', 'env_1', 'A123', 'a', 'Z']
+        for name in valid_names:
+            assert setup_environment.validate_command_name_for_path(name) is True, (
+                f'Expected valid: {name!r}'
+            )
+
+    def test_invalid_names(self):
+        """Test that invalid command names are rejected."""
+        invalid_names = [
+            '../evil',
+            'foo/bar',
+            'foo\\bar',
+            '.hidden',
+            '',
+            '   ',
+            '-leading-hyphen',
+            '_leading_underscore',
+            'has space',
+            'has.dot',
+        ]
+        for name in invalid_names:
+            assert setup_environment.validate_command_name_for_path(name) is False, (
+                f'Expected invalid: {name!r}'
+            )
+
+
+class TestArtifactIsolation:
+    """Test artifact isolation via CLAUDE_CONFIG_DIR."""
+
+    def test_create_settings_hooks_base_dir(self):
+        """Test that hook paths use hooks_base_dir when provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            isolated_hooks = Path(tmpdir) / 'my-env' / 'hooks'
+            isolated_hooks.mkdir(parents=True)
+
+            hooks = {
+                'events': [{
+                    'event': 'PostToolUse',
+                    'matcher': 'Edit',
+                    'type': 'command',
+                    'command': 'my_hook.py',
+                }],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+                hooks_base_dir=isolated_hooks,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # Hook path should use the isolated hooks directory
+            hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert 'my-env/hooks/my_hook.py' in hook_cmd
+
+    def test_create_settings_hooks_default_dir(self):
+        """Test that hook paths default to claude_user_dir/hooks when hooks_base_dir is None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_default = claude_dir / 'hooks'
+            hooks_default.mkdir(parents=True)
+
+            hooks = {
+                'events': [{
+                    'event': 'PostToolUse',
+                    'matcher': 'Edit',
+                    'type': 'command',
+                    'command': 'my_hook.py',
+                }],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            # Default: path should contain the tmpdir/hooks/ path
+            assert '/hooks/my_hook.py' in hook_cmd
+
+    def test_download_hook_files_hooks_base_dir(self):
+        """Test that hook files download to hooks_base_dir when provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            isolated_hooks = Path(tmpdir) / 'my-env' / 'hooks'
+            isolated_hooks.mkdir(parents=True)
+
+            hooks: dict[str, Any] = {'files': []}
+
+            result = setup_environment.download_hook_files(
+                hooks,
+                claude_dir,
+                'test-source',
+                hooks_base_dir=isolated_hooks,
+            )
+
+            # Empty files list returns True
+            assert result is True
+
+    def test_create_settings_claude_config_dir_injection(self):
+        """Test that CLAUDE_CONFIG_DIR is injected into settings env block."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            env_vars = {'EXISTING_VAR': 'value'}
+            env_vars['CLAUDE_CONFIG_DIR'] = '~/.claude/my-env'
+
+            result = setup_environment.create_settings(
+                {},
+                claude_dir,
+                'my-env',
+                env=env_vars,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'my-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert settings['env']['CLAUDE_CONFIG_DIR'] == '~/.claude/my-env'
+            assert settings['env']['EXISTING_VAR'] == 'value'
+
+    def test_create_settings_user_override_claude_config_dir(self):
+        """Test that user-set CLAUDE_CONFIG_DIR is preserved (not overridden)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            # User already set CLAUDE_CONFIG_DIR
+            env_vars = {'CLAUDE_CONFIG_DIR': '/custom/path'}
+
+            result = setup_environment.create_settings(
+                {},
+                claude_dir,
+                'my-env',
+                env=env_vars,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'my-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            # User value must be preserved
+            assert settings['env']['CLAUDE_CONFIG_DIR'] == '/custom/path'
+
+    @patch('sys.platform', 'linux')
+    def test_create_settings_claude_config_dir_tilde_linux(self):
+        """Test tilde-based path on non-Windows for CLAUDE_CONFIG_DIR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            # Simulate the tilde path as it would be computed by main()
+            env_vars = {'CLAUDE_CONFIG_DIR': '~/.claude/my-env'}
+
+            result = setup_environment.create_settings(
+                {},
+                claude_dir,
+                'my-env',
+                env=env_vars,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'my-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+            assert settings['env']['CLAUDE_CONFIG_DIR'] == '~/.claude/my-env'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific path test')
+    def test_create_settings_claude_config_dir_absolute_windows(self):
+        """Test absolute path on Windows for CLAUDE_CONFIG_DIR."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            # Windows gets absolute path
+            env_vars = {'CLAUDE_CONFIG_DIR': r'C:\Users\test\.claude\my-env'}
+
+            result = setup_environment.create_settings(
+                {},
+                claude_dir,
+                'my-env',
+                env=env_vars,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'my-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+            assert settings['env']['CLAUDE_CONFIG_DIR'] == r'C:\Users\test\.claude\my-env'
+
+    def test_create_settings_status_line_uses_hooks_base_dir(self):
+        """Test that status_line paths use hooks_base_dir when provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            isolated_hooks = Path(tmpdir) / 'my-env' / 'hooks'
+            isolated_hooks.mkdir(parents=True)
+
+            result = setup_environment.create_settings(
+                {},
+                claude_dir,
+                'test-env',
+                status_line={'file': 'statusline.py', 'padding': 0},
+                hooks_base_dir=isolated_hooks,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            status_cmd = settings['statusLine']['command']
+            assert 'my-env/hooks/statusline.py' in status_cmd
+
+    def test_create_settings_js_hook_uses_hooks_base_dir(self):
+        """Test that JavaScript hook paths use hooks_base_dir when provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            isolated_hooks = Path(tmpdir) / 'my-env' / 'hooks'
+            isolated_hooks.mkdir(parents=True)
+
+            hooks = {
+                'events': [{
+                    'event': 'PostToolUse',
+                    'matcher': 'Read',
+                    'type': 'command',
+                    'command': 'my_hook.js',
+                }],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+                hooks_base_dir=isolated_hooks,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert 'node' in hook_cmd
+            assert 'my-env/hooks/my_hook.js' in hook_cmd
+
+    def test_create_settings_shell_hook_uses_hooks_base_dir(self):
+        """Test that shell/other hook paths use hooks_base_dir when provided."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            isolated_hooks = Path(tmpdir) / 'my-env' / 'hooks'
+            isolated_hooks.mkdir(parents=True)
+
+            hooks = {
+                'events': [{
+                    'event': 'PostToolUse',
+                    'matcher': 'Write',
+                    'type': 'command',
+                    'command': 'my_hook.sh',
+                }],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+                hooks_base_dir=isolated_hooks,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
+            assert 'my-env/hooks/my_hook.sh' in hook_cmd
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""

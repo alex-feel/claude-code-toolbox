@@ -249,47 +249,102 @@ class MCPServerStdio(BaseModel):
 class HookEvent(BaseModel):
     """Hook event configuration.
 
-    Supports two hook types:
-    - command: Executes a script/command (requires 'command' field)
-    - prompt: Uses LLM for evaluation (requires 'prompt' field)
+    Supports four hook types matching the official Claude Code hooks specification:
+    - command: Executes a shell command (requires 'command' field)
+    - http: Sends HTTP POST request (requires 'url' field)
+    - prompt: Uses single-turn LLM evaluation (requires 'prompt' field)
+    - agent: Spawns a subagent with tool access (requires 'prompt' field)
     """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     event: str = Field(..., description='Event name (e.g., PreToolUse, PostToolUse, Notification)')
     matcher: str | None = Field('', description='Regex pattern for matching')
-    type: Literal['command', 'prompt'] = Field('command', description='Hook type: command or prompt')
+    type: Literal['command', 'http', 'prompt', 'agent'] = Field(
+        'command',
+        description='Hook type: command, http, prompt, or agent',
+    )
+
+    # Common fields (all hook types)
+    if_condition: str | None = Field(
+        None,
+        alias='if',
+        description='Permission rule syntax filter for when hook runs (e.g., "Bash(git *)", "Edit(*.ts)")',
+    )
+    status_message: str | None = Field(
+        None,
+        alias='statusMessage',
+        description='Custom spinner message displayed while hook runs',
+    )
+    once: bool | None = Field(
+        None,
+        description='If true, runs only once per session then is removed (skills only)',
+    )
+    timeout: int | None = Field(
+        None,
+        description='Timeout in seconds (default varies by type: 600 for command, 30 for prompt, 60 for agent)',
+    )
 
     # Command hook fields
     command: str | None = Field(
         None,
-        description='Command to execute (required for command hooks, forbidden for prompt hooks)',
+        description='Command to execute (required for command hooks)',
     )
     config: str | None = Field(
         None,
         description='Optional config file reference to pass as argument to hook command',
     )
+    async_execution: bool | None = Field(
+        None,
+        alias='async',
+        description='If true, runs command in background without blocking',
+    )
+    shell: Literal['bash', 'powershell'] | None = Field(
+        None,
+        description='Shell to use for command execution: "bash" (default) or "powershell"',
+    )
 
-    # Prompt hook fields
+    # HTTP hook fields
+    url: str | None = Field(
+        None,
+        description='URL to send HTTP POST request to (required for http hooks)',
+    )
+    headers: dict[str, str] | None = Field(
+        None,
+        description='Additional HTTP headers as key-value pairs. Values support $VAR_NAME env var interpolation',
+    )
+    allowed_env_vars: list[str] | None = Field(
+        None,
+        alias='allowedEnvVars',
+        description='Environment variable names permitted for interpolation into header values',
+    )
+
+    # Prompt/Agent hook fields
     prompt: str | None = Field(
         None,
-        description='Prompt text sent to LLM for evaluation (required for prompt hooks, forbidden for command hooks)',
+        description='Prompt text for LLM evaluation (required for prompt and agent hooks)',
     )
-    timeout: int | None = Field(
+    model: str | None = Field(
         None,
-        description='Timeout in seconds for prompt hook LLM evaluation (optional, default 30)',
+        description='Model to use for prompt or agent hook evaluation',
     )
 
     @model_validator(mode='after')
     def validate_hook_type_fields(self) -> 'HookEvent':
-        """Validate that fields are correctly set based on hook type.
+        """Validate that fields match the hook type per official Claude Code spec.
 
-        For command hooks:
-        - command is required
-        - prompt is forbidden
-
-        For prompt hooks:
-        - prompt is required
-        - command is forbidden
-        - config is forbidden
+        Field Matrix:
+        | Field          | command   | http       | prompt    | agent     |
+        |----------------|-----------|------------|-----------|-----------|
+        | command        | REQUIRED  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | config         | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | async          | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | shell          | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | url            | FORBIDDEN | REQUIRED   | FORBIDDEN | FORBIDDEN |
+        | headers        | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
+        | allowedEnvVars | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
+        | prompt         | FORBIDDEN | FORBIDDEN  | REQUIRED  | REQUIRED  |
+        | model          | FORBIDDEN | FORBIDDEN  | Optional  | Optional  |
 
         Returns:
             The validated HookEvent instance.
@@ -297,33 +352,106 @@ class HookEvent(BaseModel):
         Raises:
             ValueError: If field requirements are not met for the hook type.
         """
+        # Fields exclusive to each type group (typed as object for mypy compatibility)
+        _command_only_fields: dict[str, object] = {
+            'command': self.command,
+            'config': self.config,
+            'async': self.async_execution,
+            'shell': self.shell,
+        }
+        _http_only_fields: dict[str, object] = {
+            'url': self.url,
+            'headers': self.headers,
+            'allowedEnvVars': self.allowed_env_vars,
+        }
+        _prompt_agent_fields: dict[str, object] = {
+            'prompt': self.prompt,
+            'model': self.model,
+        }
+
         if self.type == 'command':
             if not self.command:
                 raise ValueError(
                     "Hook type 'command' requires 'command' field. "
-                    "Either provide a command or change type to 'prompt'.",
+                    "Either provide a command or change type to 'http', 'prompt', or 'agent'.",
                 )
+            for field_name, value in _http_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'command' cannot have '{field_name}' field. "
+                        f"Use type 'http' for HTTP webhook hooks.",
+                    )
             if self.prompt is not None:
                 raise ValueError(
                     "Hook type 'command' cannot have 'prompt' field. "
-                    "Use type 'prompt' for LLM-based hooks.",
+                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
                 )
+            if self.model is not None:
+                raise ValueError(
+                    "Hook type 'command' cannot have 'model' field. "
+                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
+                )
+
+        elif self.type == 'http':
+            if not self.url:
+                raise ValueError(
+                    "Hook type 'http' requires 'url' field. "
+                    "Provide the URL to send the HTTP POST request to.",
+                )
+            for field_name, value in _command_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'http' cannot have '{field_name}' field. "
+                        f"Use type 'command' for script-based hooks.",
+                    )
+            if self.prompt is not None:
+                raise ValueError(
+                    "Hook type 'http' cannot have 'prompt' field. "
+                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
+                )
+            if self.model is not None:
+                raise ValueError(
+                    "Hook type 'http' cannot have 'model' field. "
+                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
+                )
+
         elif self.type == 'prompt':
             if not self.prompt:
                 raise ValueError(
                     "Hook type 'prompt' requires 'prompt' field. "
                     "Either provide a prompt or change type to 'command'.",
                 )
-            if self.command is not None:
+            for field_name, value in _command_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'prompt' cannot have '{field_name}' field. "
+                        f"Use type 'command' for script-based hooks.",
+                    )
+            for field_name, value in _http_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'prompt' cannot have '{field_name}' field. "
+                        f"Use type 'http' for HTTP webhook hooks.",
+                    )
+
+        elif self.type == 'agent':
+            if not self.prompt:
                 raise ValueError(
-                    "Hook type 'prompt' cannot have 'command' field. "
-                    "Use type 'command' for script-based hooks.",
+                    "Hook type 'agent' requires 'prompt' field. "
+                    "Provide the prompt for the subagent evaluation.",
                 )
-            if self.config is not None:
-                raise ValueError(
-                    "Hook type 'prompt' cannot have 'config' field. "
-                    "Config files are only used with command hooks.",
-                )
+            for field_name, value in _command_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'agent' cannot have '{field_name}' field. "
+                        f"Use type 'command' for script-based hooks.",
+                    )
+            for field_name, value in _http_only_fields.items():
+                if value is not None:
+                    raise ValueError(
+                        f"Hook type 'agent' cannot have '{field_name}' field. "
+                        f"Use type 'http' for HTTP webhook hooks.",
+                    )
 
         return self
 
@@ -956,10 +1084,10 @@ class EnvironmentConfig(BaseModel):
         used_files: set[str] = set()
 
         # Rule 2: Check that each command hook's command and config exists in hooks.files
-        # Prompt hooks are excluded - they don't use command or config files
+        # Only command hooks use file references; http/prompt/agent hooks are excluded
         for event in self.hooks.events:
-            # Skip prompt hooks - they don't use command or config files
-            if event.type == 'prompt':
+            # Skip non-command hooks - only command hooks reference files
+            if event.type in ('prompt', 'http', 'agent'):
                 continue
 
             # For command hooks, validate command and config files
