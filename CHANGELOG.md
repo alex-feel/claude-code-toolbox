@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.3.0...v5.4.0) (2026-03-28)
+
+
+### Features
+
+* add full hooks support for all four Claude Code hook types ([bbd0045](https://github.com/alex-feel/claude-code-toolbox/commit/bbd0045a11f5a93ce9b75299a51f8b71d744a7b2))
+
 ## [5.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.2.0...v5.3.0) (2026-03-27)
 
 
