@@ -112,6 +112,35 @@ hooks:
       type: "prompt"
       prompt: "Consider security implications before executing bash commands"
       timeout: 30
+    # HTTP hook example
+    - event: "PostToolUse"
+      matcher: "Write"
+      type: "http"
+      url: "http://localhost:8080/hooks/post-tool-use"
+      headers:
+        Authorization: "Bearer $MY_TOKEN"
+        Content-Type: "application/json"
+      allowedEnvVars:
+        - "MY_TOKEN"
+      timeout: 15
+      statusMessage: "Sending webhook notification..."
+    # Agent hook example
+    - event: "PreToolUse"
+      matcher: "Bash(rm *)"
+      type: "agent"
+      prompt: "Verify security implications of: $ARGUMENTS"
+      model: "sonnet"
+      timeout: 60
+      if: "Bash(rm *)"
+      once: true
+    # Command hook with async and shell
+    - event: "Notification"
+      matcher: ""
+      type: "command"
+      command: "e2e_test_hook.py"
+      async: true
+      shell: "bash"
+      statusMessage: "Running notification handler..."
 
 # MCP Servers - all transport types
 mcp-servers:

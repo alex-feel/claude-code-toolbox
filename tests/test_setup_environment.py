@@ -3767,6 +3767,192 @@ class TestCreateSettings:
             # Command should end with the Python file, not a config
             assert settings['statusLine']['command'].endswith('statusline.py')
 
+    def test_create_settings_http_hook(self):
+        """Test creating settings with HTTP hook passes through all fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Write',
+                        'type': 'http',
+                        'url': 'http://localhost:8080/hook',
+                        'headers': {'Authorization': 'Bearer $TOKEN'},
+                        'allowedEnvVars': ['TOKEN'],
+                        'timeout': 15,
+                        'statusMessage': 'Sending webhook...',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PostToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'http'
+            assert hook['url'] == 'http://localhost:8080/hook'
+            assert hook['headers'] == {'Authorization': 'Bearer $TOKEN'}
+            assert hook['allowedEnvVars'] == ['TOKEN']
+            assert hook['timeout'] == 15
+            assert hook['statusMessage'] == 'Sending webhook...'
+
+    def test_create_settings_agent_hook(self):
+        """Test creating settings with agent hook passes through all fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Bash',
+                        'type': 'agent',
+                        'prompt': 'Verify security implications',
+                        'model': 'sonnet',
+                        'timeout': 60,
+                        'if': 'Bash(rm *)',
+                        'once': True,
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'agent'
+            assert hook['prompt'] == 'Verify security implications'
+            assert hook['model'] == 'sonnet'
+            assert hook['timeout'] == 60
+            assert hook['if'] == 'Bash(rm *)'
+            assert hook['once'] is True
+
+    def test_create_settings_prompt_hook_with_model(self):
+        """Test creating settings with prompt hook includes model field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Edit',
+                        'type': 'prompt',
+                        'prompt': 'Review this edit',
+                        'model': 'haiku',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['type'] == 'prompt'
+            assert hook['prompt'] == 'Review this edit'
+            assert hook['model'] == 'haiku'
+
+    @patch('setup_environment.handle_resource')
+    def test_create_settings_command_hook_with_async_and_shell(self, mock_download):
+        """Test creating settings with command hook async and shell fields."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+            hooks_dir = claude_dir / 'hooks'
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+
+            hooks = {
+                'files': ['hooks/notify.py'],
+                'events': [
+                    {
+                        'event': 'Notification',
+                        'matcher': '',
+                        'type': 'command',
+                        'command': 'notify.py',
+                        'async': True,
+                        'shell': 'bash',
+                        'statusMessage': 'Running...',
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['Notification'][0]['hooks'][0]
+            assert hook['type'] == 'command'
+            assert hook['async'] is True
+            assert hook['shell'] == 'bash'
+            assert hook['statusMessage'] == 'Running...'
+            assert 'uv run' in hook['command']
+
+    def test_create_settings_common_fields_on_prompt_hook(self):
+        """Test creating settings with prompt hook includes common fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'events': [
+                    {
+                        'event': 'PreToolUse',
+                        'matcher': 'Bash',
+                        'type': 'prompt',
+                        'prompt': 'Check security',
+                        'timeout': 30,
+                        'if': 'Bash(*)',
+                        'statusMessage': 'Checking...',
+                        'once': True,
+                    },
+                ],
+            }
+
+            result = setup_environment.create_settings(
+                hooks,
+                claude_dir,
+                'test-env',
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'test-env-settings.json'
+            settings = json.loads(settings_file.read_text())
+
+            hook = settings['hooks']['PreToolUse'][0]['hooks'][0]
+            assert hook['timeout'] == 30
+            assert hook['if'] == 'Bash(*)'
+            assert hook['statusMessage'] == 'Checking...'
+            assert hook['once'] is True
+
 
 class TestCreateLauncherScript:
     """Test launcher script creation."""

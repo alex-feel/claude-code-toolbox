@@ -799,30 +799,91 @@ status-line:
 
 ### Hooks
 
-Event-driven scripts that run automatically during Claude Code sessions.
+Event-driven hooks that run automatically during Claude Code sessions. Four hook types are supported: `command`, `http`, `prompt`, and `agent`.
 
 - **Type:** `Hooks | None`
 - **Default:** `None`
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: composite merge. `files` lists are concatenated with deduplication by full file path string equality. `events` lists are concatenated without deduplication (each event is unique by its field combination).
 - **Fields:**
-  - `files` (list[str]) -- Script files to download to `~/.claude/hooks/`
+  - `files` (list[str]) -- Script files to download to `~/.claude/hooks/`. Only used by command hooks.
   - `events` (list[HookEvent]) -- Event configurations
 
-#### Hook Event Fields
+#### Hook Types
 
-| Field     | Type  | Required          | Description                                                           |
-|-----------|-------|-------------------|-----------------------------------------------------------------------|
-| `event`   | `str` | Yes               | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`) |
-| `matcher` | `str` | No                | Regex pattern for matching (default: `""`)                            |
-| `type`    | `str` | No                | Hook type: `command` or `prompt` (default: `command`)                 |
-| `command` | `str` | For command hooks | Script filename (must exist in `hooks.files`)                         |
-| `config`  | `str` | No                | Config file reference (must exist in `hooks.files`)                   |
-| `prompt`  | `str` | For prompt hooks  | Prompt text for LLM evaluation                                        |
-| `timeout` | `int` | No                | Timeout in seconds (default: 30, prompt hooks only)                   |
+| Type      | Description                                            | Required Field |
+|-----------|--------------------------------------------------------|----------------|
+| `command` | Executes a shell command or script (default)           | `command`      |
+| `http`    | Sends an HTTP POST request to a URL                    | `url`          |
+| `prompt`  | Single-turn LLM evaluation with no tool access         | `prompt`       |
+| `agent`   | Spawns a subagent with tool access for evaluation      | `prompt`       |
+
+#### Common Fields (All Hook Types)
+
+These fields apply to all four hook types:
+
+| Field           | YAML Key        | Type   | Required | Description                                                                                          |
+|-----------------|-----------------|--------|----------|------------------------------------------------------------------------------------------------------|
+| `event`         | `event`         | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                                |
+| `matcher`       | `matcher`       | `str`  | No       | Regex pattern for matching (default: `""`)                                                           |
+| `type`          | `type`          | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                              |
+| `if`            | `if`            | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)                         |
+| `statusMessage` | `statusMessage` | `str`  | No       | Custom spinner message displayed while the hook runs                                                 |
+| `once`          | `once`          | `bool` | No       | If true, runs only once per session then is removed (skills only)                                    |
+| `timeout`       | `timeout`       | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)             |
+
+#### Type-Specific Fields
+
+##### Command Hook Fields
+
+| Field     | YAML Key  | Type   | Required | Description                                                                                 |
+|-----------|-----------|--------|----------|---------------------------------------------------------------------------------------------|
+| `command` | `command` | `str`  | Yes      | Script filename (must exist in `hooks.files`)                                               |
+| `config`  | `config`  | `str`  | No       | Config file reference (must exist in `hooks.files`). Toolbox-specific: appended as argument |
+| `async`   | `async`   | `bool` | No       | If true, runs the command in the background without blocking                                |
+| `shell`   | `shell`   | `str`  | No       | Shell to use: `"bash"` (default) or `"powershell"`                                          |
+
+##### HTTP Hook Fields
+
+| Field            | YAML Key         | Type            | Required | Description                                                               |
+|------------------|------------------|-----------------|----------|---------------------------------------------------------------------------|
+| `url`            | `url`            | `str`           | Yes      | URL to send the HTTP POST request to                                      |
+| `headers`        | `headers`        | `dict[str,str]` | No       | Additional HTTP headers. Values support `$VAR_NAME` env var interpolation |
+| `allowedEnvVars` | `allowedEnvVars` | `list[str]`     | No       | Environment variable names permitted for interpolation into header values |
+
+##### Prompt and Agent Hook Fields
+
+| Field    | YAML Key | Type  | Required | Description                                       |
+|----------|----------|-------|----------|---------------------------------------------------|
+| `prompt` | `prompt` | `str` | Yes      | Prompt text for LLM evaluation                    |
+| `model`  | `model`  | `str` | No       | Model to use for the evaluation                   |
+
+#### Field Matrix
+
+Complete required/forbidden field matrix across all hook types:
+
+| Field            | `command` | `http`    | `prompt`  | `agent`   |
+|------------------|-----------|-----------|-----------|-----------|
+| `command`        | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `config`         | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `async`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `shell`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `url`            | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
+| `headers`        | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `allowedEnvVars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `prompt`         | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
+| `model`          | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
+| `if`             | Optional  | Optional  | Optional  | Optional  |
+| `statusMessage`  | Optional  | Optional  | Optional  | Optional  |
+| `once`           | Optional  | Optional  | Optional  | Optional  |
+| `timeout`        | Optional  | Optional  | Optional  | Optional  |
+
+Setting a field marked FORBIDDEN on a hook type produces a validation error.
 
 #### Command Hooks
 
-Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`.
+Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run` for `.py`, `node` for `.js`/`.mjs`/`.cjs`).
+
+The `config` field is a toolbox-specific extension: when set, the config file path is appended as an argument to the command. This field is not part of the official Claude Code hooks specification.
 
 ```yaml
 hooks:
@@ -835,38 +896,93 @@ hooks:
       type: "command"
       command: "linter.py"
       config: "linter-config.yaml"
+    - event: "Notification"
+      type: "command"
+      command: "linter.py"
+      async: true
+      shell: "bash"
+      statusMessage: "Running notification handler..."
+```
+
+#### HTTP Hooks
+
+Send an HTTP POST request to the specified URL when the event fires. No file processing is involved -- all fields are passed through to `settings.json` as-is.
+
+```yaml
+hooks:
+  events:
+    - event: "PostToolUse"
+      matcher: "Write"
+      type: "http"
+      url: "http://localhost:8080/hooks/post-tool-use"
+      headers:
+        Authorization: "Bearer $MY_TOKEN"
+        Content-Type: "application/json"
+      allowedEnvVars:
+        - "MY_TOKEN"
+      timeout: 15
+      statusMessage: "Sending webhook notification..."
 ```
 
 #### Prompt Hooks
 
-Send a prompt to the LLM for evaluation when the event fires. The `command` and `config` fields are not allowed for prompt hooks.
+Send a prompt to the LLM for single-turn evaluation when the event fires. No tool access is available.
 
 ```yaml
 hooks:
-  files:
-    - "hooks/linter.py"
   events:
     - event: "PreToolUse"
       matcher: "Bash"
       type: "prompt"
       prompt: "Check if this bash command is safe to execute"
+      model: "sonnet"
       timeout: 30
+```
+
+#### Agent Hooks
+
+Spawn a subagent with tool access for evaluation when the event fires. The subagent can use tools to perform its evaluation, unlike prompt hooks.
+
+```yaml
+hooks:
+  events:
+    - event: "PreToolUse"
+      matcher: "Bash(rm *)"
+      type: "agent"
+      prompt: "Verify security implications of: $ARGUMENTS"
+      model: "sonnet"
+      timeout: 60
+      if: "Bash(rm *)"
+      once: true
 ```
 
 #### File Consistency Rules
 
-The setup validates hook file references:
+The setup validates hook file references for **command hooks only**. HTTP, prompt, and agent hooks do not use file references and are excluded from file consistency validation.
 
-1. Every file listed in `hooks.files` must be used by at least one event or the `status-line` configuration
-2. Every `command` in hook events must exist in `hooks.files`
-3. Every `config` in hook events must exist in `hooks.files`
+1. Every file listed in `hooks.files` must be used by at least one command hook event or the `status-line` configuration
+2. Every `command` in command hook events must exist in `hooks.files`
+3. Every `config` in command hook events must exist in `hooks.files`
 4. If `status-line` is configured, its `file` and `config` must exist in `hooks.files`
 5. If `status-line` is configured but `hooks` is not defined, that is an error
 
 #### Supported Script Types
 
+For command hooks:
+
 - Python: `.py`
 - JavaScript: `.js`, `.mjs`, `.cjs`
+
+#### Pass-Through Architecture
+
+The setup script processes hooks differently based on type:
+
+| Hook Type | File Processing                                                | Pass-Through Fields                                |
+|-----------|----------------------------------------------------------------|----------------------------------------------------|
+| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                   |
+| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowedEnvVars` + common fields |
+| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
+| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
 
 #### Complete Hooks Example
 
@@ -877,16 +993,44 @@ hooks:
     - "hooks/security-check.js"
     - "configs/linter-config.yaml"
   events:
+    # Command hook with config file
     - event: "PostToolUse"
       matcher: "Edit|MultiEdit|Write"
       type: "command"
       command: "linter.py"
       config: "linter-config.yaml"
+    # Command hook with async and shell
+    - event: "Notification"
+      type: "command"
+      command: "security-check.js"
+      async: true
+      shell: "bash"
+      statusMessage: "Running security check..."
+    # HTTP webhook
+    - event: "PostToolUse"
+      matcher: "Write"
+      type: "http"
+      url: "http://localhost:8080/hooks/write"
+      headers:
+        Authorization: "Bearer $API_TOKEN"
+      allowedEnvVars:
+        - "API_TOKEN"
+      timeout: 15
+    # Prompt hook for safety check
     - event: "PreToolUse"
       matcher: "Bash"
       type: "prompt"
       prompt: "Check if this bash command is safe to execute"
       timeout: 30
+    # Agent hook for security review
+    - event: "PreToolUse"
+      matcher: "Bash(rm *)"
+      type: "agent"
+      prompt: "Verify security implications of: $ARGUMENTS"
+      model: "sonnet"
+      timeout: 60
+      if: "Bash(rm *)"
+      once: true
 ```
 
 ## Advanced Topics
@@ -1217,7 +1361,7 @@ attribution:
   commit: "Co-authored-by: Claude AI"
   pr: ""  # Hide PR attribution
 
-# Hooks for code quality
+# Hooks for code quality and safety
 hooks:
   files:
     - "hooks/python-linter.py"
@@ -1228,6 +1372,11 @@ hooks:
       type: "command"
       command: "python-linter.py"
       config: "linter-config.yaml"
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "prompt"
+      prompt: "Check if this bash command is safe to execute"
+      timeout: 30
 ```
 
 ## Environment Variables Reference

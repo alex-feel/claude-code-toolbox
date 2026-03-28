@@ -376,6 +376,393 @@ class TestHookEventValidation:
         assert event.type == 'command'
 
 
+class TestHookEventAllTypes:
+    """Test HookEvent model for all 4 hook types with aliases and field matrix."""
+
+    # --- HTTP hook valid cases ---
+    def test_http_hook_with_url(self) -> None:
+        """HTTP hook with url field is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'matcher': 'Write',
+            'type': 'http',
+            'url': 'http://localhost:8080/hooks/post-tool-use',
+        })
+        assert event.type == 'http'
+        assert event.url == 'http://localhost:8080/hooks/post-tool-use'
+
+    def test_http_hook_with_headers_and_allowed_env_vars(self) -> None:
+        """HTTP hook with all optional fields is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'type': 'http',
+            'url': 'https://example.com/webhook',
+            'headers': {'Authorization': 'Bearer $MY_TOKEN', 'Content-Type': 'application/json'},
+            'allowedEnvVars': ['MY_TOKEN'],
+        })
+        assert event.headers == {'Authorization': 'Bearer $MY_TOKEN', 'Content-Type': 'application/json'}
+        assert event.allowed_env_vars == ['MY_TOKEN']
+
+    # --- Agent hook valid cases ---
+    def test_agent_hook_with_prompt(self) -> None:
+        """Agent hook with prompt field is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'matcher': 'Bash',
+            'type': 'agent',
+            'prompt': 'Verify security implications of: $ARGUMENTS',
+        })
+        assert event.type == 'agent'
+        assert event.prompt == 'Verify security implications of: $ARGUMENTS'
+
+    def test_agent_hook_with_model(self) -> None:
+        """Agent hook with model field is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'agent',
+            'prompt': 'Review this action',
+            'model': 'sonnet',
+        })
+        assert event.model == 'sonnet'
+
+    # --- Command hook with new fields ---
+    def test_command_hook_with_async_and_shell(self) -> None:
+        """Command hook with async and shell fields is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'Notification',
+            'type': 'command',
+            'command': 'notify.py',
+            'async': True,
+            'shell': 'bash',
+        })
+        assert event.async_execution is True
+        assert event.shell == 'bash'
+
+    def test_command_hook_shell_powershell(self) -> None:
+        """Command hook with shell=powershell is valid."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'Notification',
+            'type': 'command',
+            'command': 'notify.ps1',
+            'shell': 'powershell',
+        })
+        assert event.shell == 'powershell'
+
+    # --- Alias tests (populate_by_name) ---
+    def test_hook_with_if_condition_alias(self) -> None:
+        """The 'if' alias maps to if_condition field."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'command',
+            'command': 'check.py',
+            'if': 'Bash(git *)',
+        })
+        assert event.if_condition == 'Bash(git *)'
+
+    def test_hook_with_status_message_alias(self) -> None:
+        """The 'statusMessage' alias maps to status_message field."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'command',
+            'command': 'check.py',
+            'statusMessage': 'Running check...',
+        })
+        assert event.status_message == 'Running check...'
+
+    def test_hook_with_async_alias(self) -> None:
+        """The 'async' alias maps to async_execution field."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'Notification',
+            'type': 'command',
+            'command': 'notify.py',
+            'async': True,
+        })
+        assert event.async_execution is True
+
+    def test_hook_with_allowed_env_vars_alias(self) -> None:
+        """The 'allowedEnvVars' alias maps to allowed_env_vars field."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'type': 'http',
+            'url': 'https://example.com/hook',
+            'allowedEnvVars': ['TOKEN', 'SECRET'],
+        })
+        assert event.allowed_env_vars == ['TOKEN', 'SECRET']
+
+    def test_hook_with_once_field(self) -> None:
+        """The once field is accepted on all types."""
+        from scripts.models.environment_config import HookEvent
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'agent',
+            'prompt': 'Check once',
+            'once': True,
+        })
+        assert event.once is True
+
+    def test_common_fields_on_all_types(self) -> None:
+        """Common fields (if, statusMessage, once, timeout) work on all types."""
+        from scripts.models.environment_config import HookEvent
+        common = {'if': 'Bash(*)', 'statusMessage': 'Working...', 'once': True, 'timeout': 30}
+
+        for hook_data in [
+            {'event': 'E', 'type': 'command', 'command': 'c.py', **common},
+            {'event': 'E', 'type': 'http', 'url': 'http://x.com', **common},
+            {'event': 'E', 'type': 'prompt', 'prompt': 'p', **common},
+            {'event': 'E', 'type': 'agent', 'prompt': 'a', **common},
+        ]:
+            event = HookEvent.model_validate(hook_data)
+            assert event.if_condition == 'Bash(*)'
+            assert event.status_message == 'Working...'
+            assert event.once is True
+            assert event.timeout == 30
+
+    # --- HTTP hook forbidden cases ---
+    def test_http_hook_without_url_raises(self) -> None:
+        """HTTP hook without url raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+            })
+        assert "requires 'url' field" in str(exc_info.value)
+
+    def test_http_hook_with_command_raises(self) -> None:
+        """HTTP hook with command field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'command': 'bad.py',
+            })
+        assert "cannot have 'command' field" in str(exc_info.value)
+
+    def test_http_hook_with_config_raises(self) -> None:
+        """HTTP hook with config field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'config': 'bad.yaml',
+            })
+        assert "cannot have 'config' field" in str(exc_info.value)
+
+    def test_http_hook_with_async_raises(self) -> None:
+        """HTTP hook with async field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'async': True,
+            })
+        assert "cannot have 'async' field" in str(exc_info.value)
+
+    def test_http_hook_with_shell_raises(self) -> None:
+        """HTTP hook with shell field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'shell': 'bash',
+            })
+        assert "cannot have 'shell' field" in str(exc_info.value)
+
+    def test_http_hook_with_prompt_raises(self) -> None:
+        """HTTP hook with prompt field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'prompt': 'bad',
+            })
+        assert "cannot have 'prompt' field" in str(exc_info.value)
+
+    def test_http_hook_with_model_raises(self) -> None:
+        """HTTP hook with model field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://x.com',
+                'model': 'sonnet',
+            })
+        assert "cannot have 'model' field" in str(exc_info.value)
+
+    # --- Agent hook forbidden cases ---
+    def test_agent_hook_without_prompt_raises(self) -> None:
+        """Agent hook without prompt raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'agent',
+            })
+        assert "requires 'prompt' field" in str(exc_info.value)
+
+    def test_agent_hook_with_command_raises(self) -> None:
+        """Agent hook with command field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'agent',
+                'prompt': 'test',
+                'command': 'bad.py',
+            })
+        assert "cannot have 'command' field" in str(exc_info.value)
+
+    def test_agent_hook_with_url_raises(self) -> None:
+        """Agent hook with url field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'agent',
+                'prompt': 'test',
+                'url': 'http://bad.com',
+            })
+        assert "cannot have 'url' field" in str(exc_info.value)
+
+    # --- Command hook forbidden cases ---
+    def test_command_hook_with_url_raises(self) -> None:
+        """Command hook with url field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'url': 'http://bad.com',
+            })
+        assert "cannot have 'url' field" in str(exc_info.value)
+
+    def test_command_hook_with_headers_raises(self) -> None:
+        """Command hook with headers field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'headers': {'Key': 'Value'},
+            })
+        assert "cannot have 'headers' field" in str(exc_info.value)
+
+    def test_command_hook_with_model_raises(self) -> None:
+        """Command hook with model field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'model': 'sonnet',
+            })
+        assert "cannot have 'model' field" in str(exc_info.value)
+
+    # --- Prompt hook forbidden cases (new fields) ---
+    def test_prompt_hook_with_url_raises(self) -> None:
+        """Prompt hook with url field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'url': 'http://bad.com',
+            })
+        assert "cannot have 'url' field" in str(exc_info.value)
+
+    def test_prompt_hook_with_async_raises(self) -> None:
+        """Prompt hook with async field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'async': True,
+            })
+        assert "cannot have 'async' field" in str(exc_info.value)
+
+    def test_prompt_hook_with_shell_raises(self) -> None:
+        """Prompt hook with shell field raises ValueError."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'shell': 'bash',
+            })
+        assert "cannot have 'shell' field" in str(exc_info.value)
+
+    # --- Literal validation ---
+    def test_shell_literal_validation(self) -> None:
+        """Invalid shell value is rejected by Pydantic Literal."""
+        from scripts.models.environment_config import HookEvent
+        with pytest.raises(ValidationError):
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'shell': 'zsh',
+            })
+
+    # --- Validator: hooks files consistency skips new types ---
+    def test_validate_hooks_files_consistency_skips_http(self) -> None:
+        """HTTP hooks are skipped during file consistency validation."""
+        from scripts.models.environment_config import EnvironmentConfig
+        config = EnvironmentConfig.model_validate({
+            'name': 'test',
+            'hooks': {
+                'files': [],
+                'events': [
+                    {'event': 'PostToolUse', 'type': 'http', 'url': 'http://x.com'},
+                ],
+            },
+        })
+        assert config.hooks is not None
+        assert len(config.hooks.events) == 1
+
+    def test_validate_hooks_files_consistency_skips_agent(self) -> None:
+        """Agent hooks are skipped during file consistency validation."""
+        from scripts.models.environment_config import EnvironmentConfig
+        config = EnvironmentConfig.model_validate({
+            'name': 'test',
+            'hooks': {
+                'files': [],
+                'events': [
+                    {'event': 'PreToolUse', 'type': 'agent', 'prompt': 'test'},
+                ],
+            },
+        })
+        assert config.hooks is not None
+        assert len(config.hooks.events) == 1
+
+
 class TestPromptHooksWithEnvironmentConfig:
     """Test prompt hooks integration with EnvironmentConfig."""
 

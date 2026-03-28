@@ -471,6 +471,9 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
         ]
     }
 
+    Supports all 4 hook types: command, http, prompt, agent.
+    Also validates common fields (if, statusMessage, once, timeout) pass-through.
+
     Args:
         actual: Actual hooks dict from generated file
         config: Hooks config from golden_config.yaml
@@ -515,7 +518,7 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                 f'Hook type mismatch for {event_name}: expected {hook_type!r}',
                             )
 
-                        # Validate command prefix for script types
+                        # Validate type-specific fields
                         if hook_type == 'command':
                             command = hook.get('command', '')
                             command_file = event_config.get('command', '')
@@ -539,6 +542,55 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                 errors.append(
                                     f"JavaScript hook '{command_file}' missing 'node' prefix "
                                     f'in command: {command}',
+                                )
+
+                            # Validate command-specific optional fields pass-through
+                            if event_config.get('async') is not None and hook.get('async') != event_config['async']:
+                                errors.append(
+                                    f"Hook '{event_name}' async field mismatch: "
+                                    f"expected {event_config['async']!r}, got {hook.get('async')!r}",
+                                )
+                            if event_config.get('shell') is not None and hook.get('shell') != event_config['shell']:
+                                errors.append(
+                                    f"Hook '{event_name}' shell field mismatch: "
+                                    f"expected {event_config['shell']!r}, got {hook.get('shell')!r}",
+                                )
+
+                        elif hook_type == 'http':
+                            if not hook.get('url'):
+                                errors.append(
+                                    f"HTTP hook '{event_name}' missing 'url' field",
+                                )
+                            if event_config.get('headers') is not None and hook.get('headers') != event_config['headers']:
+                                errors.append(
+                                    f"HTTP hook '{event_name}' headers mismatch",
+                                )
+                            expected_env_vars = event_config.get('allowedEnvVars')
+                            if expected_env_vars is not None and hook.get('allowedEnvVars') != expected_env_vars:
+                                errors.append(
+                                    f"HTTP hook '{event_name}' allowedEnvVars mismatch",
+                                )
+
+                        elif hook_type in ('prompt', 'agent'):
+                            if not hook.get('prompt'):
+                                errors.append(
+                                    f"{hook_type.capitalize()} hook '{event_name}' missing 'prompt' field",
+                                )
+                            expected_model = event_config.get('model')
+                            if expected_model is not None and hook.get('model') != expected_model:
+                                errors.append(
+                                    f"{hook_type.capitalize()} hook '{event_name}' model mismatch: "
+                                    f"expected {expected_model!r}, got {hook.get('model')!r}",
+                                )
+
+                        # Validate common fields pass-through for all types
+                        for common_field in ('if', 'statusMessage', 'once', 'timeout'):
+                            expected_val = event_config.get(common_field)
+                            if expected_val is not None and hook.get(common_field) != expected_val:
+                                errors.append(
+                                    f"Hook '{event_name}' common field '{common_field}' mismatch: "
+                                    f"expected {expected_val!r}, "
+                                    f"got {hook.get(common_field)!r}",
                                 )
                 break
 

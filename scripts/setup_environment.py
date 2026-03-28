@@ -3789,6 +3789,13 @@ def display_installation_summary(
     _print(f'  * Files to download: {len(plan.files_to_download)}')
     _print(f'  * Hook files: {len(plan.hooks_files)}')
     _print(f'  * Hook events: {len(plan.hooks_events)}')
+    if plan.hooks_events:
+        type_counts: dict[str, int] = {}
+        for evt in plan.hooks_events:
+            t = evt.get('type', 'command')
+            type_counts[t] = type_counts.get(t, 0) + 1
+        type_parts = [f'{count} {name}' for name, count in sorted(type_counts.items())]
+        _print(f'    ({", ".join(type_parts)})')
     _print(f'  * MCP servers: {len(plan.mcp_servers)}')
 
     # Claude Code installation
@@ -6611,6 +6618,30 @@ def download_hook_files(
     return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param)
 
 
+def _apply_common_hook_fields(
+    hook_config: dict[str, Any],
+    hook: dict[str, Any],
+) -> None:
+    """Apply common hook fields to the hook configuration dict.
+
+    Passes through common fields (if, statusMessage, once, timeout) from
+    the YAML hook event configuration to the output settings.json hook dict.
+    Fields with None/missing values are skipped.
+
+    Args:
+        hook_config: The output hook configuration dict being built.
+        hook: The source YAML hook event dict.
+    """
+    if hook.get('if') is not None:
+        hook_config['if'] = hook['if']
+    if hook.get('statusMessage') is not None:
+        hook_config['statusMessage'] = hook['statusMessage']
+    if hook.get('once') is not None:
+        hook_config['once'] = hook['once']
+    if hook.get('timeout') is not None:
+        hook_config['timeout'] = hook['timeout']
+
+
 def create_settings(
     hooks: dict[str, Any],
     claude_user_dir: Path,
@@ -6773,12 +6804,15 @@ def create_settings(
             warning('Invalid hook configuration: missing event, skipping')
             continue
 
-        # For command hooks, command is required; for prompt hooks, prompt is required
+        # Validate required fields per hook type
         if hook_type == 'command' and not command:
             warning('Invalid command hook: missing command, skipping')
             continue
-        if hook_type == 'prompt' and not hook.get('prompt'):
-            warning('Invalid prompt hook: missing prompt, skipping')
+        if hook_type == 'http' and not hook.get('url'):
+            warning('Invalid http hook: missing url, skipping')
+            continue
+        if hook_type in ('prompt', 'agent') and not hook.get('prompt'):
+            warning(f'Invalid {hook_type} hook: missing prompt, skipping')
             continue
 
         # Add to settings
@@ -6892,15 +6926,47 @@ def create_settings(
                 'type': hook_type,
                 'command': full_command,
             }
-        else:
-            # Prompt hook - no file processing needed, use inline prompt
+            # Pass through command-specific optional fields
+            if hook.get('async') is not None:
+                hook_config['async'] = hook['async']
+            if hook.get('shell') is not None:
+                hook_config['shell'] = hook['shell']
+
+        elif hook_type == 'http':
+            # HTTP hooks: pure pass-through, no file-path processing
+            hook_config = {
+                'type': hook_type,
+                'url': hook.get('url', ''),
+            }
+            if hook.get('headers') is not None:
+                hook_config['headers'] = hook['headers']
+            if hook.get('allowedEnvVars') is not None:
+                hook_config['allowedEnvVars'] = hook['allowedEnvVars']
+
+        elif hook_type == 'prompt':
+            # Prompt hooks: pass-through for prompt and model
             hook_config = {
                 'type': hook_type,
                 'prompt': hook.get('prompt', ''),
             }
-            # Include timeout if specified
-            if hook.get('timeout'):
-                hook_config['timeout'] = hook.get('timeout')
+            if hook.get('model') is not None:
+                hook_config['model'] = hook['model']
+
+        elif hook_type == 'agent':
+            # Agent hooks: same structure as prompt but type is 'agent'
+            hook_config = {
+                'type': hook_type,
+                'prompt': hook.get('prompt', ''),
+            }
+            if hook.get('model') is not None:
+                hook_config['model'] = hook['model']
+
+        else:
+            warning(f'Unknown hook type: {hook_type}, skipping')
+            continue
+
+        # Apply common fields to ALL hook types
+        _apply_common_hook_fields(hook_config, hook)
 
         if matcher_group and 'hooks' in matcher_group:
             matcher_hooks_raw = matcher_group['hooks']
