@@ -698,6 +698,8 @@ user-settings:
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
+  env:
+    DISABLE_AUTOUPDATER: "1"
 ```
 
 #### `global-config`

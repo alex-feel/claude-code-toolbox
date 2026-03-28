@@ -15,12 +15,17 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Custom agents** -- specialized subagents for code review, research, debugging, and any workflow you design
 - **MCP servers** -- HTTP, SSE, and stdio transports with automatic permission pre-allowing
 - **Slash commands** -- custom commands for frequently used workflows
+- **Rules** -- user-scope rule files for coding standards, security policies, and project conventions
 - **Skills** -- multi-file skill packages for complex agent capabilities
 - **System prompts** -- replace or append to the default Claude Code prompt
-- **Hooks** -- event-driven scripts triggered on PreToolUse, PostToolUse, Notification, and other events
+- **Hooks** -- four hook types: command (shell scripts), HTTP (webhooks), prompt (LLM evaluation), and agent (subagent with tools)
+- **Permissions** -- fine-grained allow, deny, and ask rules for Claude Code tools and actions
 - **Model and reasoning control** -- model selection, effort levels (low, medium, high, max), thinking mode
-- **Configuration inheritance** -- extend and override parent configurations
+- **User and global settings** -- direct control over `settings.json` and `~/.claude.json`
+- **Status line** -- custom status bar scripts for real-time session information
+- **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
+- **File downloads** -- arbitrary files downloaded to specified destinations during setup
 - **Private repository support** -- GitHub and GitLab authentication with token-based access
 - **Cross-platform** -- consistent behavior across Windows, macOS, and Linux
 - **One-command setup** -- everything from a single YAML configuration file
@@ -44,6 +49,9 @@ agents:
 slash-commands:
   - "commands/review.md"
 
+rules:
+  - "rules/coding-standards.md"
+
 mcp-servers:
   - name: "context-server"
     transport: "http"
@@ -66,7 +74,7 @@ hooks:
       command: "linter.py"
 ```
 
-This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all 27 configuration keys.
+This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all configuration keys.
 
 ### Install Your Environment
 
@@ -106,7 +114,7 @@ See the [Installing Claude Code](docs/installing-claude-code.md) guide for platf
 
 ## Documentation
 
-- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all 26 keys, authentication, inheritance, and more
+- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all 30 keys, authentication, inheritance, and more
 - [Installing Claude Code](docs/installing-claude-code.md) -- standalone Claude Code installation, methods, and troubleshooting
 
 ## Security
