@@ -1,0 +1,12 @@
+name: "Auto-Update Test Environment"
+claude-code-version: "2.1.85"
+command-names:
+  - "auto-update-test"
+global-config:
+  editorMode: "vim"
+user-settings:
+  language: "english"
+env-variables:
+  TEST_VAR: "value"
+os-env-variables:
+  TEST_OS_VAR: "value"

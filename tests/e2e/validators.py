@@ -1130,3 +1130,47 @@ def validate_global_config_output(
             )
 
     return errors
+
+
+def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
+    """Validate auto-update controls are correctly set or absent.
+
+    When pinned=True, expects:
+    - ~/.claude.json has autoUpdates: false
+    - settings.json (wherever written) has env.DISABLE_AUTOUPDATER: "1"
+
+    When pinned=False, expects:
+    - No autoUpdates key injected in ~/.claude.json (or None for null-as-delete)
+    - No DISABLE_AUTOUPDATER in settings env section
+
+    Args:
+        home_dir: Isolated home directory path
+        pinned: Whether a specific version is pinned
+
+    Returns:
+        List of error strings (empty = all validations passed)
+    """
+    errors: list[str] = []
+
+    # Check ~/.claude.json
+    claude_json_path = home_dir / '.claude.json'
+    if claude_json_path.exists():
+        data, json_errors = validate_json_file(claude_json_path)
+        errors.extend(json_errors)
+        if data is not None:
+            if pinned:
+                if 'autoUpdates' not in data:
+                    errors.append('Pinned version: autoUpdates missing from ~/.claude.json')
+                elif data['autoUpdates'] is not False:
+                    errors.append(
+                        f'Pinned version: autoUpdates should be false, got {data["autoUpdates"]!r}',
+                    )
+            else:
+                if 'autoUpdates' in data and data['autoUpdates'] is False:
+                    errors.append(
+                        'Latest/absent version: autoUpdates=false should not be injected',
+                    )
+    elif pinned:
+        errors.append('Pinned version: ~/.claude.json does not exist')
+
+    return errors

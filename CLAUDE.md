@@ -27,7 +27,7 @@ The installer uses a native-first approach with automatic npm fallback. Entry po
 
 `install_claude.py` and `setup_environment.py` MUST be fully standalone -- NEVER import from each other. Users may run either script without the other being present.
 
-**Identical Code** (CI enforced via `tests/test_standalone_policy.py`): `Colors` class, `find_command()`, `get_real_user_home()` (EXACT body match), shell config file list (7 files + conditional filtering), Fish config detection (`'fish' in str()`), marker block constants (`# >>> claude-code-toolbox >>>`).
+**Identical Code** (CI enforced via `tests/test_standalone_policy.py`): `Colors` class, `find_command()`, `get_real_user_home()` (EXACT body match), shell config file list (7 files + conditional filtering), Fish config detection (`'fish' in str()`), marker block constants (`# >>> claude-code-toolbox >>>`), auto-update parity constants (`AUTO_UPDATE_KEY`, `AUTO_UPDATE_DISABLED_VALUE`, `DISABLE_AUTOUPDATER_KEY`, `DISABLE_AUTOUPDATER_VALUE`).
 
 **Intentionally Different** (MUST NOT synchronize): `info()`/`success()`/`warning()`/`error()` (different formatting), `run_command()` (different encoding/error handling), `find_bash_windows()` (setup_environment.py has debug_log), `is_admin()` (different implementations).
 
@@ -186,6 +186,10 @@ Conventional Commits enforced by commitizen: `feat:` (minor bump), `fix:` (patch
 ### MCP Server Permissions
 
 MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servername"]` in the profile configuration (`config.json`).
+
+### Automatic Auto-Update Management (Dual-Script)
+
+Both scripts automatically disable auto-updates when a specific Claude Code version is pinned, and remove those controls when using latest/absent version. `setup_environment.py` manages 4 in-memory dict targets (`global-config`, `user-settings.env`, `env-variables`, `os-env-variables`) via `apply_auto_update_settings()`. `install_claude.py` manages 3 file-based targets (`~/.claude.json`, `~/.claude/settings.json`, OS-level env var) via expanded `set_disable_autoupdater()`/`unset_disable_autoupdater()`. Overlap between scripts is intentional and idempotent. Both share identical parity constants (`AUTO_UPDATE_KEY`, `AUTO_UPDATE_DISABLED_VALUE`, `DISABLE_AUTOUPDATER_KEY`, `DISABLE_AUTOUPDATER_VALUE`) enforced by `TestAutoUpdateConstantsParity` in `tests/test_standalone_policy.py`. WARN-but-Respect semantics: user-set contradicting values are preserved with warning. The `[auto]` marker in the installation summary shows auto-injected values.
 
 ### Environment Variables for Debugging
 

@@ -71,6 +71,12 @@ CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic 
 SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
 SHELL_CONFIG_MARKER_END = '# <<< claude-code-toolbox <<<'
 
+# Constants for auto-update management (used for value parity with setup_environment.py)
+AUTO_UPDATE_KEY = 'autoUpdates'
+AUTO_UPDATE_DISABLED_VALUE = False
+DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
+DISABLE_AUTOUPDATER_VALUE = '1'
+
 
 # Logging functions
 def info(msg: str) -> None:
@@ -1483,9 +1489,67 @@ def set_windows_env_var(name: str, value: str) -> None:
 
 
 def set_disable_autoupdater() -> None:
-    """Set DISABLE_AUTOUPDATER environment variable to prevent auto-updates."""
-    info('Setting DISABLE_AUTOUPDATER environment variable to prevent auto-updates...')
+    """Disable auto-updates across all available targets.
 
+    Manages three targets:
+    - Target A: autoUpdates in ~/.claude.json (global config)
+    - Target B: env.DISABLE_AUTOUPDATER in ~/.claude/settings.json (user settings)
+    - Target C: OS-level DISABLE_AUTOUPDATER env var (shell profiles / Windows registry)
+
+    Uses WARN-but-Respect semantics: if user explicitly set a contradicting
+    value, it is preserved and a warning is emitted.
+    """
+    info('Disabling auto-updates...')
+
+    home = get_real_user_home()
+
+    # Target A: autoUpdates in ~/.claude.json
+    claude_json_path = home / '.claude.json'
+    try:
+        config = _read_json_dict(claude_json_path)
+        current_auto = config.get(AUTO_UPDATE_KEY)
+        if current_auto is None or current_auto == AUTO_UPDATE_DISABLED_VALUE:
+            config[AUTO_UPDATE_KEY] = AUTO_UPDATE_DISABLED_VALUE
+            claude_json_path.write_text(
+                json.dumps(config, indent=2, ensure_ascii=False) + '\n',
+                encoding='utf-8',
+            )
+            success(f'Set {AUTO_UPDATE_KEY}={AUTO_UPDATE_DISABLED_VALUE!r} in ~/.claude.json')
+        elif current_auto is True:
+            warning(
+                f'User set {AUTO_UPDATE_KEY} to True in ~/.claude.json. '
+                f'Respecting user value (not overwriting to {AUTO_UPDATE_DISABLED_VALUE!r}).',
+            )
+    except OSError as e:
+        warning(f'Could not update ~/.claude.json: {e}')
+
+    # Target B: env.DISABLE_AUTOUPDATER in ~/.claude/settings.json
+    settings_path = home / '.claude' / 'settings.json'
+    try:
+        settings = _read_json_dict(settings_path)
+        env_raw = settings.get('env')
+        if not isinstance(env_raw, dict):
+            env_raw = {}
+            settings['env'] = env_raw
+        env_section = cast(dict[str, Any], env_raw)
+        current_disable: object = env_section.get(DISABLE_AUTOUPDATER_KEY)
+        if current_disable is None or str(current_disable) == DISABLE_AUTOUPDATER_VALUE:
+            env_section[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
+            settings_path.parent.mkdir(parents=True, exist_ok=True)
+            settings_path.write_text(
+                json.dumps(settings, indent=2, ensure_ascii=False) + '\n',
+                encoding='utf-8',
+            )
+            success(f'Set env.{DISABLE_AUTOUPDATER_KEY}="{DISABLE_AUTOUPDATER_VALUE}" in ~/.claude/settings.json')
+        else:
+            warning(
+                f'User set env.{DISABLE_AUTOUPDATER_KEY} to {current_disable!r} in ~/.claude/settings.json. '
+                f'Respecting user value.',
+            )
+    except OSError as e:
+        warning(f'Could not update ~/.claude/settings.json: {e}')
+
+    # Target C: OS-level DISABLE_AUTOUPDATER environment variable
     if platform.system() == 'Windows':
         set_windows_env_var('DISABLE_AUTOUPDATER', '1')
     else:
@@ -1493,7 +1557,6 @@ def set_disable_autoupdater() -> None:
         profile_files = _get_shell_config_files()
 
         # Detect the user's login shell to ensure its profile exists
-        home = get_real_user_home()
         current_shell = os.environ.get('SHELL', '')
         shell_profile_map: dict[str, Path] = {
             'bash': home / '.bashrc',
@@ -1555,14 +1618,60 @@ def set_disable_autoupdater() -> None:
 
 
 def unset_disable_autoupdater() -> None:
-    """Remove DISABLE_AUTOUPDATER environment variable from shell profiles and registry.
+    """Re-enable auto-updates by removing controls from all targets.
 
-    Removes the variable from all shell config files (inside and outside marker blocks)
-    and cleans up empty marker blocks. On Windows, also removes from user environment
-    registry.
+    Manages three targets:
+    - Target A: Remove autoUpdates from ~/.claude.json (only if False)
+    - Target B: Remove env.DISABLE_AUTOUPDATER from ~/.claude/settings.json
+    - Target C: Remove OS-level DISABLE_AUTOUPDATER env var
 
-    Safe to call when DISABLE_AUTOUPDATER is not set (no-op).
+    Uses WARN-but-Respect semantics: if user explicitly set autoUpdates
+    to True, it is left alone.
+
+    Safe to call when no auto-update controls are set (no-op).
     """
+    home = get_real_user_home()
+
+    # Target A: Remove autoUpdates from ~/.claude.json (only if False)
+    claude_json_path = home / '.claude.json'
+    try:
+        config = _read_json_dict(claude_json_path)
+        if AUTO_UPDATE_KEY in config:
+            current_val = config[AUTO_UPDATE_KEY]
+            if current_val == AUTO_UPDATE_DISABLED_VALUE:
+                del config[AUTO_UPDATE_KEY]
+                claude_json_path.write_text(
+                    json.dumps(config, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8',
+                )
+                info(f'Removed {AUTO_UPDATE_KEY} from ~/.claude.json')
+            elif current_val is True:
+                warning(
+                    f'User set {AUTO_UPDATE_KEY} to True in ~/.claude.json. '
+                    f'Respecting user value (not removing).',
+                )
+    except OSError as e:
+        warning(f'Could not update ~/.claude.json: {e}')
+
+    # Target B: Remove env.DISABLE_AUTOUPDATER from ~/.claude/settings.json
+    settings_path = home / '.claude' / 'settings.json'
+    try:
+        settings = _read_json_dict(settings_path)
+        env_section = settings.get('env')
+        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
+            del env_section[DISABLE_AUTOUPDATER_KEY]
+            # Remove empty env section
+            if not env_section:
+                del settings['env']
+            settings_path.write_text(
+                json.dumps(settings, indent=2, ensure_ascii=False) + '\n',
+                encoding='utf-8',
+            )
+            info(f'Removed env.{DISABLE_AUTOUPDATER_KEY} from ~/.claude/settings.json')
+    except OSError as e:
+        warning(f'Could not update ~/.claude/settings.json: {e}')
+
+    # Target C: OS-level DISABLE_AUTOUPDATER environment variable
     if platform.system() == 'Windows':
         # Remove from Windows user environment registry
         try:

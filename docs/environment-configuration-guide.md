@@ -319,6 +319,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
+- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, those controls are automatically removed. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
 
@@ -1199,6 +1200,56 @@ Authentication is resolved in this order (highest priority first):
 - GitLab web URLs (`/-/raw/`) are automatically converted to API format
 - GitHub raw URLs are automatically converted to API URLs
 - Public access is attempted first; authentication is applied only on 401/403/404 responses
+
+### Automatic Auto-Update Management
+
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into four targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, any previously injected controls are automatically removed to re-enable auto-updates.
+
+#### Injection Targets
+
+| Target             | Key                       | Value   | Config Section                     |
+|--------------------|---------------------------|---------|------------------------------------|
+| `global-config`    | `autoUpdates`             | `false` | `~/.claude.json`                   |
+| `user-settings`    | `env.DISABLE_AUTOUPDATER` | `"1"`   | `settings.json`                    |
+| `env-variables`    | `DISABLE_AUTOUPDATER`     | `"1"`   | `config.json` (profile)            |
+| `os-env-variables` | `DISABLE_AUTOUPDATER`     | `"1"`   | Shell profiles / Windows registry  |
+
+All four targets are injected unconditionally regardless of whether `command-names` is present. The existing write routing infrastructure handles which files are actually created -- for example, `env-variables` only reaches `config.json` when `command-names` is specified, making injection into that dict a harmless no-op for non-isolated environments.
+
+#### Removal Behavior
+
+When the version is `"latest"` or absent:
+
+- `autoUpdates` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
+- `DISABLE_AUTOUPDATER` is removed from `user-settings.env`, `env-variables`, and `os-env-variables`.
+
+#### Conflict Resolution (WARN-but-Respect)
+
+If the user explicitly sets a value in the YAML configuration that contradicts the automatic intent, the user value is preserved and a warning is emitted:
+
+- **User value absent:** Auto-inject (proceed silently)
+- **User value matches intent:** No-op (no warning)
+- **User value contradicts intent:** Respect user value, emit warning. For example, if the user sets `autoUpdates: true` in `global-config` while pinning a specific version, the `true` value is preserved and a warning like `"User set global-config.autoUpdates to True (auto-update intent is False for pinned version). Respecting user value."` is displayed.
+
+#### `[auto]` Marker in Installation Summary
+
+Auto-injected values are displayed in the installation summary (including `--dry-run` output) with a green `[auto]` marker, similar to the existing `[?]` (unknown keys) and `[!]` (sensitive paths) markers. This makes it clear which values were automatically added by the setup script rather than explicitly configured in the YAML.
+
+```text
+Auto-injected settings (version pinning):
+  [auto] global-config.autoUpdates: false
+  [auto] user-settings.env.DISABLE_AUTOUPDATER: "1"
+  [auto] env-variables.DISABLE_AUTOUPDATER: "1"
+  [auto] os-env-variables.DISABLE_AUTOUPDATER: "1"
+```
+
+#### Defense-in-Depth
+
+The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all four targets provides the best protection.
+
+#### Parity with `install_claude.py`
+
+The `install_claude.py` standalone installer implements the same auto-update management for the targets it can reach (3 of 4: `~/.claude.json`, `~/.claude/settings.json`, and OS-level environment variables). Both scripts share identical constant values enforced by drift protection tests. See [Installing Claude Code -- Auto-Update Management](installing-claude-code.md#auto-update-management) for details.
 
 ### Configuration Sources
 
