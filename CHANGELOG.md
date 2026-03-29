@@ -1,5 +1,18 @@
 # Changelog
 
+## [5.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.4.1...v5.5.0) (2026-03-29)
+
+
+### Features
+
+* add comprehensive auto-update management across all targets ([8df2671](https://github.com/alex-feel/claude-code-toolbox/commit/8df26710f8be60fc6e92f2b8321b51806b16db05))
+
+
+### Bug Fixes
+
+* convert camelCase YAML sub-keys to kebab-case ([bf12fbf](https://github.com/alex-feel/claude-code-toolbox/commit/bf12fbfdd1fc9ef5364c855503dc7f115df5ff57))
+* ensure parent directories exist before writing config files ([fd0be16](https://github.com/alex-feel/claude-code-toolbox/commit/fd0be16a9c80f0a417517293b151c18d725a0249))
+
 ## [5.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.4.0...v5.4.1) (2026-03-29)
 
 
