@@ -1,0 +1,4 @@
+name: "Scope Child Inherits"
+inherit: scope_parent_isolated.yaml
+user-settings:
+  language: "french"

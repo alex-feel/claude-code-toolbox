@@ -1,0 +1,4 @@
+name: "Scope Standard Test"
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+user-settings:
+  theme: "light"

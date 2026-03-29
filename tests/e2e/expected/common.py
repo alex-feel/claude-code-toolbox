@@ -3,11 +3,11 @@
 These values represent files and JSON keys that are identical regardless
 of the operating system.
 
-Note: The actual settings.json location differs by platform:
-- Linux/macOS: {config_claude}/{cmd}-settings.json
-- Windows: {localappdata_claude}/{cmd}-settings.json
-
-The MCP config file is always in {claude_dir}/{cmd}-mcp.json.
+All isolated environment files use generic names inside {claude_dir}/{cmd}/:
+- config.json (profile settings, Priority 2)
+- settings.json (user settings, Priority 5)
+- mcp.json (MCP server configuration)
+- manifest.json (installation metadata)
 """
 
 from typing import Final
@@ -15,10 +15,10 @@ from typing import Final
 # Files created on ALL platforms (these are just the common JSON files)
 # The actual location varies by platform, so platform modules define full paths
 COMMON_FILES: Final[list[str]] = [
-    # MCP server configuration (always in claude_dir)
-    '{claude_dir}/{cmd}-mcp.json',
-    # Installation manifest (always in claude_dir)
-    '{claude_dir}/{cmd}-manifest.json',
+    # MCP server configuration (inside isolated directory)
+    '{claude_dir}/{cmd}/mcp.json',
+    # Installation manifest (inside isolated directory)
+    '{claude_dir}/{cmd}/manifest.json',
 ]
 
 # Expected keys in generated JSON files

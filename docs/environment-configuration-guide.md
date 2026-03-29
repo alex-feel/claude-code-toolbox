@@ -543,7 +543,7 @@ Sets an HTTP header for both `http` and `sse` transports.
 
 #### Automatic Permission Pre-Allowing
 
-MCP server names are automatically added to the `permissions.allow` list as `mcp__servername` in the settings file. You do not need to manually add MCP server permissions.
+MCP server names are automatically added to the `permissions.allow` list as `mcp__servername`. You do not need to manually add MCP server permissions.
 
 ### Model and Reasoning
 
@@ -908,7 +908,7 @@ hooks:
 
 #### HTTP Hooks
 
-Send an HTTP POST request to the specified URL when the event fires. No file processing is involved -- all fields are passed through to `settings.json` as-is.
+Send an HTTP POST request to the specified URL when the event fires. No file processing is involved -- all fields are passed through to the profile configuration as-is.
 
 ```yaml
 hooks:
@@ -1210,12 +1210,12 @@ The setup script determines the configuration source by checking in this order:
 
 ### Cross-Shell Command Registration (Windows)
 
-On Windows, the setup creates global commands that work across all shells (PowerShell, CMD, Git Bash) through a set of wrapper scripts:
+On Windows, the setup creates global commands that work across all shells (PowerShell, CMD, Git Bash) through a set of launcher and wrapper scripts:
 
-- Shared POSIX script (`~/.claude/launch-{command}.sh`) executed by Git Bash
-- PowerShell wrapper (`~/.local/bin/{command}.ps1`)
-- CMD wrapper (`~/.local/bin/{command}.cmd`)
-- Git Bash wrapper (`~/.local/bin/{command}`)
+- Shared POSIX launcher (`~/.claude/{command}/launch.sh`) -- the actual launcher executed by Git Bash
+- PowerShell wrapper (`~/.claude/{command}/start.ps1`) -- invokes launch.sh via Git Bash
+- CMD wrapper (`~/.claude/{command}/start.cmd`) -- invokes launch.sh via Git Bash
+- Global wrappers in `~/.local/bin/` (`{command}`, `{command}.ps1`, `{command}.cmd`) -- entry points that delegate to the above
 
 For the full technical architecture, see [Cross-Shell Launcher Architecture](cross-shell-launcher-architecture.md).
 
@@ -1238,7 +1238,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 13. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
 14. **Write global config** -- Merges `global-config` into `~/.claude.json`.
 15. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-16. **Configure settings** -- Creates the settings file for the command.
+16. **Configure profile** -- Creates the profile configuration file for the command.
 17. **Write manifest** -- Creates an installation tracking manifest.
 18. **Create launcher** -- Creates the launcher script for the command.
 19. **Register commands** -- Creates global command wrappers.

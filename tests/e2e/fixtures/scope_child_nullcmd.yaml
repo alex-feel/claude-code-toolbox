@@ -1,0 +1,5 @@
+name: "Scope Child Null Cmd"
+inherit: scope_parent_isolated.yaml
+command-names: null
+user-settings:
+  theme: "light"

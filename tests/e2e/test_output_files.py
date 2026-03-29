@@ -14,7 +14,7 @@ import pytest
 
 from scripts.setup_environment import configure_all_mcp_servers
 from scripts.setup_environment import create_mcp_config_file
-from scripts.setup_environment import create_settings
+from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_user_settings
 from tests.e2e.expected.common import EXPECTED_JSON_KEYS
 from tests.e2e.validators import validate_mcp_json
@@ -37,14 +37,12 @@ class TestOutputFiles:
         companyAnnouncements, attribution, statusLine.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         # Create settings
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=golden_config.get('model'),
             permissions=golden_config.get('permissions'),
             env=golden_config.get('env-variables'),
@@ -56,8 +54,8 @@ class TestOutputFiles:
             effort_level=golden_config.get('effort-level'),
         )
 
-        # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        # File is written to config_base_dir as config.json
+        settings_path = claude_dir / 'config.json'
 
         # Validate using validators.py
         errors = validate_settings(settings_path, golden_config)
@@ -73,14 +71,12 @@ class TestOutputFiles:
         Uses EXPECTED_JSON_KEYS['settings'] for reference.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         # Create settings
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=golden_config.get('model'),
             permissions=golden_config.get('permissions'),
             env=golden_config.get('env-variables'),
@@ -92,8 +88,8 @@ class TestOutputFiles:
             effort_level=golden_config.get('effort-level'),
         )
 
-        # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        # File is written to config_base_dir as config.json
+        settings_path = claude_dir / 'config.json'
 
         # Load and check keys
         data = json.loads(settings_path.read_text())
@@ -198,13 +194,11 @@ class TestOutputFiles:
         Checks: defaultMode, allow, deny, ask arrays present with expected values.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
-        create_settings(
+        create_profile_config(
             hooks={},
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=golden_config.get('permissions'),
             env=None,
@@ -216,8 +210,8 @@ class TestOutputFiles:
             effort_level=None,
         )
 
-        # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        # File is written to config_base_dir as config.json
+        settings_path = claude_dir / 'config.json'
 
         data = json.loads(settings_path.read_text())
 
@@ -252,7 +246,7 @@ class TestManifestFile:
         config_source_url = resolve_config_source_url(config_source, config_source_type)
 
         write_manifest(
-            claude_user_dir=claude_dir,
+            config_base_dir=claude_dir,
             command_name=cmd,
             config_version=str(golden_config.get('version', '')).strip() or None,
             config_source=config_source,
@@ -261,7 +255,7 @@ class TestManifestFile:
             command_names=golden_config['command-names'],
         )
 
-        manifest_path = claude_dir / f'{cmd}-manifest.json'
+        manifest_path = claude_dir / 'manifest.json'
 
         from tests.e2e.validators import validate_manifest
 
@@ -281,7 +275,7 @@ class TestManifestFile:
         claude_dir = paths['claude_dir']
 
         write_manifest(
-            claude_user_dir=claude_dir,
+            config_base_dir=claude_dir,
             command_name=cmd,
             config_version='1.0.0',
             config_source='test-config',
@@ -290,7 +284,7 @@ class TestManifestFile:
             command_names=[cmd],
         )
 
-        manifest_path = claude_dir / f'{cmd}-manifest.json'
+        manifest_path = claude_dir / 'manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
 
         required_fields = [
@@ -334,7 +328,7 @@ class TestManifestFile:
 
         # Write manifest with version 1.0.0
         write_manifest(
-            claude_user_dir=claude_dir,
+            config_base_dir=claude_dir,
             command_name=cmd,
             config_version='1.0.0',
             config_source='test',
@@ -345,7 +339,7 @@ class TestManifestFile:
 
         # Write manifest again with version 2.0.0
         write_manifest(
-            claude_user_dir=claude_dir,
+            config_base_dir=claude_dir,
             command_name=cmd,
             config_version='2.0.0',
             config_source='test',
@@ -354,7 +348,7 @@ class TestManifestFile:
             command_names=[cmd],
         )
 
-        manifest_path = claude_dir / f'{cmd}-manifest.json'
+        manifest_path = claude_dir / 'manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
         assert data['version'] == '2.0.0', 'Manifest was not overwritten on reinstall'
 

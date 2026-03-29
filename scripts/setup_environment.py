@@ -6673,10 +6673,9 @@ def _apply_common_hook_fields(
         hook_config['timeout'] = hook['timeout']
 
 
-def create_settings(
+def create_profile_config(
     hooks: dict[str, Any],
-    claude_user_dir: Path,
-    command_name: str,
+    config_base_dir: Path,
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
@@ -6687,15 +6686,14 @@ def create_settings(
     effort_level: str | None = None,
     hooks_base_dir: Path | None = None,
 ) -> bool:
-    """Create {command_name}-settings.json with environment-specific settings.
+    """Create config.json (profile configuration) for the isolated environment.
 
     This file is always overwritten to avoid duplicate hooks when re-running the installer.
     It's loaded via --settings flag when launching Claude.
 
     Args:
         hooks: Hooks configuration dictionary with 'files' and 'events' keys
-        claude_user_dir: Path to Claude user directory
-        command_name: Name of the command for the environment-specific settings file
+        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
         model: Optional model alias or custom model name
         permissions: Optional permissions configuration dict
         env: Optional environment variables dict
@@ -6712,15 +6710,15 @@ def create_settings(
             only available for Opus models.
         hooks_base_dir: Optional base directory for hook files.
             When provided, hook file paths are resolved relative to this directory
-            instead of claude_user_dir / 'hooks'.
+            instead of config_base_dir / 'hooks'.
 
     Returns:
         bool: True if successful, False otherwise.
     """
     # Determine hooks directory: use hooks_base_dir if provided, else default
-    hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
+    hooks_dir = hooks_base_dir if hooks_base_dir is not None else config_base_dir / 'hooks'
 
-    info(f'Creating {command_name}-settings.json...')
+    info('Creating config.json...')
 
     # Create fresh settings structure for this environment
     settings: dict[str, Any] = {}
@@ -7014,19 +7012,19 @@ def create_settings(
                 matcher_hooks_list.append(hook_config)
 
     # Save settings (always overwrite)
-    settings_path = claude_user_dir / f'{command_name}-settings.json'
+    settings_path = config_base_dir / 'config.json'
     try:
         with open(settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
-        success(f'Created {command_name}-settings.json')
+        success('Created config.json')
         return True
     except Exception as e:
-        error(f'Failed to save {command_name}-settings.json: {e}')
+        error(f'Failed to save config.json: {e}')
         return False
 
 
 def write_manifest(
-    claude_user_dir: Path,
+    config_base_dir: Path,
     command_name: str,
     config_version: str | None,
     config_source: str,
@@ -7036,11 +7034,11 @@ def write_manifest(
 ) -> bool:
     """Write installation manifest for the environment configuration.
 
-    Creates {command_name}-manifest.json containing metadata about the installed
+    Creates manifest.json containing metadata about the installed
     configuration. Used by version checking hooks to determine if updates are available.
 
     Args:
-        claude_user_dir: Path to ~/.claude directory
+        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
         command_name: Primary command name
         config_version: Optional semantic version from config (e.g., "1.3.0")
         config_source: Raw config source as provided by user
@@ -7051,7 +7049,7 @@ def write_manifest(
     Returns:
         True if manifest was written successfully, False otherwise.
     """
-    manifest_path = claude_user_dir / f'{command_name}-manifest.json'
+    manifest_path = config_base_dir / 'manifest.json'
 
     manifest: dict[str, Any] = {
         'name': command_name,
@@ -7067,24 +7065,23 @@ def write_manifest(
     try:
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2)
-        success(f'Created {command_name}-manifest.json')
+        success('Created manifest.json')
         return True
     except Exception as e:
         warning(f'Failed to write manifest: {e}')
         return False
 
 
-def cleanup_stale_marker(claude_user_dir: Path, command_name: str) -> None:
+def cleanup_stale_marker(config_base_dir: Path) -> None:
     """Remove stale update-available marker file during re-installation.
 
     When setup_environment.py runs, any existing update marker is no longer valid
     because the user is actively installing/updating the configuration.
 
     Args:
-        claude_user_dir: Path to ~/.claude directory
-        command_name: Primary command name
+        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
     """
-    marker_path = claude_user_dir / f'{command_name}-update-available.json'
+    marker_path = config_base_dir / 'update-available.json'
     if marker_path.exists():
         try:
             marker_path.unlink()
@@ -7093,22 +7090,25 @@ def cleanup_stale_marker(claude_user_dir: Path, command_name: str) -> None:
             warning(f'Failed to remove stale update marker: {e}')
 
 
-def _get_update_check_snippet(command_name: str) -> str:
+def _get_update_check_snippet(update_marker_path: str, command_name: str = '') -> str:
     """Generate bash snippet for configuration update notification.
 
     Produces a shell script fragment that checks for the update marker file
     and prints a colored warning if a new configuration version is available.
 
     Args:
-        command_name: Command name for the marker file path
+        update_marker_path: Shell-evaluable path to the update marker file
+            (e.g., "$HOME/.claude/mycmd/update-available.json")
+        command_name: Optional command name for display in the notification
 
     Returns:
         Bash script snippet that checks for update marker file.
     """
+    display_name = f'the {command_name} ' if command_name else ''
     return f'''# Check for configuration update notification
-UPDATE_MARKER="$HOME/.claude/{command_name}-update-available.json"
+UPDATE_MARKER="{update_marker_path}"
 if [ -f "$UPDATE_MARKER" ]; then
-  echo -e "\\\\033[1;33m[UPDATE] A new version of the {command_name} configuration is available.\\\\033[0m"
+  echo -e "\\\\033[1;33m[UPDATE] A new version of {display_name}configuration is available.\\\\033[0m"
   echo -e "\\\\033[1;33m         Re-run the installer to update.\\\\033[0m"
 fi
 
@@ -7116,36 +7116,47 @@ fi
 
 
 def create_launcher_script(
-    claude_user_dir: Path,
+    config_base_dir: Path,
     command_name: str,
     system_prompt_file: str | None = None,
     mode: str = 'replace',
     has_profile_mcp_servers: bool = False,
-) -> Path | None:
+) -> tuple[Path, Path] | None:
     """Create launcher script for starting Claude with optional system prompt.
 
+    On Windows, creates three files inside config_base_dir:
+      - start.ps1 (PowerShell wrapper)
+      - start.cmd (CMD wrapper)
+      - launch.sh (shared POSIX launcher -- the actual launcher)
+
+    On Unix, creates one file inside config_base_dir:
+      - launch.sh (the launcher, entry point for symlinks)
+
     Args:
-        claude_user_dir: Path to Claude user directory
+        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
         command_name: Name of the command to create launcher for
         system_prompt_file: Optional system prompt filename (if None, only settings are used)
         mode: System prompt mode ('append' or 'replace'), defaults to 'replace'
         has_profile_mcp_servers: Whether profile-scoped MCP servers exist (enables --strict-mcp-config)
 
     Returns:
-        Path to launcher script if created successfully, None otherwise
+        Tuple of (main_launcher_path, launch_script_path) if created successfully,
+        None otherwise. On Windows, main_launcher_path is start.ps1 and
+        launch_script_path is launch.sh. On Unix, both are launch.sh.
     """
-    launcher_path = claude_user_dir / f'start-{command_name}'
-
     # Log if profile MCP servers will be configured via --strict-mcp-config
     if has_profile_mcp_servers:
         info('Launcher will use --strict-mcp-config for profile MCP isolation')
 
     system = platform.system()
 
+    # Will hold the shared POSIX launch script path (Windows only; on Unix, same as launcher_path)
+    shared_sh: Path | None = None
+
     try:
         if system == 'Windows':
-            # Create PowerShell launcher for Windows
-            launcher_path = launcher_path.with_suffix('.ps1')
+            # Create PowerShell wrapper for Windows
+            launcher_path = config_base_dir / 'start.ps1'
             launcher_content = f'''# Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
 
@@ -7164,8 +7175,8 @@ if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {{
     exit 1
 }}
 
-# Call the shared script
-$scriptPath = Join-Path $claudeUserDir "launch-{command_name}.sh"
+# Call the shared launch script
+$scriptPath = Join-Path (Join-Path $claudeUserDir "{command_name}") "launch.sh"
 
 if ($args.Count -gt 0) {{
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
@@ -7177,7 +7188,7 @@ if ($args.Count -gt 0) {{
             launcher_path.write_text(launcher_content)
 
             # Also create a CMD batch file wrapper
-            batch_path = claude_user_dir / f'start-{command_name}.cmd'
+            batch_path = config_base_dir / 'start.cmd'
             batch_content = f'''@echo off
 REM Claude Code Environment Launcher for CMD
 REM This script starts Claude Code with the configured environment
@@ -7188,7 +7199,7 @@ REM Call shared script
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 
-set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
+set "SCRIPT_WIN=%USERPROFILE%\\.claude\\{command_name}\\launch.sh"
 
 if "%~1"=="" (
     "%BASH_EXE%" --login "%SCRIPT_WIN%"
@@ -7200,7 +7211,7 @@ if "%~1"=="" (
             batch_path.write_text(batch_content)
 
             # Create shared POSIX script that actually launches Claude
-            shared_sh = claude_user_dir / f'launch-{command_name}.sh'
+            shared_sh = config_base_dir / 'launch.sh'
 
             # Build the exec command based on whether system prompt is provided
             if system_prompt_file:
@@ -7208,19 +7219,22 @@ if "%~1"=="" (
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
+# Set isolated environment directory
+export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}/config.json")"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
 MCP_FLAGS=""
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
 fi
 
-PROMPT_PATH="$HOME/.claude/prompts/{system_prompt_file}"
+PROMPT_PATH="$HOME/.claude/{command_name}/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
@@ -7288,7 +7302,9 @@ SAFE_PROMPT_SIZE=4096
 
 '''
                 # Inject update check snippet before mode-specific logic
-                shared_sh_content += _get_update_check_snippet(command_name)
+                shared_sh_content += _get_update_check_snippet(
+                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
+                )
 
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -7360,16 +7376,21 @@ fi
 '''
             else:
                 # No system prompt, only settings
-                update_snippet = _get_update_check_snippet(command_name)
+                update_snippet = _get_update_check_snippet(
+                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
+                )
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
+# Set isolated environment directory
+export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}-settings.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}-settings.json")"
+SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
+  echo "$HOME/.claude/{command_name}/config.json")"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}-mcp.json"
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
 MCP_FLAGS=""
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
@@ -7385,7 +7406,7 @@ fi
 
         else:
             # Create bash launcher for Unix-like systems
-            launcher_path = launcher_path.with_suffix('.sh')
+            launcher_path = config_base_dir / 'launch.sh'
 
             if system_prompt_file:
                 # Load prompt file first (common for both modes)
@@ -7393,12 +7414,14 @@ fi
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
 
-CLAUDE_USER_DIR="$HOME/.claude"
-SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-settings.json"
-PROMPT_PATH="$CLAUDE_USER_DIR/prompts/{system_prompt_file}"
+# Set isolated environment directory
+export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
+SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
+PROMPT_PATH="$HOME/.claude/{command_name}/prompts/{system_prompt_file}"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$CLAUDE_USER_DIR/{command_name}-mcp.json"
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
 MCP_FLAGS=""
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
@@ -7472,7 +7495,9 @@ SAFE_PROMPT_SIZE=4096
 
 '''
                 # Inject update check snippet before mode-specific logic
-                launcher_content += _get_update_check_snippet(command_name)
+                launcher_content += _get_update_check_snippet(
+                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
+                )
 
                 # Add mode-specific logic
                 if mode == 'replace':
@@ -7551,16 +7576,20 @@ else
 fi
 '''
             else:
-                update_snippet_unix = _get_update_check_snippet(command_name)
+                update_snippet_unix = _get_update_check_snippet(
+                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
+                )
                 launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
 
-CLAUDE_USER_DIR="$HOME/.claude"
-SETTINGS_PATH="$CLAUDE_USER_DIR/{command_name}-settings.json"
+# Set isolated environment directory
+export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
+SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$CLAUDE_USER_DIR/{command_name}-mcp.json"
+MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
 MCP_FLAGS=""
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
@@ -7575,7 +7604,11 @@ claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
             launcher_path.chmod(0o755)
 
         success('Created launcher script')
-        return launcher_path
+
+        if system == 'Windows':
+            assert shared_sh is not None  # Always set in Windows branch above
+            return (launcher_path, shared_sh)
+        return (launcher_path, launcher_path)
 
     except Exception as e:
         warning(f'Failed to create launcher script: {e}')
@@ -7586,13 +7619,24 @@ def register_global_command(
     launcher_path: Path,
     command_name: str,
     additional_names: list[str] | None = None,
+    launch_script_path: Path | None = None,
 ) -> bool:
-    """Register global command(s).
+    """Register global command(s) in ~/.local/bin/.
+
+    On Windows, creates wrappers for PowerShell (.ps1), CMD (.cmd), and Git Bash
+    in ~/.local/bin/. PowerShell wrappers reference launcher_path (start.ps1);
+    CMD and Git Bash wrappers reference launch_script_path (launch.sh).
+
+    On Unix, creates symlinks in ~/.local/bin/ pointing to launcher_path.
 
     Args:
-        launcher_path: Path to the launcher script.
+        launcher_path: Path to the main launcher script (start.ps1 on Windows,
+            launch.sh on Unix).
         command_name: Primary command name (used for file naming).
         additional_names: Optional list of additional command names (aliases).
+        launch_script_path: Path to the shared POSIX launch script (launch.sh).
+            Required on Windows for CMD and Git Bash wrappers. On Unix this
+            parameter is not used (symlinks point to launcher_path directly).
 
     Returns:
         True if registration succeeded, False otherwise.
@@ -7607,6 +7651,21 @@ def register_global_command(
             local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
+            # Derive shell-format paths for the launch script
+            if launch_script_path is not None:
+                home_str = str(get_real_user_home())
+                # Windows CMD path: convert to %USERPROFILE% form
+                launch_sh_str = str(launch_script_path).replace('/', '\\')
+                cmd_script_path = launch_sh_str.replace(home_str, '%USERPROFILE%')
+                # Git Bash path: convert to $HOME form
+                bash_script_path = str(launch_script_path).replace('\\', '/')
+                bash_home = home_str.replace('\\', '/')
+                bash_script_path = bash_script_path.replace(bash_home, '$HOME')
+            else:
+                # Fallback for backward compatibility
+                cmd_script_path = f'%USERPROFILE%\\.claude\\{command_name}\\launch.sh'
+                bash_script_path = f'$HOME/.claude/{command_name}/launch.sh'
+
             # Create wrappers for all Windows shells
             # CMD wrapper
             batch_path = local_bin / f'{command_name}.cmd'
@@ -7614,7 +7673,7 @@ def register_global_command(
 REM Global {command_name} command for CMD
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
-set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
+set "SCRIPT_WIN={cmd_script_path}"
 if "%~1"=="" (
     "%BASH_EXE%" --login "%SCRIPT_WIN%"
 ) else (
@@ -7630,13 +7689,13 @@ if "%~1"=="" (
 '''
             ps1_wrapper_path.write_text(ps1_wrapper_content)
 
-            # Git Bash wrapper - simply call the shared launch script
+            # Git Bash wrapper - call the shared launch script
             bash_wrapper_path = local_bin / command_name
             bash_content = f'''#!/bin/bash
 # Bash wrapper for {command_name} to work in Git Bash
 
 # Call the shared launch script
-exec "$HOME/.claude/launch-{command_name}.sh" "$@"
+exec "{bash_script_path}" "$@"
 '''
             bash_wrapper_path.write_text(bash_content, newline='\n')  # Use Unix line endings
             # Make it executable (Git Bash respects this even on Windows)
@@ -7653,7 +7712,7 @@ exec "$HOME/.claude/launch-{command_name}.sh" "$@"
 REM Global {alias_name} command for CMD (alias for {command_name})
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
-set "SCRIPT_WIN=%USERPROFILE%\\.claude\\launch-{command_name}.sh"
+set "SCRIPT_WIN={cmd_script_path}"
 if "%~1"=="" (
     "%BASH_EXE%" --login "%SCRIPT_WIN%"
 ) else (
@@ -7673,7 +7732,7 @@ if "%~1"=="" (
                     alias_bash_path = local_bin / alias_name
                     alias_bash_content = f'''#!/bin/bash
 # Bash wrapper for {alias_name} (alias for {command_name})
-exec "$HOME/.claude/launch-{command_name}.sh" "$@"
+exec "{bash_script_path}" "$@"
 '''
                     alias_bash_path.write_text(alias_bash_content, newline='\n')
                     alias_bash_path.chmod(0o755)
@@ -8181,6 +8240,11 @@ def main() -> None:
                 else:
                     isolated_config_dir = Path(user_config_dir)
                 artifact_base_dir = isolated_config_dir
+                # Remove CLAUDE_CONFIG_DIR from env_variables -- the launcher export
+                # is the sole authoritative source. Keeping it in config.json env
+                # section would create a redundant, potentially stale second source.
+                if env_variables and 'CLAUDE_CONFIG_DIR' in env_variables:
+                    env_variables.pop('CLAUDE_CONFIG_DIR')
             else:
                 # Auto-compute isolation directory from primary command name
                 isolated_config_dir = claude_user_dir / primary_command_name
@@ -8350,7 +8414,7 @@ def main() -> None:
         # Calculate profile MCP config path for profile-scoped servers
         profile_mcp_config_path: Path | None = None
         if primary_command_name:
-            profile_mcp_config_path = claude_user_dir / f'{primary_command_name}-mcp.json'
+            profile_mcp_config_path = artifact_base_dir / 'mcp.json'
 
         _, profile_servers, mcp_stats = configure_all_mcp_servers(
             mcp_servers, profile_mcp_config_path, nodejs_dir=nodejs_dir,
@@ -8361,7 +8425,8 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 13: Writing user settings...{Colors.NC}')
         if user_settings:
-            if write_user_settings(user_settings, claude_user_dir):
+            settings_target_dir = artifact_base_dir if primary_command_name else claude_user_dir
+            if write_user_settings(user_settings, settings_target_dir):
                 success('User settings configured successfully')
             else:
                 warning('Failed to write user settings (non-fatal)')
@@ -8390,38 +8455,17 @@ def main() -> None:
                                        hooks_base_dir=hooks_base_dir_arg):
                 download_failures.append('hook files')
 
-            # Inject CLAUDE_CONFIG_DIR for environment isolation
-            if isolated_config_dir is not None:
-                if env_variables is None:
-                    env_variables = {}
-                if 'CLAUDE_CONFIG_DIR' not in env_variables:
-                    # Platform-dependent path format:
-                    # - Windows: absolute path (Windows shell does not resolve ~)
-                    # - Linux/macOS/WSL: tilde-based path for portability
-                    if sys.platform == 'win32':
-                        config_dir_value = str(isolated_config_dir)
-                    else:
-                        home_str = str(home)
-                        isolated_str = str(isolated_config_dir)
-                        if isolated_str.startswith(home_str):
-                            config_dir_value = '~' + isolated_str[len(home_str):]
-                        else:
-                            config_dir_value = isolated_str
-                    env_variables['CLAUDE_CONFIG_DIR'] = config_dir_value
-                    info(f'Environment isolation active for "{primary_command_name}"')
-
-            # Step 16: Configure settings
+            # Step 16: Create profile configuration
             print()
-            print(f'{Colors.CYAN}Step 16: Configuring settings...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Creating profile configuration...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
                 status_line_arg = cast(dict[str, Any], status_line)
 
-            create_settings(
+            create_profile_config(
                 hooks,
-                claude_user_dir,
-                primary_command_name,
+                artifact_base_dir,
                 model,
                 permissions,
                 env_variables,
@@ -8436,11 +8480,11 @@ def main() -> None:
             # Step 17: Write installation manifest
             print()
             print(f'{Colors.CYAN}Step 17: Writing installation manifest...{Colors.NC}')
-            cleanup_stale_marker(claude_user_dir, primary_command_name)
+            cleanup_stale_marker(artifact_base_dir)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
             write_manifest(
-                claude_user_dir=claude_user_dir,
+                config_base_dir=artifact_base_dir,
                 command_name=primary_command_name,
                 config_version=config_version,
                 config_source=config_name,
@@ -8457,19 +8501,23 @@ def main() -> None:
             if system_prompt:
                 clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
                 prompt_filename = Path(clean_prompt).name
-            launcher_path = create_launcher_script(
-                claude_user_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
+            launcher_result = create_launcher_script(
+                artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
             # Step 19: Register global command(s)
-            if launcher_path:
+            if launcher_result:
+                main_launcher, launch_script = launcher_result
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
                     print(f'{Colors.CYAN}Step 19: Registering global commands: {all_names}...{Colors.NC}')
                 else:
                     print(f'{Colors.CYAN}Step 19: Registering global {primary_command_name} command...{Colors.NC}')
-                register_global_command(launcher_path, primary_command_name, additional_command_names)
+                register_global_command(
+                    main_launcher, primary_command_name, additional_command_names,
+                    launch_script_path=launch_script,
+                )
             else:
                 warning('Launcher script was not created')
         else:

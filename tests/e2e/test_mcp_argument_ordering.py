@@ -64,7 +64,7 @@ class TestMCPArgumentOrdering:
             patch.object(setup_environment, 'run_bash_command', mock_bash),
             patch.object(setup_environment, 'run_command', mock_run),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
@@ -116,7 +116,7 @@ class TestMCPArgumentOrdering:
             patch.object(setup_environment, 'run_command', mock_run),
             patch('pathlib.Path.exists', return_value=False),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
@@ -167,7 +167,7 @@ class TestMCPArgumentOrdering:
             patch.object(setup_environment, 'run_bash_command', mock_bash),
             patch.object(setup_environment, 'run_command', mock_run),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
@@ -218,7 +218,7 @@ class TestMCPArgumentOrdering:
             patch.object(setup_environment, 'run_bash_command', mock_bash),
             patch.object(setup_environment, 'run_command', mock_run),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
@@ -278,7 +278,7 @@ class TestMCPHeaderEnvVarExpansion:
             patch.object(setup_environment, 'run_bash_command', mock_bash),
             patch.object(setup_environment, 'run_command', mock_run),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
@@ -325,7 +325,7 @@ class TestMCPProfileHeaderConfig:
             patch.object(setup_environment, 'run_bash_command', mock_bash),
             patch.object(setup_environment, 'run_command', mock_run),
         ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'test-mcp.json'
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             _, profile_servers, _ = configure_all_mcp_servers(
                 servers=golden_config.get('mcp-servers', []),
                 profile_mcp_config_path=profile_mcp_path,
