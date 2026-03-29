@@ -4635,3 +4635,125 @@ class TestNativeInstallerRecoveryChain:
         # Only the initial 1-second sleep for PATH update, no 2-second recovery sleeps
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert 2 not in sleep_calls
+
+
+class TestSetDisableAutoupdaterExpanded:
+    """Tests for expanded set_disable_autoupdater() with 3 targets."""
+
+    def test_set_writes_autoupdates_to_claude_json(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.set_disable_autoupdater()
+        claude_json = home / '.claude.json'
+        assert claude_json.exists()
+        data = json.loads(claude_json.read_text())
+        assert data['autoUpdates'] is False
+
+    def test_set_writes_env_to_settings_json(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.set_disable_autoupdater()
+        settings_path = home / '.claude' / 'settings.json'
+        assert settings_path.exists()
+        data = json.loads(settings_path.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_set_respects_existing_autoupdates_true(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        claude_json = home / '.claude.json'
+        claude_json.write_text(json.dumps({'autoUpdates': True}))
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.set_disable_autoupdater()
+        data = json.loads(claude_json.read_text())
+        assert data['autoUpdates'] is True
+
+    def test_set_creates_missing_files(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.set_disable_autoupdater()
+        assert (home / '.claude.json').exists()
+        assert (home / '.claude' / 'settings.json').exists()
+
+
+class TestUnsetDisableAutoupdaterExpanded:
+    """Tests for expanded unset_disable_autoupdater() with 3 targets."""
+
+    def test_unset_removes_autoupdates_false_from_claude_json(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        claude_json = home / '.claude.json'
+        claude_json.write_text(json.dumps({'autoUpdates': False, 'other': 'keep'}))
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.unset_disable_autoupdater()
+        data = json.loads(claude_json.read_text())
+        assert 'autoUpdates' not in data
+        assert data['other'] == 'keep'
+
+    def test_unset_leaves_autoupdates_true_in_claude_json(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        claude_json = home / '.claude.json'
+        claude_json.write_text(json.dumps({'autoUpdates': True}))
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.unset_disable_autoupdater()
+        data = json.loads(claude_json.read_text())
+        assert data['autoUpdates'] is True
+
+    def test_unset_removes_env_from_settings_json(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        settings_path = home / '.claude' / 'settings.json'
+        settings_path.write_text(json.dumps({'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER': 'val'}}))
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.unset_disable_autoupdater()
+        data = json.loads(settings_path.read_text())
+        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
+        assert data['env']['OTHER'] == 'val'
+
+    def test_unset_handles_missing_files(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.unset_disable_autoupdater()
+
+    def test_set_unset_roundtrip(self, tmp_path):
+        home = tmp_path / 'home'
+        home.mkdir()
+        (home / '.claude').mkdir()
+        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
+             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
+             patch('platform.system', return_value='Linux'):
+            install_claude.set_disable_autoupdater()
+            install_claude.unset_disable_autoupdater()
+        claude_json = home / '.claude.json'
+        data = json.loads(claude_json.read_text())
+        assert 'autoUpdates' not in data
+        settings_path = home / '.claude' / 'settings.json'
+        sdata = json.loads(settings_path.read_text())
+        assert 'env' not in sdata or 'DISABLE_AUTOUPDATER' not in sdata.get('env', {})

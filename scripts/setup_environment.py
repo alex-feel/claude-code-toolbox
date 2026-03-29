@@ -597,6 +597,9 @@ class InstallationPlan:
     unknown_keys: list[str] = field(default_factory=lambda: list[str]())
     sensitive_paths: list[str] = field(default_factory=lambda: list[str]())
 
+    # Auto-injected items (auto-update controls)
+    auto_injected_items: list[str] = field(default_factory=lambda: list[str]())
+
     @property
     def total_resources(self) -> int:
         """Total count of downloadable resources."""
@@ -1563,6 +1566,199 @@ def write_global_config(
         warning(f'Failed to write global config to {config_file}')
 
     return ok
+
+
+# Constants for auto-update management (used for value parity with install_claude.py)
+AUTO_UPDATE_KEY = 'autoUpdates'
+AUTO_UPDATE_DISABLED_VALUE = False
+DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
+DISABLE_AUTOUPDATER_VALUE = '1'
+
+
+def apply_auto_update_settings(
+    claude_code_version_normalized: str | None,
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+    list[str],
+    list[str],
+]:
+    """Apply automatic auto-update settings based on version pinning.
+
+    When a specific version is pinned, disables auto-updates across all
+    four available targets. When version is None (latest/absent), removes
+    auto-injected controls.
+
+    Operates on in-memory dicts ONLY -- has no knowledge of command-names,
+    file paths, or environment isolation. The existing write routing
+    infrastructure handles which files get created.
+
+    Args:
+        claude_code_version_normalized: Pinned version string, or None for latest.
+        global_config: Global config dict (may be None).
+        user_settings: User settings dict (may be None).
+        env_variables: Environment variables dict (may be None).
+        os_env_variables: OS-level environment variables dict (may be None).
+
+    Returns:
+        Tuple of (global_config, user_settings, env_variables, os_env_variables,
+        warnings, auto_injected_items).
+    """
+    warnings_list: list[str] = []
+    auto_injected: list[str] = []
+
+    if claude_code_version_normalized is not None:
+        # Pinned version: inject auto-update disable controls
+        global_config, user_settings, env_variables, os_env_variables = (
+            _inject_auto_update_controls(
+                global_config, user_settings, env_variables, os_env_variables,
+                warnings_list, auto_injected,
+            )
+        )
+    else:
+        # Latest/absent: remove auto-injected controls
+        global_config, user_settings, env_variables, os_env_variables = (
+            _remove_auto_update_controls(
+                global_config, user_settings, env_variables, os_env_variables,
+                warnings_list,
+            )
+        )
+
+    return global_config, user_settings, env_variables, os_env_variables, warnings_list, auto_injected
+
+
+def _inject_auto_update_controls(
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+    warnings_list: list[str],
+    auto_injected: list[str],
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+]:
+    """Inject auto-update disable controls into all four target dicts."""
+    # Target 1: global_config.autoUpdates = False
+    if global_config is None:
+        global_config = {}
+    current_auto = global_config.get(AUTO_UPDATE_KEY)
+    if current_auto is None:
+        global_config[AUTO_UPDATE_KEY] = AUTO_UPDATE_DISABLED_VALUE
+        auto_injected.append(f'global-config.{AUTO_UPDATE_KEY}: false')
+    elif current_auto == AUTO_UPDATE_DISABLED_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set global-config.{AUTO_UPDATE_KEY} to {current_auto!r} '
+            f'(auto-update intent is {AUTO_UPDATE_DISABLED_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 2: user_settings.env.DISABLE_AUTOUPDATER = "1"
+    if user_settings is None:
+        user_settings = {}
+    env_raw = user_settings.get('env')
+    if not isinstance(env_raw, dict):
+        env_raw = {}
+        user_settings['env'] = env_raw
+    env_section = cast(dict[str, Any], env_raw)
+    current_disable: object = env_section.get(DISABLE_AUTOUPDATER_KEY)
+    if current_disable is None:
+        env_section[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
+        auto_injected.append(f'user-settings.env.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
+    elif str(current_disable) == DISABLE_AUTOUPDATER_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set user-settings.env.{DISABLE_AUTOUPDATER_KEY} to {current_disable!r} '
+            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 3: env_variables.DISABLE_AUTOUPDATER = "1"
+    if env_variables is None:
+        env_variables = {}
+    current_env = env_variables.get(DISABLE_AUTOUPDATER_KEY)
+    if current_env is None:
+        env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
+        auto_injected.append(f'env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
+    elif str(current_env) == DISABLE_AUTOUPDATER_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set env-variables.{DISABLE_AUTOUPDATER_KEY} to {current_env!r} '
+            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 4: os_env_variables.DISABLE_AUTOUPDATER = "1"
+    if os_env_variables is None:
+        os_env_variables = {}
+    current_os_env = os_env_variables.get(DISABLE_AUTOUPDATER_KEY)
+    if current_os_env is None:
+        os_env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
+        auto_injected.append(f'os-env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
+    elif str(current_os_env) == DISABLE_AUTOUPDATER_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set os-env-variables.{DISABLE_AUTOUPDATER_KEY} to {current_os_env!r} '
+            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    return global_config, user_settings, env_variables, os_env_variables
+
+
+def _remove_auto_update_controls(
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+    warnings_list: list[str],
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+]:
+    """Remove auto-injected auto-update controls from all four target dicts."""
+    # Target 1: Remove autoUpdates from global_config (only if False)
+    if global_config is not None and AUTO_UPDATE_KEY in global_config:
+        current_val = global_config[AUTO_UPDATE_KEY]
+        if current_val == AUTO_UPDATE_DISABLED_VALUE:
+            # Set to None for RFC 7396 null-as-delete
+            global_config[AUTO_UPDATE_KEY] = None
+        elif current_val is True:
+            warnings_list.append(
+                f'User explicitly set global-config.{AUTO_UPDATE_KEY} to True. '
+                f'Respecting user value (not removing).',
+            )
+
+    # Target 2: Remove DISABLE_AUTOUPDATER from user_settings.env
+    if user_settings is not None:
+        env_section = user_settings.get('env')
+        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
+            del env_section[DISABLE_AUTOUPDATER_KEY]
+
+    # Target 3: Remove DISABLE_AUTOUPDATER from env_variables
+    if env_variables is not None and DISABLE_AUTOUPDATER_KEY in env_variables:
+        del env_variables[DISABLE_AUTOUPDATER_KEY]
+
+    # Target 4: Set os_env_variables DISABLE_AUTOUPDATER to None (triggers deletion)
+    if os_env_variables is not None and DISABLE_AUTOUPDATER_KEY in os_env_variables:
+        os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
+
+    return global_config, user_settings, env_variables, os_env_variables
 
 
 def detect_settings_conflicts(
@@ -3816,8 +4012,8 @@ def display_installation_summary(
         settings_items.append(f'System prompt: {plan.system_prompt_mode}')
     if plan.permissions:
         perm_parts: list[str] = []
-        if 'defaultMode' in plan.permissions:
-            perm_parts.append(f"defaultMode={plan.permissions['defaultMode']}")
+        if 'default-mode' in plan.permissions:
+            perm_parts.append(f"default-mode={plan.permissions['default-mode']}")
         if 'allow' in plan.permissions:
             perm_parts.append(f"{len(plan.permissions['allow'])} allow")
         if 'deny' in plan.permissions:
@@ -3876,6 +4072,13 @@ def display_installation_summary(
             _print(f'  {Colors.YELLOW}[{platform_key}]{Colors.NC}')
             for cmd in cmds:
                 _print(f'    $ {cmd}')
+
+    # Auto-injected items section (green)
+    if plan.auto_injected_items:
+        _print()
+        _print(f'{Colors.GREEN}{Colors.BOLD}Auto-update controls (version pinned):{Colors.NC}')
+        for item in plan.auto_injected_items:
+            _print(f'  {Colors.GREEN}[auto] {item}{Colors.NC}')
 
     # Attention section (red)
     has_attention = plan.sensitive_paths or plan.unknown_keys
@@ -6655,7 +6858,7 @@ def _apply_common_hook_fields(
 ) -> None:
     """Apply common hook fields to the hook configuration dict.
 
-    Passes through common fields (if, statusMessage, once, timeout) from
+    Passes through common fields (if, status-message, once, timeout) from
     the YAML hook event configuration to the output settings.json hook dict.
     Fields with None/missing values are skipped.
 
@@ -6665,8 +6868,8 @@ def _apply_common_hook_fields(
     """
     if hook.get('if') is not None:
         hook_config['if'] = hook['if']
-    if hook.get('statusMessage') is not None:
-        hook_config['statusMessage'] = hook['statusMessage']
+    if hook.get('status-message') is not None:
+        hook_config['statusMessage'] = hook['status-message']
     if hook.get('once') is not None:
         hook_config['once'] = hook['once']
     if hook.get('timeout') is not None:
@@ -6734,6 +6937,11 @@ def create_profile_config(
     # Use permissions from env config if provided
     if permissions:
         final_permissions = permissions.copy()
+        # Translate kebab-case YAML keys to camelCase JSON keys
+        if 'default-mode' in final_permissions:
+            final_permissions['defaultMode'] = final_permissions.pop('default-mode')
+        if 'additional-directories' in final_permissions:
+            final_permissions['additionalDirectories'] = final_permissions.pop('additional-directories')
         info('Using permissions from environment configuration')
 
     # Add permissions to settings if we have any
@@ -6976,8 +7184,8 @@ def create_profile_config(
             }
             if hook.get('headers') is not None:
                 hook_config['headers'] = hook['headers']
-            if hook.get('allowedEnvVars') is not None:
-                hook_config['allowedEnvVars'] = hook['allowedEnvVars']
+            if hook.get('allowed-env-vars') is not None:
+                hook_config['allowedEnvVars'] = hook['allowed-env-vars']
 
         elif hook_type == 'prompt':
             # Prompt hooks: pass-through for prompt and model
@@ -7014,6 +7222,7 @@ def create_profile_config(
     # Save settings (always overwrite)
     settings_path = config_base_dir / 'config.json'
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         with open(settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
         success('Created config.json')
@@ -7063,6 +7272,7 @@ def write_manifest(
     }
 
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2)
         success('Created manifest.json')
@@ -7154,6 +7364,7 @@ def create_launcher_script(
     shared_sh: Path | None = None
 
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         if system == 'Windows':
             # Create PowerShell wrapper for Windows
             launcher_path = config_base_dir / 'start.ps1'
@@ -8140,6 +8351,25 @@ def main() -> None:
                 info(f'Claude Code version specified: {claude_code_version_str}')
                 claude_code_version_normalized = claude_code_version_str
 
+        # Apply automatic auto-update settings based on version pinning
+        # Modifies in-memory dicts BEFORE they flow through write paths
+        (
+            global_config,
+            user_settings,
+            env_variables,
+            os_env_variables,
+            auto_update_warnings,
+            auto_injected_items,
+        ) = apply_auto_update_settings(
+            claude_code_version_normalized,
+            global_config,
+            user_settings,
+            env_variables,
+            os_env_variables,
+        )
+        for warn_msg in auto_update_warnings:
+            warning(warn_msg)
+
         # Validate user-settings section for excluded keys
         if user_settings:
             user_settings_errors = validate_user_settings(user_settings)
@@ -8198,6 +8428,7 @@ def main() -> None:
             inheritance_chain=inheritance_chain,
             args=args,
         )
+        plan.auto_injected_items = auto_injected_items
 
         # Determine auto-confirm from --yes flag or environment variable
         auto_confirm = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
@@ -8274,15 +8505,17 @@ def main() -> None:
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
 
-        # Step 2: Create directories
+        # Step 2: Create base configuration directory
         print()
-        print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        # Always create standard claude_user_dir first
+        print(f'{Colors.CYAN}Step 2: Creating base configuration directory...{Colors.NC}')
         claude_user_dir.mkdir(parents=True, exist_ok=True)
-        # Create artifact directories (may be under isolated path when artifact_base_dir != claude_user_dir)
-        for dir_path in [agents_dir, commands_dir, rules_dir, prompts_dir, hooks_dir, skills_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-            success(f'Created: {dir_path}')
+        success(f'Created: {claude_user_dir}')
+        if artifact_base_dir != claude_user_dir:
+            artifact_base_dir.mkdir(parents=True, exist_ok=True)
+            success(f'Created: {artifact_base_dir}')
+        # Subdirectories (agents, commands, rules, prompts, hooks, skills)
+        # are created on-demand by their respective processing functions
+        # only when files are actually placed into them.
 
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
@@ -8594,8 +8827,8 @@ def main() -> None:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:
             perm_items: list[str] = []
-            if 'defaultMode' in permissions:
-                perm_items.append(f"defaultMode={permissions['defaultMode']}")
+            if 'default-mode' in permissions:
+                perm_items.append(f"default-mode={permissions['default-mode']}")
             if 'allow' in permissions:
                 perm_items.append(f"{len(permissions['allow'])} allow rules")
             if 'deny' in permissions:

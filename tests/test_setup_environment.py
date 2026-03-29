@@ -3747,9 +3747,9 @@ class TestCreateSettings:
                         'type': 'http',
                         'url': 'http://localhost:8080/hook',
                         'headers': {'Authorization': 'Bearer $TOKEN'},
-                        'allowedEnvVars': ['TOKEN'],
+                        'allowed-env-vars': ['TOKEN'],
                         'timeout': 15,
-                        'statusMessage': 'Sending webhook...',
+                        'status-message': 'Sending webhook...',
                     },
                 ],
             }
@@ -3859,7 +3859,7 @@ class TestCreateSettings:
                         'command': 'notify.py',
                         'async': True,
                         'shell': 'bash',
-                        'statusMessage': 'Running...',
+                        'status-message': 'Running...',
                     },
                 ],
             }
@@ -3894,7 +3894,7 @@ class TestCreateSettings:
                         'prompt': 'Check security',
                         'timeout': 30,
                         'if': 'Bash(*)',
-                        'statusMessage': 'Checking...',
+                        'status-message': 'Checking...',
                         'once': True,
                     },
                 ],
@@ -10447,3 +10447,140 @@ class TestSuggestKnownKey:
         output = buf.getvalue()
         assert 'completely-random-xyz' in output
         assert 'did you mean' not in output
+
+
+class TestApplyAutoUpdateSettings:
+    """Tests for apply_auto_update_settings() auto-update management."""
+
+    def test_pinned_version_injects_all_four_targets(self) -> None:
+        gc, us, ev, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None, None,
+        )
+        assert gc is not None
+        assert gc['autoUpdates'] is False
+        assert us is not None
+        assert us['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert ev is not None
+        assert ev['DISABLE_AUTOUPDATER'] == '1'
+        assert osev is not None
+        assert osev['DISABLE_AUTOUPDATER'] == '1'
+        assert not warns
+        assert len(auto) == 4
+
+    def test_none_version_removes_all_four_targets(self) -> None:
+        gc = {'autoUpdates': False, 'other': 'keep'}
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER': 'val'}}
+        ev = {'DISABLE_AUTOUPDATER': '1', 'SOME_VAR': 'x'}
+        osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1', 'PATH_VAR': '/usr'}
+        gc_r, us_r, ev_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
+            None, gc, us, ev, osev,
+        )
+        assert gc_r is not None
+        assert gc_r['autoUpdates'] is None  # null-as-delete
+        assert gc_r['other'] == 'keep'
+        assert us_r is not None
+        assert 'DISABLE_AUTOUPDATER' not in us_r['env']
+        assert us_r['env']['OTHER'] == 'val'
+        assert ev_r is not None
+        assert 'DISABLE_AUTOUPDATER' not in ev_r
+        assert osev_r is not None
+        assert osev_r['DISABLE_AUTOUPDATER'] is None
+        assert osev_r['PATH_VAR'] == '/usr'
+        assert not warns
+        assert not auto
+
+    def test_none_global_config_creates_dict(self) -> None:
+        gc, _, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', None, {'env': {}}, {}, {},
+        )
+        assert gc is not None
+        assert gc['autoUpdates'] is False
+
+    def test_none_user_settings_creates_dict(self) -> None:
+        _, us, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', {}, None, {}, {},
+        )
+        assert us is not None
+        assert us['env']['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_none_env_variables_creates_dict(self) -> None:
+        _, _, ev, _, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', {}, {}, None, {},
+        )
+        assert ev is not None
+        assert ev['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_none_os_env_variables_creates_dict(self) -> None:
+        _, _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', {}, {}, {}, None,
+        )
+        assert osev is not None
+        assert osev['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_conflict_detection_respects_user_autoupdates_true(self) -> None:
+        gc = {'autoUpdates': True}
+        gc_r, _, _, _, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc, {}, {}, {},
+        )
+        assert gc_r is not None
+        assert gc_r['autoUpdates'] is True
+        assert len(warns) == 1
+        assert 'Respecting user value' in warns[0]
+        assert not any('global-config.autoUpdates' in a for a in auto)
+
+    def test_conflict_detection_respects_user_disable_autoupdater(self) -> None:
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '0'}}
+        _, us_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', {}, us, {}, {},
+        )
+        assert us_r is not None
+        assert us_r['env']['DISABLE_AUTOUPDATER'] == '0'
+        assert any('DISABLE_AUTOUPDATER' in w for w in warns)
+
+    def test_unset_only_removes_false_autoupdates(self) -> None:
+        gc = {'autoUpdates': False}
+        gc_r, _, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            None, gc, None, None, None,
+        )
+        assert gc_r is not None
+        assert gc_r['autoUpdates'] is None
+
+    def test_unset_leaves_true_autoupdates_alone(self) -> None:
+        gc = {'autoUpdates': True}
+        gc_r, _, _, _, warns, _ = setup_environment.apply_auto_update_settings(
+            None, gc, None, None, None,
+        )
+        assert gc_r is not None
+        assert gc_r['autoUpdates'] is True
+        assert any('Respecting user value' in w for w in warns)
+
+    def test_idempotent_double_injection(self) -> None:
+        gc1, us1, ev1, osev1, _, auto1 = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None, None,
+        )
+        gc2, us2, ev2, osev2, _, auto2 = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc1, us1, ev1, osev1,
+        )
+        assert gc1 == gc2
+        assert us1 == us2
+        assert ev1 == ev2
+        assert osev1 == osev2
+        # Second call should not produce new auto-injected items (values already match)
+        assert not auto2
+
+    def test_auto_injected_items_list(self) -> None:
+        _, _, _, _, _, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None, None,
+        )
+        assert any('global-config.autoUpdates' in a for a in auto)
+        assert any('user-settings.env.DISABLE_AUTOUPDATER' in a for a in auto)
+        assert any('env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
+        assert any('os-env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
+
+    def test_unconditional_injection_regardless_of_command_names(self) -> None:
+        """Function has no knowledge of command-names -- only receives dicts."""
+        import inspect
+        sig = inspect.signature(setup_environment.apply_auto_update_settings)
+        param_names = list(sig.parameters.keys())
+        assert 'command_names' not in param_names
+        assert 'primary_command_name' not in param_names

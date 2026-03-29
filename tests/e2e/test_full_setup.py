@@ -37,35 +37,29 @@ def resolve_path_template(template: str, paths: dict[str, Path], cmd: str) -> Pa
 class TestE2EFullSetup:
     """Test the complete E2E setup workflow."""
 
-    def test_setup_creates_all_directories(
+    def test_no_empty_subdirectories_created(
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Verify setup creates all required directories.
+        """Verify that subdirectories are NOT created when no content targets them.
 
-        Verifies:
-        - hooks_dir, agents_dir, commands_dir, skills_dir exist
-        - Directories are created under claude_dir
+        Subdirectories (agents, commands, rules, prompts, hooks, skills) must only
+        exist when files are actually placed into them by their respective processing
+        functions. An empty configuration must not produce empty subdirectories.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        # Create directories as setup_environment.py does
-        agents_dir = claude_dir / 'agents'
-        commands_dir = claude_dir / 'commands'
-        prompts_dir = claude_dir / 'prompts'
-        hooks_dir = claude_dir / 'hooks'
-        skills_dir = claude_dir / 'skills'
+        # Ensure base directory exists (as Step 2 does)
+        claude_dir.mkdir(parents=True, exist_ok=True)
 
-        for dir_path in [agents_dir, commands_dir, prompts_dir, hooks_dir, skills_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-
-        # Verify
-        assert agents_dir.exists(), f'agents_dir not created: {agents_dir}'
-        assert commands_dir.exists(), f'commands_dir not created: {commands_dir}'
-        assert prompts_dir.exists(), f'prompts_dir not created: {prompts_dir}'
-        assert hooks_dir.exists(), f'hooks_dir not created: {hooks_dir}'
-        assert skills_dir.exists(), f'skills_dir not created: {skills_dir}'
+        # Verify: subdirectories must NOT exist since no content was written
+        subdirs = ['agents', 'commands', 'rules', 'prompts', 'hooks', 'skills']
+        for subdir_name in subdirs:
+            subdir_path = claude_dir / subdir_name
+            assert not subdir_path.exists(), (
+                f'Empty subdirectory should not exist: {subdir_path}'
+            )
 
     def test_setup_creates_expected_files(
         self,

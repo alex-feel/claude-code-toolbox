@@ -114,7 +114,7 @@ See the [Installing Claude Code](docs/installing-claude-code.md) guide for platf
 
 ## Documentation
 
-- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all 30 keys, authentication, inheritance, and more
+- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all keys, authentication, inheritance, and more
 - [Installing Claude Code](docs/installing-claude-code.md) -- standalone Claude Code installation, methods, and troubleshooting
 
 ## Security

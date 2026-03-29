@@ -120,10 +120,10 @@ hooks:
       headers:
         Authorization: "Bearer $MY_TOKEN"
         Content-Type: "application/json"
-      allowedEnvVars:
+      allowed-env-vars:
         - "MY_TOKEN"
       timeout: 15
-      statusMessage: "Sending webhook notification..."
+      status-message: "Sending webhook notification..."
     # Agent hook example
     - event: "PreToolUse"
       matcher: "Bash(rm *)"
@@ -140,7 +140,7 @@ hooks:
       command: "e2e_test_hook.py"
       async: true
       shell: "bash"
-      statusMessage: "Running notification handler..."
+      status-message: "Running notification handler..."
 
 # MCP Servers - all transport types
 mcp-servers:
@@ -184,7 +184,9 @@ model: "sonnet"
 
 # Permissions configuration
 permissions:
-  defaultMode: "default"
+  default-mode: "default"
+  additional-directories:
+    - "/tmp/e2e-test-dir"
   allow:
     - "mcp__e2e-http-server"
     - "mcp__e2e-http-profile-server"

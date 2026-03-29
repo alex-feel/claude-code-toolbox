@@ -427,10 +427,10 @@ def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> l
     """
     errors: list[str] = []
 
-    # Check defaultMode
-    if 'defaultMode' in expected and actual.get('defaultMode') != expected['defaultMode']:
+    # Check defaultMode (YAML key: default-mode, JSON key: defaultMode)
+    if 'default-mode' in expected and actual.get('defaultMode') != expected['default-mode']:
         errors.append(
-            f"permissions.defaultMode: expected {expected['defaultMode']!r}, "
+            f"permissions.defaultMode: expected {expected['default-mode']!r}, "
             f"got {actual.get('defaultMode')!r}",
         )
 
@@ -458,6 +458,16 @@ def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> l
         if item not in actual_ask
     )
 
+    # Check additionalDirectories (YAML key: additional-directories, JSON key: additionalDirectories)
+    if 'additional-directories' in expected:
+        expected_dirs = expected['additional-directories']
+        actual_dirs = actual.get('additionalDirectories', [])
+        if actual_dirs != expected_dirs:
+            errors.append(
+                f'permissions.additionalDirectories: expected {expected_dirs!r}, '
+                f'got {actual_dirs!r}',
+            )
+
     return errors
 
 
@@ -472,7 +482,7 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
     }
 
     Supports all 4 hook types: command, http, prompt, agent.
-    Also validates common fields (if, statusMessage, once, timeout) pass-through.
+    Also validates common fields (if, status-message, once, timeout) pass-through.
 
     Args:
         actual: Actual hooks dict from generated file
@@ -565,7 +575,7 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                 errors.append(
                                     f"HTTP hook '{event_name}' headers mismatch",
                                 )
-                            expected_env_vars = event_config.get('allowedEnvVars')
+                            expected_env_vars = event_config.get('allowed-env-vars')
                             if expected_env_vars is not None and hook.get('allowedEnvVars') != expected_env_vars:
                                 errors.append(
                                     f"HTTP hook '{event_name}' allowedEnvVars mismatch",
@@ -584,13 +594,16 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                 )
 
                         # Validate common fields pass-through for all types
-                        for common_field in ('if', 'statusMessage', 'once', 'timeout'):
-                            expected_val = event_config.get(common_field)
-                            if expected_val is not None and hook.get(common_field) != expected_val:
+                        # YAML uses kebab-case (status-message), JSON uses camelCase (statusMessage)
+                        yaml_to_json_common = {'status-message': 'statusMessage'}
+                        for yaml_field in ('if', 'status-message', 'once', 'timeout'):
+                            json_field = yaml_to_json_common.get(yaml_field, yaml_field)
+                            expected_val = event_config.get(yaml_field)
+                            if expected_val is not None and hook.get(json_field) != expected_val:
                                 errors.append(
-                                    f"Hook '{event_name}' common field '{common_field}' mismatch: "
+                                    f"Hook '{event_name}' common field '{json_field}' mismatch: "
                                     f"expected {expected_val!r}, "
-                                    f"got {hook.get(common_field)!r}",
+                                    f"got {hook.get(json_field)!r}",
                                 )
                 break
 
@@ -1128,5 +1141,49 @@ def validate_global_config_output(
             errors.append(
                 f'Key {key!r}: expected {expected_value!r}, got {content[key]!r}',
             )
+
+    return errors
+
+
+def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
+    """Validate auto-update controls are correctly set or absent.
+
+    When pinned=True, expects:
+    - ~/.claude.json has autoUpdates: false
+    - settings.json (wherever written) has env.DISABLE_AUTOUPDATER: "1"
+
+    When pinned=False, expects:
+    - No autoUpdates key injected in ~/.claude.json (or None for null-as-delete)
+    - No DISABLE_AUTOUPDATER in settings env section
+
+    Args:
+        home_dir: Isolated home directory path
+        pinned: Whether a specific version is pinned
+
+    Returns:
+        List of error strings (empty = all validations passed)
+    """
+    errors: list[str] = []
+
+    # Check ~/.claude.json
+    claude_json_path = home_dir / '.claude.json'
+    if claude_json_path.exists():
+        data, json_errors = validate_json_file(claude_json_path)
+        errors.extend(json_errors)
+        if data is not None:
+            if pinned:
+                if 'autoUpdates' not in data:
+                    errors.append('Pinned version: autoUpdates missing from ~/.claude.json')
+                elif data['autoUpdates'] is not False:
+                    errors.append(
+                        f'Pinned version: autoUpdates should be false, got {data["autoUpdates"]!r}',
+                    )
+            else:
+                if 'autoUpdates' in data and data['autoUpdates'] is False:
+                    errors.append(
+                        'Latest/absent version: autoUpdates=false should not be injected',
+                    )
+    elif pinned:
+        errors.append('Pinned version: ~/.claude.json does not exist')
 
     return errors

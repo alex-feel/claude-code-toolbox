@@ -170,6 +170,12 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 
 All configuration keys use **kebab-case** (hyphenated lowercase), for example `mcp-servers`, `effort-level`, `files-to-download`. Using underscores (`effort_level`, `mcp_servers`) will cause the key to be flagged as unknown during installation.
 
+**Sub-key naming conventions:**
+
+- **Top-level keys** (`hooks`, `permissions`, `mcp-servers`, etc.): MUST be kebab-case (validated by `KNOWN_CONFIG_KEYS`)
+- **Sub-keys in structured sections** (`hooks.events[]`, `permissions`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
+- **Sub-keys in free-form sections** (`user-settings`, `global-config`): MUST match Claude Code's native camelCase (pass-through, no translation)
+
 > **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `effort_level` and `effort-level`. However, the runtime setup script (`setup_environment.py`) uses `config.get('effort-level')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
 
 ## Configuration Keys
@@ -319,6 +325,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
+- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, those controls are automatically removed. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
 
@@ -600,17 +607,17 @@ Permission rules controlling which tools and actions are allowed, denied, or req
 - **Default:** `None`
 - **Inheritance:** Standard override (child replaces parent). Note: MCP server permissions are automatically added during setup regardless of inheritance.
 - **Fields:**
-  - `defaultMode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
+  - `default-mode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
   - `allow` -- List of explicitly allowed actions
   - `deny` -- List of explicitly denied actions
   - `ask` -- List of actions requiring confirmation
-  - `additionalDirectories` -- List of additional directory paths
+  - `additional-directories` -- List of additional directory paths
 - **Note:** MCP server permissions (for example, `mcp__servername`) are automatically merged into the `allow` list
 - **Example:**
 
 ```yaml
 permissions:
-  defaultMode: "default"
+  default-mode: "default"
   allow:
     - "Read"
     - "Glob"
@@ -620,7 +627,7 @@ permissions:
   ask:
     - "Edit"
     - "Write"
-  additionalDirectories:
+  additional-directories:
     - "/opt/project-data"
 ```
 
@@ -823,15 +830,15 @@ Event-driven hooks that run automatically during Claude Code sessions. Four hook
 
 These fields apply to all four hook types:
 
-| Field           | YAML Key        | Type   | Required | Description                                                                                          |
-|-----------------|-----------------|--------|----------|------------------------------------------------------------------------------------------------------|
-| `event`         | `event`         | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                                |
-| `matcher`       | `matcher`       | `str`  | No       | Regex pattern for matching (default: `""`)                                                           |
-| `type`          | `type`          | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                              |
-| `if`            | `if`            | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)                         |
-| `statusMessage` | `statusMessage` | `str`  | No       | Custom spinner message displayed while the hook runs                                                 |
-| `once`          | `once`          | `bool` | No       | If true, runs only once per session then is removed (skills only)                                    |
-| `timeout`       | `timeout`       | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)             |
+| Field            | YAML Key         | Type   | Required | Description                                                                              |
+|------------------|------------------|--------|----------|------------------------------------------------------------------------------------------|
+| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                    |
+| `matcher`        | `matcher`        | `str`  | No       | Regex pattern for matching (default: `""`)                                               |
+| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                  |
+| `if`             | `if`             | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)             |
+| `status-message` | `status-message` | `str`  | No       | Custom spinner message displayed while the hook runs                                     |
+| `once`           | `once`           | `bool` | No       | If true, runs only once per session then is removed (skills only)                        |
+| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent) |
 
 #### Type-Specific Fields
 
@@ -846,11 +853,11 @@ These fields apply to all four hook types:
 
 ##### HTTP Hook Fields
 
-| Field            | YAML Key         | Type            | Required | Description                                                               |
-|------------------|------------------|-----------------|----------|---------------------------------------------------------------------------|
-| `url`            | `url`            | `str`           | Yes      | URL to send the HTTP POST request to                                      |
-| `headers`        | `headers`        | `dict[str,str]` | No       | Additional HTTP headers. Values support `$VAR_NAME` env var interpolation |
-| `allowedEnvVars` | `allowedEnvVars` | `list[str]`     | No       | Environment variable names permitted for interpolation into header values |
+| Field              | YAML Key           | Type            | Required | Description                                                               |
+|--------------------|--------------------|-----------------|----------|---------------------------------------------------------------------------|
+| `url`              | `url`              | `str`           | Yes      | URL to send the HTTP POST request to                                      |
+| `headers`          | `headers`          | `dict[str,str]` | No       | Additional HTTP headers. Values support `$VAR_NAME` env var interpolation |
+| `allowed-env-vars` | `allowed-env-vars` | `list[str]`     | No       | Environment variable names permitted for interpolation into header values |
 
 ##### Prompt and Agent Hook Fields
 
@@ -863,21 +870,21 @@ These fields apply to all four hook types:
 
 Complete required/forbidden field matrix across all hook types:
 
-| Field            | `command` | `http`    | `prompt`  | `agent`   |
-|------------------|-----------|-----------|-----------|-----------|
-| `command`        | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `config`         | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `async`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `shell`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `url`            | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
-| `headers`        | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `allowedEnvVars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `prompt`         | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
-| `model`          | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
-| `if`             | Optional  | Optional  | Optional  | Optional  |
-| `statusMessage`  | Optional  | Optional  | Optional  | Optional  |
-| `once`           | Optional  | Optional  | Optional  | Optional  |
-| `timeout`        | Optional  | Optional  | Optional  | Optional  |
+| Field              | `command` | `http`    | `prompt`  | `agent`   |
+|--------------------|-----------|-----------|-----------|-----------|
+| `command`          | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `config`           | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `async`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `shell`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `url`              | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
+| `headers`          | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `allowed-env-vars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `prompt`           | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
+| `model`            | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
+| `if`               | Optional  | Optional  | Optional  | Optional  |
+| `status-message`   | Optional  | Optional  | Optional  | Optional  |
+| `once`             | Optional  | Optional  | Optional  | Optional  |
+| `timeout`          | Optional  | Optional  | Optional  | Optional  |
 
 Setting a field marked FORBIDDEN on a hook type produces a validation error.
 
@@ -903,7 +910,7 @@ hooks:
       command: "linter.py"
       async: true
       shell: "bash"
-      statusMessage: "Running notification handler..."
+      status-message: "Running notification handler..."
 ```
 
 #### HTTP Hooks
@@ -920,10 +927,10 @@ hooks:
       headers:
         Authorization: "Bearer $MY_TOKEN"
         Content-Type: "application/json"
-      allowedEnvVars:
+      allowed-env-vars:
         - "MY_TOKEN"
       timeout: 15
-      statusMessage: "Sending webhook notification..."
+      status-message: "Sending webhook notification..."
 ```
 
 #### Prompt Hooks
@@ -979,12 +986,12 @@ For command hooks:
 
 The setup script processes hooks differently based on type:
 
-| Hook Type | File Processing                                                | Pass-Through Fields                                |
-|-----------|----------------------------------------------------------------|----------------------------------------------------|
-| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                   |
-| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowedEnvVars` + common fields |
-| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
-| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
+| Hook Type | File Processing                                                | Pass-Through Fields                                    |
+|-----------|----------------------------------------------------------------|--------------------------------------------------------|
+| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                       |
+| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowed-env-vars` + common fields   |
+| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
+| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
 
 #### Complete Hooks Example
 
@@ -1007,7 +1014,7 @@ hooks:
       command: "security-check.js"
       async: true
       shell: "bash"
-      statusMessage: "Running security check..."
+      status-message: "Running security check..."
     # HTTP webhook
     - event: "PostToolUse"
       matcher: "Write"
@@ -1015,7 +1022,7 @@ hooks:
       url: "http://localhost:8080/hooks/write"
       headers:
         Authorization: "Bearer $API_TOKEN"
-      allowedEnvVars:
+      allowed-env-vars:
         - "API_TOKEN"
       timeout: 15
     # Prompt hook for safety check
@@ -1200,6 +1207,56 @@ Authentication is resolved in this order (highest priority first):
 - GitHub raw URLs are automatically converted to API URLs
 - Public access is attempted first; authentication is applied only on 401/403/404 responses
 
+### Automatic Auto-Update Management
+
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into four targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, any previously injected controls are automatically removed to re-enable auto-updates.
+
+#### Injection Targets
+
+| Target             | Key                       | Value   | Config Section                     |
+|--------------------|---------------------------|---------|------------------------------------|
+| `global-config`    | `autoUpdates`             | `false` | `~/.claude.json`                   |
+| `user-settings`    | `env.DISABLE_AUTOUPDATER` | `"1"`   | `settings.json`                    |
+| `env-variables`    | `DISABLE_AUTOUPDATER`     | `"1"`   | `config.json` (profile)            |
+| `os-env-variables` | `DISABLE_AUTOUPDATER`     | `"1"`   | Shell profiles / Windows registry  |
+
+All four targets are injected unconditionally regardless of whether `command-names` is present. The existing write routing infrastructure handles which files are actually created -- for example, `env-variables` only reaches `config.json` when `command-names` is specified, making injection into that dict a harmless no-op for non-isolated environments.
+
+#### Removal Behavior
+
+When the version is `"latest"` or absent:
+
+- `autoUpdates` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
+- `DISABLE_AUTOUPDATER` is removed from `user-settings.env`, `env-variables`, and `os-env-variables`.
+
+#### Conflict Resolution (WARN-but-Respect)
+
+If the user explicitly sets a value in the YAML configuration that contradicts the automatic intent, the user value is preserved and a warning is emitted:
+
+- **User value absent:** Auto-inject (proceed silently)
+- **User value matches intent:** No-op (no warning)
+- **User value contradicts intent:** Respect user value, emit warning. For example, if the user sets `autoUpdates: true` in `global-config` while pinning a specific version, the `true` value is preserved and a warning like `"User set global-config.autoUpdates to True (auto-update intent is False for pinned version). Respecting user value."` is displayed.
+
+#### `[auto]` Marker in Installation Summary
+
+Auto-injected values are displayed in the installation summary (including `--dry-run` output) with a green `[auto]` marker, similar to the existing `[?]` (unknown keys) and `[!]` (sensitive paths) markers. This makes it clear which values were automatically added by the setup script rather than explicitly configured in the YAML.
+
+```text
+Auto-injected settings (version pinning):
+  [auto] global-config.autoUpdates: false
+  [auto] user-settings.env.DISABLE_AUTOUPDATER: "1"
+  [auto] env-variables.DISABLE_AUTOUPDATER: "1"
+  [auto] os-env-variables.DISABLE_AUTOUPDATER: "1"
+```
+
+#### Defense-in-Depth
+
+The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all four targets provides the best protection.
+
+#### Parity with `install_claude.py`
+
+The `install_claude.py` standalone installer implements the same auto-update management for the targets it can reach (3 of 4: `~/.claude.json`, `~/.claude/settings.json`, and OS-level environment variables). Both scripts share identical constant values enforced by drift protection tests. See [Installing Claude Code -- Auto-Update Management](installing-claude-code.md#auto-update-management) for details.
+
 ### Configuration Sources
 
 The setup script determines the configuration source by checking in this order:
@@ -1322,7 +1379,7 @@ always-thinking-enabled: true
 
 # Permissions
 permissions:
-  defaultMode: "default"
+  default-mode: "default"
   allow:
     - "Read"
     - "Glob"
