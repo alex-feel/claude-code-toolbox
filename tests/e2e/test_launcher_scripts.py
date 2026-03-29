@@ -48,13 +48,15 @@ class TestLauncherScriptsWindows:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
+        launch_script = launcher_path_result[1] if launcher_path_result else None
 
         # Register global command creates wrappers
         if launcher_path:
@@ -62,6 +64,7 @@ class TestLauncherScriptsWindows:
                 launcher_path=launcher_path,
                 command_name=cmd,
                 additional_names=None,
+                launch_script_path=launch_script,
             )
 
         # Validate CMD wrapper
@@ -91,13 +94,15 @@ class TestLauncherScriptsWindows:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
+        launch_script = launcher_path_result[1] if launcher_path_result else None
 
         # Register global command creates wrappers
         if launcher_path:
@@ -105,6 +110,7 @@ class TestLauncherScriptsWindows:
                 launcher_path=launcher_path,
                 command_name=cmd,
                 additional_names=None,
+                launch_script_path=launch_script,
             )
 
         # Validate PS1 wrapper
@@ -132,13 +138,15 @@ class TestLauncherScriptsWindows:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
+        launch_script = launcher_path_result[1] if launcher_path_result else None
 
         # Register global command creates wrappers
         if launcher_path:
@@ -146,6 +154,7 @@ class TestLauncherScriptsWindows:
                 launcher_path=launcher_path,
                 command_name=cmd,
                 additional_names=None,
+                launch_script_path=launch_script,
             )
 
         # Validate Git Bash wrapper
@@ -180,13 +189,14 @@ class TestLauncherScriptsUnix:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None, 'create_launcher_script returned None'
 
@@ -208,13 +218,14 @@ class TestLauncherScriptsUnix:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None, 'create_launcher_script returned None'
         assert launcher_path.exists(), f'Launcher script not created: {launcher_path}'
@@ -245,13 +256,14 @@ class TestLauncherScriptsPlatformAgnostic:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None, 'create_launcher_script returned None'
         assert launcher_path.exists(), f'Launcher script not created: {launcher_path}'
@@ -289,13 +301,14 @@ class TestLauncherScriptsPlatformAgnostic:
         claude_dir = paths['claude_dir']
 
         # Create launcher script
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None, 'create_launcher_script returned None'
 

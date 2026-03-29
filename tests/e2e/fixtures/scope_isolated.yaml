@@ -1,0 +1,6 @@
+name: "Scope Isolated Test"
+command-names: ["scope-cmd"]
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+user-settings:
+  theme: "dark"
+  language: "english"

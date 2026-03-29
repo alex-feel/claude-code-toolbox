@@ -25,7 +25,7 @@ import pytest
 
 from scripts.setup_environment import configure_all_mcp_servers
 from scripts.setup_environment import create_mcp_config_file
-from scripts.setup_environment import create_settings
+from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_user_settings
 from tests.e2e.validators import validate_path_separator_consistency
 
@@ -277,7 +277,6 @@ class TestPathSeparatorConsistency:
         consistently, even on Windows.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_config = golden_config.get('hooks', {})
@@ -285,10 +284,9 @@ class TestPathSeparatorConsistency:
             return
 
         # Create settings with hooks
-        create_settings(
+        create_profile_config(
             hooks=hooks_config,
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -300,7 +298,7 @@ class TestPathSeparatorConsistency:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
         hooks = data.get('hooks', {})
 
@@ -318,7 +316,7 @@ class TestPathSeparatorConsistency:
                     # Extract path tokens from the compound command
                     path_tokens = _extract_paths_from_command(command_str)
                     # Hook paths should use POSIX-style (forward slashes)
-                    # because create_settings uses .as_posix()
+                    # because create_profile_config uses .as_posix()
                     errors.extend(
                         f'hooks[{event_name}][{idx}].hooks[{hook_idx}].command '
                         f'contains backslash in path token: {path_token}'
@@ -342,7 +340,6 @@ class TestPathSeparatorConsistency:
         Path.as_posix() by design, same as hooks.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         status_line_config = golden_config.get('status-line')
@@ -350,10 +347,9 @@ class TestPathSeparatorConsistency:
             return
 
         # Create settings with status line
-        create_settings(
+        create_profile_config(
             hooks={},
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -365,7 +361,7 @@ class TestPathSeparatorConsistency:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
         status_line = data.get('statusLine', {})
 
@@ -397,14 +393,12 @@ class TestPathSeparatorConsistency:
         within compound command strings uses forward slashes consistently.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         # Create full settings
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=golden_config.get('model'),
             permissions=golden_config.get('permissions'),
             env=golden_config.get('env-variables'),
@@ -416,7 +410,7 @@ class TestPathSeparatorConsistency:
             effort_level=golden_config.get('effort-level'),
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []

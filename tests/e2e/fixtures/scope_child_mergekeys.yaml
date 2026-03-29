@@ -1,0 +1,12 @@
+name: "Scope Child MergeKeys"
+inherit: scope_parent_isolated.yaml
+merge-keys:
+  - user-settings
+user-settings:
+  language: "spanish"
+hooks:
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit"
+      type: "prompt"
+      prompt: "Check this edit"

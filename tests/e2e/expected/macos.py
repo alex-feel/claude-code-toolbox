@@ -18,11 +18,11 @@ from typing import Final
 # Paths use fixture key references that will be resolved at test runtime
 EXPECTED_FILES: Final[list[str]] = [
     # Launcher script in claude_dir
-    '{claude_dir}/start-{cmd}.sh',
-    # Settings in claude_dir (written to claude_user_dir by create_settings)
-    '{claude_dir}/{cmd}-settings.json',
-    # MCP config in claude_dir
-    '{claude_dir}/{cmd}-mcp.json',
+    '{claude_dir}/{cmd}/launch.sh',
+    # Profile config in artifact base dir
+    '{claude_dir}/{cmd}/config.json',
+    # MCP config in artifact base dir
+    '{claude_dir}/{cmd}/mcp.json',
     # Symlink in local_bin
     '{local_bin}/{cmd}',
 ]
@@ -30,12 +30,12 @@ EXPECTED_FILES: Final[list[str]] = [
 # Expected paths mapping logical names to path templates
 # Uses fixture keys that will be resolved at test runtime
 EXPECTED_PATHS: Final[dict[str, str]] = {
-    'launcher_script': '{claude_dir}/start-{cmd}.sh',
-    'settings': '{claude_dir}/{cmd}-settings.json',
-    'mcp_config': '{claude_dir}/{cmd}-mcp.json',
+    'launcher_script': '{claude_dir}/{cmd}/launch.sh',
+    'settings': '{claude_dir}/{cmd}/config.json',
+    'mcp_config': '{claude_dir}/{cmd}/mcp.json',
     'command_symlink': '{local_bin}/{cmd}',
-    'hooks_dir': '{claude_dir}/hooks',
-    'agents_dir': '{claude_dir}/agents',
-    'commands_dir': '{claude_dir}/commands',
-    'skills_dir': '{claude_dir}/skills',
+    'hooks_dir': '{claude_dir}/{cmd}/hooks',
+    'agents_dir': '{claude_dir}/{cmd}/agents',
+    'commands_dir': '{claude_dir}/{cmd}/commands',
+    'skills_dir': '{claude_dir}/{cmd}/skills',
 }

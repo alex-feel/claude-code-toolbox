@@ -7,7 +7,6 @@ launcher scripts) remain in the standard ~/.claude/ directory.
 """
 
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,78 +77,75 @@ class TestArtifactIsolationDirectories:
         # Verify standard claude_dir also exists
         assert paths.claude_dir.exists()
 
-    def test_infrastructure_files_in_claude_user_dir(
+    def test_infrastructure_files_in_config_base_dir(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify settings and MCP config remain in standard ~/.claude/ directory."""
+        """Verify config.json is created inside the isolated config directory."""
         paths = _run_isolated_setup(e2e_isolated_home, golden_config)
-        claude_dir = paths.claude_dir
-        primary_cmd = paths.primary_command_name
-
-        # Create settings file as create_settings() would
-        settings: dict[str, Any] = {'model': 'test'}
-        settings_path = claude_dir / f'{primary_cmd}-settings.json'
-        settings_path.write_text(json.dumps(settings, indent=2))
-
-        # Verify settings file is in claude_dir, not in isolated dir
-        assert settings_path.exists()
-        assert settings_path.parent == claude_dir
-
-
-class TestConfigDirInjection:
-    """Test CLAUDE_CONFIG_DIR injection into settings env block."""
-
-    def test_settings_claude_config_dir_injected(
-        self,
-        e2e_isolated_home: dict[str, Path],
-        golden_config: dict[str, Any],
-    ) -> None:
-        """Verify {command_name}-settings.json contains env.CLAUDE_CONFIG_DIR."""
-        paths = _run_isolated_setup(e2e_isolated_home, golden_config)
-        claude_dir = paths.claude_dir
-        primary_cmd = paths.primary_command_name
         artifact_base = paths.artifact_base_dir
-        home = paths.home
+        artifact_base.mkdir(parents=True, exist_ok=True)
+
+        # Create settings file as create_profile_config() would
+        settings: dict[str, Any] = {'model': 'test'}
+        config_path = artifact_base / 'config.json'
+        config_path.write_text(json.dumps(settings, indent=2))
+
+        # Verify config.json is in artifact_base_dir
+        assert config_path.exists()
+        assert config_path.parent == artifact_base
+
+
+class TestConfigDirIsolation:
+    """Test CLAUDE_CONFIG_DIR isolation behavior after Bug 4 deletion.
+
+    CLAUDE_CONFIG_DIR auto-injection into settings was deleted. The launcher
+    export is now the sole source of truth. These tests verify:
+    - CLAUDE_CONFIG_DIR is NOT injected into config.json env section
+    - Hook file paths correctly reference the isolated directory
+    - User-specified env vars (other than CLAUDE_CONFIG_DIR) are preserved
+    """
+
+    def test_settings_claude_config_dir_not_injected(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify config.json does NOT contain env.CLAUDE_CONFIG_DIR.
+
+        After Bug 4 deletion, CLAUDE_CONFIG_DIR is only exported in launcher
+        scripts. It must NOT appear in the config.json env section.
+        """
+        paths = _run_isolated_setup(e2e_isolated_home, golden_config)
+        artifact_base = paths.artifact_base_dir
 
         # Create hooks dir in isolated location
         hooks_dir = artifact_base / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Simulate the CLAUDE_CONFIG_DIR injection logic from main()
-        env_variables: dict[str, str] = golden_config.get('env-variables', {}) or {}
-        if 'CLAUDE_CONFIG_DIR' not in env_variables:
-            home_str = str(home)
-            isolated_str = str(artifact_base)
-            config_dir_value = (
-                str(artifact_base) if sys.platform == 'win32'
-                else ('~' + isolated_str[len(home_str):] if isolated_str.startswith(home_str) else isolated_str)
-            )
-            env_variables['CLAUDE_CONFIG_DIR'] = config_dir_value
+        # Pass env variables WITHOUT CLAUDE_CONFIG_DIR
+        env_variables: dict[str, str] = {'MY_VAR': 'test_value'}
 
-        result = setup_environment.create_settings(
+        result = setup_environment.create_profile_config(
             golden_config.get('hooks', {}),
-            claude_dir,
-            primary_cmd,
+            artifact_base,
             env=env_variables,
             hooks_base_dir=hooks_dir,
         )
 
         assert result is True
 
-        settings_file = claude_dir / f'{primary_cmd}-settings.json'
-        assert settings_file.exists()
+        config_file = artifact_base / 'config.json'
+        assert config_file.exists()
 
-        settings = json.loads(settings_file.read_text())
-        assert 'env' in settings
-        assert 'CLAUDE_CONFIG_DIR' in settings['env']
-
-        config_dir_val = settings['env']['CLAUDE_CONFIG_DIR']
-        # On non-Windows, should be tilde-based
-        if sys.platform != 'win32':
-            assert config_dir_val.startswith('~/')
-            assert primary_cmd in config_dir_val
+        settings = json.loads(config_file.read_text())
+        env_block = settings.get('env', {})
+        assert 'CLAUDE_CONFIG_DIR' not in env_block, (
+            'CLAUDE_CONFIG_DIR should NOT be in config.json env section'
+        )
+        # Other env vars should still be present
+        assert env_block.get('MY_VAR') == 'test_value'
 
     def test_hooks_in_isolated_dir(
         self,
@@ -158,9 +154,8 @@ class TestConfigDirInjection:
     ) -> None:
         """Verify hook file paths in settings point to isolated directory."""
         paths = _run_isolated_setup(e2e_isolated_home, golden_config)
-        claude_dir = paths.claude_dir
-        primary_cmd = paths.primary_command_name
         artifact_base = paths.artifact_base_dir
+        primary_cmd = paths.primary_command_name
 
         hooks_dir = artifact_base / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -174,17 +169,16 @@ class TestConfigDirInjection:
             }],
         }
 
-        result = setup_environment.create_settings(
+        result = setup_environment.create_profile_config(
             hooks_config,
-            claude_dir,
-            primary_cmd,
+            artifact_base,
             hooks_base_dir=hooks_dir,
         )
 
         assert result is True
 
-        settings_file = claude_dir / f'{primary_cmd}-settings.json'
-        settings = json.loads(settings_file.read_text())
+        config_file = artifact_base / 'config.json'
+        settings = json.loads(config_file.read_text())
 
         hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
         # Hook path should reference the isolated hooks directory
@@ -196,24 +190,32 @@ class TestConfigDirInjection:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify user-specified CLAUDE_CONFIG_DIR is preserved in settings."""
+        """Verify user-specified CLAUDE_CONFIG_DIR is NOT written to config.json.
+
+        Even when user provides CLAUDE_CONFIG_DIR in env-variables, it should
+        be popped from the env dict (launcher export is the sole source).
+        """
         paths = _run_isolated_setup(e2e_isolated_home, golden_config)
-        claude_dir = paths.claude_dir
-        primary_cmd = paths.primary_command_name
+        artifact_base = paths.artifact_base_dir
+        artifact_base.mkdir(parents=True, exist_ok=True)
 
-        # User explicitly sets CLAUDE_CONFIG_DIR
-        user_env = {'CLAUDE_CONFIG_DIR': '/custom/user/path'}
+        # User explicitly sets CLAUDE_CONFIG_DIR along with other vars
+        user_env = {
+            'CLAUDE_CONFIG_DIR': '/custom/user/path',
+            'OTHER_VAR': 'keep_this',
+        }
 
-        result = setup_environment.create_settings(
+        result = setup_environment.create_profile_config(
             {},
-            claude_dir,
-            primary_cmd,
+            artifact_base,
             env=user_env,
         )
 
         assert result is True
 
-        settings_file = claude_dir / f'{primary_cmd}-settings.json'
-        settings = json.loads(settings_file.read_text())
+        config_file = artifact_base / 'config.json'
+        settings = json.loads(config_file.read_text())
 
-        assert settings['env']['CLAUDE_CONFIG_DIR'] == '/custom/user/path'
+        env_block = settings.get('env', {})
+        # OTHER_VAR should be present
+        assert env_block.get('OTHER_VAR') == 'keep_this'

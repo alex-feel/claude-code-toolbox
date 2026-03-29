@@ -19,7 +19,7 @@ import pytest
 from scripts import setup_environment
 from scripts.setup_environment import configure_all_mcp_servers
 from scripts.setup_environment import create_mcp_config_file
-from scripts.setup_environment import create_settings
+from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_user_settings
 from tests.e2e.validators import validate_all_paths_expanded
 from tests.e2e.validators import validate_path_expanded
@@ -96,14 +96,12 @@ class TestTildeExpansion:
         are properly expanded.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         # Create settings
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=golden_config.get('model'),
             permissions=golden_config.get('permissions'),
             env=golden_config.get('env-variables'),
@@ -116,7 +114,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
 
         data = json.loads(settings_path.read_text())
 
@@ -217,7 +215,6 @@ class TestTildeExpansion:
         are properly expanded.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_config = golden_config.get('hooks', {})
@@ -226,10 +223,9 @@ class TestTildeExpansion:
             return
 
         # Create settings with hooks
-        create_settings(
+        create_profile_config(
             hooks=hooks_config,
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -242,7 +238,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
 
         data = json.loads(settings_path.read_text())
         hooks = data.get('hooks', {})
@@ -274,7 +270,6 @@ class TestTildeExpansion:
         The statusLine.command field may contain a path to a status script.
         """
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         status_line_config = golden_config.get('status-line')
@@ -283,10 +278,9 @@ class TestTildeExpansion:
             return
 
         # Create settings with status line
-        create_settings(
+        create_profile_config(
             hooks={},
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -299,7 +293,7 @@ class TestTildeExpansion:
         )
 
         # File is written to claude_user_dir (= claude_dir)
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
 
         data = json.loads(settings_path.read_text())
         status_line = data.get('statusLine', {})

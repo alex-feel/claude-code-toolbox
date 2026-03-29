@@ -1,0 +1,5 @@
+name: "Scope Parent Isolated"
+command-names: ["parent-cmd"]
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+user-settings:
+  theme: "dark"

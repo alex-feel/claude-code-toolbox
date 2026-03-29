@@ -925,7 +925,7 @@ class TestMCPServerConfigurationEdgeCases:
 class TestCreateSettingsComplex:
     """Test complex settings creation scenarios."""
 
-    def test_create_settings_with_permissions_merge(self):
+    def test_create_profile_config_with_permissions_merge(self):
         """Test that only explicit permissions are included, no auto-adding."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -936,7 +936,7 @@ class TestCreateSettingsComplex:
                 'ask': ['mcp__server4'],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
                 'test',
@@ -944,7 +944,7 @@ class TestCreateSettingsComplex:
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Only explicitly listed permissions should be present
@@ -954,21 +954,21 @@ class TestCreateSettingsComplex:
             assert 'mcp__server2' not in settings['permissions']['allow']
             assert settings['permissions']['allow'].count('mcp__server1') == 1
 
-    def test_create_settings_mcp_in_deny_list(self):
+    def test_create_profile_config_mcp_in_deny_list(self):
         """Test MCP server in deny list is not auto-allowed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             permissions = {'deny': ['mcp__blocked_server']}
 
-            setup_environment.create_settings(
+            setup_environment.create_profile_config(
                 {},
                 claude_dir,
                 'test',
                 permissions=permissions,
             )
 
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
@@ -977,27 +977,27 @@ class TestCreateSettingsComplex:
                 [],
             )
 
-    def test_create_settings_mcp_in_ask_list(self):
+    def test_create_profile_config_mcp_in_ask_list(self):
         """Test MCP server in ask list is not auto-allowed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             permissions = {'ask': ['mcp__ask_server']}
 
-            setup_environment.create_settings(
+            setup_environment.create_profile_config(
                 {},
                 claude_dir,
                 'test',
                 permissions=permissions,
             )
 
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Should not be in allow list
             assert 'allow' not in settings['permissions'] or 'mcp__ask_server' not in settings['permissions'].get('allow', [])
 
-    def test_create_settings_with_env_variables(self):
+    def test_create_profile_config_with_env_variables(self):
         """Test creating settings with environment variables."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1007,14 +1007,14 @@ class TestCreateSettingsComplex:
                 'DEBUG': 'true',
             }
 
-            setup_environment.create_settings(
+            setup_environment.create_profile_config(
                 {},
                 claude_dir,
                 'test',
                 env=env_vars,
             )
 
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             assert settings['env'] == env_vars
@@ -1022,7 +1022,7 @@ class TestCreateSettingsComplex:
     @patch('setup_environment.download_file')
     @patch('platform.system', return_value='Windows')
     @patch('shutil.which', return_value='py')
-    def test_create_settings_hooks_windows_python(self, mock_which, _mock_system, mock_download):
+    def test_create_profile_config_hooks_windows_python(self, mock_which, _mock_system, mock_download):
         """Test hook configuration with Python scripts on Windows."""
         del mock_which  # Unused but required for patch
         del _mock_system  # Unused but required for patch
@@ -1049,13 +1049,13 @@ class TestCreateSettingsComplex:
                 ],
             }
 
-            setup_environment.create_settings(
+            setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Should use py command on Windows
@@ -1065,7 +1065,7 @@ class TestCreateSettingsComplex:
 
     @patch('setup_environment.handle_resource')
     @patch('platform.system', return_value='Linux')
-    def test_create_settings_hooks_linux(self, _mock_system, mock_download):
+    def test_create_profile_config_hooks_linux(self, _mock_system, mock_download):
         """Test hook configuration on Linux."""
         mock_download.return_value = True
 
@@ -1097,7 +1097,7 @@ class TestCreateSettingsComplex:
             )
 
             # Then create settings
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
@@ -1107,7 +1107,7 @@ class TestCreateSettingsComplex:
             # Note: With uv run, executable permissions are no longer needed
             # The script is executed via: uv run --python 3.12 script.py
 
-    def test_create_settings_hooks_invalid(self):
+    def test_create_profile_config_hooks_invalid(self):
         """Test handling invalid hook configuration."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1121,7 +1121,7 @@ class TestCreateSettingsComplex:
                 ],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
@@ -1130,7 +1130,7 @@ class TestCreateSettingsComplex:
             # Should still succeed but skip invalid hook
             assert result is True
 
-    def test_create_settings_non_python_hook(self):
+    def test_create_profile_config_non_python_hook(self):
         """Test hook configuration with non-Python script."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -1146,30 +1146,30 @@ class TestCreateSettingsComplex:
                 ],
             }
 
-            setup_environment.create_settings(
+            setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Command should be used as-is
             hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
             assert hook_cmd == 'echo "test"'
 
-    def test_create_settings_save_failure(self):
+    def test_create_profile_config_save_failure(self):
         """Test handling save failure."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             # Make directory read-only to cause save failure
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings_file.write_text('dummy')
 
             with patch('builtins.open', side_effect=PermissionError('Cannot write')):
-                result = setup_environment.create_settings(
+                result = setup_environment.create_profile_config(
                     {},
                     claude_dir,
                     'test',
@@ -1187,15 +1187,16 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 None,  # No system prompt
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             # Check shared script doesn't reference prompt
-            shared_script = claude_dir / 'launch-test-env.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
             assert '--append-system-prompt-file' not in content
 
@@ -1205,11 +1206,12 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 'custom-prompt.md',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1222,12 +1224,13 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 'prompt.md',
                 mode='append',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1241,12 +1244,13 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1264,16 +1268,17 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 'prompt.md',
                 mode='append',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             # Check shared script for correct flag
-            shared_script = claude_dir / 'launch-test-env.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
             assert '--append-system-prompt-file' in content
             assert 'exec claude $MCP_FLAGS --append-system-prompt-file' in content
@@ -1284,16 +1289,17 @@ class TestCreateLauncherScriptEdgeCases:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-env',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             # Check shared script for correct flags
-            shared_script = claude_dir / 'launch-test-env.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
             # Replace mode uses conditional logic: both flags are present
             assert '--system-prompt-file' in content  # For new sessions
@@ -1308,10 +1314,11 @@ class TestCreateLauncherScriptEdgeCases:
             claude_dir = Path(tmpdir)
 
             with patch('pathlib.Path.write_text', side_effect=Exception('Write failed')):
-                launcher = setup_environment.create_launcher_script(
+                launcher_result = setup_environment.create_launcher_script(
                     claude_dir,
                     'test-env',
                 )
+                launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is None
 
@@ -1366,7 +1373,7 @@ class TestRegisterGlobalCommandEdgeCases:
             # Verify files were overwritten with new content
             assert 'Global test-cmd command for CMD' in existing_cmd.read_text()
             assert 'Global test-cmd command for PowerShell' in existing_ps1.read_text()
-            assert 'launch-test-cmd.sh' in existing_bash.read_text()
+            assert 'launch.sh' in existing_bash.read_text()
 
     def test_register_global_command_exception(self):
         """Test command registration with exception."""
@@ -1419,7 +1426,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_settings', return_value=True)
+    @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
     @patch('pathlib.Path.mkdir')
     def test_main_no_launcher_created(
@@ -1471,7 +1478,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_settings', return_value=True)
+    @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
     @patch('pathlib.Path.mkdir')
@@ -1498,7 +1505,7 @@ class TestMainFunctionErrorPaths:
         del mock_deps  # Unused but required for patch
         del mock_install  # Unused but required for patch
         mock_load.return_value = ({'name': 'Env Test'}, 'env-config.yaml')
-        mock_launcher.return_value = Path('/tmp/launcher')
+        mock_launcher.return_value = (Path('/tmp/launcher'), Path('/tmp/launcher'))
 
         with (
             patch('sys.argv', ['setup_environment.py', '--yes']),  # No config argument, uses env var
@@ -1519,7 +1526,7 @@ class TestMainFunctionErrorPaths:
         'setup_environment.configure_all_mcp_servers',
         return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}),
     )
-    @patch('setup_environment.create_settings', return_value=True)
+    @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
     @patch('pathlib.Path.mkdir')
@@ -1588,7 +1595,7 @@ class TestMainFunctionErrorPaths:
             'full-test.yaml',
         )
 
-        mock_launcher.return_value = Path('/tmp/launcher')
+        mock_launcher.return_value = (Path('/tmp/launcher'), Path('/tmp/launcher'))
 
         with (
             patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123', '--yes']),
@@ -1693,15 +1700,16 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             assert shared_script.exists()
 
             content = shared_script.read_text()
@@ -1716,15 +1724,16 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='append',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Verify correct argument ordering with append mode (includes MCP flags)
@@ -1737,14 +1746,15 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 None,  # No system prompt
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Verify correct argument ordering without prompt (includes MCP flags)
@@ -1756,12 +1766,13 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1777,12 +1788,13 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='append',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1796,11 +1808,12 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 None,  # No system prompt
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1814,12 +1827,13 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -1839,7 +1853,7 @@ class TestSystemPromptWithUserFlags:
                 'prompt.md',
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Should NOT contain conditional logic for $@
@@ -1856,11 +1870,12 @@ class TestSystemPromptWithUserFlags:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -1894,15 +1909,16 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Verify flag detection logic exists
@@ -1926,7 +1942,7 @@ class TestConditionalSystemPromptLoading:
                 mode='replace',
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Verify conditional branches exist
@@ -1974,7 +1990,7 @@ class TestConditionalSystemPromptLoading:
                 mode='append',
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Verify version-aware flag usage
@@ -2003,12 +2019,13 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2026,12 +2043,13 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2073,12 +2091,13 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='append',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2108,12 +2127,13 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2133,7 +2153,7 @@ class TestConditionalSystemPromptLoading:
                 'prompt.md',
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # All four flag variations should be checked
@@ -2148,11 +2168,12 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2174,7 +2195,7 @@ class TestConditionalSystemPromptLoading:
                 None,  # No system prompt
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Should not have conditional logic when no prompt is configured
@@ -2187,11 +2208,12 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 None,  # No system prompt
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2211,7 +2233,7 @@ class TestConditionalSystemPromptLoading:
                 'prompt.md',
             )
 
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             content = shared_script.read_text()
 
             # Find the continue branch
@@ -2234,11 +2256,12 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2262,11 +2285,12 @@ class TestConditionalSystemPromptLoading:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             content = launcher.read_text()
 
@@ -2528,9 +2552,9 @@ class TestAddDirectoryToWindowsPathLength:
 
 
 class TestHookConfigFileSupport:
-    """Test hook configuration file support in create_settings."""
+    """Test hook configuration file support in create_profile_config."""
 
-    def test_create_settings_hook_with_config(self) -> None:
+    def test_create_profile_config_hook_with_config(self) -> None:
         """Test hook configuration with config file reference."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2559,14 +2583,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify command includes config path
@@ -2575,7 +2599,7 @@ class TestHookConfigFileSupport:
             assert 'protect_config.yaml' in hook_cmd
             assert hook_cmd.endswith('protect_config.yaml')
 
-    def test_create_settings_hook_without_config_backward_compat(self) -> None:
+    def test_create_profile_config_hook_without_config_backward_compat(self) -> None:
         """Test that hooks without config field still work (backward compatibility)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2598,14 +2622,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify command does NOT include config path
@@ -2614,7 +2638,7 @@ class TestHookConfigFileSupport:
             # Command should end with the Python file, not a config
             assert hook_cmd.endswith('test.py')
 
-    def test_create_settings_hook_config_with_query_params(self) -> None:
+    def test_create_profile_config_hook_config_with_query_params(self) -> None:
         """Test hook config with query parameters in filename."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2642,14 +2666,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Verify query params are stripped from config path
@@ -2657,7 +2681,7 @@ class TestHookConfigFileSupport:
             assert 'config.yaml' in hook_cmd
             assert '?token=' not in hook_cmd
 
-    def test_create_settings_non_python_hook_with_config(self) -> None:
+    def test_create_profile_config_non_python_hook_with_config(self) -> None:
         """Test non-Python hook with config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
@@ -2682,14 +2706,14 @@ class TestHookConfigFileSupport:
                 ],
             }
 
-            result = setup_environment.create_settings(
+            result = setup_environment.create_profile_config(
                 hooks,
                 claude_dir,
                 'test',
             )
 
             assert result is True
-            settings_file = claude_dir / 'test-settings.json'
+            settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
             # Non-Python scripts should also get config appended
@@ -2704,7 +2728,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_single_server(self) -> None:
         """Test creating MCP config file with a single server."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {
@@ -2736,7 +2760,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_multiple_servers(self) -> None:
         """Test creating MCP config file with multiple servers."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {
@@ -2768,7 +2792,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_with_env(self) -> None:
         """Test creating MCP config file with environment variables."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {
@@ -2789,7 +2813,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_with_env_string(self) -> None:
         """Test creating MCP config file with single env string."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {
@@ -2808,7 +2832,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_with_header(self) -> None:
         """Test creating MCP config file with HTTP headers."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {
@@ -2829,7 +2853,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_empty_list(self) -> None:
         """Test creating MCP config file with empty server list."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             result = setup_environment.create_mcp_config_file([], config_path)
 
@@ -2839,7 +2863,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_missing_name(self) -> None:
         """Test handling server with missing name."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
 
             servers = [
                 {'command': 'uvx test'},  # Missing 'name'
@@ -2855,7 +2879,7 @@ class TestMCPProfileScope:
     def test_create_mcp_config_file_permission_error(self) -> None:
         """Test handling permission error when creating config file."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'subdir' / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'subdir' / 'mcp.json'
 
             servers = [{'name': 'test', 'command': 'test'}]
 
@@ -2926,7 +2950,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -2960,7 +2984,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3023,7 +3047,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3071,7 +3095,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3113,7 +3137,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3170,7 +3194,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3202,20 +3226,21 @@ class TestMCPProfileScope:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
                 has_profile_mcp_servers=True,
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
 
             # Verify MCP config logic is present
             assert 'MCP_CONFIG_PATH=' in content
-            assert 'test-cmd-mcp.json' in content
+            assert 'mcp.json' in content
             assert 'MCP_FLAGS=""' in content
             assert '--strict-mcp-config' in content
             assert '--mcp-config' in content
@@ -3227,23 +3252,24 @@ class TestMCPProfileScope:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
                 has_profile_mcp_servers=True,
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
-            shared_script = claude_dir / 'launch-test-cmd.sh'
+            shared_script = claude_dir / 'launch.sh'
             assert shared_script.exists()
 
             content = shared_script.read_text()
 
             # Verify MCP config logic in shared script
             assert 'MCP_CONFIG_PATH=' in content
-            assert 'test-cmd-mcp.json' in content
+            assert 'mcp.json' in content
             assert '--strict-mcp-config' in content
             assert '--mcp-config' in content
 
@@ -3253,13 +3279,14 @@ class TestMCPProfileScope:
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            launcher = setup_environment.create_launcher_script(
+            launcher_result = setup_environment.create_launcher_script(
                 claude_dir,
                 'test-cmd',
                 'prompt.md',
                 mode='replace',
                 has_profile_mcp_servers=False,
             )
+            launcher = launcher_result[0] if launcher_result else None
 
             assert launcher is not None
             content = launcher.read_text()
@@ -3305,7 +3332,7 @@ class TestMCPProfileScope:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3325,7 +3352,7 @@ class TestMCPProfileScope:
     def test_stale_mcp_config_file_removed_when_no_profile_servers(self) -> None:
         """Test that stale MCP config file is removed when no profile servers exist."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
             # Create a stale MCP config file
             config_path.write_text('{"mcpServers": {"stale-server": {}}}')
             assert config_path.exists()
@@ -3363,7 +3390,7 @@ class TestMCPProfileScope:
     def test_stale_mcp_config_removal_failure_logged_as_warning(self) -> None:
         """Test that stale MCP config removal failure is logged as warning, not error."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
             # Create a stale MCP config file
             config_path.write_text('{"mcpServers": {"stale-server": {}}}')
 
@@ -3614,7 +3641,7 @@ class TestCombinedScopeSupport:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3659,7 +3686,7 @@ class TestCombinedScopeSupport:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3694,7 +3721,7 @@ class TestCombinedScopeSupport:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -3732,7 +3759,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 setup_environment.configure_all_mcp_servers(servers, profile_config)
 
             # Warning should have been logged during normalize_scope
@@ -3762,7 +3789,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3789,7 +3816,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3811,7 +3838,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3833,7 +3860,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3862,7 +3889,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3889,7 +3916,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3916,7 +3943,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3944,7 +3971,7 @@ class TestCombinedScopeSupport:
             ]
 
             with tempfile.TemporaryDirectory() as tmpdir:
-                profile_config = Path(tmpdir) / 'test-mcp.json'
+                profile_config = Path(tmpdir) / 'mcp.json'
                 success_flag, profile_servers, _ = setup_environment.configure_all_mcp_servers(
                     servers, profile_config,
                 )
@@ -3958,7 +3985,7 @@ class TestCombinedScopeSupport:
         with (
             patch('setup_environment.configure_mcp_server', return_value=True), tempfile.TemporaryDirectory() as tmpdir,
         ):
-            config_path = Path(tmpdir) / 'test-mcp.json'
+            config_path = Path(tmpdir) / 'mcp.json'
             # Create a stale MCP config file
             config_path.write_text('{"mcpServers": {"stale-server": {}}}')
             assert config_path.exists()
@@ -4235,7 +4262,7 @@ class TestConfigureAllMcpServersStats:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -4271,7 +4298,7 @@ class TestConfigureAllMcpServersStats:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -4307,7 +4334,7 @@ class TestConfigureAllMcpServersStats:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,
@@ -4342,7 +4369,7 @@ class TestConfigureAllMcpServersStats:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            profile_config = Path(tmpdir) / 'test-mcp.json'
+            profile_config = Path(tmpdir) / 'mcp.json'
 
             success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                 servers,

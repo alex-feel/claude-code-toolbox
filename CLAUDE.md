@@ -76,6 +76,19 @@ Writes to `~/.claude.json`. Merge: `deep_merge_settings()` with `array_union_key
 
 **Null-as-delete (RFC 7396):** `null` values in `user-settings`/`global-config` delete the key from the target JSON. `_merge_recursive()` handles via `target.pop(key, None)`. Null in arrays is NOT deletion. Bare YAML keys (`key:` with no value) also trigger deletion -- use `key: ""` for empty strings. Dry-run shows `[DELETE]` markers in RED.
 
+### Two-File Architecture for Command Environments
+
+When `command-names` is specified, the setup creates an isolated directory `~/.claude/{cmd}/` containing two configuration files loaded by Claude Code at different priority levels:
+
+| File             | Priority         | Content                                                                                        | Write Mechanism                                |
+|------------------|------------------|------------------------------------------------------------------------------------------------|------------------------------------------------|
+| `settings.json`  | 5 (userSettings) | YAML `user-settings`                                                                           | Deep merge via `write_user_settings()`         |
+| `config.json`    | 2 (flagSettings) | Hooks, env vars, permissions, model, MCP permissions, statusLine, attribution, effortLevel     | Atomic write via `create_profile_config()`     |
+
+Scope-based routing: `command-names` presence in the final resolved config determines the SINGLE write target for `write_user_settings()`. Present: `~/.claude/{cmd}/settings.json`. Absent: `~/.claude/settings.json`. Never dual-write.
+
+The launcher (`launch.sh`) passes `config.json` via `--settings` flag and sets `export CLAUDE_CONFIG_DIR` to the isolated directory.
+
 ### Platform-Conditional Tilde Expansion in Settings
 
 `_expand_tilde_keys_in_settings()` handles tilde (`~`) paths in settings keys defined in `TILDE_EXPANSION_KEYS` (`apiKeyHelper`, `awsCredentialExport`):
@@ -87,7 +100,7 @@ Preserved on non-Windows to avoid WSL HOME contamination (`os.path.expanduser('~
 
 ### Cross-Shell Command Registration (Windows)
 
-Global commands (e.g., `claude-python`) work across all Windows shells: shared POSIX script (`~/.claude/launch-{command}.sh`) + wrappers for PowerShell (`.ps1`), CMD (`.cmd`), and Git Bash in `~/.local/bin/`.
+Global commands (e.g., `claude-python`) work across all Windows shells: shared POSIX launcher (`~/.claude/{command}/launch.sh`) + wrappers for PowerShell (`start.ps1`), CMD (`start.cmd`) in the same directory, and global entry points in `~/.local/bin/`.
 
 ### Validation Models
 
@@ -172,7 +185,7 @@ Conventional Commits enforced by commitizen: `feat:` (minor bump), `fix:` (patch
 
 ### MCP Server Permissions
 
-MCP servers are automatically pre-allowed in `settings.json` via `permissions.allow: ["mcp__servername"]`.
+MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servername"]` in the profile configuration (`config.json`).
 
 ### Environment Variables for Debugging
 

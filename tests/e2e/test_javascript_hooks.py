@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from scripts.setup_environment import create_settings
+from scripts.setup_environment import create_profile_config
 
 
 class TestJavaScriptHooks:
@@ -23,17 +23,15 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify .js hook commands have 'node' prefix."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         # Create hooks directory
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -45,7 +43,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         # Find .js hook and verify node prefix
@@ -72,16 +70,14 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify .mjs ES module hook commands have 'node' prefix."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -93,7 +89,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -115,16 +111,14 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify .cjs CommonJS hook commands have 'node' prefix."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -136,7 +130,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -158,16 +152,14 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify JavaScript hooks with config files have correct format."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -179,7 +171,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []
@@ -213,16 +205,14 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify Python and JavaScript hooks can coexist with correct prefixes."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -234,7 +224,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         python_hooks_found = 0
@@ -269,16 +259,14 @@ class TestJavaScriptHooks:
     ) -> None:
         """Verify JavaScript hooks do NOT have cmd /c wrapper (node.exe is binary)."""
         paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
 
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_settings(
+        create_profile_config(
             hooks=golden_config.get('hooks', {}),
-            claude_user_dir=claude_dir,
-            command_name=cmd,
+            config_base_dir=claude_dir,
             model=None,
             permissions=None,
             env=None,
@@ -290,7 +278,7 @@ class TestJavaScriptHooks:
             effort_level=None,
         )
 
-        settings_path = claude_dir / f'{cmd}-settings.json'
+        settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
 
         errors: list[str] = []

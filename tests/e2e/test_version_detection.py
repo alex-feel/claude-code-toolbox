@@ -152,20 +152,21 @@ class TestLauncherVersionDetection:
         prompt_file = _create_test_prompt(claude_dir)
 
         # Create launcher script with system prompt
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=prompt_file,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None, 'create_launcher_script returned None'
         assert launcher_path.exists(), f'Launcher script not created: {launcher_path}'
 
         # On Windows, check the shared POSIX script which contains version detection
         if sys.platform == 'win32':
-            posix_script = claude_dir / f'launch-{cmd}.sh'
+            posix_script = claude_dir / 'launch.sh'
             assert posix_script.exists(), f'Shared POSIX script not found: {posix_script}'
             content = posix_script.read_text(encoding='utf-8')
             script_name = posix_script.name
@@ -197,20 +198,21 @@ class TestLauncherVersionDetection:
         # Create system prompt file (required for version detection to be included)
         prompt_file = _create_test_prompt(claude_dir)
 
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=prompt_file,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None
 
         # On Windows, the version function is in the shared POSIX script
         if sys.platform == 'win32':
             # The shared script is at ~/.claude/launch-{cmd}.sh
-            posix_script = claude_dir / f'launch-{cmd}.sh'
+            posix_script = claude_dir / 'launch.sh'
             assert posix_script.exists(), f'Shared POSIX script not found: {posix_script}'
             content = posix_script.read_text(encoding='utf-8')
             script_name = posix_script.name
@@ -243,19 +245,20 @@ class TestLauncherVersionDetection:
         # Create system prompt file (required for version detection to be included)
         prompt_file = _create_test_prompt(claude_dir)
 
-        launcher_path = create_launcher_script(
-            claude_user_dir=claude_dir,
+        launcher_path_result = create_launcher_script(
+            config_base_dir=claude_dir,
             command_name=cmd,
             system_prompt_file=prompt_file,
             mode='replace',
             has_profile_mcp_servers=False,
         )
+        launcher_path = launcher_path_result[0] if launcher_path_result else None
 
         assert launcher_path is not None
 
         # On Windows, check the shared POSIX script which contains version detection
         if sys.platform == 'win32':
-            posix_script = claude_dir / f'launch-{cmd}.sh'
+            posix_script = claude_dir / 'launch.sh'
             assert posix_script.exists(), f'Shared POSIX script not found: {posix_script}'
             content = posix_script.read_text(encoding='utf-8')
             script_name = posix_script.name

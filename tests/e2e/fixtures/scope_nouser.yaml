@@ -1,0 +1,4 @@
+name: "Scope No User Settings"
+command-names: ["nousercmd"]
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+model: "sonnet"
