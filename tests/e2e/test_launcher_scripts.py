@@ -246,11 +246,7 @@ class TestLauncherScriptsPlatformAgnostic:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify launcher script references the settings file.
-
-        The launcher should reference {cmd}-settings.json
-        to load environment-specific configuration.
-        """
+        """Verify launcher script references the settings file via --settings flag."""
         paths = e2e_isolated_home
         cmd = golden_config['command-names'][0]
         claude_dir = paths['claude_dir']
@@ -269,22 +265,19 @@ class TestLauncherScriptsPlatformAgnostic:
         assert launcher_path.exists(), f'Launcher script not created: {launcher_path}'
 
         content = launcher_path.read_text(encoding='utf-8')
-        settings_pattern = f'{cmd}-settings.json'
 
-        # Note: On Windows, the launcher .sh file may not directly reference
-        # settings if it's using a different invocation path
         if sys.platform == 'win32':
             # On Windows, check for settings reference OR claude invocation
-            has_settings_ref = settings_pattern in content or '--settings' in content
+            has_settings_ref = '--settings' in content
             has_claude_ref = 'claude' in content.lower()
             assert has_settings_ref or has_claude_ref, (
-                f'Launcher script {launcher_path.name} missing settings reference '
+                f'Launcher script {launcher_path.name} missing --settings reference '
                 f'or claude invocation'
             )
         else:
-            # On Unix, the launcher should directly reference the settings file
-            assert settings_pattern in content or '--settings' in content, (
-                f'Launcher script {launcher_path.name} missing reference to {settings_pattern}'
+            # On Unix, the launcher should reference --settings flag
+            assert '--settings' in content, (
+                f'Launcher script {launcher_path.name} missing --settings flag reference'
             )
 
     def test_launcher_script_format(

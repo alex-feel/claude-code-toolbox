@@ -295,7 +295,7 @@ def _validate_mcp_server_config(name: str, server: dict[str, Any]) -> list[str]:
 
 
 def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
-    """Validate {cmd}-settings.json.
+    """Validate profile configuration (config.json).
 
     Validates the environment-specific settings file that is loaded via --settings flag.
     Contains: model, permissions, env, hooks, attribution, statusLine, etc.
@@ -688,8 +688,8 @@ def validate_launcher_script(
 
     Validates the launcher scripts created for starting Claude Code with the environment.
     Different scripts are created per platform:
-    - Unix (Linux/macOS): start-{cmd}.sh or launcher script in ~/.local/bin/{cmd}
-    - Windows: launch-{cmd}.sh (shared POSIX), {cmd}.ps1, {cmd}.cmd, {cmd} (Git Bash)
+    - Unix (Linux/macOS): launch.sh in ~/.claude/{cmd}/
+    - Windows: launch.sh (shared POSIX), {cmd}.ps1, {cmd}.cmd, {cmd} (Git Bash)
 
     Args:
         path: Path to the launcher script
@@ -734,7 +734,7 @@ def _validate_windows_launcher(path: Path, content: str, command_name: str) -> l
         if '& ' not in content and 'Invoke-Expression' not in content:
             errors.append(f'PowerShell wrapper {path.name} lacks invocation (& or Invoke-Expression)')
         # Should reference the launcher script
-        if f'launch-{command_name}.sh' not in content and command_name not in content:
+        if 'launch.sh' not in content and command_name not in content:
             errors.append(f'PowerShell wrapper {path.name} missing reference to launcher or command')
 
     elif suffix == '.cmd':
@@ -746,7 +746,7 @@ def _validate_windows_launcher(path: Path, content: str, command_name: str) -> l
             errors.append(f'CMD wrapper {path.name} missing bash invocation')
 
     elif suffix == '.sh' or suffix == '':
-        # Shared POSIX script (launch-{cmd}.sh) or Git Bash wrapper
+        # Shared POSIX script (launch.sh) or Git Bash wrapper
         if not content.strip().startswith('#!'):
             errors.append(f'Script {path.name} missing shebang')
         if 'claude' not in content.lower():
@@ -756,7 +756,7 @@ def _validate_windows_launcher(path: Path, content: str, command_name: str) -> l
 
 
 def _validate_unix_launcher(path: Path, content: str, command_name: str) -> list[str]:
-    """Validate Unix launcher script.
+    """Validate Unix launcher script (launch.sh in ~/.claude/{cmd}/).
 
     Args:
         path: Path to the launcher script
@@ -776,10 +776,9 @@ def _validate_unix_launcher(path: Path, content: str, command_name: str) -> list
     if 'claude' not in content.lower():
         errors.append(f'Unix launcher {path.name} missing claude invocation')
 
-    # Should reference the settings file
-    settings_pattern = f'{command_name}-settings.json'
-    if settings_pattern not in content:
-        errors.append(f'Unix launcher {path.name} missing reference to {settings_pattern}')
+    # Should reference the settings file via --settings flag
+    if '--settings' not in content:
+        errors.append(f'Unix launcher {path.name} for {command_name} missing --settings flag reference')
 
     return errors
 
