@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.4.0...v5.4.1) (2026-03-29)
+
+
+### Bug Fixes
+
+* reorganize isolated environment artifacts into dedicated directories ([b697b2a](https://github.com/alex-feel/claude-code-toolbox/commit/b697b2a75ec11c202976a1e4ecbdecba45c07c65))
+
 ## [5.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.3.0...v5.4.0) (2026-03-28)
 
 
