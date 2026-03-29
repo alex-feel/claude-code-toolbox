@@ -7014,6 +7014,7 @@ def create_profile_config(
     # Save settings (always overwrite)
     settings_path = config_base_dir / 'config.json'
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         with open(settings_path, 'w') as f:
             json.dump(settings, f, indent=2)
         success('Created config.json')
@@ -7063,6 +7064,7 @@ def write_manifest(
     }
 
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         with open(manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2)
         success('Created manifest.json')
@@ -7154,6 +7156,7 @@ def create_launcher_script(
     shared_sh: Path | None = None
 
     try:
+        config_base_dir.mkdir(parents=True, exist_ok=True)
         if system == 'Windows':
             # Create PowerShell wrapper for Windows
             launcher_path = config_base_dir / 'start.ps1'
@@ -8274,15 +8277,17 @@ def main() -> None:
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
 
-        # Step 2: Create directories
+        # Step 2: Create base configuration directory
         print()
-        print(f'{Colors.CYAN}Step 2: Creating configuration directories...{Colors.NC}')
-        # Always create standard claude_user_dir first
+        print(f'{Colors.CYAN}Step 2: Creating base configuration directory...{Colors.NC}')
         claude_user_dir.mkdir(parents=True, exist_ok=True)
-        # Create artifact directories (may be under isolated path when artifact_base_dir != claude_user_dir)
-        for dir_path in [agents_dir, commands_dir, rules_dir, prompts_dir, hooks_dir, skills_dir]:
-            dir_path.mkdir(parents=True, exist_ok=True)
-            success(f'Created: {dir_path}')
+        success(f'Created: {claude_user_dir}')
+        if artifact_base_dir != claude_user_dir:
+            artifact_base_dir.mkdir(parents=True, exist_ok=True)
+            success(f'Created: {artifact_base_dir}')
+        # Subdirectories (agents, commands, rules, prompts, hooks, skills)
+        # are created on-demand by their respective processing functions
+        # only when files are actually placed into them.
 
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
