@@ -1560,7 +1560,7 @@ class TestMainFunctionErrorPaths:
                 'base-url': 'https://example.com/base/{path}',
                 'model': 'claude-3-opus',
                 'permissions': {
-                    'defaultMode': 'ask',
+                    'default-mode': 'ask',
                     'allow': ['tool__*'],
                     'deny': ['mcp__dangerous'],
                     'ask': ['mcp__sensitive'],

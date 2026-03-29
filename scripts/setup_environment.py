@@ -4012,8 +4012,8 @@ def display_installation_summary(
         settings_items.append(f'System prompt: {plan.system_prompt_mode}')
     if plan.permissions:
         perm_parts: list[str] = []
-        if 'defaultMode' in plan.permissions:
-            perm_parts.append(f"defaultMode={plan.permissions['defaultMode']}")
+        if 'default-mode' in plan.permissions:
+            perm_parts.append(f"default-mode={plan.permissions['default-mode']}")
         if 'allow' in plan.permissions:
             perm_parts.append(f"{len(plan.permissions['allow'])} allow")
         if 'deny' in plan.permissions:
@@ -6858,7 +6858,7 @@ def _apply_common_hook_fields(
 ) -> None:
     """Apply common hook fields to the hook configuration dict.
 
-    Passes through common fields (if, statusMessage, once, timeout) from
+    Passes through common fields (if, status-message, once, timeout) from
     the YAML hook event configuration to the output settings.json hook dict.
     Fields with None/missing values are skipped.
 
@@ -6868,8 +6868,8 @@ def _apply_common_hook_fields(
     """
     if hook.get('if') is not None:
         hook_config['if'] = hook['if']
-    if hook.get('statusMessage') is not None:
-        hook_config['statusMessage'] = hook['statusMessage']
+    if hook.get('status-message') is not None:
+        hook_config['statusMessage'] = hook['status-message']
     if hook.get('once') is not None:
         hook_config['once'] = hook['once']
     if hook.get('timeout') is not None:
@@ -6937,6 +6937,11 @@ def create_profile_config(
     # Use permissions from env config if provided
     if permissions:
         final_permissions = permissions.copy()
+        # Translate kebab-case YAML keys to camelCase JSON keys
+        if 'default-mode' in final_permissions:
+            final_permissions['defaultMode'] = final_permissions.pop('default-mode')
+        if 'additional-directories' in final_permissions:
+            final_permissions['additionalDirectories'] = final_permissions.pop('additional-directories')
         info('Using permissions from environment configuration')
 
     # Add permissions to settings if we have any
@@ -7179,8 +7184,8 @@ def create_profile_config(
             }
             if hook.get('headers') is not None:
                 hook_config['headers'] = hook['headers']
-            if hook.get('allowedEnvVars') is not None:
-                hook_config['allowedEnvVars'] = hook['allowedEnvVars']
+            if hook.get('allowed-env-vars') is not None:
+                hook_config['allowedEnvVars'] = hook['allowed-env-vars']
 
         elif hook_type == 'prompt':
             # Prompt hooks: pass-through for prompt and model
@@ -8822,8 +8827,8 @@ def main() -> None:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
         if permissions:
             perm_items: list[str] = []
-            if 'defaultMode' in permissions:
-                perm_items.append(f"defaultMode={permissions['defaultMode']}")
+            if 'default-mode' in permissions:
+                perm_items.append(f"default-mode={permissions['default-mode']}")
             if 'allow' in permissions:
                 perm_items.append(f"{len(permissions['allow'])} allow rules")
             if 'deny' in permissions:

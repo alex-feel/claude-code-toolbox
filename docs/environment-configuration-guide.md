@@ -170,6 +170,12 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 
 All configuration keys use **kebab-case** (hyphenated lowercase), for example `mcp-servers`, `effort-level`, `files-to-download`. Using underscores (`effort_level`, `mcp_servers`) will cause the key to be flagged as unknown during installation.
 
+**Sub-key naming conventions:**
+
+- **Top-level keys** (`hooks`, `permissions`, `mcp-servers`, etc.): MUST be kebab-case (validated by `KNOWN_CONFIG_KEYS`)
+- **Sub-keys in structured sections** (`hooks.events[]`, `permissions`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
+- **Sub-keys in free-form sections** (`user-settings`, `global-config`): MUST match Claude Code's native camelCase (pass-through, no translation)
+
 > **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `effort_level` and `effort-level`. However, the runtime setup script (`setup_environment.py`) uses `config.get('effort-level')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
 
 ## Configuration Keys
@@ -601,17 +607,17 @@ Permission rules controlling which tools and actions are allowed, denied, or req
 - **Default:** `None`
 - **Inheritance:** Standard override (child replaces parent). Note: MCP server permissions are automatically added during setup regardless of inheritance.
 - **Fields:**
-  - `defaultMode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
+  - `default-mode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
   - `allow` -- List of explicitly allowed actions
   - `deny` -- List of explicitly denied actions
   - `ask` -- List of actions requiring confirmation
-  - `additionalDirectories` -- List of additional directory paths
+  - `additional-directories` -- List of additional directory paths
 - **Note:** MCP server permissions (for example, `mcp__servername`) are automatically merged into the `allow` list
 - **Example:**
 
 ```yaml
 permissions:
-  defaultMode: "default"
+  default-mode: "default"
   allow:
     - "Read"
     - "Glob"
@@ -621,7 +627,7 @@ permissions:
   ask:
     - "Edit"
     - "Write"
-  additionalDirectories:
+  additional-directories:
     - "/opt/project-data"
 ```
 
@@ -824,15 +830,15 @@ Event-driven hooks that run automatically during Claude Code sessions. Four hook
 
 These fields apply to all four hook types:
 
-| Field           | YAML Key        | Type   | Required | Description                                                                                          |
-|-----------------|-----------------|--------|----------|------------------------------------------------------------------------------------------------------|
-| `event`         | `event`         | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                                |
-| `matcher`       | `matcher`       | `str`  | No       | Regex pattern for matching (default: `""`)                                                           |
-| `type`          | `type`          | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                              |
-| `if`            | `if`            | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)                         |
-| `statusMessage` | `statusMessage` | `str`  | No       | Custom spinner message displayed while the hook runs                                                 |
-| `once`          | `once`          | `bool` | No       | If true, runs only once per session then is removed (skills only)                                    |
-| `timeout`       | `timeout`       | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)             |
+| Field            | YAML Key         | Type   | Required | Description                                                                              |
+|------------------|------------------|--------|----------|------------------------------------------------------------------------------------------|
+| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                    |
+| `matcher`        | `matcher`        | `str`  | No       | Regex pattern for matching (default: `""`)                                               |
+| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                  |
+| `if`             | `if`             | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)             |
+| `status-message` | `status-message` | `str`  | No       | Custom spinner message displayed while the hook runs                                     |
+| `once`           | `once`           | `bool` | No       | If true, runs only once per session then is removed (skills only)                        |
+| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent) |
 
 #### Type-Specific Fields
 
@@ -847,11 +853,11 @@ These fields apply to all four hook types:
 
 ##### HTTP Hook Fields
 
-| Field            | YAML Key         | Type            | Required | Description                                                               |
-|------------------|------------------|-----------------|----------|---------------------------------------------------------------------------|
-| `url`            | `url`            | `str`           | Yes      | URL to send the HTTP POST request to                                      |
-| `headers`        | `headers`        | `dict[str,str]` | No       | Additional HTTP headers. Values support `$VAR_NAME` env var interpolation |
-| `allowedEnvVars` | `allowedEnvVars` | `list[str]`     | No       | Environment variable names permitted for interpolation into header values |
+| Field              | YAML Key           | Type            | Required | Description                                                               |
+|--------------------|--------------------|-----------------|----------|---------------------------------------------------------------------------|
+| `url`              | `url`              | `str`           | Yes      | URL to send the HTTP POST request to                                      |
+| `headers`          | `headers`          | `dict[str,str]` | No       | Additional HTTP headers. Values support `$VAR_NAME` env var interpolation |
+| `allowed-env-vars` | `allowed-env-vars` | `list[str]`     | No       | Environment variable names permitted for interpolation into header values |
 
 ##### Prompt and Agent Hook Fields
 
@@ -864,21 +870,21 @@ These fields apply to all four hook types:
 
 Complete required/forbidden field matrix across all hook types:
 
-| Field            | `command` | `http`    | `prompt`  | `agent`   |
-|------------------|-----------|-----------|-----------|-----------|
-| `command`        | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `config`         | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `async`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `shell`          | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `url`            | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
-| `headers`        | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `allowedEnvVars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `prompt`         | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
-| `model`          | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
-| `if`             | Optional  | Optional  | Optional  | Optional  |
-| `statusMessage`  | Optional  | Optional  | Optional  | Optional  |
-| `once`           | Optional  | Optional  | Optional  | Optional  |
-| `timeout`        | Optional  | Optional  | Optional  | Optional  |
+| Field              | `command` | `http`    | `prompt`  | `agent`   |
+|--------------------|-----------|-----------|-----------|-----------|
+| `command`          | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `config`           | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `async`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `shell`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+| `url`              | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
+| `headers`          | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `allowed-env-vars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+| `prompt`           | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
+| `model`            | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
+| `if`               | Optional  | Optional  | Optional  | Optional  |
+| `status-message`   | Optional  | Optional  | Optional  | Optional  |
+| `once`             | Optional  | Optional  | Optional  | Optional  |
+| `timeout`          | Optional  | Optional  | Optional  | Optional  |
 
 Setting a field marked FORBIDDEN on a hook type produces a validation error.
 
@@ -904,7 +910,7 @@ hooks:
       command: "linter.py"
       async: true
       shell: "bash"
-      statusMessage: "Running notification handler..."
+      status-message: "Running notification handler..."
 ```
 
 #### HTTP Hooks
@@ -921,10 +927,10 @@ hooks:
       headers:
         Authorization: "Bearer $MY_TOKEN"
         Content-Type: "application/json"
-      allowedEnvVars:
+      allowed-env-vars:
         - "MY_TOKEN"
       timeout: 15
-      statusMessage: "Sending webhook notification..."
+      status-message: "Sending webhook notification..."
 ```
 
 #### Prompt Hooks
@@ -980,12 +986,12 @@ For command hooks:
 
 The setup script processes hooks differently based on type:
 
-| Hook Type | File Processing                                                | Pass-Through Fields                                |
-|-----------|----------------------------------------------------------------|----------------------------------------------------|
-| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                   |
-| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowedEnvVars` + common fields |
-| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
-| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                  |
+| Hook Type | File Processing                                                | Pass-Through Fields                                    |
+|-----------|----------------------------------------------------------------|--------------------------------------------------------|
+| `command` | Yes (Python via `uv run`, JavaScript via `node`, other as-is)  | `async`, `shell` + common fields                       |
+| `http`    | No (pure pass-through)                                         | `url`, `headers`, `allowed-env-vars` + common fields   |
+| `prompt`  | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
+| `agent`   | No (pure pass-through)                                         | `prompt`, `model` + common fields                      |
 
 #### Complete Hooks Example
 
@@ -1008,7 +1014,7 @@ hooks:
       command: "security-check.js"
       async: true
       shell: "bash"
-      statusMessage: "Running security check..."
+      status-message: "Running security check..."
     # HTTP webhook
     - event: "PostToolUse"
       matcher: "Write"
@@ -1016,7 +1022,7 @@ hooks:
       url: "http://localhost:8080/hooks/write"
       headers:
         Authorization: "Bearer $API_TOKEN"
-      allowedEnvVars:
+      allowed-env-vars:
         - "API_TOKEN"
       timeout: 15
     # Prompt hook for safety check
@@ -1373,7 +1379,7 @@ always-thinking-enabled: true
 
 # Permissions
 permissions:
-  defaultMode: "default"
+  default-mode: "default"
   allow:
     - "Read"
     - "Glob"

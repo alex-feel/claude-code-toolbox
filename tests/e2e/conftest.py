@@ -158,7 +158,7 @@ def golden_config() -> dict[str, Any]:
     - hooks: Files and events configuration
     - mcp-servers: All transport types (http, sse, stdio)
     - model: Model configuration
-    - permissions: defaultMode, allow, deny, ask lists
+    - permissions: default-mode, allow, deny, ask lists
     - env-variables: Environment variables for Claude
     - os-env-variables: OS-level environment variables
     - command-defaults: System prompt and mode

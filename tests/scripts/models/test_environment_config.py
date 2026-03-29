@@ -400,7 +400,7 @@ class TestHookEventAllTypes:
             'type': 'http',
             'url': 'https://example.com/webhook',
             'headers': {'Authorization': 'Bearer $MY_TOKEN', 'Content-Type': 'application/json'},
-            'allowedEnvVars': ['MY_TOKEN'],
+            'allowed-env-vars': ['MY_TOKEN'],
         })
         assert event.headers == {'Authorization': 'Bearer $MY_TOKEN', 'Content-Type': 'application/json'}
         assert event.allowed_env_vars == ['MY_TOKEN']
@@ -467,13 +467,13 @@ class TestHookEventAllTypes:
         assert event.if_condition == 'Bash(git *)'
 
     def test_hook_with_status_message_alias(self) -> None:
-        """The 'statusMessage' alias maps to status_message field."""
+        """The 'status-message' alias maps to status_message field."""
         from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'type': 'command',
             'command': 'check.py',
-            'statusMessage': 'Running check...',
+            'status-message': 'Running check...',
         })
         assert event.status_message == 'Running check...'
 
@@ -489,13 +489,13 @@ class TestHookEventAllTypes:
         assert event.async_execution is True
 
     def test_hook_with_allowed_env_vars_alias(self) -> None:
-        """The 'allowedEnvVars' alias maps to allowed_env_vars field."""
+        """The 'allowed-env-vars' alias maps to allowed_env_vars field."""
         from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PostToolUse',
             'type': 'http',
             'url': 'https://example.com/hook',
-            'allowedEnvVars': ['TOKEN', 'SECRET'],
+            'allowed-env-vars': ['TOKEN', 'SECRET'],
         })
         assert event.allowed_env_vars == ['TOKEN', 'SECRET']
 
@@ -511,9 +511,9 @@ class TestHookEventAllTypes:
         assert event.once is True
 
     def test_common_fields_on_all_types(self) -> None:
-        """Common fields (if, statusMessage, once, timeout) work on all types."""
+        """Common fields (if, status-message, once, timeout) work on all types."""
         from scripts.models.environment_config import HookEvent
-        common = {'if': 'Bash(*)', 'statusMessage': 'Working...', 'once': True, 'timeout': 30}
+        common = {'if': 'Bash(*)', 'status-message': 'Working...', 'once': True, 'timeout': 30}
 
         for hook_data in [
             {'event': 'E', 'type': 'command', 'command': 'c.py', **common},

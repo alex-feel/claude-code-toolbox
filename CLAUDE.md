@@ -226,7 +226,7 @@ Hooks support four types matching the official Claude Code hooks specification:
 | `prompt`  | `prompt`       | Single-turn LLM evaluation (no tool access)        |
 | `agent`   | `prompt`       | Spawns a subagent with tool access for evaluation  |
 
-Common fields available on all types: `if`, `statusMessage`, `once`, `timeout`.
+Common fields available on all types: `if`, `status-message`, `once`, `timeout`.
 
 Only `command` hooks reference files from `hooks.files`. Other types are pure pass-through. `_apply_common_hook_fields()` applies shared fields to all types.
 
@@ -236,7 +236,7 @@ hooks:
     events:
         - {event: PostToolUse, matcher: "Edit|MultiEdit|Write", type: command, command: linter.py}
         - {event: PostToolUse, matcher: Write, type: http, url: "http://localhost:8080/hooks/write",
-           headers: {Authorization: "Bearer $API_TOKEN"}, allowedEnvVars: [API_TOKEN]}
+           headers: {Authorization: "Bearer $API_TOKEN"}, allowed-env-vars: [API_TOKEN]}
         - {event: PreToolUse, matcher: Bash, type: prompt, prompt: "Check if this bash command is safe"}
         - {event: PreToolUse, matcher: "Bash(rm *)", type: agent,
            prompt: "Verify security implications of: $ARGUMENTS", once: true}
@@ -244,8 +244,12 @@ hooks:
 
 Type-specific fields (setting a field on the wrong type produces a validation error):
 - **command**: `command` (required), `config`, `async`, `shell`
-- **http**: `url` (required), `headers`, `allowedEnvVars`
+- **http**: `url` (required), `headers`, `allowed-env-vars`
 - **prompt/agent**: `prompt` (required), `model`
+
+### Two-Layer Naming Convention (Sub-Keys)
+
+Sub-keys in structured sections (`hooks.events[]`, `permissions`) use kebab-case in YAML and are translated to camelCase for Claude Code JSON output by the setup script. Sub-keys in free-form sections (`user-settings`, `global-config`) pass through as-is and must match Claude Code's native camelCase.
 
 ### System Prompt Configuration
 

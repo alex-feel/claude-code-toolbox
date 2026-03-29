@@ -72,7 +72,7 @@ def sample_environment_config() -> dict[str, Any]:
         'model': 'sonnet',
         'env-variables': {'TEST_VAR': 'test_value'},
         'permissions': {
-            'defaultMode': 'default',
+            'default-mode': 'default',
             'allow': ['mcp__test'],
         },
         'command-defaults': {

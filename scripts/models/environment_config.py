@@ -273,7 +273,7 @@ class HookEvent(BaseModel):
     )
     status_message: str | None = Field(
         None,
-        alias='statusMessage',
+        alias='status-message',
         description='Custom spinner message displayed while hook runs',
     )
     once: bool | None = Field(
@@ -315,7 +315,7 @@ class HookEvent(BaseModel):
     )
     allowed_env_vars: list[str] | None = Field(
         None,
-        alias='allowedEnvVars',
+        alias='allowed-env-vars',
         description='Environment variable names permitted for interpolation into header values',
     )
 
@@ -334,17 +334,17 @@ class HookEvent(BaseModel):
         """Validate that fields match the hook type per official Claude Code spec.
 
         Field Matrix:
-        | Field          | command   | http       | prompt    | agent     |
-        |----------------|-----------|------------|-----------|-----------|
-        | command        | REQUIRED  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | config         | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | async          | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | shell          | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | url            | FORBIDDEN | REQUIRED   | FORBIDDEN | FORBIDDEN |
-        | headers        | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
-        | allowedEnvVars | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
-        | prompt         | FORBIDDEN | FORBIDDEN  | REQUIRED  | REQUIRED  |
-        | model          | FORBIDDEN | FORBIDDEN  | Optional  | Optional  |
+        | Field            | command   | http       | prompt    | agent     |
+        |------------------|-----------|------------|-----------|-----------|
+        | command          | REQUIRED  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | config           | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | async            | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | shell            | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
+        | url              | FORBIDDEN | REQUIRED   | FORBIDDEN | FORBIDDEN |
+        | headers          | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
+        | allowed-env-vars | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
+        | prompt           | FORBIDDEN | FORBIDDEN  | REQUIRED  | REQUIRED  |
+        | model            | FORBIDDEN | FORBIDDEN  | Optional  | Optional  |
 
         Returns:
             The validated HookEvent instance.
@@ -362,7 +362,7 @@ class HookEvent(BaseModel):
         _http_only_fields: dict[str, object] = {
             'url': self.url,
             'headers': self.headers,
-            'allowedEnvVars': self.allowed_env_vars,
+            'allowed-env-vars': self.allowed_env_vars,
         }
         _prompt_agent_fields: dict[str, object] = {
             'prompt': self.prompt,
@@ -599,7 +599,7 @@ class Permissions(BaseModel):
 
     default_mode: Literal['default', 'acceptEdits', 'plan', 'bypassPermissions'] | None = Field(
         None,
-        alias='defaultMode',
+        alias='default-mode',
         description='Default permission mode',
     )
     allow: list[str] | None = Field(None, description='Explicitly allowed actions')
@@ -607,7 +607,7 @@ class Permissions(BaseModel):
     ask: list[str] | None = Field(None, description='Actions requiring confirmation')
     additional_directories: list[str] | None = Field(
         None,
-        alias='additionalDirectories',
+        alias='additional-directories',
         description='Additional accessible directories',
     )
 
