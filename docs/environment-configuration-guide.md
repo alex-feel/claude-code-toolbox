@@ -1253,10 +1253,6 @@ Auto-injected settings (version pinning):
 
 The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all four targets provides the best protection.
 
-#### Parity with `install_claude.py`
-
-The `install_claude.py` standalone installer implements the same auto-update management for the targets it can reach (3 of 4: `~/.claude.json`, `~/.claude/settings.json`, and OS-level environment variables). Both scripts share identical constant values enforced by drift protection tests. See [Installing Claude Code -- Auto-Update Management](installing-claude-code.md#auto-update-management) for details.
-
 ### Configuration Sources
 
 The setup script determines the configuration source by checking in this order:

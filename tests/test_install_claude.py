@@ -3702,16 +3702,15 @@ class TestInstallClaudeNpmSudo:
             assert result is False
 
     @patch('platform.system', return_value='Linux')
-    @patch('install_claude.set_disable_autoupdater')
     @patch('install_claude.find_command', return_value='/usr/bin/npm')
     @patch('install_claude.needs_sudo_for_npm', return_value=True)
     @patch('install_claude.run_command')
     @patch('install_claude._run_with_sudo_fallback')
-    def test_sudo_success_with_version_sets_autoupdater(
+    def test_sudo_success_with_specific_version(
         self, mock_sudo, mock_run_command,
-        mock_needs_sudo, mock_find, mock_set_autoupdater, mock_system,
+        mock_needs_sudo, mock_find, mock_system,
     ):
-        """DISABLE_AUTOUPDATER is set when specific version installed via sudo."""
+        """Sudo fallback succeeds when installing a specific version."""
         assert mock_needs_sudo.return_value is True
         assert mock_find.return_value == '/usr/bin/npm'
         assert mock_system.return_value == 'Linux'
@@ -3727,7 +3726,6 @@ class TestInstallClaudeNpmSudo:
             result = install_claude.install_claude_npm(version='1.2.3')
 
             assert result is True
-            mock_set_autoupdater.assert_called_once()
 
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.find_command', return_value=r'C:\Program Files\nodejs\npm.cmd')
@@ -4361,17 +4359,15 @@ class TestWarnMigrationFailed:
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.get_claude_version', return_value='2.1.0')
     @patch('install_claude.verify_claude_installation')
-    @patch('install_claude.unset_disable_autoupdater')
     @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
     @patch('install_claude.compare_versions', return_value=True)
     def test_warn_migration_failed_called_on_failure(
-        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_config, mock_warn,
     ):
         """_warn_migration_failed is called when migration fails."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
-        assert mock_unset is not None
         assert mock_get_version.return_value == '2.1.0'
         assert mock_native.return_value is False
         assert mock_config is not None
@@ -4391,17 +4387,15 @@ class TestMigrationFailureInstallMethodReset:
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.get_claude_version', return_value='2.1.0')
     @patch('install_claude.verify_claude_installation')
-    @patch('install_claude.unset_disable_autoupdater')
     @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
     @patch('install_claude.compare_versions', return_value=True)
     def test_migration_failure_resets_install_method_no_version_pin(
-        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_warn, mock_config,
     ):
         """Migration failure without version pin resets installMethod to npm."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
-        assert mock_unset is not None
         assert mock_get_version.return_value == '2.1.0'
         assert mock_native.return_value is False
         assert mock_warn is not None
@@ -4419,13 +4413,11 @@ class TestMigrationFailureInstallMethodReset:
     @patch('install_claude.install_claude_native_cross_platform', return_value=False)
     @patch('install_claude.get_claude_version', return_value='2.1.0')
     @patch('install_claude.verify_claude_installation')
-    @patch('install_claude.set_disable_autoupdater')
     def test_migration_failure_resets_install_method_version_pinned(
-        self, mock_set_auto, mock_verify, mock_get_version,
+        self, mock_verify, mock_get_version,
         mock_native, mock_warn, mock_config,
     ):
         """Migration failure with version pin resets installMethod to npm."""
-        assert mock_set_auto is not None
         assert mock_get_version.return_value == '2.1.0'
         assert mock_native.return_value is False
         assert mock_warn is not None
@@ -4440,17 +4432,15 @@ class TestMigrationFailureInstallMethodReset:
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.get_claude_version', return_value='2.1.0')
     @patch('install_claude.verify_claude_installation')
-    @patch('install_claude.unset_disable_autoupdater')
     @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
     @patch('install_claude.compare_versions', return_value=True)
     def test_migration_not_detected_resets_install_method(
-        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_warn, mock_config,
     ):
         """Migration succeeds but verify returns non-native resets installMethod to npm."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
-        assert mock_unset is not None
         assert mock_get_version.return_value == '2.1.0'
         assert mock_native.return_value is True
         assert mock_warn is not None
@@ -4470,17 +4460,15 @@ class TestMigrationFailureInstallMethodReset:
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
-    @patch('install_claude.unset_disable_autoupdater')
     @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
     @patch('install_claude.compare_versions', return_value=True)
     def test_successful_migration_sets_native_not_npm(
-        self, mock_compare, mock_latest, mock_unset, mock_verify,
+        self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_npm_check, mock_remove, mock_config,
     ):
         """Successful migration sets installMethod to native, not npm."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
-        assert mock_unset is not None
         assert mock_native.return_value is True
         assert mock_npm_check.return_value is False
         assert mock_remove.return_value is True
@@ -4635,125 +4623,3 @@ class TestNativeInstallerRecoveryChain:
         # Only the initial 1-second sleep for PATH update, no 2-second recovery sleeps
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert 2 not in sleep_calls
-
-
-class TestSetDisableAutoupdaterExpanded:
-    """Tests for expanded set_disable_autoupdater() with 3 targets."""
-
-    def test_set_writes_autoupdates_to_claude_json(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.set_disable_autoupdater()
-        claude_json = home / '.claude.json'
-        assert claude_json.exists()
-        data = json.loads(claude_json.read_text())
-        assert data['autoUpdates'] is False
-
-    def test_set_writes_env_to_settings_json(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.set_disable_autoupdater()
-        settings_path = home / '.claude' / 'settings.json'
-        assert settings_path.exists()
-        data = json.loads(settings_path.read_text())
-        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
-
-    def test_set_respects_existing_autoupdates_true(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        claude_json = home / '.claude.json'
-        claude_json.write_text(json.dumps({'autoUpdates': True}))
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.set_disable_autoupdater()
-        data = json.loads(claude_json.read_text())
-        assert data['autoUpdates'] is True
-
-    def test_set_creates_missing_files(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.set_disable_autoupdater()
-        assert (home / '.claude.json').exists()
-        assert (home / '.claude' / 'settings.json').exists()
-
-
-class TestUnsetDisableAutoupdaterExpanded:
-    """Tests for expanded unset_disable_autoupdater() with 3 targets."""
-
-    def test_unset_removes_autoupdates_false_from_claude_json(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        claude_json = home / '.claude.json'
-        claude_json.write_text(json.dumps({'autoUpdates': False, 'other': 'keep'}))
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.unset_disable_autoupdater()
-        data = json.loads(claude_json.read_text())
-        assert 'autoUpdates' not in data
-        assert data['other'] == 'keep'
-
-    def test_unset_leaves_autoupdates_true_in_claude_json(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        claude_json = home / '.claude.json'
-        claude_json.write_text(json.dumps({'autoUpdates': True}))
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.unset_disable_autoupdater()
-        data = json.loads(claude_json.read_text())
-        assert data['autoUpdates'] is True
-
-    def test_unset_removes_env_from_settings_json(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        settings_path = home / '.claude' / 'settings.json'
-        settings_path.write_text(json.dumps({'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER': 'val'}}))
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.unset_disable_autoupdater()
-        data = json.loads(settings_path.read_text())
-        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
-        assert data['env']['OTHER'] == 'val'
-
-    def test_unset_handles_missing_files(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.unset_disable_autoupdater()
-
-    def test_set_unset_roundtrip(self, tmp_path):
-        home = tmp_path / 'home'
-        home.mkdir()
-        (home / '.claude').mkdir()
-        with patch.object(install_claude, 'get_real_user_home', return_value=home), \
-             patch.object(install_claude, '_get_shell_config_files', return_value=[]), \
-             patch('platform.system', return_value='Linux'):
-            install_claude.set_disable_autoupdater()
-            install_claude.unset_disable_autoupdater()
-        claude_json = home / '.claude.json'
-        data = json.loads(claude_json.read_text())
-        assert 'autoUpdates' not in data
-        settings_path = home / '.claude' / 'settings.json'
-        sdata = json.loads(settings_path.read_text())
-        assert 'env' not in sdata or 'DISABLE_AUTOUPDATER' not in sdata.get('env', {})
