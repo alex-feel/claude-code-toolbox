@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.5.1...v5.6.0) (2026-03-30)
+
+
+### Features
+
+* add env loader file generation with CMD batch parity ([70d7d81](https://github.com/alex-feel/claude-code-toolbox/commit/70d7d81c37a8ff6b5474722b1288884af7d079a4))
+
+
+### Bug Fixes
+
+* add unset guidance for deleted os-env-variables ([c49c74d](https://github.com/alex-feel/claude-code-toolbox/commit/c49c74dbe7be2835be88633a901f7e12040e049b))
+
 ## [5.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.5.0...v5.5.1) (2026-03-30)
 
 
