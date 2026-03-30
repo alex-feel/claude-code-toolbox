@@ -4743,6 +4743,16 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     if failed_count > 0:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
+    # Print unset guidance for deleted variables on Unix
+    if sys.platform != 'win32' and deleted_names:
+        info('To remove deleted variable(s) from your current shell session, run:')
+        for var_name in deleted_names:
+            print(f'  unset {var_name}')
+        if shutil.which('fish'):
+            info('For Fish shell:')
+            for var_name in deleted_names:
+                print(f'  set -e {var_name}')
+
     # Broadcast WM_SETTINGCHANGE after all env var operations (Windows)
     if sys.platform == 'win32' and (set_count > 0 or delete_count > 0):
         _broadcast_wm_settingchange()

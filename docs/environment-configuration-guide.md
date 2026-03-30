@@ -665,6 +665,10 @@ os-env-variables:
   OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
+- **Current session guidance (Linux/macOS):** When variables are deleted via `null`, the setup script outputs shell-specific `unset` commands so the user can remove those variables from the running session without opening a new terminal:
+  - **Bash/Zsh:** `unset VARNAME` for each deleted variable
+  - **Fish** (when installed): `set -e VARNAME` for each deleted variable
+
 #### Environment Variable Loading
 
 The setup script provides two distinct mechanisms for environment variables, each serving a different scope:
