@@ -66,7 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_CODE_TOOLBOX
 
 ### `CLAUDE_CODE_TOOLBOX_VERSION`
 
-Specify a particular version to install (e.g., `2.0.76`). Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. When a specific version is set, auto-update controls are automatically configured across three targets to prevent auto-updates from overwriting the pinned version (see [Auto-Update Management](#auto-update-management) below). When the version pin is removed (running without `CLAUDE_CODE_TOOLBOX_VERSION`), those controls are automatically removed, re-enabling auto-updates. If the requested version is not found via GCS download, the installer falls back to the native installer with the latest version.
+Specify a particular version to install (e.g., `2.0.76`). Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. Auto-update management is handled by `setup_environment.py` when used; see the [Environment Configuration Guide](environment-configuration-guide.md) for details. If the requested version is not found via GCS download, the installer falls back to the native installer with the latest version.
 
 **Linux/macOS example:**
 
@@ -134,25 +134,9 @@ To switch manually, uninstall the npm version with `npm uninstall -g @anthropic-
 
 ## Auto-Update Management
 
-When a specific version is pinned via `CLAUDE_CODE_TOOLBOX_VERSION`, the installer automatically disables auto-updates across three targets. When the version pin is removed, those controls are automatically cleaned up.
+Auto-update management is handled by `setup_environment.py` via YAML configuration, not by the standalone installer. When `claude-code-version` is specified in a YAML environment configuration, `setup_environment.py` automatically manages auto-update controls across four targets.
 
-### Targets
-
-| Target                         | Location                          | Set Value | Unset Behavior                              |
-|--------------------------------|-----------------------------------|-----------|---------------------------------------------|
-| `autoUpdates`                  | `~/.claude.json`                  | `false`   | Remove key only if current value is `false` |
-| `env.DISABLE_AUTOUPDATER`      | `~/.claude/settings.json`         | `"1"`     | Remove key; clean empty `env` section       |
-| OS-level `DISABLE_AUTOUPDATER` | Shell profiles / Windows registry | `"1"`     | Remove from all shell profiles / registry   |
-
-Target A (`autoUpdates` in `~/.claude.json`) is a deprecated defense-in-depth mechanism (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)). Target B (`DISABLE_AUTOUPDATER` in settings) and Target C (OS-level environment variable) are the primary controls.
-
-### Conflict Resolution
-
-The installer uses WARN-but-Respect semantics: if the user has explicitly set `autoUpdates: true` in `~/.claude.json`, the installer preserves the user value and emits a warning instead of overwriting it.
-
-### Parity with `setup_environment.py`
-
-The environment setup script (`setup_environment.py`) implements the same auto-update management for the targets it can reach (4 targets: `global-config`, `user-settings.env`, `env-variables`, and `os-env-variables`). Both scripts share identical constant values (`AUTO_UPDATE_KEY`, `AUTO_UPDATE_DISABLED_VALUE`, `DISABLE_AUTOUPDATER_KEY`, `DISABLE_AUTOUPDATER_VALUE`), enforced by drift protection tests in `tests/test_standalone_policy.py`. See [Environment Configuration Guide -- Automatic Auto-Update Management](environment-configuration-guide.md#automatic-auto-update-management) for the setup script's behavior.
+For version pinning with auto-update protection, use `setup_environment.py` with a YAML configuration specifying `claude-code-version`. See [Automatic Auto-Update Management](environment-configuration-guide.md#automatic-auto-update-management) in the Environment Configuration Guide.
 
 ### Known Issues
 
@@ -161,8 +145,6 @@ The Claude Code auto-updater may ignore disable settings in some versions:
 - [#10764](https://github.com/anthropics/claude-code/issues/10764) -- Auto-updater runs despite `DISABLE_AUTOUPDATER`
 - [#11263](https://github.com/anthropics/claude-code/issues/11263) -- Auto-update still triggers in some scenarios
 - [#12564](https://github.com/anthropics/claude-code/issues/12564) -- Auto-updater bypass in certain conditions
-
-The multi-target approach (disabling via both `autoUpdates` and `DISABLE_AUTOUPDATER` across config files and OS environment) provides defense-in-depth against these issues.
 
 ## Troubleshooting
 

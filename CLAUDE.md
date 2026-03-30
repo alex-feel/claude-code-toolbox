@@ -27,13 +27,13 @@ The installer uses a native-first approach with automatic npm fallback. Entry po
 
 `install_claude.py` and `setup_environment.py` MUST be fully standalone -- NEVER import from each other. Users may run either script without the other being present.
 
-**Identical Code** (CI enforced via `tests/test_standalone_policy.py`): `Colors` class, `find_command()`, `get_real_user_home()` (EXACT body match), shell config file list (7 files + conditional filtering), Fish config detection (`'fish' in str()`), marker block constants (`# >>> claude-code-toolbox >>>`), auto-update parity constants (`AUTO_UPDATE_KEY`, `AUTO_UPDATE_DISABLED_VALUE`, `DISABLE_AUTOUPDATER_KEY`, `DISABLE_AUTOUPDATER_VALUE`).
+**Identical Code** (CI enforced via `tests/test_standalone_policy.py`): `Colors` class, `find_command()`, `get_real_user_home()` (EXACT body match), shell config file list (7 files + conditional filtering), Fish config detection (`'fish' in str()`), marker block constants (`# >>> claude-code-toolbox >>>`).
 
 **Intentionally Different** (MUST NOT synchronize): `info()`/`success()`/`warning()`/`error()` (different formatting), `run_command()` (different encoding/error handling), `find_bash_windows()` (setup_environment.py has debug_log), `is_admin()` (different implementations).
 
 **Native Path Priority:** `find_command()` and `verify_claude_installation()` check the native path (`~/.local/bin/claude[.exe]`) first, before `shutil.which()` PATH search. This ensures native binary is preferred even when PATH would resolve to npm first. Validates file exists with `st_size > 1000` to skip empty/corrupt files.
 
-**Environment Variables:** `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` (`auto`/`native`/`npm`, default `auto` -- unknown sources → native-first with npm fallback), `CLAUDE_CODE_TOOLBOX_VERSION` (forces npm version; native doesn't support version selection), `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` (`1` only -- see Root Detection Guard).
+**Environment Variables:** `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` (`auto`/`native`/`npm`, default `auto` -- unknown sources → native-first with npm fallback), `CLAUDE_CODE_TOOLBOX_VERSION` (installs a specific Claude Code version; works with both native via GCS download and npm methods), `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` (`1` only -- see Root Detection Guard).
 
 **Native Path Detection (Non-Windows):** `verify_claude_installation()` classifies the binary location for upgrade strategy:
 
@@ -187,9 +187,9 @@ Conventional Commits enforced by commitizen: `feat:` (minor bump), `fix:` (patch
 
 MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servername"]` in the profile configuration (`config.json`).
 
-### Automatic Auto-Update Management (Dual-Script)
+### Automatic Auto-Update Management
 
-Both scripts automatically disable auto-updates when a specific Claude Code version is pinned, and remove those controls when using latest/absent version. `setup_environment.py` manages 4 in-memory dict targets (`global-config`, `user-settings.env`, `env-variables`, `os-env-variables`) via `apply_auto_update_settings()`. `install_claude.py` manages 3 file-based targets (`~/.claude.json`, `~/.claude/settings.json`, OS-level env var) via expanded `set_disable_autoupdater()`/`unset_disable_autoupdater()`. Overlap between scripts is intentional and idempotent. Both share identical parity constants (`AUTO_UPDATE_KEY`, `AUTO_UPDATE_DISABLED_VALUE`, `DISABLE_AUTOUPDATER_KEY`, `DISABLE_AUTOUPDATER_VALUE`) enforced by `TestAutoUpdateConstantsParity` in `tests/test_standalone_policy.py`. WARN-but-Respect semantics: user-set contradicting values are preserved with warning. The `[auto]` marker in the installation summary shows auto-injected values.
+`setup_environment.py` automatically disables auto-updates when a specific Claude Code version is pinned via `claude-code-version` in YAML, and removes those controls when using latest/absent version. Manages 4 in-memory dict targets (`global-config`, `user-settings.env`, `env-variables`, `os-env-variables`) via `apply_auto_update_settings()`. WARN-but-Respect semantics: if the user explicitly sets a contradicting value in their YAML configuration (e.g., `autoUpdates: true` in `global-config` while pinning a version), the user value is preserved and a warning is emitted. The `[auto]` marker in the installation summary shows auto-injected values. Auto-update management is solely the responsibility of `setup_environment.py`; `install_claude.py` does not participate in auto-update configuration.
 
 ### Environment Variables for Debugging
 

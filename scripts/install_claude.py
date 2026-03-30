@@ -71,12 +71,6 @@ CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic 
 SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
 SHELL_CONFIG_MARKER_END = '# <<< claude-code-toolbox <<<'
 
-# Constants for auto-update management (used for value parity with setup_environment.py)
-AUTO_UPDATE_KEY = 'autoUpdates'
-AUTO_UPDATE_DISABLED_VALUE = False
-DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
-DISABLE_AUTOUPDATER_VALUE = '1'
-
 
 # Logging functions
 def info(msg: str) -> None:
@@ -176,90 +170,6 @@ def _get_shell_config_files() -> list[Path]:
 def _is_fish_config(config_file: Path) -> bool:
     """Check if a config file path is a Fish shell config."""
     return 'fish' in str(config_file)
-
-
-def _is_bash_zsh_export_line(line: str, name: str) -> bool:
-    """Check if a line is a bash/zsh export for the given variable name.
-
-    Matches patterns:
-    - export NAME="value"
-    - export NAME='value'
-    - export NAME=value
-    - NAME="value" (without export keyword)
-
-    Does NOT match:
-    - Comments containing the variable name
-    - Lines where the variable name is part of another word
-
-    Args:
-        line: The line to check.
-        name: The environment variable name.
-
-    Returns:
-        bool: True if line exports the variable, False otherwise.
-    """
-    stripped = line.strip()
-
-    # Skip comments
-    if stripped.startswith('#'):
-        return False
-
-    # Match "export NAME=" or "NAME=" patterns
-    # Must be at start of line (after stripping) to avoid partial matches
-    return stripped.startswith((f'export {name}=', f'{name}='))
-
-
-def _is_fish_set_line(line: str, name: str) -> bool:
-    """Check if a line is a fish shell set command for the given variable name.
-
-    Matches patterns:
-    - set -gx NAME "value"
-    - set -gx NAME 'value'
-    - set -Ux NAME "value"
-    - set NAME "value"
-    - And variations with different flag orders
-
-    Does NOT match:
-    - Comments containing the variable name
-    - Lines where the variable name is part of another word
-
-    Args:
-        line: The line to check.
-        name: The environment variable name.
-
-    Returns:
-        bool: True if line sets the variable, False otherwise.
-    """
-    stripped = line.strip()
-
-    # Skip comments
-    if stripped.startswith('#'):
-        return False
-
-    # Fish shell set pattern: set [-flags] NAME value
-    # Pattern matches: set (with optional flags like -gx, -Ux, etc.) followed by NAME and value
-    fish_pattern = rf'^set\s+(?:-[gGxXUu]+\s+)*{re.escape(name)}\s+'
-    return bool(re.match(fish_pattern, stripped))
-
-
-def _is_env_var_line(config_file: Path, line: str, name: str) -> bool:
-    """Check if a line sets the given environment variable (any shell syntax).
-
-    Detects the shell type from the config file path and checks accordingly.
-
-    Args:
-        config_file: Path to the shell config file.
-        line: The line to check.
-        name: The environment variable name.
-
-    Returns:
-        bool: True if line sets the variable, False otherwise.
-    """
-    is_fish = _is_fish_config(config_file)
-
-    if is_fish:
-        return _is_fish_set_line(line, name)
-    return _is_bash_zsh_export_line(line, name)
 
 
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -1488,268 +1398,6 @@ def set_windows_env_var(name: str, value: str) -> None:
         warning(f'Could not set environment variable {name}: {e}')
 
 
-def set_disable_autoupdater() -> None:
-    """Disable auto-updates across all available targets.
-
-    Manages three targets:
-    - Target A: autoUpdates in ~/.claude.json (global config)
-    - Target B: env.DISABLE_AUTOUPDATER in ~/.claude/settings.json (user settings)
-    - Target C: OS-level DISABLE_AUTOUPDATER env var (shell profiles / Windows registry)
-
-    Uses WARN-but-Respect semantics: if user explicitly set a contradicting
-    value, it is preserved and a warning is emitted.
-    """
-    info('Disabling auto-updates...')
-
-    home = get_real_user_home()
-
-    # Target A: autoUpdates in ~/.claude.json
-    claude_json_path = home / '.claude.json'
-    try:
-        config = _read_json_dict(claude_json_path)
-        current_auto = config.get(AUTO_UPDATE_KEY)
-        if current_auto is None or current_auto == AUTO_UPDATE_DISABLED_VALUE:
-            config[AUTO_UPDATE_KEY] = AUTO_UPDATE_DISABLED_VALUE
-            claude_json_path.write_text(
-                json.dumps(config, indent=2, ensure_ascii=False) + '\n',
-                encoding='utf-8',
-            )
-            success(f'Set {AUTO_UPDATE_KEY}={AUTO_UPDATE_DISABLED_VALUE!r} in ~/.claude.json')
-        elif current_auto is True:
-            warning(
-                f'User set {AUTO_UPDATE_KEY} to True in ~/.claude.json. '
-                f'Respecting user value (not overwriting to {AUTO_UPDATE_DISABLED_VALUE!r}).',
-            )
-    except OSError as e:
-        warning(f'Could not update ~/.claude.json: {e}')
-
-    # Target B: env.DISABLE_AUTOUPDATER in ~/.claude/settings.json
-    settings_path = home / '.claude' / 'settings.json'
-    try:
-        settings = _read_json_dict(settings_path)
-        env_raw = settings.get('env')
-        if not isinstance(env_raw, dict):
-            env_raw = {}
-            settings['env'] = env_raw
-        env_section = cast(dict[str, Any], env_raw)
-        current_disable: object = env_section.get(DISABLE_AUTOUPDATER_KEY)
-        if current_disable is None or str(current_disable) == DISABLE_AUTOUPDATER_VALUE:
-            env_section[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
-            settings_path.parent.mkdir(parents=True, exist_ok=True)
-            settings_path.write_text(
-                json.dumps(settings, indent=2, ensure_ascii=False) + '\n',
-                encoding='utf-8',
-            )
-            success(f'Set env.{DISABLE_AUTOUPDATER_KEY}="{DISABLE_AUTOUPDATER_VALUE}" in ~/.claude/settings.json')
-        else:
-            warning(
-                f'User set env.{DISABLE_AUTOUPDATER_KEY} to {current_disable!r} in ~/.claude/settings.json. '
-                f'Respecting user value.',
-            )
-    except OSError as e:
-        warning(f'Could not update ~/.claude/settings.json: {e}')
-
-    # Target C: OS-level DISABLE_AUTOUPDATER environment variable
-    if platform.system() == 'Windows':
-        set_windows_env_var('DISABLE_AUTOUPDATER', '1')
-    else:
-        # Get all shell config files (with Linux conditional filtering)
-        profile_files = _get_shell_config_files()
-
-        # Detect the user's login shell to ensure its profile exists
-        current_shell = os.environ.get('SHELL', '')
-        shell_profile_map: dict[str, Path] = {
-            'bash': home / '.bashrc',
-            'zsh': home / '.zshrc',
-            'fish': home / '.config' / 'fish' / 'config.fish',
-        }
-
-        # Identify which profile corresponds to the current shell
-        current_shell_profile: Path | None = None
-        for shell_name, profile_path in shell_profile_map.items():
-            if shell_name in current_shell:
-                current_shell_profile = profile_path
-                break
-
-        updated_files: list[Path] = []
-        for profile_file in profile_files:
-            should_update = profile_file.exists()
-            # Create the profile for the user's current shell if it does not exist
-            if not should_update and profile_file == current_shell_profile:
-                should_update = True
-
-            if should_update:
-                try:
-                    content = profile_file.read_text() if profile_file.exists() else ''
-                    if 'DISABLE_AUTOUPDATER' not in content:
-                        # Use Fish-specific syntax for Fish config
-                        if _is_fish_config(profile_file):
-                            export_line = 'set -gx DISABLE_AUTOUPDATER 1'
-                        else:
-                            export_line = 'export DISABLE_AUTOUPDATER=1'
-
-                        # Use marker block for managed entries
-                        if SHELL_CONFIG_MARKER_START in content:
-                            # Append inside existing marker block
-                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
-                            if marker_end_idx != -1:
-                                content = (
-                                    content[:marker_end_idx]
-                                    + export_line + '\n'
-                                    + content[marker_end_idx:]
-                                )
-                            else:
-                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
-                        else:
-                            content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
-
-                        # Ensure parent directory exists (e.g. ~/.config/fish/)
-                        profile_file.parent.mkdir(parents=True, exist_ok=True)
-                        profile_file.write_text(content)
-                        updated_files.append(profile_file)
-                except Exception as e:
-                    warning(f'Could not update {profile_file}: {e}')
-
-        if updated_files:
-            success(f"Added DISABLE_AUTOUPDATER to: {', '.join(str(f) for f in updated_files)}")
-            info('Please restart your shell to apply changes')
-        else:
-            warning('No shell profile files were updated')
-
-
-def unset_disable_autoupdater() -> None:
-    """Re-enable auto-updates by removing controls from all targets.
-
-    Manages three targets:
-    - Target A: Remove autoUpdates from ~/.claude.json (only if False)
-    - Target B: Remove env.DISABLE_AUTOUPDATER from ~/.claude/settings.json
-    - Target C: Remove OS-level DISABLE_AUTOUPDATER env var
-
-    Uses WARN-but-Respect semantics: if user explicitly set autoUpdates
-    to True, it is left alone.
-
-    Safe to call when no auto-update controls are set (no-op).
-    """
-    home = get_real_user_home()
-
-    # Target A: Remove autoUpdates from ~/.claude.json (only if False)
-    claude_json_path = home / '.claude.json'
-    try:
-        config = _read_json_dict(claude_json_path)
-        if AUTO_UPDATE_KEY in config:
-            current_val = config[AUTO_UPDATE_KEY]
-            if current_val == AUTO_UPDATE_DISABLED_VALUE:
-                del config[AUTO_UPDATE_KEY]
-                claude_json_path.write_text(
-                    json.dumps(config, indent=2, ensure_ascii=False) + '\n',
-                    encoding='utf-8',
-                )
-                info(f'Removed {AUTO_UPDATE_KEY} from ~/.claude.json')
-            elif current_val is True:
-                warning(
-                    f'User set {AUTO_UPDATE_KEY} to True in ~/.claude.json. '
-                    f'Respecting user value (not removing).',
-                )
-    except OSError as e:
-        warning(f'Could not update ~/.claude.json: {e}')
-
-    # Target B: Remove env.DISABLE_AUTOUPDATER from ~/.claude/settings.json
-    settings_path = home / '.claude' / 'settings.json'
-    try:
-        settings = _read_json_dict(settings_path)
-        env_section = settings.get('env')
-        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
-            del env_section[DISABLE_AUTOUPDATER_KEY]
-            # Remove empty env section
-            if not env_section:
-                del settings['env']
-            settings_path.write_text(
-                json.dumps(settings, indent=2, ensure_ascii=False) + '\n',
-                encoding='utf-8',
-            )
-            info(f'Removed env.{DISABLE_AUTOUPDATER_KEY} from ~/.claude/settings.json')
-    except OSError as e:
-        warning(f'Could not update ~/.claude/settings.json: {e}')
-
-    # Target C: OS-level DISABLE_AUTOUPDATER environment variable
-    if platform.system() == 'Windows':
-        # Remove from Windows user environment registry
-        try:
-            result = subprocess.run(
-                ['REG', 'DELETE', r'HKCU\Environment', '/V', 'DISABLE_AUTOUPDATER', '/F'],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                info('Removed DISABLE_AUTOUPDATER from Windows registry')
-        except Exception:
-            pass  # Variable may not exist in registry -- that's fine
-        # Remove from current process
-        os.environ.pop('DISABLE_AUTOUPDATER', None)
-    else:
-        # Unix: remove from all shell config files
-        profile_files = _get_shell_config_files()
-        removed_files: list[Path] = []
-
-        for config_file in profile_files:
-            if not config_file.exists():
-                continue
-
-            try:
-                content = config_file.read_text(encoding='utf-8')
-                original_content = content
-
-                # First pass: Remove the variable from ANYWHERE in the file
-                lines = content.split('\n')
-                new_lines: list[str] = []
-                for line in lines:
-                    if _is_env_var_line(config_file, line, 'DISABLE_AUTOUPDATER'):
-                        continue  # Skip this line (remove)
-                    new_lines.append(line)
-
-                new_content = '\n'.join(new_lines)
-
-                # Clean up empty marker blocks
-                if SHELL_CONFIG_MARKER_START in new_content:
-                    start_idx = new_content.find(SHELL_CONFIG_MARKER_START)
-                    end_idx = new_content.find(SHELL_CONFIG_MARKER_END)
-
-                    if end_idx != -1:
-                        before = new_content[:start_idx]
-                        block = new_content[start_idx:end_idx + len(SHELL_CONFIG_MARKER_END)]
-                        after = new_content[end_idx + len(SHELL_CONFIG_MARKER_END):]
-
-                        # Check if block is empty (only markers and whitespace)
-                        block_lines = block.split('\n')
-                        has_content = False
-                        for block_line in block_lines:
-                            if block_line in (SHELL_CONFIG_MARKER_START, SHELL_CONFIG_MARKER_END):
-                                continue
-                            if block_line.strip():
-                                has_content = True
-                                break
-
-                        if not has_content:
-                            # Block is empty, remove it entirely
-                            new_content = before.rstrip('\n') + '\n' + after.lstrip('\n')
-                            # Handle edge case where file becomes only newlines
-                            if new_content.strip() == '':
-                                new_content = ''
-
-                # Only write if content changed
-                if new_content != original_content:
-                    config_file.write_text(new_content, encoding='utf-8')
-                    removed_files.append(config_file)
-            except OSError as e:
-                warning(f'Could not modify {config_file}: {e}')
-
-        # Also remove from current process
-        os.environ.pop('DISABLE_AUTOUPDATER', None)
-
-        if removed_files:
-            info(f"Removed DISABLE_AUTOUPDATER from: {', '.join(str(f) for f in removed_files)}")
-
-
 def configure_powershell_policy() -> None:
     """Configure PowerShell execution policy for npm scripts.
 
@@ -2435,11 +2083,6 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
     if result.returncode == 0:
         success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
-
-        # If specific version was installed, set DISABLE_AUTOUPDATER
-        if version:
-            set_disable_autoupdater()
-
         return True
 
     # Try with sudo on Unix systems using the three-tier fallback strategy
@@ -2458,11 +2101,6 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
         if sudo_result is not None and sudo_result.returncode == 0:
             success(f"Claude Code {'upgraded' if upgrade else 'installed'} successfully")
-
-            # If specific version was installed, set DISABLE_AUTOUPDATER
-            if version:
-                set_disable_autoupdater()
-
             return True
 
         if sudo_result is None:
@@ -3316,7 +2954,6 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             if is_installed and source == 'native':
                 success(f'Native installation verified at: {claude_path}')
                 _finalize_native_install()
-                set_disable_autoupdater()
                 return True
             if is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
@@ -3483,7 +3120,6 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         if is_installed and source == 'native':
             success(f'Native installation verified at: {claude_path}')
             _finalize_native_install()
-            set_disable_autoupdater()
             return True
         if is_installed:
             warning(f'Claude found but from {source} source at: {claude_path}')
@@ -3608,8 +3244,6 @@ def ensure_claude() -> bool:
                 error(f'Failed to install specific version {requested_version} with all methods')
                 return False
             success(f'Claude Code version {current_version} is already installed (matches requested version)')
-            # Set DISABLE_AUTOUPDATER since a specific version was requested
-            set_disable_autoupdater()
 
             # Check if migration from npm to native is beneficial (even when version matches)
             # Only auto-migrate if: (1) auto mode, (2) currently npm
@@ -3648,9 +3282,6 @@ def ensure_claude() -> bool:
                     return True  # Don't fail, npm still works
 
             return True
-
-        # No version pin -- remove DISABLE_AUTOUPDATER if previously set
-        unset_disable_autoupdater()
 
         # Check if migration from npm to native is beneficial
         # Only auto-migrate if: (1) auto mode, (2) no specific version, (3) currently npm
