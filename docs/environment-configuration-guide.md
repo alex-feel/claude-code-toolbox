@@ -665,6 +665,7 @@ os-env-variables:
   OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
+- **Automatic string conversion:** Non-string YAML values (integers, booleans, floats) in both `env-variables` and `os-env-variables` are automatically converted to strings by the setup script. For example, `MCP_TIMEOUT: 30000` (YAML integer) becomes `"30000"` (string), and `ENABLE_FEATURE: true` (YAML boolean) becomes `"True"` (string). To preserve exact string representation, quote values in YAML: `ENABLE_FEATURE: "true"`.
 - **Current session guidance (Linux/macOS):** When variables are deleted via `null`, the setup script outputs shell-specific `unset` commands so the user can remove those variables from the running session without opening a new terminal:
   - **Bash/Zsh:** `unset VARNAME` for each deleted variable
   - **Fish** (when installed): `set -e VARNAME` for each deleted variable

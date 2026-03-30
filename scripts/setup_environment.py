@@ -4793,7 +4793,7 @@ def generate_env_loader_files(
         Dict mapping file type to generated Path (e.g., {"sh": Path(...)}).
     """
     # Filter to only non-None values (deletions are excluded from loader files)
-    active_vars = {k: v for k, v in os_env_vars.items() if v is not None}
+    active_vars = {k: str(v) for k, v in os_env_vars.items() if v is not None}
 
     if not active_vars:
         return {}
@@ -7111,7 +7111,7 @@ def create_profile_config(
 
     # Add environment variables if specified
     if env:
-        settings['env'] = env
+        settings['env'] = {k: str(v) for k, v in env.items()}
         info(f'Setting {len(env)} environment variables')
         for key in env:
             info(f'  - {key}')

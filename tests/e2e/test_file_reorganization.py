@@ -226,6 +226,7 @@ class TestFileReorganization:
         assert 'CLAUDE_CONFIG_DIR' not in env_block
         assert env_block.get('E2E_TEST_VAR') == 'test_value'
         assert env_block.get('E2E_ANOTHER_VAR') == 'another_value'
+        assert env_block.get('E2E_INT_VAR') == '42'  # YAML int -> string conversion
 
         # Verify user-settings content NOT in config.json
         assert 'theme' not in content

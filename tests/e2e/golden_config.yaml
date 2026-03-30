@@ -207,6 +207,7 @@ env-variables:
   E2E_TEST_VAR: "test_value"
   E2E_ANOTHER_VAR: "another_value"
   E2E_PATH_VAR: "~/.claude/e2e-data"
+  E2E_INT_VAR: 42
 
 # OS-level environment variables
 os-env-variables:
@@ -214,6 +215,8 @@ os-env-variables:
   E2E_OS_PATH: "/opt/e2e/bin"
   E2E_OS_DELETE_VAR: null
   E2E_OS_DELETE_TOKEN: null
+  E2E_OS_INT_VAR: 30000
+  E2E_OS_BOOL_VAR: true
 
 # Command defaults
 command-defaults:

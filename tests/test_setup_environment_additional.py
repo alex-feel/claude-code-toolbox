@@ -22,6 +22,7 @@ import yaml
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
+
 import setup_environment
 
 
@@ -1018,6 +1019,35 @@ class TestCreateSettingsComplex:
             settings = json.loads(settings_file.read_text())
 
             assert settings['env'] == env_vars
+
+    def test_create_profile_config_with_non_string_env_values(self) -> None:
+        """Non-string env variable values are coerced to strings in config.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            # Simulate YAML-parsed non-string values
+            env_vars: dict[str, Any] = {
+                'TIMEOUT': 30000,
+                'ENABLE_FEATURE': True,
+                'THRESHOLD': 0.5,
+                'NORMAL_VAR': 'string_value',
+            }
+
+            setup_environment.create_profile_config(
+                {},
+                claude_dir,
+                env=env_vars,
+            )
+
+            settings_file = claude_dir / 'config.json'
+            settings = json.loads(settings_file.read_text())
+
+            # All values must be strings in the output
+            env_output = settings['env']
+            assert env_output['TIMEOUT'] == '30000'
+            assert env_output['ENABLE_FEATURE'] == 'True'
+            assert env_output['THRESHOLD'] == '0.5'
+            assert env_output['NORMAL_VAR'] == 'string_value'
 
     @patch('setup_environment.download_file')
     @patch('platform.system', return_value='Windows')

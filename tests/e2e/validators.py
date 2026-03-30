@@ -345,9 +345,11 @@ def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
     config_env = config.get('env-variables', {})
     for key, expected_value in config_env.items():
         actual = data.get('env', {}).get(key)
-        if actual != expected_value:
+        # Production code coerces env values to strings via str(v)
+        expected_str = str(expected_value)
+        if actual != expected_str:
             errors.append(
-                f"Env var '{key}': expected {expected_value!r}, got {actual!r}",
+                f"Env var '{key}': expected {expected_str!r}, got {actual!r}",
             )
 
     # Hooks structure validation
@@ -1217,7 +1219,7 @@ def validate_env_loader_files(
     errors: list[str] = []
 
     # Determine which vars should appear (non-None only)
-    active_vars = {k: v for k, v in os_env_vars.items() if v is not None}
+    active_vars = {k: str(v) for k, v in os_env_vars.items() if v is not None}
     deletion_vars = [k for k, v in os_env_vars.items() if v is None]
 
     if not active_vars:
