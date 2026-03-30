@@ -1187,3 +1187,296 @@ def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
         errors.append('Pinned version: ~/.claude.json does not exist')
 
     return errors
+
+
+def validate_env_loader_files(
+    claude_dir: Path,
+    os_env_vars: dict[str, str | None],
+    command_name: str | None = None,
+) -> list[str]:
+    """Validate env loader files exist with correct content.
+
+    Checks that generate_env_loader_files() produced the expected shell-specific
+    loader files containing ONLY non-None os-env-variables with proper syntax.
+
+    Validates:
+    - Global toolbox-env.sh exists in ~/.claude/
+    - Per-command env.sh exists in ~/.claude/{cmd}/ (when command_name provided)
+    - File content contains correct export syntax for each shell type
+    - None-valued (deletion) variables are excluded from loader files
+    - Header comment is present
+
+    Args:
+        claude_dir: Path to the ~/.claude directory
+        os_env_vars: OS env vars dict from config (None values = deletions)
+        command_name: Command name for per-command file checks, or None
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+
+    # Determine which vars should appear (non-None only)
+    active_vars = {k: v for k, v in os_env_vars.items() if v is not None}
+    deletion_vars = [k for k, v in os_env_vars.items() if v is None]
+
+    if not active_vars:
+        # No active vars means no files should be generated
+        global_sh = claude_dir / 'toolbox-env.sh'
+        if global_sh.exists():
+            errors.append(
+                f'toolbox-env.sh exists but no active os-env-variables: {global_sh}',
+            )
+        return errors
+
+    # --- Global convenience files ---
+    global_sh = claude_dir / 'toolbox-env.sh'
+    if not global_sh.exists():
+        errors.append(f'Global env loader not found: {global_sh}')
+    else:
+        sh_content = global_sh.read_text(encoding='utf-8')
+        errors.extend(_validate_sh_loader_content(sh_content, active_vars, deletion_vars, 'toolbox-env.sh'))
+
+    # Global PS1 on Windows
+    if sys.platform == 'win32':
+        global_ps1 = claude_dir / 'toolbox-env.ps1'
+        if not global_ps1.exists():
+            errors.append(f'Global PS1 env loader not found on Windows: {global_ps1}')
+        else:
+            ps1_content = global_ps1.read_text(encoding='utf-8')
+            errors.extend(
+                _validate_ps1_loader_content(ps1_content, active_vars, deletion_vars, 'toolbox-env.ps1'),
+            )
+
+    # Global CMD on Windows
+    if sys.platform == 'win32':
+        global_cmd = claude_dir / 'toolbox-env.cmd'
+        if not global_cmd.exists():
+            errors.append(f'Global CMD env loader not found on Windows: {global_cmd}')
+        else:
+            cmd_content = global_cmd.read_text(encoding='utf-8')
+            errors.extend(
+                _validate_cmd_loader_content(cmd_content, active_vars, deletion_vars, 'toolbox-env.cmd'),
+            )
+
+    # --- Per-command files ---
+    if command_name:
+        cmd_dir = claude_dir / command_name
+        cmd_sh = cmd_dir / 'env.sh'
+        if not cmd_sh.exists():
+            errors.append(f'Per-command env loader not found: {cmd_sh}')
+        else:
+            sh_content = cmd_sh.read_text(encoding='utf-8')
+            errors.extend(_validate_sh_loader_content(sh_content, active_vars, deletion_vars, 'env.sh'))
+
+        if sys.platform == 'win32':
+            cmd_ps1 = cmd_dir / 'env.ps1'
+            if not cmd_ps1.exists():
+                errors.append(f'Per-command PS1 env loader not found on Windows: {cmd_ps1}')
+            else:
+                ps1_content = cmd_ps1.read_text(encoding='utf-8')
+                errors.extend(
+                    _validate_ps1_loader_content(ps1_content, active_vars, deletion_vars, 'env.ps1'),
+                )
+
+        if sys.platform == 'win32':
+            cmd_cmd = cmd_dir / 'env.cmd'
+            if not cmd_cmd.exists():
+                errors.append(f'Per-command CMD env loader not found on Windows: {cmd_cmd}')
+            else:
+                cmd_content = cmd_cmd.read_text(encoding='utf-8')
+                errors.extend(
+                    _validate_cmd_loader_content(cmd_content, active_vars, deletion_vars, 'env.cmd'),
+                )
+
+    return errors
+
+
+def _validate_sh_loader_content(
+    content: str,
+    active_vars: dict[str, str],
+    deletion_vars: list[str],
+    filename: str,
+) -> list[str]:
+    """Validate Bash/Zsh env loader file content.
+
+    Args:
+        content: File content
+        active_vars: Variables that should be present (name -> value, non-None only)
+        deletion_vars: Variable names that must NOT appear
+        filename: Filename for error messages
+
+    Returns:
+        List of error strings
+    """
+    errors: list[str] = []
+
+    # Header check
+    if not content.startswith('# Auto-generated by claude-code-toolbox'):
+        errors.append(f'{filename}: missing header comment')
+
+    # Each active var should have an export line
+    errors.extend(
+        f'{filename}: missing export for {name}'
+        for name in active_vars
+        if f'export {name}=' not in content
+    )
+
+    # Deletion vars must NOT appear
+    errors.extend(
+        f'{filename}: deletion var {name} should not appear'
+        for name in deletion_vars
+        if f'export {name}=' in content
+    )
+
+    return errors
+
+
+def _validate_ps1_loader_content(
+    content: str,
+    active_vars: dict[str, str],
+    deletion_vars: list[str],
+    filename: str,
+) -> list[str]:
+    """Validate PowerShell env loader file content.
+
+    Args:
+        content: File content
+        active_vars: Variables that should be present (name -> value, non-None only)
+        deletion_vars: Variable names that must NOT appear
+        filename: Filename for error messages
+
+    Returns:
+        List of error strings
+    """
+    errors: list[str] = []
+
+    # Header check
+    if not content.startswith('# Auto-generated by claude-code-toolbox'):
+        errors.append(f'{filename}: missing header comment')
+
+    # Each active var should have a $env: line
+    errors.extend(
+        f'{filename}: missing $env:{name} assignment'
+        for name in active_vars
+        if f'$env:{name} =' not in content
+    )
+
+    # Deletion vars must NOT appear
+    errors.extend(
+        f'{filename}: deletion var {name} should not appear'
+        for name in deletion_vars
+        if f'$env:{name} =' in content
+    )
+
+    return errors
+
+
+def _validate_cmd_loader_content(
+    content: str,
+    active_vars: dict[str, str],
+    deletion_vars: list[str],
+    filename: str,
+) -> list[str]:
+    """Validate CMD batch env loader file content.
+
+    Args:
+        content: File content
+        active_vars: Variables that should be present (name -> value, non-None only)
+        deletion_vars: Variable names that must NOT appear
+        filename: Filename for error messages
+
+    Returns:
+        List of error strings
+    """
+    errors: list[str] = []
+
+    # Header check
+    if not content.startswith('@echo off'):
+        errors.append(f'{filename}: missing @echo off header')
+
+    # Each active var should have a SET line
+    errors.extend(
+        f'{filename}: missing SET for {name}'
+        for name in active_vars
+        if f'SET "{name}=' not in content
+    )
+
+    # Deletion vars must NOT appear
+    errors.extend(
+        f'{filename}: deletion var {name} should not appear'
+        for name in deletion_vars
+        if f'SET "{name}=' in content
+    )
+
+    return errors
+
+
+def validate_launcher_env_sourcing(
+    launcher_path: Path,
+) -> list[str]:
+    """Validate that a launcher script contains env loader source guard.
+
+    Checks that create_launcher_script() injected the guarded source line
+    for loading OS-level environment variables from the per-command env file.
+
+    Validates:
+    - Bash/POSIX launchers contain file-existence guard and source command
+    - PowerShell launchers contain Test-Path guard and dot-source command
+    - CMD batch launchers contain if exist guard and call to env.cmd
+
+    Args:
+        launcher_path: Path to the launcher script
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+
+    if not launcher_path.exists():
+        return [f'Launcher script not found: {launcher_path}']
+
+    try:
+        content = launcher_path.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launcher_path}: {e}']
+
+    suffix = launcher_path.suffix.lower()
+
+    if suffix == '.ps1':
+        # PowerShell: expect Test-Path guard and dot-source
+        if 'env.ps1' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing env.ps1 reference in PowerShell launcher',
+            )
+        if 'Test-Path' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing Test-Path guard for env.ps1',
+            )
+    elif suffix == '.cmd':
+        # CMD batch: expect if exist guard and call to env.cmd
+        if 'env.cmd' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing env.cmd reference in CMD launcher',
+            )
+        if 'if exist' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing if exist guard for env.cmd',
+            )
+        if 'call' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing call command for env.cmd',
+            )
+    elif suffix in ('.sh', ''):
+        # Bash/POSIX: expect file-existence guard and source/dot-source
+        if 'env.sh' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing env.sh reference in shell launcher',
+            )
+        # Check for file-existence guard ([ -f ... ] pattern)
+        if '[ -f' not in content and '[-f' not in content:
+            errors.append(
+                f'{launcher_path.name}: missing file-existence guard for env.sh',
+            )
+
+    return errors

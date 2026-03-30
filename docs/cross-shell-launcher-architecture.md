@@ -442,7 +442,7 @@ After this step, `p` holds the entire prompt file as a single string, with `\r` 
 
 - PowerShell by default parses and expands `$`, `$(...)`, quotes, and backticks. When you try to embed a Bash command substitution inside a PowerShell string, you create two different quoting layers that both want to process `$` and quotes. That is why `--%` was necessary, it stops PowerShell from interpreting the rest of the line and lets Bash be the only parser. ([Microsoft Learn][ps3])
 
-- The `claude.cmd` or `claude.ps1` shims on Windows are not friendly to very long, multi-line arguments. The legacy `cmd.exe` command line length limit and argument handling make this especially brittle, which is why you saw errors like "Too long command line" or spurious option parsing. Launching the real Bash first, then `exec`-ing the CLI from Bash, avoids those layers and their limitations. Microsoft documents the stop-parsing token for exactly these scenarios, where you must pass complex arguments to a native tool without PowerShell interference. ([Microsoft Learn][ps3])
+- The `claude.cmd` or `claude.ps1` shims on Windows are not friendly to very long, multi-line arguments. The `cmd.exe` command line length limit and argument handling make this especially brittle, which is why you saw errors like "Too long command line" or spurious option parsing. Launching the real Bash first, then `exec`-ing the CLI from Bash, avoids those layers and their limitations. Microsoft documents the stop-parsing token for exactly these scenarios, where you must pass complex arguments to a native tool without PowerShell interference. ([Microsoft Learn][ps3])
 
 ### Micro-timeline of what happens (PowerShell)
 
