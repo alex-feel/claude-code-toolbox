@@ -289,6 +289,23 @@ Step comments/print statements in `main()` MUST use continuous whole integers (n
 | Linux    | `'linux'`      | `'Linux'`           | `'posix'` |
 | macOS    | `'darwin'`     | `'Darwin'`          | `'posix'` |
 
+### Agent Development Pitfalls
+
+Recurring patterns that cause CI failures. Every item below has caused at least one real CI failure. Read this section before modifying `setup_environment.py` or its tests.
+
+**Cross-platform test verification:** Local `uv run pytest` skips tests targeting other platforms (`@pytest.mark.skipif`). Developing on Windows means Unix-only tests are SKIPPED locally but WILL RUN in CI on Linux/macOS (and vice versa). A 100% local pass rate does NOT guarantee CI success. Before committing, review skipped tests to verify they would pass on their target platform. NEVER report a clean test run as definitive when platform-skipped tests exist.
+
+**Tests must match implementation:** Every test assertion MUST correspond to actually implemented behavior. Do NOT write tests that assert behavior which has not been coded yet. If a test is for a new feature, implement the feature BEFORE or SIMULTANEOUSLY with the test. Tests that pass only because they are platform-skipped on the development machine will fail in CI on the target platform. This is the single most common cause of CI failures in this project.
+
+**Parallel mock side effects:** Tests calling functions that use `execute_parallel()` (which uses `ThreadPoolExecutor`) MUST NOT use `mock.side_effect = [list]` with distinct values per item. The list is consumed in thread-scheduling order, not submission order. This causes non-deterministic failures depending on OS thread scheduling. Use either:
+
+- `@patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE': '1'})` to force sequential execution in tests that verify logic (not parallelism)
+- Function-based `side_effect` that maps inputs to deterministic outputs for tests that must run in parallel
+
+**Shell escape sequence levels:** Modifying shell template strings (especially ANSI escape sequences like `\\\\033`) requires tracking three escaping layers: Python source string, generated shell script file, and final shell execution. A change that appears correct in Python source may produce wrong output in the generated `.sh` file. After modifying escape sequences, always verify the generated file content matches expectations.
+
+**Multi-phase implementation counting:** When implementing multi-phase changes that introduce intermediate test failures, ALL failures MUST be explicitly counted including BOTH unit tests AND E2E tests. Agents have historically undercounted by omitting E2E failures. Each phase validation MUST confirm the exact failure count matches expectations before proceeding.
+
 ## Script Dependencies
 
 Python 3.12 required. **uv** installed by bootstrap scripts. Dependencies: PyYAML, Pydantic. Dev: pytest, ruff, pre-commit.
