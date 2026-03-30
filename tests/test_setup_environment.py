@@ -10584,3 +10584,463 @@ class TestApplyAutoUpdateSettings:
         param_names = list(sig.parameters.keys())
         assert 'command_names' not in param_names
         assert 'primary_command_name' not in param_names
+
+
+class TestBroadcastWmSettingchange:
+    """Tests for _broadcast_wm_settingchange() helper."""
+
+    def test_noop_on_non_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify no subprocess calls on non-Windows platforms."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        called: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            called.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        setup_environment._broadcast_wm_settingchange()
+        assert called == []
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_calls_setx_and_reg_delete_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify setx + reg delete pattern on Windows."""
+        called: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            called.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        setup_environment._broadcast_wm_settingchange()
+        assert len(called) == 2
+        assert called[0] == ['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp']
+        assert called[1][0] == 'reg'
+        assert called[1][1] == 'delete'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_does_not_raise_on_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify check=False prevents exceptions."""
+        def mock_run(_cmd: list[str], **_kw: object) -> MagicMock:
+            return MagicMock(returncode=1)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        # Should not raise
+        setup_environment._broadcast_wm_settingchange()
+
+
+class TestGenerateEnvLoaderFiles:
+    """Tests for generate_env_loader_files() function."""
+
+    def test_empty_vars_returns_empty(self) -> None:
+        """Empty os_env_vars produces no files."""
+        result = setup_environment.generate_env_loader_files({}, None, None)
+        assert result == {}
+
+    def test_all_none_values_returns_empty(self) -> None:
+        """All None values (deletions) produce no files."""
+        result = setup_environment.generate_env_loader_files(
+            {'DEL_VAR': None, 'DEL_OTHER': None}, None, None,
+        )
+        assert result == {}
+
+    def test_none_values_excluded_from_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """None values (deletions) are not written to loader files."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)  # No fish
+
+        result = setup_environment.generate_env_loader_files(
+            {'KEEP': 'val', 'DELETE': None}, None, None,
+        )
+        assert len(result) > 0
+        # Check that the sh file only has KEEP, not DELETE
+        sh_files = [p for k, p in result.items() if k.startswith('sh:')]
+        assert len(sh_files) == 1
+        content = sh_files[0].read_text()
+        assert 'KEEP' in content
+        assert 'DELETE' not in content
+
+    def test_global_files_generated_without_commands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without command_names, only global convenience files are generated."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        result = setup_environment.generate_env_loader_files(
+            {'MY_VAR': 'value'}, None, None,
+        )
+        # Should generate toolbox-env.sh
+        sh_files = [p for k, p in result.items() if k.startswith('sh:')]
+        assert len(sh_files) == 1
+        assert sh_files[0].name == 'toolbox-env.sh'
+
+    def test_per_command_and_global_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With command_names, generates per-command + global files."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        result = setup_environment.generate_env_loader_files(
+            {'VAR1': 'val1'}, ['my-cmd'], cmd_dir,
+        )
+        sh_files = [p for k, p in result.items() if k.startswith('sh:')]
+        names = {p.name for p in sh_files}
+        assert 'env.sh' in names  # per-command
+        assert 'toolbox-env.sh' in names  # global
+
+    def test_sh_format_correctness(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify bash/zsh export syntax."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        setup_environment.generate_env_loader_files({'FOO': 'bar', 'BAZ': 'qux'}, None, None)
+        sh_path = tmp_path / '.claude' / 'toolbox-env.sh'
+        content = sh_path.read_text()
+        assert 'export FOO="bar"' in content
+        assert 'export BAZ="qux"' in content
+        assert content.startswith('# Auto-generated by claude-code-toolbox')
+
+    def test_fish_format_generated_when_fish_available(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify fish set -gx syntax when fish is installed."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda cmd: '/usr/bin/fish' if cmd == 'fish' else None)
+
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, None, None)
+        fish_path = tmp_path / '.claude' / 'toolbox-env.fish'
+        assert fish_path.exists()
+        content = fish_path.read_text()
+        assert 'set -gx FOO "bar"' in content
+
+    def test_fish_not_generated_when_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No fish file when fish is not installed."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, None, None)
+        fish_path = tmp_path / '.claude' / 'toolbox-env.fish'
+        assert not fish_path.exists()
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_ps1_format_on_windows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify PowerShell syntax on Windows."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, ['my-cmd'], cmd_dir)
+        ps1_path = cmd_dir / 'env.ps1'
+        assert ps1_path.exists()
+        content = ps1_path.read_text()
+        assert "$env:FOO = 'bar'" in content
+
+    def test_special_chars_escaped_in_sh(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Values with special chars are properly escaped in bash."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        setup_environment.generate_env_loader_files(
+            {'TRICKY': 'has "quotes" and $dollar and `backtick`'}, None, None,
+        )
+        sh_path = tmp_path / '.claude' / 'toolbox-env.sh'
+        content = sh_path.read_text()
+        assert r'\"quotes\"' in content
+        assert r'\$dollar' in content
+        assert r'\`backtick\`' in content
+
+    def test_special_chars_escaped_in_ps1(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Values with single quotes are properly escaped in PowerShell."""
+        if sys.platform != 'win32':
+            pytest.skip('Windows-specific test')
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files(
+            {'TRICKY': "it's a value"}, ['my-cmd'], cmd_dir,
+        )
+        ps1_path = cmd_dir / 'env.ps1'
+        content = ps1_path.read_text()
+        assert "$env:TRICKY = 'it''s a value'" in content
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_cmd_format_on_windows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify CMD batch SET syntax on Windows."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, ['my-cmd'], cmd_dir)
+        cmd_path = cmd_dir / 'env.cmd'
+        assert cmd_path.exists()
+        content = cmd_path.read_text()
+        assert 'SET "FOO=bar"' in content
+        assert content.startswith('@echo off')
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_special_chars_escaped_in_cmd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Percent signs are doubled in CMD batch files."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files(
+            {'TRICKY': 'has 50% discount'}, ['my-cmd'], cmd_dir,
+        )
+        cmd_path = cmd_dir / 'env.cmd'
+        content = cmd_path.read_text()
+        assert 'SET "TRICKY=has 50%% discount"' in content
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_global_cmd_file_on_windows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Global toolbox-env.cmd generated on Windows."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        setup_environment.generate_env_loader_files({'MY_VAR': 'value'}, None, None)
+        cmd_path = tmp_path / '.claude' / 'toolbox-env.cmd'
+        assert cmd_path.exists()
+        content = cmd_path.read_text()
+        assert 'SET "MY_VAR=value"' in content
+
+
+class TestLauncherEnvSourcing:
+    """Tests for env loader sourcing in launcher scripts."""
+
+    def test_unix_launcher_contains_env_source_guard(self, tmp_path: Path) -> None:
+        """Unix launch.sh contains guarded env.sh source line."""
+        config_dir = tmp_path / '.claude' / 'test-cmd'
+        config_dir.mkdir(parents=True)
+
+        result = setup_environment.create_launcher_script(
+            config_base_dir=config_dir,
+            command_name='test-cmd',
+            system_prompt_file=None,
+            mode='replace',
+            has_profile_mcp_servers=False,
+        )
+        assert result is not None
+        launcher_path = result[1]  # launch.sh
+        content = launcher_path.read_text()
+        assert 'ENV_FILE="$HOME/.claude/test-cmd/env.sh"' in content
+        assert '[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in content
+
+    def test_unix_launcher_with_prompt_contains_env_source(self, tmp_path: Path) -> None:
+        """Unix launch.sh with system prompt also has env source."""
+        config_dir = tmp_path / '.claude' / 'test-cmd'
+        prompts_dir = config_dir / 'prompts'
+        prompts_dir.mkdir(parents=True)
+        (prompts_dir / 'test.md').write_text('# Test prompt')
+
+        result = setup_environment.create_launcher_script(
+            config_base_dir=config_dir,
+            command_name='test-cmd',
+            system_prompt_file='test.md',
+            mode='replace',
+            has_profile_mcp_servers=False,
+        )
+        assert result is not None
+        launcher_path = result[1]
+        content = launcher_path.read_text()
+        assert 'ENV_FILE="$HOME/.claude/test-cmd/env.sh"' in content
+        assert '[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in content
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_windows_ps1_contains_env_source(self, tmp_path: Path) -> None:
+        """Windows start.ps1 contains PowerShell dot-source guard."""
+        config_dir = tmp_path / '.claude' / 'test-cmd'
+        config_dir.mkdir(parents=True)
+
+        result = setup_environment.create_launcher_script(
+            config_base_dir=config_dir,
+            command_name='test-cmd',
+            system_prompt_file=None,
+            mode='replace',
+            has_profile_mcp_servers=False,
+        )
+        assert result is not None
+        ps1_path = result[0]  # start.ps1
+        content = ps1_path.read_text()
+        assert 'env.ps1' in content
+        assert 'Test-Path' in content
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_windows_shared_sh_contains_env_source(self, tmp_path: Path) -> None:
+        """Windows shared launch.sh contains env.sh source guard."""
+        config_dir = tmp_path / '.claude' / 'test-cmd'
+        config_dir.mkdir(parents=True)
+
+        result = setup_environment.create_launcher_script(
+            config_base_dir=config_dir,
+            command_name='test-cmd',
+            system_prompt_file=None,
+            mode='replace',
+            has_profile_mcp_servers=False,
+        )
+        assert result is not None
+        launch_sh = result[1]  # launch.sh
+        content = launch_sh.read_text()
+        assert 'ENV_FILE="$HOME/.claude/test-cmd/env.sh"' in content
+        assert '[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in content
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_windows_cmd_contains_env_source(self, tmp_path: Path) -> None:
+        """Windows start.cmd contains guarded call to env.cmd."""
+        config_dir = tmp_path / '.claude' / 'test-cmd'
+        config_dir.mkdir(parents=True)
+
+        result = setup_environment.create_launcher_script(
+            config_base_dir=config_dir,
+            command_name='test-cmd',
+            system_prompt_file=None,
+            mode='replace',
+            has_profile_mcp_servers=False,
+        )
+        assert result is not None
+        cmd_path = config_dir / 'start.cmd'
+        assert cmd_path.exists()
+        content = cmd_path.read_text()
+        assert 'env.cmd' in content
+        assert 'if exist' in content
+        assert 'call' in content
+
+
+class TestFishSetUx:
+    """Tests for Fish set -Ux in set_os_env_variable_unix()."""
+
+    def test_fish_set_ux_called_when_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When fish is installed, set -Ux is called for setting values."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
+
+        fish_cmds: list[list[str]] = []
+
+        original_which = shutil.which
+
+        def mock_which(cmd: str) -> str | None:
+            if cmd == 'fish':
+                return '/usr/bin/fish'
+            return original_which(cmd)
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            fish_cmds.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        setup_environment.set_os_env_variable_unix('MY_VAR', 'my_value')
+
+        assert len(fish_cmds) == 1
+        assert fish_cmds[0] == ['fish', '-c', 'set -Ux MY_VAR "my_value"']
+
+    def test_fish_set_ue_called_for_deletion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When fish is installed, set -Ue is called for deletions."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
+
+        fish_cmds: list[list[str]] = []
+
+        def mock_which(cmd: str) -> str | None:
+            if cmd == 'fish':
+                return '/usr/bin/fish'
+            return None
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            fish_cmds.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        setup_environment.set_os_env_variable_unix('MY_VAR', None)
+
+        assert len(fish_cmds) == 1
+        assert fish_cmds[0] == ['fish', '-c', 'set -Ue MY_VAR']
+
+    def test_no_fish_calls_when_not_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When fish is not installed, no subprocess calls for fish."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
+
+        fish_cmds: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            fish_cmds.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        setup_environment.set_os_env_variable_unix('MY_VAR', 'value')
+        assert fish_cmds == []
+
+    def test_timeout_gracefully_handled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """TimeoutExpired is caught and ignored."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
+
+        def mock_which(cmd: str) -> str | None:
+            if cmd == 'fish':
+                return '/usr/bin/fish'
+            return None
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+
+        def mock_run(cmd: list[str], **_kw: object) -> None:
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=5)
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        # Should not raise
+        setup_environment.set_os_env_variable_unix('MY_VAR', 'value')
+
+    def test_oserror_gracefully_handled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """OSError is caught and ignored."""
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
+
+        def mock_which(cmd: str) -> str | None:
+            if cmd == 'fish':
+                return '/usr/bin/fish'
+            return None
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+
+        def mock_run(_cmd: list[str], **_kw: object) -> None:
+            raise OSError('fish not found')
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        # Should not raise
+        setup_environment.set_os_env_variable_unix('MY_VAR', 'value')
+
+
+class TestSetOsEnvVariableWindowsBroadcast:
+    """Tests for WM_SETTINGCHANGE broadcast after reg delete in set_os_env_variable_windows()."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_broadcast_called_after_successful_deletion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Verify broadcast is called after successful reg delete."""
+        called_with: list[list[str]] = []
+
+        class MockResult:
+            returncode = 0
+            stderr = ''
+
+        def mock_run(cmd: list[str], **_kw: object) -> MockResult:
+            called_with.append(cmd)
+            return MockResult()
+
+        monkeypatch.setattr(subprocess, 'run', mock_run)
+        result = setup_environment.set_os_env_variable_windows('MY_VAR', None)
+        assert result is True
+        # First call: reg delete for the variable
+        assert called_with[0][0] == 'reg'
+        # Next calls: broadcast (setx + reg delete for temp)
+        assert called_with[1] == ['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp']
+        assert called_with[2][0] == 'reg'
+        assert 'CLAUDE_CODE_TOOLBOX_TEMP' in called_with[2]

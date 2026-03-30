@@ -70,6 +70,12 @@ The setup script requires explicit user confirmation before installing. CLI flag
 
 YAML configs define complete environments: dependencies, agents, MCP servers (auto-permission), slash commands, system prompts (append/replace modes), hooks, global config (`~/.claude.json` via deep merge), and selective inheritance via `merge-keys` directive.
 
+**Env Loader Files:** `generate_env_loader_files()` creates Rustup-style shell scripts containing ONLY `os-env-variables` (not `env-variables`). Per-command files: `~/.claude/{cmd}/env.sh`, `env.fish` (if Fish installed), `env.ps1` (Windows), `env.cmd` (Windows). Global files: `~/.claude/toolbox-env.sh`, `toolbox-env.fish`, `toolbox-env.ps1` (Windows), `toolbox-env.cmd` (Windows). `None`-valued (deletion) vars are excluded. `create_launcher_script()` injects guarded source lines in all 6 launcher variants so commands auto-load env vars.
+
+**Fish Dual-Mechanism:** `set_os_env_variable_unix()` writes `set -gx` to `config.fish` (durable persistence) AND calls `set -Ux` via subprocess (instant propagation to all running Fish sessions). For deletions, `set -Ue` removes the universal variable. The `config.fish` write is authoritative; `set -Ux` is complementary.
+
+**WM_SETTINGCHANGE Broadcast:** `_broadcast_wm_settingchange()` in `setup_environment.py` uses the dummy `setx CLAUDE_CODE_TOOLBOX_TEMP temp` + `reg delete` pattern to trigger `WM_SETTINGCHANGE`. Called from `add_directory_to_windows_path()`, `cleanup_temp_paths_from_registry()`, `set_os_env_variable_windows()` (after `reg delete` for deletions), and `set_all_os_env_variables()` (batch broadcast after all operations). `install_claude.py` has its own independent copy at `ensure_local_bin_in_path_windows()` (standalone script policy).
+
 ### Global Config (`global-config`)
 
 Writes to `~/.claude.json`. Merge: `deep_merge_settings()` with `array_union_keys=set()` (arrays replaced, not unioned -- differs from `user-settings` which unions `permissions.allow/deny/ask`). Only `oauthAccount` blocked from non-null values (`GLOBAL_CONFIG_EXCLUDED_KEYS`); `null` allowed for clearing OAuth. `install_claude.py`'s `update_install_method_config()` also writes to `~/.claude.json` via the same pattern. Both `write_user_settings()` and `write_global_config()` delegate to `_write_merged_json()`.

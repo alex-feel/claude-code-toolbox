@@ -1907,6 +1907,24 @@ def parse_mcp_command(command_str: str) -> dict[str, Any]:
 _WIN_PATH_VALUE_MAX_LENGTH = 32762
 
 
+def _broadcast_wm_settingchange() -> None:
+    """Broadcast WM_SETTINGCHANGE to notify GUI applications of environment changes.
+
+    Uses a dummy setx+reg-delete trick to trigger the broadcast.
+    Only affects new windows opened from Explorer; does NOT update
+    existing CLI terminal sessions (cmd, PowerShell, Git Bash).
+    """
+    if sys.platform == 'win32':
+        subprocess.run(
+            ['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'],
+            capture_output=True, check=False,
+        )
+        subprocess.run(
+            ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
+            capture_output=True, check=False,
+        )
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -2032,15 +2050,8 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
                     f'Restart your terminal to apply changes.',
                 )
 
-            # Broadcast WM_SETTINGCHANGE to notify other processes
-            # This is done via setx which broadcasts the change
-            # We use a dummy variable to trigger the broadcast without modifying anything
-            subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
-            subprocess.run(
-                ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
-                capture_output=True,
-                check=False,
-            )
+            # Broadcast WM_SETTINGCHANGE to notify GUI applications
+            _broadcast_wm_settingchange()
 
             return True, f'Successfully added to PATH: {normalized_dir}'
 
@@ -2148,13 +2159,8 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
                 new_path = ';'.join(clean_components)
                 winreg.SetValueEx(reg_key, 'PATH', 0, winreg.REG_EXPAND_SZ, new_path)
 
-                # Broadcast WM_SETTINGCHANGE to notify other processes
-                subprocess.run(['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp'], capture_output=True, check=False)
-                subprocess.run(
-                    ['reg', 'delete', r'HKCU\Environment', '/v', 'CLAUDE_CODE_TOOLBOX_TEMP', '/f'],
-                    capture_output=True,
-                    check=False,
-                )
+                # Broadcast WM_SETTINGCHANGE to notify GUI applications
+                _broadcast_wm_settingchange()
 
             winreg.CloseKey(reg_key)
             return (len(removed_paths), removed_paths)
@@ -4591,6 +4597,8 @@ def set_os_env_variable_windows(name: str, value: str | None) -> bool:
                     warning(f'Could not delete environment variable {name}: {result.stderr}')
                 else:
                     success = True
+                    # reg delete does not broadcast WM_SETTINGCHANGE (unlike setx)
+                    _broadcast_wm_settingchange()
             else:
                 # Set the variable using setx
                 result = subprocess.run(
@@ -4637,6 +4645,24 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
                 # Set the variable
                 if not add_export_to_file(config_file, name, value):
                     all_success = False
+
+        # Fish universal variables: propagate immediately to all running Fish instances
+        # config.fish (set -gx) remains the durable persistence mechanism;
+        # set -Ux provides instant propagation to open Fish sessions
+        if shutil.which('fish'):
+            try:
+                if value is None:
+                    subprocess.run(
+                        ['fish', '-c', f'set -Ue {name}'],
+                        capture_output=True, check=False, timeout=5,
+                    )
+                else:
+                    subprocess.run(
+                        ['fish', '-c', f'set -Ux {name} "{value}"'],
+                        capture_output=True, check=False, timeout=5,
+                    )
+            except (OSError, subprocess.TimeoutExpired):
+                pass  # Non-critical: config.fish write is the durable mechanism
 
     return all_success
 
@@ -4717,15 +4743,140 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     if failed_count > 0:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
-    # Provide reload instructions for Unix systems
-    if sys.platform != 'win32' and (set_count > 0 or delete_count > 0):
-        info('Note: Open a new terminal to apply changes')
-        # Provide explicit unset instructions for deleted variables
-        if deleted_names:
-            unset_cmds = ' '.join(f'unset {n};' for n in deleted_names)
-            info(f'To remove deleted variables from current shell: {unset_cmds}')
+    # Broadcast WM_SETTINGCHANGE after all env var operations (Windows)
+    if sys.platform == 'win32' and (set_count > 0 or delete_count > 0):
+        _broadcast_wm_settingchange()
 
     return failed_count == 0
+
+
+def generate_env_loader_files(
+    os_env_vars: dict[str, str | None],
+    command_names: list[str] | None,
+    config_base_dir: Path | None,
+) -> dict[str, Path]:
+    """Generate shell-specific env loader files for OS environment variables.
+
+    Creates Rustup-pattern env files that can be sourced by launchers
+    and users. Contains ONLY os-env-variables (NOT env-variables,
+    which are handled by Claude Code's config.json env key).
+
+    Per-command files (when command_names provided):
+        ~/.claude/{cmd}/env.sh      (Bash/Zsh)
+        ~/.claude/{cmd}/env.fish    (Fish, if Fish installed)
+        ~/.claude/{cmd}/env.ps1     (PowerShell, Windows only)
+        ~/.claude/{cmd}/env.cmd     (CMD batch, Windows only)
+
+    Global convenience files (always generated when os_env_vars non-empty):
+        ~/.claude/toolbox-env.sh
+        ~/.claude/toolbox-env.fish  (if Fish installed)
+        ~/.claude/toolbox-env.ps1   (PowerShell, Windows only)
+        ~/.claude/toolbox-env.cmd   (CMD batch, Windows only)
+
+    Args:
+        os_env_vars: Dict of env var names to values. None values = deletions
+                     (excluded from loader files since the var should not exist).
+        command_names: List of command names, or None for non-command configs.
+        config_base_dir: Base dir for per-command files (e.g., ~/.claude/{cmd}/).
+
+    Returns:
+        Dict mapping file type to generated Path (e.g., {"sh": Path(...)}).
+    """
+    # Filter to only non-None values (deletions are excluded from loader files)
+    active_vars = {k: v for k, v in os_env_vars.items() if v is not None}
+
+    if not active_vars:
+        return {}
+
+    generated: dict[str, Path] = {}
+    home = get_real_user_home()
+    claude_dir = home / '.claude'
+
+    # Build file content for each shell type
+    sh_header = '# Auto-generated by claude-code-toolbox -- do not edit manually\n'
+    sh_header += '# Re-run setup to update. Source this file to load OS env vars.\n'
+
+    fish_header = '# Auto-generated by claude-code-toolbox -- do not edit manually\n'
+    fish_header += '# Re-run setup to update. Source this file to load OS env vars.\n'
+
+    ps1_header = '# Auto-generated by claude-code-toolbox -- do not edit manually\n'
+    ps1_header += '# Re-run setup to update. Dot-source this file to load OS env vars.\n'
+
+    # Bash/Zsh content
+    sh_lines = [sh_header]
+    for name, value in active_vars.items():
+        # Escape special characters for double-quoted bash strings
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+        sh_lines.append(f'export {name}="{escaped}"')
+    sh_content = '\n'.join(sh_lines) + '\n'
+
+    # Fish content
+    fish_lines = [fish_header]
+    for name, value in active_vars.items():
+        # Escape special characters for double-quoted fish strings
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+        fish_lines.append(f'set -gx {name} "{escaped}"')
+    fish_content = '\n'.join(fish_lines) + '\n'
+
+    # PowerShell content
+    ps1_lines = [ps1_header]
+    for name, value in active_vars.items():
+        # Single-quote for literal PowerShell strings; double internal single-quotes
+        escaped = value.replace("'", "''")
+        ps1_lines.append(f"$env:{name} = '{escaped}'")
+    ps1_content = '\n'.join(ps1_lines) + '\n'
+
+    # CMD batch content (Windows only)
+    cmd_header = '@echo off\n'
+    cmd_header += 'REM Auto-generated by claude-code-toolbox -- do not edit manually\n'
+    cmd_header += 'REM Re-run setup to update. Call this file to load OS env vars.\n'
+
+    cmd_lines = [cmd_header]
+    for name, value in active_vars.items():
+        # Double percent signs for batch files (% -> %%)
+        escaped = value.replace('%', '%%')
+        cmd_lines.append(f'SET "{name}={escaped}"')
+    cmd_content = '\n'.join(cmd_lines) + '\n'
+
+    has_fish = bool(shutil.which('fish'))
+
+    def _write_loader(
+        directory: Path,
+        sh_name: str,
+        fish_name: str | None,
+        ps1_name: str | None,
+        cmd_name: str | None,
+    ) -> None:
+        """Write loader files into the given directory."""
+        directory.mkdir(parents=True, exist_ok=True)
+
+        sh_path = directory / sh_name
+        sh_path.write_text(sh_content, newline='\n')
+        generated[f'sh:{sh_path}'] = sh_path
+
+        if fish_name and has_fish:
+            fish_path = directory / fish_name
+            fish_path.write_text(fish_content, newline='\n')
+            generated[f'fish:{fish_path}'] = fish_path
+
+        if ps1_name and sys.platform == 'win32':
+            ps1_path = directory / ps1_name
+            ps1_path.write_text(ps1_content)
+            generated[f'ps1:{ps1_path}'] = ps1_path
+
+        if cmd_name and sys.platform == 'win32':
+            cmd_path = directory / cmd_name
+            cmd_path.write_text(cmd_content)
+            generated[f'cmd:{cmd_path}'] = cmd_path
+
+    # Per-command files
+    if command_names and config_base_dir:
+        _write_loader(config_base_dir, 'env.sh', 'env.fish', 'env.ps1', 'env.cmd')
+
+    # Global convenience files (always generated)
+    _write_loader(claude_dir, 'toolbox-env.sh', 'toolbox-env.fish', 'toolbox-env.ps1', 'toolbox-env.cmd')
+
+    return generated
 
 
 # --- Standalone Node.js installation functions ---
@@ -7373,6 +7524,10 @@ def create_launcher_script(
 
 $claudeUserDir = Join-Path $env:USERPROFILE ".claude"
 
+# Source OS-level environment variables (if configured)
+$envFile = Join-Path (Join-Path $claudeUserDir "{command_name}") "env.ps1"
+if (Test-Path $envFile) {{ . $envFile }}
+
 Write-Host "Starting Claude Code with {command_name} configuration..." -ForegroundColor Green
 
 # Find Git Bash (required for Claude Code on Windows)
@@ -7404,6 +7559,10 @@ if ($args.Count -gt 0) {{
 REM Claude Code Environment Launcher for CMD
 REM This script starts Claude Code with the configured environment
 
+REM Source OS-level environment variables (if configured)
+set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+if exist "%ENV_FILE%" call "%ENV_FILE%"
+
 echo Starting Claude Code with {command_name} configuration...
 
 REM Call shared script
@@ -7432,6 +7591,10 @@ set -euo pipefail
 
 # Set isolated environment directory
 export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
+# Source OS-level environment variables (if configured)
+ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 # Get Windows path for settings
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
@@ -7596,6 +7759,10 @@ set -euo pipefail
 # Set isolated environment directory
 export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
 
+# Source OS-level environment variables (if configured)
+ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
 # Get Windows path for settings
 SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
   echo "$HOME/.claude/{command_name}/config.json")"
@@ -7627,6 +7794,10 @@ fi
 
 # Set isolated environment directory
 export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+
+# Source OS-level environment variables (if configured)
+ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
 PROMPT_PATH="$HOME/.claude/{command_name}/prompts/{system_prompt_file}"
@@ -7797,6 +7968,10 @@ fi
 # Set isolated environment directory
 export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
 
+# Source OS-level environment variables (if configured)
+ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
 SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
 
 # MCP configuration for profile-scoped servers
@@ -7882,6 +8057,9 @@ def register_global_command(
             batch_path = local_bin / f'{command_name}.cmd'
             batch_content = f'''@echo off
 REM Global {command_name} command for CMD
+REM Source OS-level environment variables (if configured)
+set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 set "SCRIPT_WIN={cmd_script_path}"
@@ -7921,6 +8099,9 @@ exec "{bash_script_path}" "$@"
                     alias_batch_path = local_bin / f'{alias_name}.cmd'
                     alias_batch_content = f'''@echo off
 REM Global {alias_name} command for CMD (alias for {command_name})
+REM Source OS-level environment variables (if configured)
+set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 set "SCRIPT_WIN={cmd_script_path}"
@@ -7959,7 +8140,6 @@ exec "{bash_script_path}" "$@"
                     info(path_message)
                 else:
                     success(path_message)
-                    info('You may need to restart your terminal for PATH changes to take effect')
             else:
                 warning(f'Failed to add directory to PATH: {path_message}')
                 info('')
@@ -8553,6 +8733,15 @@ def main() -> None:
         else:
             info('No OS environment variables to configure')
 
+        # Generate env loader files for OS environment variables
+        generated_env_files: dict[str, Path] = {}
+        if os_env_variables:
+            generated_env_files = generate_env_loader_files(
+                os_env_variables, command_names, artifact_base_dir if command_names else None,
+            )
+            if generated_env_files:
+                success(f'Generated {len(generated_env_files)} env loader file(s)')
+
         # Step 7: Process agents
         print()
         print(f'{Colors.CYAN}Step 7: Processing agents...{Colors.NC}')
@@ -8883,6 +9072,44 @@ def main() -> None:
                 print(f'   * Global command: {primary_command_name}')
         else:
             print('   * Use "claude" to start Claude Code with configured environment')
+
+        # Environment guidance based on what was configured
+        if os_env_variables and generated_env_files:
+            active_env_count = sum(1 for v in os_env_variables.values() if v is not None)
+            if active_env_count > 0:
+                if command_names:
+                    print(f'   * Environment: Commands auto-load {active_env_count} OS env var(s)')
+                    home = get_real_user_home()
+                    if sys.platform == 'win32':
+                        ps1_loader = home / '.claude' / 'toolbox-env.ps1'
+                        cmd_loader = home / '.claude' / 'toolbox-env.cmd'
+                        print(f'     For bare "claude" (PowerShell): . {ps1_loader}')
+                        print(f'     For bare "claude" (CMD): {cmd_loader}')
+                    else:
+                        shell_name = os.environ.get('SHELL', '')
+                        if 'fish' in shell_name:
+                            fish_loader = home / '.claude' / 'toolbox-env.fish'
+                            print(f'     For bare "claude": source {fish_loader}')
+                        else:
+                            sh_loader = home / '.claude' / 'toolbox-env.sh'
+                            print(f'     For bare "claude": source {sh_loader}')
+                else:
+                    print(f'   * Environment: {active_env_count} OS env var(s) configured')
+                    home = get_real_user_home()
+                    if sys.platform == 'win32':
+                        ps1_loader = home / '.claude' / 'toolbox-env.ps1'
+                        cmd_loader = home / '.claude' / 'toolbox-env.cmd'
+                        print(f'     To apply now (PowerShell): . {ps1_loader}')
+                        print(f'     To apply now (CMD): {cmd_loader}')
+                    else:
+                        shell_name = os.environ.get('SHELL', '')
+                        if 'fish' in shell_name:
+                            fish_loader = home / '.claude' / 'toolbox-env.fish'
+                            print(f'     To apply now: source {fish_loader}')
+                        else:
+                            sh_loader = home / '.claude' / 'toolbox-env.sh'
+                            print(f'     To apply now: source {sh_loader}')
+                    print('     Or open a new terminal for automatic loading')
 
         print()
         print(f'{Colors.YELLOW}Available Commands (after starting Claude):{Colors.NC}')

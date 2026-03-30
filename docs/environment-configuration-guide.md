@@ -665,6 +665,84 @@ os-env-variables:
   OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
+#### Environment Variable Loading
+
+The setup script provides two distinct mechanisms for environment variables, each serving a different scope:
+
+| YAML Key           | Scope                | Storage                           | Available In                         |
+|--------------------|----------------------|-----------------------------------|--------------------------------------|
+| `env-variables`    | Claude Code internal | `config.json` `env` key (profile) | Claude Code sessions only            |
+| `os-env-variables` | OS-level persistent  | Shell profiles + Windows registry | All processes (terminals, programs)  |
+
+##### Env Loader Files
+
+When `os-env-variables` are configured, the setup generates Rustup-style env loader files that can be sourced to load the variables into the current shell session. These files contain **only** `os-env-variables` (not `env-variables`, which are handled by Claude Code's `config.json`).
+
+**Per-command files** (generated when `command-names` is specified):
+
+| File                         | Shell      | Generated When |
+|------------------------------|------------|----------------|
+| `~/.claude/{cmd}/env.sh`     | Bash/Zsh   | Always         |
+| `~/.claude/{cmd}/env.fish`   | Fish       | Fish installed |
+| `~/.claude/{cmd}/env.ps1`    | PowerShell | Windows only   |
+| `~/.claude/{cmd}/env.cmd`    | CMD batch  | Windows only   |
+
+**Global convenience files** (always generated when `os-env-variables` are non-empty):
+
+| File                          | Shell      | Generated When |
+|-------------------------------|------------|----------------|
+| `~/.claude/toolbox-env.sh`    | Bash/Zsh   | Always         |
+| `~/.claude/toolbox-env.fish`  | Fish       | Fish installed |
+| `~/.claude/toolbox-env.ps1`   | PowerShell | Windows only   |
+| `~/.claude/toolbox-env.cmd`   | CMD batch  | Windows only   |
+
+Variables set to `null` (deletions) are excluded from loader files.
+
+##### Automatic Loading via Launchers
+
+When `command-names` is specified, the generated launcher scripts automatically source the per-command env loader file before starting Claude Code. No manual action is required -- running the command (for example, `claude-python`) loads all OS environment variables.
+
+The source line is guarded by a file-existence check, so launchers work normally even when no `os-env-variables` are configured.
+
+##### Manual Sourcing for Bare `claude`
+
+Users who run bare `claude` (without a command-name launcher) can manually source the global loader to apply OS environment variables to their current shell session:
+
+**Bash/Zsh:**
+
+```bash
+source ~/.claude/toolbox-env.sh
+```
+
+**Fish:**
+
+```fish
+source ~/.claude/toolbox-env.fish
+```
+
+**PowerShell (Windows):**
+
+```powershell
+. ~/.claude/toolbox-env.ps1
+```
+
+**CMD (Windows):**
+
+```batch
+%USERPROFILE%\.claude\toolbox-env.cmd
+```
+
+Alternatively, open a new terminal -- shell profiles are updated during setup and will load the variables automatically.
+
+##### Fish Dual-Mechanism
+
+On systems with Fish shell installed, the setup uses two complementary mechanisms for OS environment variables:
+
+- **`set -gx` in `config.fish`**: Durable persistence. Variables are loaded when Fish starts. This is the primary mechanism.
+- **`set -Ux` (Universal Exported)**: Instant propagation. Variables are immediately visible in all running Fish sessions without requiring `source` or a new terminal. For deletions, `set -Ue` removes the universal variable.
+
+The `config.fish` write is always the authoritative source. The `set -Ux` call is a complementary enhancement that provides immediate availability.
+
 ### User Interface
 
 #### `command-defaults`
@@ -1281,10 +1359,10 @@ Here is a conceptual overview of what the setup script does when you run it with
 3. **Download custom files** -- Processes `files-to-download` entries.
 4. **Install Node.js** -- If `install-nodejs: true` is set in the config.
 5. **Install dependencies** -- Runs platform-specific dependency commands.
-6. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`.
-7. **Process agents** -- Downloads agent markdown files to `~/.claude/agents/`.
+6. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`. Generates env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) for launcher auto-sourcing.
+7. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
 8. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
-9. **Process rules** -- Downloads rule markdown files to `~/.claude/rules/`.
+9. **Process rules** -- Downloads rule Markdown files to `~/.claude/rules/`.
 10. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
 11. **Process system prompt** -- Downloads the prompt file if configured.
 12. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
