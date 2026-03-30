@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.5.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.5.0...v5.5.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* remove auto-update management logic from install_claude.py ([3407a3f](https://github.com/alex-feel/claude-code-toolbox/commit/3407a3fbd96982d31ad8cb4606aaa82c498c6919))
+
 ## [5.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.4.1...v5.5.0) (2026-03-29)
 
 
