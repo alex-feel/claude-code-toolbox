@@ -10809,6 +10809,38 @@ class TestGenerateEnvLoaderFiles:
         content = cmd_path.read_text()
         assert 'SET "MY_VAR=value"' in content
 
+    def test_non_string_values_converted_to_strings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Non-string YAML values (int, bool, float) are converted to strings in loader files."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)  # No fish
+
+        # Simulate YAML-parsed non-string values
+        mixed_type_vars: dict[str, Any] = {
+            'INT_VAR': 30000,
+            'BOOL_VAR': True,
+            'FLOAT_VAR': 0.5,
+            'STR_VAR': 'normal_string',
+            'DELETE_VAR': None,
+        }
+
+        result = setup_environment.generate_env_loader_files(mixed_type_vars, None, None)
+        assert len(result) > 0
+
+        # Check that the sh file contains string representations
+        sh_files = [p for k, p in result.items() if k.startswith('sh:')]
+        assert len(sh_files) == 1
+        content = sh_files[0].read_text()
+
+        # All non-None values should be present as strings
+        assert 'export INT_VAR="30000"' in content
+        assert 'export BOOL_VAR="True"' in content
+        assert 'export FLOAT_VAR="0.5"' in content
+        assert 'export STR_VAR="normal_string"' in content
+        # Deletion var should be absent
+        assert 'DELETE_VAR' not in content
+
 
 class TestLauncherEnvSourcing:
     """Tests for env loader sourcing in launcher scripts."""
