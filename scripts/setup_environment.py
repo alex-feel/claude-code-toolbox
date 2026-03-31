@@ -905,6 +905,7 @@ def run_bash_command(
     command: str,
     capture_output: bool = True,
     login_shell: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Execute command via bash (Git Bash on Windows, native bash on Unix).
 
@@ -915,6 +916,9 @@ def run_bash_command(
         command: The bash command string to execute
         capture_output: Whether to capture stdout/stderr
         login_shell: Whether to use login shell (-l flag)
+        extra_env: Additional environment variables to merge into the subprocess
+            environment. When provided, these values override any existing
+            environment variables (e.g., passing PATH replaces the inherited PATH).
 
     Returns:
         subprocess.CompletedProcess with the result
@@ -949,6 +953,10 @@ def run_bash_command(
     env = os.environ.copy()
     if sys.platform == 'win32':
         env['MSYS_NO_PATHCONV'] = '1'
+
+    # Merge additional environment variables (e.g., PATH for MCP server configuration)
+    if extra_env:
+        env.update(extra_env)
 
     try:
         result = subprocess.run(args, capture_output=capture_output, text=True, env=env)
@@ -987,6 +995,9 @@ def convert_to_unix_path(windows_path: str) -> str:
     """
     if not windows_path:
         return windows_path
+
+    # Strip surrounding double quotes from Windows registry PATH entries
+    windows_path = windows_path.strip('"')
 
     # If already a Unix path (starts with / and no drive letter), return as-is
     if windows_path.startswith('/') and len(windows_path) > 1 and windows_path[1] != ':':
@@ -1925,6 +1936,47 @@ def _broadcast_wm_settingchange() -> None:
         )
 
 
+def _is_temp_path(path: str) -> bool:
+    """Check if a path belongs to a temporary directory.
+
+    Detects paths under the user's TEMP/TMP directories, including paths
+    with Windows 8.3 short filename format mismatches. Also detects pytest
+    temp directories.
+
+    Args:
+        path: The file system path to check (will be lowercased internally).
+
+    Returns:
+        True if the path is in a temporary directory, False otherwise.
+    """
+    if sys.platform != 'win32':
+        return False
+
+    path_lower = path.lower()
+
+    # Resolve TEMP/TMP to long form to handle Windows 8.3 short name format
+    # (e.g., 'afilip~1' vs 'afilippov')
+    for env_var in ('TEMP', 'TMP'):
+        temp_dir = os.environ.get(env_var, '')
+        if temp_dir:
+            try:
+                temp_dir_resolved = str(Path(temp_dir).resolve()).lower()
+            except (OSError, ValueError):
+                temp_dir_resolved = temp_dir.lower()
+            if temp_dir_resolved and temp_dir_resolved in path_lower:
+                return True
+            # Also check the raw (possibly 8.3) form
+            if temp_dir.lower() in path_lower:
+                return True
+
+    # Defense-in-depth: catch pytest temp dirs and generic tmp* subdirectories
+    # regardless of TEMP variable resolution
+    return (
+        r'\appdata\local\temp\pytest-of-' in path_lower
+        or r'\appdata\local\temp\tmp' in path_lower
+    )
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -1951,31 +2003,14 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             normalized_dir = str(Path(directory).resolve())
 
             # CRITICAL: Prevent adding temporary directory paths to PATH
-            # Temporary directories cause PATH pollution and don't persist
-            temp_dir_env = os.environ.get('TEMP', '').lower()
-            temp_dir_alt = os.environ.get('TMP', '').lower()
-            normalized_lower = normalized_dir.lower()
-
-            # Check if path is in a temp directory
-            if temp_dir_env and temp_dir_env in normalized_lower:
-                return (
-                    False,
-                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
-                )
-            if temp_dir_alt and temp_dir_alt in normalized_lower:
-                return (
-                    False,
-                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
-                )
-
-            # Additional check for common temp path patterns
-            if r'\appdata\local\temp\tmp' in normalized_lower:
+            if _is_temp_path(normalized_dir):
                 return (
                     False,
                     f'Refusing to add temporary directory to PATH: {normalized_dir}',
                 )
 
             # Validate it's the expected .local\bin directory
+            normalized_lower = normalized_dir.lower()
             expected_local_bin = str(get_real_user_home() / '.local' / 'bin')
             if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(get_real_user_home()).lower()):
                 # Allow only paths under user's home directory
@@ -2095,6 +2130,7 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
     This function scans the user's PATH environment variable and removes any
     entries that point to temporary directories. These paths are typically
     added by mistake when scripts execute from temporary locations.
+    Also removes literal %PATH% self-references that cause recursive expansion.
 
     Returns:
         tuple[int, list[str]]: (count of removed paths, list of removed path strings)
@@ -2109,8 +2145,6 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
     if sys.platform == 'win32':
         try:
             removed_paths: list[str] = []
-            temp_dir_env = os.environ.get('TEMP', '').lower()
-            temp_dir_alt = os.environ.get('TMP', '').lower()
 
             # Open the registry key for user environment variables
             reg_key = winreg.OpenKey(
@@ -2132,24 +2166,14 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
             clean_components: list[str] = []
 
             for path_entry in path_components:
-                path_lower = path_entry.lower()
+                # Check if this is a temporary directory path or a self-reference
+                should_remove = _is_temp_path(path_entry)
 
-                # Check if this is a temporary directory path
-                is_temp_path = False
+                # Also remove %PATH% self-references that cause recursive expansion
+                if path_entry.strip() == '%PATH%':
+                    should_remove = True
 
-                # Check against TEMP environment variable
-                if temp_dir_env and temp_dir_env in path_lower:
-                    is_temp_path = True
-
-                # Check against TMP environment variable
-                if temp_dir_alt and temp_dir_alt in path_lower:
-                    is_temp_path = True
-
-                # Check for common temp path patterns
-                if r'\appdata\local\temp\tmp' in path_lower:
-                    is_temp_path = True
-
-                if is_temp_path:
+                if should_remove:
                     removed_paths.append(path_entry)
                 else:
                     clean_components.append(path_entry)
@@ -6597,11 +6621,13 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
 
             for remove_scope in ['user', 'local', 'project']:
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
                 )
                 # Best-effort: ignore exit code, server may not exist in this scope
-                run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env={'PATH': env.unix_explicit_path},
+                )
         else:
             # Unix: Direct subprocess execution
             for remove_scope in ['user', 'local', 'project']:
@@ -6651,14 +6677,16 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 header_part = f' --header "{header}"' if header else ''
 
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
                     f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
                 bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
                 debug_log(f'First attempt bash_cmd: {bash_cmd_preview}')
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env={'PATH': env.unix_explicit_path},
+                )
                 debug_log(f'First attempt result: returncode={result.returncode}')
                 if result.returncode != 0:
                     debug_log(f'First attempt failed! stdout={result.stdout}, stderr={result.stderr}')
@@ -6670,11 +6698,16 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 # Use double quotes for header to allow ${VAR} expansion in bash
                 header_part = f' --header "{header}"' if header else ''
                 bash_cmd = (
-                    f'export PATH="{parent_dir}:$PATH" && '
                     f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)}{env_part} '
                     f'--transport {shlex.quote(transport)} {shlex.quote(name)} {shlex.quote(url)}{header_part}'
                 )
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                current_path = os.environ.get('PATH', '')
+                parent_str = str(parent_dir)
+                extra_path = f'{parent_str}:{current_path}' if parent_str not in current_path else current_path
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env={'PATH': extra_path},
+                )
         elif command:
             # Stdio transport (command)
 
@@ -6711,7 +6744,6 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
                     f'-- {command_str}'
                 )
@@ -6720,7 +6752,10 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 debug_log(f'STDIO bash_cmd: {bash_cmd_preview}')
 
                 info(f'Configuring stdio MCP server {name}...')
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env={'PATH': env.unix_explicit_path},
+                )
                 debug_log(f'STDIO result: returncode={result.returncode}')
                 if result.returncode != 0:
                     debug_log(f'STDIO failed! stdout={result.stdout}, stderr={result.stderr}')

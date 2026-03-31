@@ -243,6 +243,26 @@ class TestConvertToUnixPath:
         result = setup_environment.convert_to_unix_path(r'C:\Users/Name\Documents/file.txt')
         assert result == '/c/Users/Name/Documents/file.txt'
 
+    def test_strips_surrounding_double_quotes(self):
+        """Quoted registry PATH entries have surrounding quotes stripped before conversion."""
+        result = setup_environment.convert_to_unix_path('"C:\\Program Files\\App"')
+        assert result == '/c/Program Files/App'
+
+    def test_strips_quotes_preserving_drive_letter(self):
+        """Drive letter detection works after quote stripping."""
+        result = setup_environment.convert_to_unix_path('"D:\\tools\\bin"')
+        assert result == '/d/tools/bin'
+
+    def test_strips_quotes_from_simple_path(self):
+        """Simple quoted path is handled correctly."""
+        result = setup_environment.convert_to_unix_path('"C:\\Windows"')
+        assert result == '/c/Windows'
+
+    def test_unquoted_path_unchanged(self):
+        """Path without quotes works as before (regression check)."""
+        result = setup_environment.convert_to_unix_path(r'C:\Program Files\nodejs')
+        assert result == '/c/Program Files/nodejs'
+
 
 class TestConvertPathEnvToUnix:
     """Tests for convert_path_env_to_unix function."""
@@ -276,6 +296,123 @@ class TestConvertPathEnvToUnix:
         """Test that single semicolon (empty entries only) produces empty result."""
         result = setup_environment.convert_path_env_to_unix(';')
         assert result == ''
+
+    def test_quoted_entries_in_path(self):
+        """Quoted entries in PATH are handled correctly via convert_to_unix_path."""
+        result = setup_environment.convert_path_env_to_unix(
+            r'C:\Windows;"C:\Program Files\App";D:\tools',
+        )
+        assert result == '/c/Windows:/c/Program Files/App:/d/tools'
+
+
+class TestIsTempPath:
+    """Tests for _is_temp_path() shared helper."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_detects_temp_env_path(self):
+        """Path under TEMP directory is detected."""
+        temp_dir = os.environ.get('TEMP', r'C:\Users\test\AppData\Local\Temp')
+        test_path = os.path.join(temp_dir, 'some_subdir', 'file.exe')
+        assert setup_environment._is_temp_path(test_path) is True
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_detects_pytest_temp_pattern(self):
+        """Pytest temp directory pattern is detected regardless of TEMP var."""
+        path = r'C:\Users\someone\AppData\Local\Temp\pytest-of-user\pytest-42\test0\home\.local\bin'
+        assert setup_environment._is_temp_path(path) is True
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_detects_tmp_prefix_pattern(self):
+        """Generic tmp* subdirectory pattern is detected."""
+        path = r'C:\Users\test\AppData\Local\Temp\tmp12345\home\.local\bin'
+        assert setup_environment._is_temp_path(path) is True
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_normal_path_not_detected(self):
+        """Normal .local/bin path is NOT flagged as temp."""
+        path = r'C:\Users\test\.local\bin'
+        assert setup_environment._is_temp_path(path) is False
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    def test_program_files_not_detected(self):
+        """Program Files path is NOT flagged as temp."""
+        path = r'C:\Program Files\nodejs'
+        assert setup_environment._is_temp_path(path) is False
+
+    @pytest.mark.skipif(sys.platform != 'linux', reason='Linux-specific test')
+    def test_returns_false_on_non_windows(self):
+        """Always returns False on non-Windows platforms."""
+        assert setup_environment._is_temp_path('/tmp/pytest-of-user/test0') is False
+
+
+class TestCleanupTempPathsFromRegistryEnhanced:
+    """Tests for enhanced cleanup_temp_paths_from_registry() behavior."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.winreg')
+    def test_removes_path_self_reference(self, mock_winreg):
+        """The literal %PATH% self-reference entry is removed during cleanup."""
+        mock_key = MagicMock()
+        mock_winreg.OpenKey.return_value = mock_key
+        mock_winreg.QueryValueEx.return_value = (
+            r'C:\Users\test\.local\bin;%PATH%;C:\Windows',
+            1,
+        )
+        mock_winreg.HKEY_CURRENT_USER = 0x80000001
+        mock_winreg.KEY_READ = 0x20019
+        mock_winreg.KEY_WRITE = 0x20006
+        mock_winreg.REG_EXPAND_SZ = 2
+
+        with patch('setup_environment._broadcast_wm_settingchange'):
+            count, removed = setup_environment.cleanup_temp_paths_from_registry()
+
+        assert count == 1
+        assert '%PATH%' in removed
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.winreg')
+    def test_removes_pytest_temp_path_with_short_name(self, mock_winreg):
+        """Pytest temp paths with 8.3 short names are detected and removed."""
+        mock_key = MagicMock()
+        mock_winreg.OpenKey.return_value = mock_key
+        stale_path = (
+            r'C:\Users\afilippov\AppData\Local\Temp\pytest-of-afilippov'
+            r'\pytest-432\test0\home\.local\bin'
+        )
+        mock_winreg.QueryValueEx.return_value = (
+            rf'C:\Users\test\.local\bin;{stale_path};C:\Windows',
+            1,
+        )
+        mock_winreg.HKEY_CURRENT_USER = 0x80000001
+        mock_winreg.KEY_READ = 0x20019
+        mock_winreg.KEY_WRITE = 0x20006
+        mock_winreg.REG_EXPAND_SZ = 2
+
+        with patch('setup_environment._broadcast_wm_settingchange'):
+            count, removed = setup_environment.cleanup_temp_paths_from_registry()
+
+        assert count == 1
+        assert stale_path in removed
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.winreg')
+    def test_preserves_non_temp_paths(self, mock_winreg):
+        """Non-temp paths are preserved during cleanup."""
+        mock_key = MagicMock()
+        mock_winreg.OpenKey.return_value = mock_key
+        mock_winreg.QueryValueEx.return_value = (
+            r'C:\Users\test\.local\bin;C:\Windows;C:\Program Files\nodejs',
+            1,
+        )
+        mock_winreg.HKEY_CURRENT_USER = 0x80000001
+        mock_winreg.KEY_READ = 0x20019
+        mock_winreg.KEY_WRITE = 0x20006
+        mock_winreg.REG_EXPAND_SZ = 2
+
+        count, removed = setup_environment.cleanup_temp_paths_from_registry()
+
+        assert count == 0
+        assert removed == []
 
 
 class TestGetBashPreferredCommand:
@@ -2390,8 +2527,11 @@ class TestConfigureMCPServer:
         assert 'test-stdio-server' in bash_cmd
         # npx commands should use cmd /c wrapper
         assert 'cmd /c npx @test/server' in bash_cmd
-        # PATH export should be present
-        assert 'export PATH=' in bash_cmd
+        # PATH should NOT be in the bash command (passed via extra_env)
+        assert 'export PATH=' not in bash_cmd
+        # Verify extra_env was passed with PATH
+        assert call_args.kwargs.get('extra_env') is not None
+        assert 'PATH' in call_args.kwargs['extra_env']
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_bash_command')
@@ -8516,6 +8656,132 @@ class TestRunBashCommandMsysPathConversion:
         env = call_kwargs.get('env')
         assert env is not None
         assert env.get('MSYS_NO_PATHCONV') == '1'
+
+
+class TestRunBashCommandExtraEnv:
+    """Tests for run_bash_command() extra_env parameter."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.find_bash_windows', return_value=r'C:\Program Files\Git\bin\bash.exe')
+    @patch('subprocess.run')
+    def test_extra_env_merged_into_subprocess(self, mock_run, mock_find_bash):
+        """extra_env dict values are merged into subprocess environment."""
+        del mock_find_bash
+        mock_run.return_value = subprocess.CompletedProcess([], 0, 'ok', '')
+        setup_environment.run_bash_command('echo test', extra_env={'MY_VAR': 'my_value'})
+        call_kwargs = mock_run.call_args
+        env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+        assert env is not None
+        assert env['MY_VAR'] == 'my_value'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.find_bash_windows', return_value=r'C:\Program Files\Git\bin\bash.exe')
+    @patch('subprocess.run')
+    def test_extra_env_overrides_existing(self, mock_run, mock_find_bash):
+        """extra_env PATH overrides the default PATH from os.environ."""
+        del mock_find_bash
+        mock_run.return_value = subprocess.CompletedProcess([], 0, 'ok', '')
+        setup_environment.run_bash_command(
+            'echo test',
+            extra_env={'PATH': '/custom/path:/another/path'},
+        )
+        call_kwargs = mock_run.call_args
+        env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+        assert env['PATH'] == '/custom/path:/another/path'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.find_bash_windows', return_value=r'C:\Program Files\Git\bin\bash.exe')
+    @patch('subprocess.run')
+    def test_extra_env_none_is_noop(self, mock_run, mock_find_bash):
+        """Passing extra_env=None does not change environment."""
+        del mock_find_bash
+        mock_run.return_value = subprocess.CompletedProcess([], 0, 'ok', '')
+        setup_environment.run_bash_command('echo test', extra_env=None)
+        call_kwargs = mock_run.call_args
+        env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+        assert env['MSYS_NO_PATHCONV'] == '1'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.find_bash_windows', return_value=r'C:\Program Files\Git\bin\bash.exe')
+    @patch('subprocess.run')
+    def test_msys_no_pathconv_preserved_with_extra_env(self, mock_run, mock_find_bash):
+        """MSYS_NO_PATHCONV is preserved when extra_env is provided."""
+        del mock_find_bash
+        mock_run.return_value = subprocess.CompletedProcess([], 0, 'ok', '')
+        setup_environment.run_bash_command('echo test', extra_env={'FOO': 'bar'})
+        call_kwargs = mock_run.call_args
+        env = call_kwargs.kwargs.get('env') or call_kwargs[1].get('env')
+        assert env['MSYS_NO_PATHCONV'] == '1'
+        assert env['FOO'] == 'bar'
+
+
+class TestMcpBashCommandsNoExportPath:
+    """Verify bash commands for MCP configuration do not embed export PATH."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment._prepare_windows_bash_env')
+    @patch('setup_environment.find_command', return_value=r'C:\Users\test\.local\bin\claude.exe')
+    @patch('platform.system', return_value='Windows')
+    def test_windows_http_mcp_no_export_path(
+        self, mock_system, mock_find, mock_prep_env, mock_bash,
+    ):
+        """Windows HTTP MCP add command does not contain 'export PATH='."""
+        del mock_system
+        del mock_find
+        mock_prep_env.return_value = setup_environment._WindowsBashEnv(
+            unix_explicit_path='/c/Windows:/c/test',
+            unix_claude_cmd='/c/Users/test/.local/bin/claude.exe',
+        )
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'http://localhost:8000/mcp',
+        }
+        setup_environment.configure_mcp_server(server)
+
+        for call in mock_bash.call_args_list:
+            bash_cmd = call.args[0] if call.args else call.kwargs.get('command', '')
+            assert 'export PATH=' not in bash_cmd, (
+                f'Bash command still contains export PATH=: {bash_cmd}'
+            )
+            # Verify extra_env was passed
+            assert call.kwargs.get('extra_env') is not None, (
+                f'Missing extra_env for bash call: {bash_cmd}'
+            )
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment._prepare_windows_bash_env')
+    @patch('setup_environment.find_command', return_value=r'C:\Users\test\.local\bin\claude.exe')
+    @patch('platform.system', return_value='Windows')
+    def test_windows_stdio_mcp_no_export_path(
+        self, mock_system, mock_find, mock_prep_env, mock_bash,
+    ):
+        """Windows STDIO MCP add command does not contain 'export PATH='."""
+        del mock_system
+        del mock_find
+        mock_prep_env.return_value = setup_environment._WindowsBashEnv(
+            unix_explicit_path='/c/Windows:/c/test',
+            unix_claude_cmd='/c/Users/test/.local/bin/claude.exe',
+        )
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'test-stdio-server',
+            'scope': 'user',
+            'command': 'uvx test-server',
+        }
+        setup_environment.configure_mcp_server(server)
+
+        for call in mock_bash.call_args_list:
+            bash_cmd = call.args[0] if call.args else call.kwargs.get('command', '')
+            assert 'export PATH=' not in bash_cmd, (
+                f'Bash command still contains export PATH=: {bash_cmd}'
+            )
 
 
 class TestMainFunctionUserSettings:

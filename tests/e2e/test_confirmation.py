@@ -161,10 +161,10 @@ class TestConfirmationSummaryContent:
         buf = io.StringIO()
         setup_environment.display_installation_summary(plan, output=buf)
         output = buf.getvalue()
-        # Golden config has 1 agent, 1 slash command, 5 MCP servers, etc.
+        # Golden config has 1 agent, 1 slash command, 6 MCP servers, etc.
         assert 'Agents: 1' in output
         assert 'Slash commands: 1' in output
-        assert 'MCP servers: 5' in output
+        assert 'MCP servers: 6' in output
 
     def test_summary_flags_unknown_keys(
         self, golden_config: dict[str, Any],

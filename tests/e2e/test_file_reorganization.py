@@ -19,6 +19,7 @@ from scripts.setup_environment import create_mcp_config_file
 from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import register_global_command
 from scripts.setup_environment import write_manifest
+from tests.e2e.validators import _is_profile_scoped
 
 
 def _resolve_path_template(template: str, paths: dict[str, Path], cmd: str) -> Path:
@@ -67,7 +68,7 @@ class TestFileReorganization:
         mcp_path = artifact_base_dir / 'mcp.json'
         profile_servers = [
             s for s in golden_config.get('mcp-servers', [])
-            if s.get('scope') == 'profile'
+            if _is_profile_scoped(s)
         ]
         if profile_servers:
             create_mcp_config_file(profile_servers, mcp_path)
@@ -247,7 +248,7 @@ class TestFileReorganization:
 
         profile_servers = [
             s for s in golden_config.get('mcp-servers', [])
-            if s.get('scope') == 'profile'
+            if _is_profile_scoped(s)
         ]
 
         launcher_result = create_launcher_script(

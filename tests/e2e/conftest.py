@@ -4,6 +4,7 @@ This module provides comprehensive fixtures for E2E testing of setup_environment
 All fixtures use function scope for complete test isolation.
 """
 
+import sys
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -118,6 +119,16 @@ def e2e_isolated_home(
         'appdata_roaming': appdata_roaming,
         'appdata_local': appdata_local,
     }
+
+    # Prevent real Windows registry writes during E2E tests.
+    # register_global_command() calls add_directory_to_windows_path() which
+    # writes to HKCU\Environment\PATH. Mock to prevent real registry modification.
+    if sys.platform == 'win32':
+        monkeypatch.setattr(
+            setup_environment,
+            'add_directory_to_windows_path',
+            lambda directory: (True, f'[mock] Would add {directory} to PATH'),
+        )
 
     # Yield paths to the test
     yield paths

@@ -247,6 +247,61 @@ class TestMCPArgumentOrdering:
             'SSE server without header config should not have --header option'
         )
 
+    def test_combined_scope_dispatches_user_and_profile(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify combined scope [user, profile] dispatches to both user scope and profile config."""
+        mock_bash = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                setup_environment, 'find_command',
+                return_value='/usr/local/bin/claude',
+            ),
+            patch.object(setup_environment, 'run_bash_command', mock_bash),
+            patch.object(setup_environment, 'run_command', mock_run),
+        ):
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
+            _, profile_servers, stats = configure_all_mcp_servers(
+                servers=golden_config.get('mcp-servers', []),
+                profile_mcp_config_path=profile_mcp_path,
+            )
+
+        # Verify the combined-scope server was dispatched via claude mcp add
+        # for the user scope (non-profile scopes use run_bash_command)
+        bash_cmd = _find_mcp_add_call(
+            mock_bash.call_args_list, 'e2e-combined-scope-server',
+        )
+        assert bash_cmd is not None, (
+            'No mcp add command found for e2e-combined-scope-server '
+            '(should be dispatched for user scope via run_bash_command)'
+        )
+
+        # Verify --scope user is used (not profile, which goes to JSON config)
+        assert '--scope user' in bash_cmd, (
+            f'Combined-scope server should use --scope user for the '
+            f'non-profile scope dispatch, got: {bash_cmd}'
+        )
+
+        # Verify the server also appears in profile_servers (for JSON config)
+        profile_server_names = [s['name'] for s in profile_servers]
+        assert 'e2e-combined-scope-server' in profile_server_names, (
+            'Combined-scope server should appear in profile_servers for JSON config'
+        )
+
+        # Verify stats reflect the combined scope
+        assert stats['combined_count'] >= 1, (
+            f'Expected at least 1 combined-scope server in stats, got: {stats}'
+        )
+
 
 class TestMCPHeaderEnvVarExpansion:
     """E2E tests for header environment variable expansion using double quotes."""
@@ -358,3 +413,50 @@ class TestMCPProfileHeaderConfig:
         assert server_config['headers'].get('Authorization') == 'Bearer profile-token', (
             f"Expected 'Bearer profile-token', got {server_config['headers']}"
         )
+
+    def test_combined_scope_server_in_profile_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify combined scope [user, profile] server is written to profile MCP JSON."""
+        mock_bash = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                setup_environment, 'find_command',
+                return_value='/usr/local/bin/claude',
+            ),
+            patch.object(setup_environment, 'run_bash_command', mock_bash),
+            patch.object(setup_environment, 'run_command', mock_run),
+        ):
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
+            configure_all_mcp_servers(
+                servers=golden_config.get('mcp-servers', []),
+                profile_mcp_config_path=profile_mcp_path,
+            )
+
+        # Verify the MCP JSON file was created
+        import json
+        assert profile_mcp_path.exists(), (
+            f'Profile MCP config file not created: {profile_mcp_path}'
+        )
+        data = json.loads(profile_mcp_path.read_text(encoding='utf-8'))
+        assert 'mcpServers' in data
+
+        # Verify the combined-scope server is present in the JSON config
+        assert 'e2e-combined-scope-server' in data['mcpServers'], (
+            'Combined-scope server should appear in profile MCP JSON config. '
+            f'Found servers: {list(data["mcpServers"].keys())}'
+        )
+
+        # Verify its config is correct
+        server_config = data['mcpServers']['e2e-combined-scope-server']
+        assert server_config['type'] == 'http'
+        assert server_config['url'] == 'http://localhost:3003/combined-api'

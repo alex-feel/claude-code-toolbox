@@ -135,6 +135,25 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _is_profile_scoped(server: dict[str, Any]) -> bool:
+    """Check if a server configuration includes 'profile' in its scope.
+
+    Handles both string scope ('profile') and list scope (['user', 'profile']).
+
+    Args:
+        server: MCP server configuration dictionary from YAML.
+
+    Returns:
+        True if the server has profile scope, False otherwise.
+    """
+    scope = server.get('scope', 'user')
+    if isinstance(scope, str):
+        return scope == 'profile'
+    if isinstance(scope, list):
+        return 'profile' in scope
+    return False
+
+
 def validate_mcp_json(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate MCP configuration JSON structure and content.
 
