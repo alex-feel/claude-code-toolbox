@@ -331,3 +331,22 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
     monkeypatch.setattr(Path, 'write_bytes', guarded_write_bytes)
     monkeypatch.setattr(Path, 'mkdir', guarded_mkdir)
     monkeypatch.setattr(Path, 'unlink', guarded_unlink)
+
+
+@pytest.fixture(autouse=True)
+def _mock_cleanup_stale_auto_update_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent cleanup_stale_auto_update_controls from touching real filesystem.
+
+    This function iterates ~/.claude/ subdirectories and writes to settings.json
+    and .claude.json files. In test environments, it must be mocked to prevent
+    the conftest safety guard from blocking writes to real user paths.
+    """
+    try:
+        import setup_environment
+        monkeypatch.setattr(
+            setup_environment,
+            'cleanup_stale_auto_update_controls',
+            lambda **_kwargs: None,
+        )
+    except (ImportError, AttributeError):
+        pass  # Not all test modules import setup_environment

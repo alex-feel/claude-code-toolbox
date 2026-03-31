@@ -8892,9 +8892,9 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 15-19 skipped
+        # Verify output shows Steps 16-20 skipped
         captured = capsys.readouterr()
-        assert 'Steps 15-19: Skipping command creation' in captured.out
+        assert 'Steps 16-20: Skipping command creation' in captured.out
         assert 'Step 13: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -8959,13 +8959,13 @@ class TestMainFunctionUserSettings:
         # Verify profile settings were also created
         mock_settings.assert_called_once()
 
-        # Verify output shows Step 13 and Steps 15-19
+        # Verify output shows Step 13 and Steps 16-20
         captured = capsys.readouterr()
         assert 'Step 13: Writing user settings' in captured.out
-        assert 'Step 15: Downloading hooks' in captured.out
-        assert 'Step 16: Creating profile configuration' in captured.out
-        assert 'Step 18: Creating launcher script' in captured.out
-        assert 'Step 19: Registering global' in captured.out
+        assert 'Step 16: Downloading hooks' in captured.out
+        assert 'Step 17: Creating profile configuration' in captured.out
+        assert 'Step 19: Creating launcher script' in captured.out
+        assert 'Step 20: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(
@@ -10798,7 +10798,7 @@ class TestApplyAutoUpdateSettings:
         assert gc_r['autoUpdates'] is None  # null-as-delete
         assert gc_r['other'] == 'keep'
         assert us_r is not None
-        assert 'DISABLE_AUTOUPDATER' not in us_r['env']
+        assert us_r['env']['DISABLE_AUTOUPDATER'] is None  # null-as-delete via merge
         assert us_r['env']['OTHER'] == 'val'
         assert ev_r is not None
         assert 'DISABLE_AUTOUPDATER' not in ev_r

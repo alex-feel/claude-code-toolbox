@@ -1166,12 +1166,17 @@ def validate_global_config_output(
     return errors
 
 
-def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
+def validate_auto_update_controls(
+    home_dir: Path, pinned: bool, command_name: str | None = None,
+) -> list[str]:
     """Validate auto-update controls are correctly set or absent.
 
     When pinned=True, expects:
     - ~/.claude.json has autoUpdates: false
     - settings.json (wherever written) has env.DISABLE_AUTOUPDATER: "1"
+
+    When pinned=True AND command_name is provided, additionally expects:
+    - ~/.claude/{command_name}/.claude.json has autoUpdates: false
 
     When pinned=False, expects:
     - No autoUpdates key injected in ~/.claude.json (or None for null-as-delete)
@@ -1180,6 +1185,7 @@ def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
     Args:
         home_dir: Isolated home directory path
         pinned: Whether a specific version is pinned
+        command_name: Command name for isolated environment check, or None
 
     Returns:
         List of error strings (empty = all validations passed)
@@ -1206,6 +1212,85 @@ def validate_auto_update_controls(home_dir: Path, pinned: bool) -> list[str]:
                     )
     elif pinned:
         errors.append('Pinned version: ~/.claude.json does not exist')
+
+    # Check isolated .claude.json when command_name provided
+    if command_name and pinned:
+        isolated_json = home_dir / '.claude' / command_name / '.claude.json'
+        if isolated_json.exists():
+            data, json_errors = validate_json_file(isolated_json)
+            errors.extend(json_errors)
+            if data is not None:
+                if 'autoUpdates' not in data:
+                    errors.append(
+                        f'Pinned: autoUpdates missing from isolated {isolated_json}',
+                    )
+                elif data['autoUpdates'] is not False:
+                    errors.append(
+                        f'Pinned: autoUpdates in {isolated_json} should be false, '
+                        f'got {data["autoUpdates"]!r}',
+                    )
+        else:
+            errors.append(f'Pinned: isolated {isolated_json} does not exist')
+
+    return errors
+
+
+def validate_global_config_dual_write(
+    home_dir: Path,
+    global_config: dict[str, Any],
+    command_name: str | None = None,
+) -> list[str]:
+    """Validate that global-config is dual-written when command-names is present.
+
+    Args:
+        home_dir: Isolated home directory path.
+        global_config: Expected global config key-value pairs.
+        command_name: Command name for isolated environment, or None.
+
+    Returns:
+        List of error strings (empty = all validations passed).
+    """
+    errors: list[str] = []
+
+    # Check home .claude.json
+    home_json_path = home_dir / '.claude.json'
+    if home_json_path.exists():
+        data, json_errors = validate_json_file(home_json_path)
+        errors.extend(json_errors)
+        if data is not None:
+            for key, value in global_config.items():
+                if value is None:
+                    # Null-as-delete: key should be absent
+                    if key in data:
+                        errors.append(f'Home .claude.json: {key} should be deleted (null)')
+                elif key not in data:
+                    errors.append(f'Home .claude.json: missing key {key}')
+                elif data[key] != value:
+                    errors.append(
+                        f'Home .claude.json: {key} expected {value!r}, got {data[key]!r}',
+                    )
+    else:
+        errors.append('Home .claude.json does not exist')
+
+    # Check isolated .claude.json when command-names present
+    if command_name:
+        isolated_path = home_dir / '.claude' / command_name / '.claude.json'
+        if isolated_path.exists():
+            data, json_errors = validate_json_file(isolated_path)
+            errors.extend(json_errors)
+            if data is not None:
+                for key, value in global_config.items():
+                    if value is None:
+                        if key in data:
+                            errors.append(f'Isolated .claude.json: {key} should be deleted')
+                    elif key not in data:
+                        errors.append(f'Isolated .claude.json: missing key {key}')
+                    elif data[key] != value:
+                        errors.append(
+                            f'Isolated .claude.json: {key} expected {value!r}, got {data[key]!r}',
+                        )
+        else:
+            errors.append(f'Isolated .claude.json does not exist at {isolated_path}')
 
     return errors
 

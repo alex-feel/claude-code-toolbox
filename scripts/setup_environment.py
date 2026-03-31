@@ -1546,24 +1546,25 @@ def validate_global_config(global_config: dict[str, Any]) -> list[str]:
 
 def write_global_config(
     global_config: dict[str, Any],
+    artifact_base_dir: Path | None = None,
 ) -> bool:
     """Write global configuration to ~/.claude.json with deep merge.
 
-    Implements the three-step merge process via _write_merged_json():
-    1. READ existing ~/.claude.json (or empty dict if not exists)
-    2. DEEP MERGE new config values into existing (no array union)
-    3. WRITE merged result back to file
-
-    Uses array_union_keys=set() because ~/.claude.json has no
-    permissions.allow/deny/ask paths (those are settings.json-specific).
+    Implements asymmetric dual-write: always writes to ~/.claude.json
+    (machine baseline for bare claude sessions), and additionally writes
+    to artifact_base_dir/.claude.json when command-names creates an
+    isolated environment (since Claude Code CLI resolves getGlobalClaudeFile()
+    via CLAUDE_CONFIG_DIR with no fallback to the home directory).
 
     Args:
         global_config: Global config dict from YAML global-config section.
+        artifact_base_dir: Isolated config directory path, or None.
 
     Returns:
-        True if config was written successfully, False on write failure.
+        True if config was written successfully to all targets, False on any failure.
     """
-    config_file = get_real_user_home() / '.claude.json'
+    home_dir = get_real_user_home()
+    config_file = home_dir / '.claude.json'
 
     ok, _ = _write_merged_json(
         config_file,
@@ -1575,6 +1576,20 @@ def write_global_config(
         success(f'Wrote global config to {config_file}')
     else:
         warning(f'Failed to write global config to {config_file}')
+
+    # Dual-write to isolated environment when command-names is present
+    if artifact_base_dir is not None and artifact_base_dir != home_dir:
+        isolated_config_file = artifact_base_dir / '.claude.json'
+        iso_ok, _ = _write_merged_json(
+            isolated_config_file,
+            global_config,
+            array_union_keys=set(),
+        )
+        if iso_ok:
+            success(f'Wrote global config to {isolated_config_file}')
+        else:
+            warning(f'Failed to write global config to {isolated_config_file}')
+        ok = ok and iso_ok
 
     return ok
 
@@ -1756,10 +1771,15 @@ def _remove_auto_update_controls(
             )
 
     # Target 2: Remove DISABLE_AUTOUPDATER from user_settings.env
+    # Uses None for RFC 7396 null-as-delete: _write_merged_json() ->
+    # _merge_recursive() requires None to trigger target.pop(key, None)
+    # on disk. Using del only removes from in-memory dict; absent key
+    # is preserved during merge. (Target 3 uses del correctly because
+    # create_profile_config() writes atomically, not via merge.)
     if user_settings is not None:
         env_section = user_settings.get('env')
         if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
-            del env_section[DISABLE_AUTOUPDATER_KEY]
+            env_section[DISABLE_AUTOUPDATER_KEY] = None
 
     # Target 3: Remove DISABLE_AUTOUPDATER from env_variables
     if env_variables is not None and DISABLE_AUTOUPDATER_KEY in env_variables:
@@ -1770,6 +1790,115 @@ def _remove_auto_update_controls(
         os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
 
     return global_config, user_settings, env_variables, os_env_variables
+
+
+def cleanup_stale_auto_update_controls(
+    home_dir: Path,
+    is_pinned: bool,
+) -> None:
+    """Remove stale auto-update controls from all filesystem locations.
+
+    Implements write-remove symmetry: writes go to specific locations
+    via scope-based routing, but removal sweeps ALL locations
+    unconditionally to clean up artifacts from prior configurations.
+
+    Called AFTER all write steps in main() as a post-write cleanup pass.
+
+    Args:
+        home_dir: User home directory.
+        is_pinned: Whether a specific Claude Code version is pinned.
+    """
+    claude_dir = home_dir / '.claude'
+
+    if not is_pinned:
+        # When NOT pinned: remove auto-update controls from EVERYWHERE
+
+        # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
+        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+
+        # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    settings_path = subdir / 'settings.json'
+                    if settings_path.exists():
+                        _cleanup_settings_json_autoupdater(settings_path)
+
+        # 3. Clean autoUpdates: false from ~/.claude.json
+        _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
+
+        # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    claude_json_path = subdir / '.claude.json'
+                    if claude_json_path.exists():
+                        _cleanup_claude_json_auto_updates(claude_json_path)
+
+    else:
+        # When pinned WITH command-names: clean stale DISABLE_AUTOUPDATER
+        # from ~/.claude/settings.json (bare sessions must not inherit
+        # isolated environment restrictions)
+        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+
+
+def _cleanup_settings_json_autoupdater(settings_path: Path) -> None:
+    """Remove stale DISABLE_AUTOUPDATER from a settings.json file via merge."""
+    if not settings_path.exists():
+        return
+    try:
+        content = json.loads(settings_path.read_text(encoding='utf-8'))
+        env_section = content.get('env')
+        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {'env': {DISABLE_AUTOUPDATER_KEY: None}}
+            ok, merged = _write_merged_json(settings_path, cleanup_dict)
+            if ok and merged.get('env') == {}:
+                # Clean empty env: {} after removal
+                merged.pop('env')
+                settings_path.write_text(
+                    json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8',
+                )
+            if ok:
+                info(f'Cleaned stale {DISABLE_AUTOUPDATER_KEY} from {settings_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
+    """Remove stale autoUpdates: false from a .claude.json file.
+
+    Only removes when value is false (auto-injected by toolbox).
+    Preserves autoUpdates: true (explicit user preference).
+    """
+    if not claude_json_path.exists():
+        return
+    try:
+        content = json.loads(claude_json_path.read_text(encoding='utf-8'))
+        if content.get(AUTO_UPDATE_KEY) is False:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {AUTO_UPDATE_KEY: None}
+            ok, _ = _write_merged_json(
+                claude_json_path, cleanup_dict, array_union_keys=set(),
+            )
+            if ok:
+                info(f'Cleaned stale {AUTO_UPDATE_KEY}: false from {claude_json_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def _run_stale_auto_update_cleanup(claude_code_version_normalized: str | None) -> None:
+    """Execute Step 15: cleanup stale auto-update controls.
+
+    Extracted from main() to reduce function complexity for static analysis.
+    """
+    print()
+    print(f'{Colors.CYAN}Step 15: Cleaning stale auto-update controls...{Colors.NC}')
+    cleanup_stale_auto_update_controls(
+        home_dir=get_real_user_home(),
+        is_pinned=claude_code_version_normalized is not None,
+    )
 
 
 def detect_settings_conflicts(
@@ -6564,7 +6693,11 @@ def _prepare_windows_bash_env(
     )
 
 
-def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) -> bool:
+def configure_mcp_server(
+    server: dict[str, Any],
+    nodejs_dir: str | None = None,
+    artifact_base_dir: Path | None = None,
+) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
@@ -6619,6 +6752,10 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
             # as the add operation, preventing "not found" errors due to asymmetric execution
             env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
 
+            remove_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+            if artifact_base_dir is not None:
+                remove_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+
             for remove_scope in ['user', 'local', 'project']:
                 bash_cmd = (
                     f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
@@ -6626,14 +6763,18 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 # Best-effort: ignore exit code, server may not exist in this scope
                 run_bash_command(
                     bash_cmd, capture_output=True, login_shell=True,
-                    extra_env={'PATH': env.unix_explicit_path},
+                    extra_env=remove_extra_env,
                 )
         else:
             # Unix: Direct subprocess execution
+            remove_env: dict[str, str] | None = None
+            if artifact_base_dir is not None:
+                remove_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
+
             for remove_scope in ['user', 'local', 'project']:
                 remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
                 # Best-effort: ignore exit code, server may not exist in this scope
-                run_command(remove_cmd, capture_output=True)
+                run_command(remove_cmd, capture_output=True, env=remove_env)
 
         # Profile-scoped servers are configured via create_mcp_config_file(), not claude mcp add
         if scope == 'profile':
@@ -6683,9 +6824,12 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
 
                 bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
                 debug_log(f'First attempt bash_cmd: {bash_cmd_preview}')
+                http_win_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+                if artifact_base_dir is not None:
+                    http_win_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
                 result = run_bash_command(
                     bash_cmd, capture_output=True, login_shell=True,
-                    extra_env={'PATH': env.unix_explicit_path},
+                    extra_env=http_win_extra_env,
                 )
                 debug_log(f'First attempt result: returncode={result.returncode}')
                 if result.returncode != 0:
@@ -6704,9 +6848,12 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 current_path = os.environ.get('PATH', '')
                 parent_str = str(parent_dir)
                 extra_path = f'{parent_str}:{current_path}' if parent_str not in current_path else current_path
+                http_unix_extra_env: dict[str, str] = {'PATH': extra_path}
+                if artifact_base_dir is not None:
+                    http_unix_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
                 result = run_bash_command(
                     bash_cmd, capture_output=True, login_shell=True,
-                    extra_env={'PATH': extra_path},
+                    extra_env=http_unix_extra_env,
                 )
         elif command:
             # Stdio transport (command)
@@ -6752,9 +6899,12 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 debug_log(f'STDIO bash_cmd: {bash_cmd_preview}')
 
                 info(f'Configuring stdio MCP server {name}...')
+                stdio_win_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+                if artifact_base_dir is not None:
+                    stdio_win_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
                 result = run_bash_command(
                     bash_cmd, capture_output=True, login_shell=True,
-                    extra_env={'PATH': env.unix_explicit_path},
+                    extra_env=stdio_win_extra_env,
                 )
                 debug_log(f'STDIO result: returncode={result.returncode}')
                 if result.returncode != 0:
@@ -6773,7 +6923,10 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                         separator_idx = [str(arg) for arg in base_cmd].index('--')
                         base_cmd = list(base_cmd[:separator_idx + 1]) + expanded_command.split()
 
-                result = run_command(base_cmd, capture_output=True)
+                stdio_unix_env: dict[str, str] | None = None
+                if artifact_base_dir is not None:
+                    stdio_unix_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
+                result = run_command(base_cmd, capture_output=True, env=stdio_unix_env)
         else:
             error(f'MCP server {name} missing url or command')
             return False
@@ -6809,6 +6962,7 @@ def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
     nodejs_dir: str | None = None,
+    artifact_base_dir: Path | None = None,
 ) -> tuple[bool, list[dict[str, Any]], dict[str, int]]:
     """Configure all MCP servers from configuration.
 
@@ -6876,13 +7030,19 @@ def configure_all_mcp_servers(
             if not has_global:
                 server_copy = server.copy()
                 server_copy['scope'] = 'profile'
-                configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
+                configure_mcp_server(
+                    server_copy, nodejs_dir=nodejs_dir,
+                    artifact_base_dir=artifact_base_dir,
+                )
 
         # Configure for each non-profile scope via claude mcp add
         for scope in non_profile_scopes:
             server_copy = server.copy()
             server_copy['scope'] = scope
-            configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
+            configure_mcp_server(
+                server_copy, nodejs_dir=nodejs_dir,
+                artifact_base_dir=artifact_base_dir,
+            )
 
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:
@@ -8885,6 +9045,7 @@ def main() -> None:
 
         _, profile_servers, mcp_stats = configure_all_mcp_servers(
             mcp_servers, profile_mcp_config_path, nodejs_dir=nodejs_dir,
+            artifact_base_dir=artifact_base_dir if primary_command_name else None,
         )
         has_profile_mcp_servers = len(profile_servers) > 0
 
@@ -8904,27 +9065,33 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 14: Writing global config...{Colors.NC}')
         if global_config:
-            if write_global_config(global_config):
+            if write_global_config(
+                global_config,
+                artifact_base_dir=artifact_base_dir if primary_command_name else None,
+            ):
                 success('Global config written successfully')
             else:
                 warning('Failed to write global config (non-fatal)')
         else:
             info('No global config to write')
 
+        # Step 15: Cleanup stale auto-update controls
+        _run_stale_auto_update_cleanup(claude_code_version_normalized)
+
         # Check if command creation is needed
         if primary_command_name:
-            # Step 15: Download hooks
+            # Step 16: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 15: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
                                        hooks_base_dir=hooks_base_dir_arg):
                 download_failures.append('hook files')
 
-            # Step 16: Create profile configuration
+            # Step 17: Create profile configuration
             print()
-            print(f'{Colors.CYAN}Step 16: Creating profile configuration...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 17: Creating profile configuration...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -8944,9 +9111,9 @@ def main() -> None:
                 hooks_base_dir=hooks_base_dir_arg,
             )
 
-            # Step 17: Write installation manifest
+            # Step 18: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 17: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 18: Writing installation manifest...{Colors.NC}')
             cleanup_stale_marker(artifact_base_dir)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -8960,9 +9127,9 @@ def main() -> None:
                 command_names=command_names or [primary_command_name],
             )
 
-            # Step 18: Create launcher script
+            # Step 19: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 18: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 19: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -8972,15 +9139,15 @@ def main() -> None:
                 artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 19: Register global command(s)
+            # Step 20: Register global command(s)
             if launcher_result:
                 main_launcher, launch_script = launcher_result
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 19: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 20: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 19: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 20: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(
                     main_launcher, primary_command_name, additional_command_names,
                     launch_script_path=launch_script,
@@ -8990,7 +9157,7 @@ def main() -> None:
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 15-19: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 16-20: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
