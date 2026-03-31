@@ -933,8 +933,10 @@ class TestClaudeInstallation:
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_windows(
         self,
+        mock_update_config,
         mock_ensure_path,
         mock_verify,
         mock_run,
@@ -945,6 +947,7 @@ class TestClaudeInstallation:
         """Test native Claude installer on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_update_config is not None
         # Mock installer script download
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer script'
@@ -1132,8 +1135,10 @@ class TestEnsureClaudeSourceAwareUpgrade:
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.update_install_method_config')
     def test_upgrade_native_source_fallback_to_npm_on_failure(
         self,
+        mock_update_config,
         mock_verify,
         mock_get_version,
         mock_get_latest,
@@ -1142,6 +1147,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm,
     ):
         """When native upgrade fails in auto mode, should fall back to npm."""
+        assert mock_update_config is not None
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
 
@@ -1250,8 +1256,10 @@ class TestEnsureClaudeSourceAwareUpgrade:
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.update_install_method_config')
     def test_upgrade_unknown_source_npm_fallback(
         self,
+        mock_update_config,
         mock_verify,
         mock_get_version,
         mock_get_latest,
@@ -1260,6 +1268,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm,
     ):
         """When source is unknown and native fails, fall back to npm."""
+        assert mock_update_config is not None
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/usr/bin/claude', 'unknown')
 

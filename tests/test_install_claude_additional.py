@@ -198,8 +198,10 @@ class TestClaudeInstallationAdditional:
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
-    def test_install_claude_native_linux(self, mock_verify, mock_run, mock_urlopen, mock_platform):
+    @patch('install_claude.update_install_method_config')
+    def test_install_claude_native_linux(self, mock_update_config, mock_verify, mock_run, mock_urlopen, mock_platform):
         """Test native Claude installation on Linux with mocked dependencies."""
+        assert mock_update_config is not None
         # Mock urlopen to return installer script
         mock_response = MagicMock()
         mock_response.read.return_value = b'#!/bin/bash\necho "Installing Claude"'
@@ -226,8 +228,10 @@ class TestClaudeInstallationAdditional:
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
-    def test_install_claude_native_macos(self, mock_verify, mock_run, mock_urlopen):
+    @patch('install_claude.update_install_method_config')
+    def test_install_claude_native_macos(self, mock_update_config, mock_verify, mock_run, mock_urlopen):
         """Test native Claude installation on macOS with mocked dependencies."""
+        assert mock_update_config is not None
         # Mock urlopen to return installer script
         mock_response = MagicMock()
         mock_response.read.return_value = b'#!/bin/bash\necho "Installing Claude"'
@@ -568,8 +572,12 @@ class TestGCSDirectDownload:
     @patch('pathlib.Path.stat')
     @patch('pathlib.Path.replace')
     @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.unlink')
+    @patch('pathlib.Path.chmod')
     def test_download_claude_direct_from_gcs_success(
         self,
+        mock_chmod,
+        mock_unlink,
         mock_mkdir,
         mock_replace,
         mock_stat,
@@ -578,6 +586,7 @@ class TestGCSDirectDownload:
         mock_platform_path,
     ):
         """Test successful direct download from GCS."""
+        del mock_chmod, mock_unlink  # Prevent real file operations
         # Mock file exists after download
         mock_exists.return_value = True
         mock_stat.return_value.st_size = 5_000_000  # 5MB file
@@ -662,8 +671,12 @@ class TestGCSDirectDownload:
     @patch('pathlib.Path.stat')
     @patch('pathlib.Path.replace')
     @patch('pathlib.Path.mkdir')
+    @patch('pathlib.Path.unlink')
+    @patch('pathlib.Path.chmod')
     def test_download_claude_direct_from_gcs_ssl_fallback(
         self,
+        mock_chmod,
+        mock_unlink,
         mock_mkdir,
         mock_replace,
         mock_stat,
@@ -673,6 +686,7 @@ class TestGCSDirectDownload:
         mock_build_opener,
     ):
         """Test direct download with SSL error fallback."""
+        del mock_chmod, mock_unlink  # Prevent real file operations
         # First call fails with SSL error, second succeeds
         mock_urlretrieve.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
@@ -735,8 +749,10 @@ class TestHybridInstallApproach:
     @patch('install_claude.ensure_local_bin_in_path_windows')
     @patch('install_claude.verify_claude_installation')
     @patch('time.sleep')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_windows_specific_version_uses_gcs(
         self,
+        mock_update_config,
         mock_sleep,
         mock_verify,
         mock_ensure_path,
@@ -750,6 +766,7 @@ class TestHybridInstallApproach:
         """
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_update_config is not None
         mock_gcs_download.return_value = True
         mock_verify.return_value = (True, 'C:\\Users\\Test\\.local\\bin\\claude.exe', 'native')
 
@@ -871,8 +888,10 @@ class TestNativeWindowsInstallerFunction:
     @patch('tempfile.NamedTemporaryFile')
     @patch('os.unlink')
     @patch('time.sleep')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_windows_installer_ssl_fallback(
         self,
+        mock_update_config,
         mock_sleep,
         mock_unlink,
         mock_temp,
@@ -882,6 +901,7 @@ class TestNativeWindowsInstallerFunction:
         mock_urlopen,
     ):
         """Test native installer with SSL error fallback."""
+        assert mock_update_config is not None
         # First call fails with SSL, second succeeds
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer script'
@@ -1016,8 +1036,10 @@ class TestHybridInstallMacOS:
     @patch('install_claude.verify_claude_installation')
     @patch('pathlib.Path.chmod')
     @patch('time.sleep')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_macos_specific_version_uses_gcs(
         self,
+        mock_update_config,
         mock_sleep,
         mock_chmod,
         mock_verify,
@@ -1029,6 +1051,7 @@ class TestHybridInstallMacOS:
         The implementation configures PATH directly via _ensure_local_bin_in_path_unix()
         without calling 'claude install', which would trigger auto-update behavior.
         """
+        assert mock_update_config is not None
         mock_gcs_download.return_value = True
         mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
 
@@ -1110,8 +1133,10 @@ class TestHybridInstallLinux:
     @patch('install_claude.verify_claude_installation')
     @patch('pathlib.Path.chmod')
     @patch('time.sleep')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_linux_specific_version_uses_gcs(
         self,
+        mock_update_config,
         mock_sleep,
         mock_chmod,
         mock_verify,
@@ -1124,6 +1149,7 @@ class TestHybridInstallLinux:
         The implementation configures PATH directly via _ensure_local_bin_in_path_unix()
         without calling 'claude install', which would trigger auto-update behavior.
         """
+        assert mock_update_config is not None
         mock_gcs_download.return_value = True
         mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
 

@@ -4386,18 +4386,29 @@ class TestRegisterGlobalCommand:
 
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
-    def test_register_global_command_windows(self, mock_run, mock_system):
+    @patch('setup_environment.add_directory_to_windows_path', return_value=(True, '[mock] Would add to PATH'))
+    @patch('pathlib.Path.home')
+    def test_register_global_command_windows(self, mock_home, mock_add_path, mock_run, mock_system):
         """Test registering global command on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            mock_home.return_value = Path(tmpdir)
             launcher = Path(tmpdir) / 'launcher.ps1'
             launcher.write_text('# Launcher')
 
             result = setup_environment.register_global_command(launcher, 'test-cmd')
             assert result is True
+            # Verify files were written to mock home, not real home
+            local_bin = Path(tmpdir) / '.local' / 'bin'
+            assert (local_bin / 'test-cmd.cmd').exists()
+            assert (local_bin / 'test-cmd.ps1').exists()
+            assert (local_bin / 'test-cmd').exists()
+            # Verify add_directory_to_windows_path was called (not real registry)
+            mock_add_path.assert_called_once()
+            del mock_add_path  # Explicitly acknowledge usage
 
     @patch('platform.system', return_value='Linux')
     def test_register_global_command_linux(self, mock_system):
@@ -4660,9 +4671,14 @@ class TestMainFunction:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.find_command')
     @patch('setup_environment.is_admin', return_value=True)
-    def test_main_skip_install(self, mock_is_admin, mock_find, mock_load):
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('pathlib.Path.mkdir')
+    def test_main_skip_install(self, mock_mkdir, mock_cleanup_stale, mock_write_manifest, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
         assert mock_is_admin.return_value is True  # Verify admin check is mocked
+        assert mock_write_manifest is not None
+        assert mock_cleanup_stale is not None
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
@@ -4683,6 +4699,7 @@ class TestMainFunction:
         ):
             setup_environment.main()
             mock_exit.assert_not_called()
+        del mock_mkdir  # Explicitly acknowledge usage
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -7281,8 +7298,20 @@ class TestCommandNames:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.write_global_config')
+    @patch('setup_environment.generate_env_loader_files')
+    @patch('setup_environment.set_all_os_env_variables')
     def test_command_names_single(
         self,
+        mock_set_all_os_env,
+        mock_gen_env_loader,
+        mock_write_global,
+        mock_write_user,
+        mock_cleanup_stale,
+        mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
         mock_register,
@@ -7299,10 +7328,16 @@ class TestCommandNames:
         # Verify mock configuration is available
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
+        assert mock_write_manifest is not None
+        assert mock_cleanup_stale is not None
+        assert mock_write_user is not None
+        assert mock_write_global is not None
+        assert mock_gen_env_loader is not None
+        assert mock_set_all_os_env is not None
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
-                'command-names': ['aegis'],  # New format with single name
+                'command-names': ['test-unit-cmd-1'],
                 'dependencies': {},
                 'agents': [],
                 'slash-commands': [],
@@ -7326,7 +7361,7 @@ class TestCommandNames:
         # Verify register_global_command was called with primary name and no additional names
         mock_register.assert_called_once()
         call_args = mock_register.call_args
-        assert call_args[0][1] == 'aegis'  # Primary command name
+        assert call_args[0][1] == 'test-unit-cmd-1'  # Primary command name
         assert call_args[0][2] is None  # No additional names
 
     @patch('setup_environment.load_config_from_source')
@@ -7340,8 +7375,20 @@ class TestCommandNames:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('setup_environment.write_user_settings')
+    @patch('setup_environment.write_global_config')
+    @patch('setup_environment.generate_env_loader_files')
+    @patch('setup_environment.set_all_os_env_variables')
     def test_command_names_multiple(
         self,
+        mock_set_all_os_env,
+        mock_gen_env_loader,
+        mock_write_global,
+        mock_write_user,
+        mock_cleanup_stale,
+        mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
         mock_register,
@@ -7358,10 +7405,16 @@ class TestCommandNames:
         # Verify mock configuration is available
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
+        assert mock_write_manifest is not None
+        assert mock_cleanup_stale is not None
+        assert mock_write_user is not None
+        assert mock_write_global is not None
+        assert mock_gen_env_loader is not None
+        assert mock_set_all_os_env is not None
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
-                'command-names': ['aegis', 'claude-dev', 'myenv'],  # Multiple names
+                'command-names': ['test-unit-cmd-1', 'test-unit-alias-1', 'test-unit-alias-2'],
                 'dependencies': {},
                 'agents': [],
                 'slash-commands': [],
@@ -7385,8 +7438,8 @@ class TestCommandNames:
         # Verify register_global_command was called with primary name and additional names
         mock_register.assert_called_once()
         call_args = mock_register.call_args
-        assert call_args[0][1] == 'aegis'  # Primary command name
-        assert call_args[0][2] == ['claude-dev', 'myenv']  # Additional names
+        assert call_args[0][1] == 'test-unit-cmd-1'  # Primary command name
+        assert call_args[0][2] == ['test-unit-alias-1', 'test-unit-alias-2']  # Additional names
 
     @patch('setup_environment.load_config_from_source')
     def test_command_names_validation_empty_name(self, mock_load):
