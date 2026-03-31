@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.6.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.0...v5.6.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* coerce non-string YAML env values to strings in env loader and config ([4797137](https://github.com/alex-feel/claude-code-toolbox/commit/47971378eaf929bb8369379b4c06d2bdd8b5d06a))
+
 ## [5.6.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.5.1...v5.6.0) (2026-03-30)
 
 
