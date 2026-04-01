@@ -47,11 +47,6 @@ from urllib.request import urlretrieve
 
 import yaml
 
-# Import pwd module for Unix-like systems (used for detecting real user home under sudo)
-# The import happens here but pwd is used in get_real_user_home() function
-if sys.platform != 'win32':
-    pass  # Used in get_real_user_home() for resolving sudo user's home directory
-
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
@@ -356,26 +351,24 @@ def is_admin() -> bool:
     Returns:
         True if running as admin or not on Windows, False otherwise.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+
+            windll = getattr(ctypes, 'windll', None)
+            if windll is None:
+                return False
+            shell32 = getattr(windll, 'shell32', None)
+            if shell32 is None:
+                return False
+            is_user_admin = getattr(shell32, 'IsUserAnAdmin', None)
+            if is_user_admin is None:
+                return False
+            return bool(is_user_admin())
+        except Exception:
+            return False
+    else:
         return True  # Not Windows, no admin check needed
-
-    try:
-        import ctypes
-
-        # Use getattr to access Windows-specific attributes dynamically
-        # This prevents type checkers from failing on non-Windows platforms
-        windll = getattr(ctypes, 'windll', None)
-        if windll is None:
-            return False
-        shell32 = getattr(windll, 'shell32', None)
-        if shell32 is None:
-            return False
-        is_user_admin = getattr(shell32, 'IsUserAnAdmin', None)
-        if is_user_admin is None:
-            return False
-        return bool(is_user_admin())
-    except Exception:
-        return False
 
 
 def request_admin_elevation(script_args: list[str] | None = None) -> None:
@@ -384,104 +377,84 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
     Args:
         script_args: Optional list of arguments to pass to elevated script.
     """
-    if platform.system() != 'Windows':
-        return
+    if sys.platform == 'win32':
+        try:
+            import ctypes
 
-    try:
-        import ctypes
+            # Collect critical environment variables to pass to elevated process
+            env_vars_to_pass: list[str] = []
+            critical_env_vars = [
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
+                'GITHUB_TOKEN',
+                'GITLAB_TOKEN',
+                'REPO_TOKEN',
+                'CLAUDE_CODE_TOOLBOX_VERSION',
+            ]
 
-        # Collect critical environment variables to pass to elevated process
-        env_vars_to_pass: list[str] = []
-        critical_env_vars = [
-            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
-            'GITHUB_TOKEN',
-            'GITLAB_TOKEN',
-            'REPO_TOKEN',
-            'CLAUDE_CODE_TOOLBOX_VERSION',
-        ]
+            for var_name in critical_env_vars:
+                var_value = os.environ.get(var_name)
+                if var_value:
+                    env_vars_to_pass.append(f'--env-{var_name}={var_value}')
 
-        for var_name in critical_env_vars:
-            var_value = os.environ.get(var_name)
-            if var_value:
-                # Don't escape here - we'll handle escaping when building the params string
-                env_vars_to_pass.append(f'--env-{var_name}={var_value}')
-
-        # Build command line with script path, environment variables, then original arguments
-        # Important: sys.argv[0] is the script path, sys.argv[1:] are the actual arguments
-        # Add special flag to indicate UAC elevation created a new window
-        uac_flag = ['--elevated-via-uac']
-        if script_args:
-            # When script_args is provided, use it instead of sys.argv[1:]
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
-        else:
-            # Use original arguments (excluding script path)
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
-
-        # Build parameters string with proper quoting for Windows
-        # Quote each argument that contains spaces or special characters
-        params_list: list[str] = []
-        for arg in all_args:
-            # Always quote arguments with = to ensure proper parsing
-            if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
-                # For Windows command line, we need to escape quotes properly
-                # Use \" for quotes inside quoted strings
-                escaped_arg = arg.replace('"', '\\"')
-                quoted_arg = f'"{escaped_arg}"'
-                params_list.append(quoted_arg)
+            uac_flag = ['--elevated-via-uac']
+            if script_args:
+                all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
             else:
-                params_list.append(arg)
-        params = ' '.join(params_list)
+                all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
 
-        # Use getattr to access Windows-specific attributes dynamically
-        windll = getattr(ctypes, 'windll', None)
-        if windll is None:
-            return
-        shell32 = getattr(windll, 'shell32', None)
-        if shell32 is None:
-            return
-        shell_execute_w = getattr(shell32, 'ShellExecuteW', None)
-        if shell_execute_w is None:
-            return
+            params_list: list[str] = []
+            for arg in all_args:
+                if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
+                    escaped_arg = arg.replace('"', '\\\\"')
+                    quoted_arg = f'"{escaped_arg}"'
+                    params_list.append(quoted_arg)
+                else:
+                    params_list.append(arg)
+            params = ' '.join(params_list)
 
-        # Request elevation
-        result = shell_execute_w(
-            None,
-            'runas',
-            sys.executable,
-            params,
-            None,
-            1,
-        )
+            windll = getattr(ctypes, 'windll', None)
+            if windll is None:
+                return
+            shell32 = getattr(windll, 'shell32', None)
+            if shell32 is None:
+                return
+            shell_execute_w = getattr(shell32, 'ShellExecuteW', None)
+            if shell_execute_w is None:
+                return
 
-        # Exit current process if elevation was requested
-        if result > 32:  # Success
-            # Show message that elevated window is opening
-            print()
-            info('Administrator privileges granted!')
-            info('A new window is opening with elevated privileges...')
-            info('Please check the new window to see the setup progress.')
-            print()
+            result = shell_execute_w(
+                None,
+                'runas',
+                sys.executable,
+                params,
+                None,
+                1,
+            )
 
-            # Wait briefly to ensure elevated process starts
-            time.sleep(1.0)
-            # Exit the non-elevated process so only the elevated one continues
-            sys.exit(0)
-        else:
-            # Elevation was denied or failed
-            error('Administrator elevation was denied')
-            error('Installation cannot proceed without administrator privileges')
-            error('')
-            error('Please run this script as administrator manually:')
-            error('  1. Right-click on your terminal')
-            error('  2. Select "Run as administrator"')
-            error('  3. Run the setup command again')
+            if result > 32:  # Success
+                print()
+                info('Administrator privileges granted!')
+                info('A new window is opening with elevated privileges...')
+                info('Please check the new window to see the setup progress.')
+                print()
+
+                time.sleep(1.0)
+                sys.exit(0)
+            else:
+                error('Administrator elevation was denied')
+                error('Installation cannot proceed without administrator privileges')
+                error('')
+                error('Please run this script as administrator manually:')
+                error('  1. Right-click on your terminal')
+                error('  2. Select "Run as administrator"')
+                error('  3. Run the setup command again')
+                sys.exit(1)
+
+        except Exception as e:
+            error(f'Failed to request elevation: {e}')
+            error('Please run this script as administrator manually')
             sys.exit(1)
-
-    except Exception as e:
-        # If elevation fails due to an error, report it
-        error(f'Failed to request elevation: {e}')
-        error('Please run this script as administrator manually')
-        sys.exit(1)
+    # Non-Windows: no-op
 
 
 def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
@@ -494,31 +467,24 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
     Returns:
         True if admin needed, False otherwise.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        if not args.skip_install:
+            return True
+
+        dependencies = config.get('dependencies', {})
+        if dependencies:
+            win_deps = dependencies.get('windows', [])
+            common_deps = dependencies.get('common', [])
+            all_deps = win_deps + common_deps
+
+            for dep in all_deps:
+                if 'winget' in dep and '--scope machine' in dep:
+                    return True
+                if 'npm install -g' in dep:
+                    return True
+
         return False
-
-    # Check if Claude Code installation is needed
-    if not args.skip_install:
-        # Installing Node.js and Git typically requires admin on Windows
-        return True
-
-    # Check for dependencies that need admin
-    dependencies = config.get('dependencies', {})
-    if dependencies:
-        # Check Windows-specific dependencies
-        win_deps = dependencies.get('windows', [])
-        common_deps = dependencies.get('common', [])
-        all_deps = win_deps + common_deps
-
-        for dep in all_deps:
-            # Check for commands that typically need admin
-            if 'winget' in dep and '--scope machine' in dep:
-                return True
-            if 'npm install -g' in dep:
-                # Global npm installs may need admin depending on Node.js installation
-                return True
-
-    return False
+    return False  # Non-Windows, admin not applicable
 
 
 # ANSI color codes for pretty output
@@ -2078,32 +2044,26 @@ def _is_temp_path(path: str) -> bool:
     Returns:
         True if the path is in a temporary directory, False otherwise.
     """
-    if sys.platform != 'win32':
-        return False
+    if platform.system() == 'Windows':
+        path_lower = path.lower()
 
-    path_lower = path.lower()
+        for env_var in ('TEMP', 'TMP'):
+            temp_dir = os.environ.get(env_var, '')
+            if temp_dir:
+                try:
+                    temp_dir_resolved = str(Path(temp_dir).resolve()).lower()
+                except (OSError, ValueError):
+                    temp_dir_resolved = temp_dir.lower()
+                if temp_dir_resolved and temp_dir_resolved in path_lower:
+                    return True
+                if temp_dir.lower() in path_lower:
+                    return True
 
-    # Resolve TEMP/TMP to long form to handle Windows 8.3 short name format
-    # (e.g., 'afilip~1' vs 'afilippov')
-    for env_var in ('TEMP', 'TMP'):
-        temp_dir = os.environ.get(env_var, '')
-        if temp_dir:
-            try:
-                temp_dir_resolved = str(Path(temp_dir).resolve()).lower()
-            except (OSError, ValueError):
-                temp_dir_resolved = temp_dir.lower()
-            if temp_dir_resolved and temp_dir_resolved in path_lower:
-                return True
-            # Also check the raw (possibly 8.3) form
-            if temp_dir.lower() in path_lower:
-                return True
-
-    # Defense-in-depth: catch pytest temp dirs and generic tmp* subdirectories
-    # regardless of TEMP variable resolution
-    return (
-        r'\appdata\local\temp\pytest-of-' in path_lower
-        or r'\appdata\local\temp\tmp' in path_lower
-    )
+        return (
+            r'\appdata\local\temp\pytest-of-' in path_lower
+            or r'\appdata\local\temp\tmp' in path_lower
+        )
+    return False
 
 
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
@@ -2241,16 +2201,15 @@ def ensure_local_bin_in_path() -> None:
         - Updates current session's os.environ['PATH']
         - Provides user feedback only if PATH was newly added
     """
-    if platform.system() != 'Windows':
-        return
+    if sys.platform == 'win32':
+        local_bin = get_real_user_home() / '.local' / 'bin'
+        local_bin.mkdir(parents=True, exist_ok=True)
 
-    local_bin = get_real_user_home() / '.local' / 'bin'
-    local_bin.mkdir(parents=True, exist_ok=True)
+        path_success, path_message = add_directory_to_windows_path(str(local_bin))
 
-    path_success, path_message = add_directory_to_windows_path(str(local_bin))
-
-    if path_success and 'already in PATH' not in path_message:
-        info('Pre-configured .local/bin in PATH for tool installations')
+        if path_success and 'already in PATH' not in path_message:
+            info('Pre-configured .local/bin in PATH for tool installations')
+    # Non-Windows: no-op
 
 
 def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
@@ -4256,13 +4215,13 @@ def display_installation_summary(
 
 def _dev_tty_available() -> bool:
     """Check if /dev/tty is available for interactive input."""
-    if sys.platform != 'win32':
-        try:
-            with open('/dev/tty'):
-                return True
-        except OSError:
-            pass
-    return False
+    if platform.system() == 'Windows':
+        return False
+    try:
+        with open('/dev/tty'):
+            return True
+    except OSError:
+        return False
 
 
 def _get_user_confirmation(prompt: str) -> str:
@@ -4286,18 +4245,15 @@ def _get_user_confirmation(prompt: str) -> str:
             return ''
 
     # Best-effort /dev/tty fallback (Unix only)
-    if sys.platform != 'win32':
-        try:
-            with open('/dev/tty') as tty:
-                # Write prompt to stderr (stdout may be piped)
-                sys.stderr.write(prompt)
-                sys.stderr.flush()
-                return tty.readline().strip()
-        except (OSError, EOFError):
-            pass
-
-    # No interactive input available
-    return ''
+    if platform.system() == 'Windows':
+        return ''
+    try:
+        with open('/dev/tty') as tty:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            return tty.readline().strip()
+    except (OSError, EOFError):
+        return ''
 
 
 def confirm_installation(
@@ -4342,7 +4298,9 @@ def confirm_installation(
 
     # Try /dev/tty fallback on Unix when stdin is piped
     can_tty_fallback = False
-    if not can_interact and sys.platform != 'win32':
+    if sys.platform == 'win32':
+        pass  # No /dev/tty on Windows
+    elif not can_interact:
         can_tty_fallback = _dev_tty_available()
 
     if not can_interact and not can_tty_fallback:
@@ -4380,22 +4338,19 @@ def get_real_user_home() -> Path:
     Returns:
         Path: The real user's home directory.
     """
-    if sys.platform != 'win32':
-        # Check if running under sudo (Unix-only)
+    result: Path | None = None
+    if sys.platform == 'win32':
+        pass  # Windows: no sudo resolution needed
+    else:
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user:
             try:
-                # Get the home directory of the user who invoked sudo
-                # pwd is imported at module level for non-Windows platforms
                 import pwd as pwd_module
 
-                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+                result = Path(pwd_module.getpwnam(sudo_user).pw_dir)
             except KeyError:
-                # User not found in password database, fall back
                 warning(f'Could not find home directory for sudo user: {sudo_user}')
-
-    # Windows or not running under sudo - use default home
-    return Path.home()
+    return result if result is not None else Path.home()
 
 
 def get_all_shell_config_files() -> list[Path]:
@@ -4407,35 +4362,25 @@ def get_all_shell_config_files() -> list[Path]:
     Returns:
         list[Path]: List of shell config file paths that exist or should be created.
     """
-    # Windows uses registry, not shell config files
-    config_files: list[Path] = []
+    if platform.system() == 'Windows':
+        return []
+    home = get_real_user_home()
 
-    if sys.platform != 'win32':
-        # Unix-like systems - get all shell config files
-        home = get_real_user_home()
+    config_files = [
+        home / '.bashrc',
+        home / '.bash_profile',
+        home / '.profile',
+        home / '.zshenv',
+        home / '.zprofile',
+        home / '.zshrc',
+        home / '.config' / 'fish' / 'config.fish',
+    ]
 
-        # All possible shell config files for environment variables
-        # Listed in order of preference/importance
-        config_files = [
-            # Bash files
-            home / '.bashrc',       # Interactive bash shells (most common on Linux)
-            home / '.bash_profile',  # Login bash shells (macOS Terminal.app, SSH)
-            home / '.profile',      # Fallback for sh/dash (Ubuntu default login shell)
-            # Zsh files
-            home / '.zshenv',       # All zsh instances (recommended for env vars)
-            home / '.zprofile',     # Zsh login shells (macOS default since Catalina)
-            home / '.zshrc',        # Interactive zsh shells
-            # Fish files
-            home / '.config' / 'fish' / 'config.fish',  # Fish shell config
-        ]
+    if platform.system() == 'Linux' and not shutil.which('zsh'):
+        config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
-        # On Linux, only include zsh files if zsh is installed
-        if platform.system() == 'Linux' and not shutil.which('zsh'):
-            config_files = [f for f in config_files if not f.name.startswith('.zsh')]
-
-        # On both Linux and macOS, only include fish config if fish is installed
-        if not shutil.which('fish'):
-            config_files = [f for f in config_files if 'fish' not in str(f)]
+    if not shutil.which('fish'):
+        config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
 
@@ -4782,40 +4727,33 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
     Returns:
         bool: True if all operations succeeded, False if any failed.
     """
-    # Windows doesn't use shell config files
-    all_success = False
+    if platform.system() == 'Windows':
+        return False
+    config_files = get_all_shell_config_files()
+    all_success = True
 
-    if sys.platform != 'win32':
-        config_files = get_all_shell_config_files()
-        all_success = True
+    for config_file in config_files:
+        if value is None:
+            if not remove_export_from_file(config_file, name):
+                all_success = False
+        else:
+            if not add_export_to_file(config_file, name, value):
+                all_success = False
 
-        for config_file in config_files:
+    if shutil.which('fish'):
+        try:
             if value is None:
-                # Delete the variable
-                if not remove_export_from_file(config_file, name):
-                    all_success = False
+                subprocess.run(
+                    ['fish', '-c', f'set -Ue {name}'],
+                    capture_output=True, check=False, timeout=5,
+                )
             else:
-                # Set the variable
-                if not add_export_to_file(config_file, name, value):
-                    all_success = False
-
-        # Fish universal variables: propagate immediately to all running Fish instances
-        # config.fish (set -gx) remains the durable persistence mechanism;
-        # set -Ux provides instant propagation to open Fish sessions
-        if shutil.which('fish'):
-            try:
-                if value is None:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ue {name}'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-                else:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ux {name} "{value}"'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-            except (OSError, subprocess.TimeoutExpired):
-                pass  # Non-critical: config.fish write is the durable mechanism
+                subprocess.run(
+                    ['fish', '-c', f'set -Ux {name} "{value}"'],
+                    capture_output=True, check=False, timeout=5,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     return all_success
 
@@ -4897,7 +4835,9 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
     # Print unset guidance for deleted variables on Unix
-    if sys.platform != 'win32' and deleted_names:
+    if sys.platform == 'win32':
+        pass  # Unset guidance is Unix-only
+    elif deleted_names:
         info('To remove deleted variable(s) from your current shell session, run:')
         for var_name in deleted_names:
             print(f'  unset {var_name}')
@@ -6485,54 +6425,50 @@ def verify_nodejs_available() -> str | None:
     Returns:
         Parent directory of the verified Node.js executable, or None if not found.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        # Primary: Use shutil.which for proper PATH-based detection
         node_path = shutil.which('node')
         if node_path:
-            return str(Path(node_path).parent)
-        warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
-        return None
+            try:
+                result = subprocess.run(
+                    [node_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
+                    return str(Path(node_path).parent)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
-    # Primary: Use shutil.which for proper PATH-based detection
+        # Secondary: Try find_command with common installation paths
+        node_path = find_command('node')
+        if node_path:
+            try:
+                result = subprocess.run(
+                    [node_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    node_dir = str(Path(node_path).parent)
+                    current_path = os.environ.get('PATH', '')
+                    if node_dir.lower() not in current_path.lower():
+                        os.environ['PATH'] = f'{node_dir};{current_path}'
+                        info(f'Added {node_dir} to PATH')
+                    success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
+                    return str(Path(node_path).parent)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        error('Node.js not found in PATH')
+        return None
     node_path = shutil.which('node')
     if node_path:
-        # Verify node actually works
-        try:
-            result = subprocess.run(
-                [node_path, '--version'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return str(Path(node_path).parent)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    # Secondary: Try find_command with common installation paths
-    node_path = find_command('node')
-    if node_path:
-        # Verify node actually works
-        try:
-            result = subprocess.run(
-                [node_path, '--version'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Add to PATH if not already there
-                node_dir = str(Path(node_path).parent)
-                current_path = os.environ.get('PATH', '')
-                if node_dir.lower() not in current_path.lower():
-                    os.environ['PATH'] = f'{node_dir};{current_path}'
-                    info(f'Added {node_dir} to PATH')
-                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return str(Path(node_path).parent)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    error('Node.js not found in PATH')
+        return str(Path(node_path).parent)
+    warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
     return None
 
 
@@ -8490,7 +8426,9 @@ def main() -> None:
             print()
 
     # Refuse to run as root on Unix unless explicitly allowed
-    if platform.system() != 'Windows':
+    if sys.platform == 'win32':
+        pass  # Root guard not applicable on Windows
+    else:
         geteuid = getattr(os, 'geteuid', None)
         if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')

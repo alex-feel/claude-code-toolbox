@@ -113,22 +113,19 @@ def get_real_user_home() -> Path:
     Returns:
         Path: The real user's home directory.
     """
-    if sys.platform != 'win32':
-        # Check if running under sudo (Unix-only)
+    result: Path | None = None
+    if sys.platform == 'win32':
+        pass  # Windows: no sudo resolution needed
+    else:
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user:
             try:
-                # Get the home directory of the user who invoked sudo
-                # pwd is imported at module level for non-Windows platforms
                 import pwd as pwd_module
 
-                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+                result = Path(pwd_module.getpwnam(sudo_user).pw_dir)
             except KeyError:
-                # User not found in password database, fall back
                 warning(f'Could not find home directory for sudo user: {sudo_user}')
-
-    # Windows or not running under sudo - use default home
-    return Path.home()
+    return result if result is not None else Path.home()
 
 
 def _get_shell_config_files() -> list[Path]:
@@ -161,7 +158,9 @@ def _get_shell_config_files() -> list[Path]:
         config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
     # On both Linux and macOS, only include fish config if fish is installed
-    if sys.platform != 'win32' and not shutil.which('fish'):
+    if sys.platform == 'win32':
+        pass  # Shell config files not used on Windows
+    elif not shutil.which('fish'):
         config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
@@ -474,14 +473,13 @@ def _dev_tty_sudo_available() -> bool:
         True if /dev/tty is available and sudo can be used through it,
         False otherwise.
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
-    if sys.platform != 'win32':
-        try:
-            with open('/dev/tty'):
-                return True
-        except OSError:
-            pass
-    return False
+    if platform.system() == 'Windows':
+        return False
+    try:
+        with open('/dev/tty'):
+            return True
+    except OSError:
+        return False
 
 
 def _run_with_sudo_fallback(
@@ -511,12 +509,36 @@ def _run_with_sudo_fallback(
         CompletedProcess if sudo was attempted (check returncode for success),
         None if no sudo mechanism was available.
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
-    if sys.platform != 'win32':
-        sudo_cmd = ['sudo'] + cmd
+    if platform.system() == 'Windows':
+        return None  # sudo not applicable on Windows
 
-        # Tier 1: Interactive mode -- user can enter password at stdin
-        if sys.stdin.isatty():
+    sudo_cmd = ['sudo'] + cmd
+
+    # Tier 1: Interactive mode -- user can enter password at stdin
+    if sys.stdin.isatty():
+        try:
+            return subprocess.run(
+                sudo_cmd,
+                capture_output=capture_output,
+                encoding='utf-8',
+                errors='replace',
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            warning(f'Sudo command timed out after {timeout} seconds')
+            return None
+        except FileNotFoundError:
+            warning('sudo command not found')
+            return None
+
+    # Tier 2: Non-interactive with cached credentials
+    try:
+        cred_check = subprocess.run(
+            ['sudo', '-n', 'true'],
+            capture_output=True,
+            timeout=5,
+        )
+        if cred_check.returncode == 0:
             try:
                 return subprocess.run(
                     sudo_cmd,
@@ -529,50 +551,27 @@ def _run_with_sudo_fallback(
                 warning(f'Sudo command timed out after {timeout} seconds')
                 return None
             except FileNotFoundError:
-                warning('sudo command not found')
                 return None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
 
-        # Tier 2: Non-interactive with cached credentials
+    # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
+    if _dev_tty_sudo_available():
+        info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
         try:
-            cred_check = subprocess.run(
-                ['sudo', '-n', 'true'],
-                capture_output=True,
-                timeout=5,
-            )
-            if cred_check.returncode == 0:
-                try:
-                    return subprocess.run(
-                        sudo_cmd,
-                        capture_output=capture_output,
-                        encoding='utf-8',
-                        errors='replace',
-                        timeout=timeout,
-                    )
-                except subprocess.TimeoutExpired:
-                    warning(f'Sudo command timed out after {timeout} seconds')
-                    return None
-                except FileNotFoundError:
-                    return None
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+            with open('/dev/tty') as tty:
+                return subprocess.run(
+                    sudo_cmd,
+                    stdin=tty,
+                    capture_output=capture_output,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=tty_timeout,
+                )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
             pass
 
-        # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
-        if _dev_tty_sudo_available():
-            info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
-            try:
-                with open('/dev/tty') as tty:
-                    return subprocess.run(
-                        sudo_cmd,
-                        stdin=tty,
-                        capture_output=capture_output,
-                        encoding='utf-8',
-                        errors='replace',
-                        timeout=tty_timeout,
-                    )
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
-
-    # Windows or all tiers exhausted
+    # All tiers exhausted
     return None
 
 
@@ -747,7 +746,9 @@ def remove_npm_claude() -> bool:
         return True
 
     # Non-sudo uninstall failed - try with sudo on Unix systems
-    if sys.platform != 'win32':
+    if sys.platform == 'win32':
+        pass  # No sudo fallback on Windows
+    else:
         sudo_result = _run_with_sudo_fallback(
             [npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
             capture_output=True,
@@ -760,14 +761,15 @@ def remove_npm_claude() -> bool:
             return True
 
         if sudo_result is None:
-            # No sudo mechanism available -- provide guidance
             warning('Cannot use sudo (non-interactive mode, no terminal available)')
             info('When running via curl | bash, sudo cannot prompt for a password.')
 
     # Dynamic prefix rm-rf fallback (Unix only)
     # When npm uninstall fails (e.g., ENOTEMPTY from npm/cli#5825),
     # remove package files directly using the npm global prefix path.
-    if sys.platform != 'win32':
+    if sys.platform == 'win32':
+        pass  # No prefix rm-rf fallback on Windows
+    else:
         prefix = _get_npm_global_prefix(npm_path)
         if prefix:
             parent_dir = Path(prefix) / 'lib' / 'node_modules' / '@anthropic-ai'
@@ -2072,7 +2074,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         info(f'{action} Claude Code CLI (latest version) via npm (npm path: {npm_path})...')
 
     # Check if sudo will be needed on Unix-like systems
-    will_need_sudo = platform.system() != 'Windows' and needs_sudo_for_npm()
+    will_need_sudo = False if platform.system() == 'Windows' else needs_sudo_for_npm()
     if will_need_sudo:
         info('Global npm directory requires elevated permissions')
 
@@ -2086,7 +2088,9 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         return True
 
     # Try with sudo on Unix systems using the three-tier fallback strategy
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        pass  # No sudo fallback on Windows
+    else:
         if will_need_sudo:
             warning('Global npm directory requires elevated permissions - attempting sudo...')
         else:
@@ -2483,82 +2487,76 @@ def _ensure_local_bin_in_path_unix() -> bool:
     Note:
         No-op on Windows (returns True immediately).
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
-    if sys.platform != 'win32':
-        home = get_real_user_home()
-        local_bin = home / '.local' / 'bin'
-        local_bin.mkdir(parents=True, exist_ok=True)
-        local_bin_str = str(local_bin)
+    if platform.system() == 'Windows':
+        return True  # No-op on Windows
 
-        # Update current process PATH
-        current_path = os.environ.get('PATH', '')
-        if local_bin_str not in current_path:
-            os.environ['PATH'] = f'{local_bin_str}:{current_path}'
-            info(f'Updated current session PATH with {local_bin_str}')
+    home = get_real_user_home()
+    local_bin = home / '.local' / 'bin'
+    local_bin.mkdir(parents=True, exist_ok=True)
+    local_bin_str = str(local_bin)
 
-        # Update shell profile files
-        profile_files = _get_shell_config_files()
+    # Update current process PATH
+    current_path = os.environ.get('PATH', '')
+    if local_bin_str not in current_path:
+        os.environ['PATH'] = f'{local_bin_str}:{current_path}'
+        info(f'Updated current session PATH with {local_bin_str}')
 
-        # Detect the user's login shell to ensure its profile exists
-        current_shell = os.environ.get('SHELL', '')
-        shell_profile_map: dict[str, Path] = {
-            'bash': home / '.bashrc',
-            'zsh': home / '.zshrc',
-            'fish': home / '.config' / 'fish' / 'config.fish',
-        }
+    # Update shell profile files
+    profile_files = _get_shell_config_files()
 
-        # Identify which profile corresponds to the current shell
-        current_shell_profile: Path | None = None
-        for shell_name, profile_path in shell_profile_map.items():
-            if shell_name in current_shell:
-                current_shell_profile = profile_path
-                break
+    # Detect the user's login shell to ensure its profile exists
+    current_shell = os.environ.get('SHELL', '')
+    shell_profile_map: dict[str, Path] = {
+        'bash': home / '.bashrc',
+        'zsh': home / '.zshrc',
+        'fish': home / '.config' / 'fish' / 'config.fish',
+    }
 
-        updated_files: list[Path] = []
+    # Identify which profile corresponds to the current shell
+    current_shell_profile: Path | None = None
+    for shell_name, profile_path in shell_profile_map.items():
+        if shell_name in current_shell:
+            current_shell_profile = profile_path
+            break
 
-        for profile_file in profile_files:
-            should_update = profile_file.exists()
-            # Create the profile for the user's current shell if it does not exist
-            if not should_update and profile_file == current_shell_profile:
-                should_update = True
+    updated_files: list[Path] = []
 
-            if should_update:
-                try:
-                    content = profile_file.read_text() if profile_file.exists() else ''
-                    # .local/bin substring check correctly detects the PATH entry regardless
-                    # of format (~/.local/bin, $HOME/.local/bin, or absolute path).
-                    # Theoretical false-match risk from comments is negligible.
-                    if '.local/bin' not in content:
-                        # Use Fish-specific PATH syntax
-                        if _is_fish_config(profile_file):
-                            export_line = 'fish_add_path ~/.local/bin'
-                        else:
-                            export_line = 'export PATH="$HOME/.local/bin:$PATH"'
+    for profile_file in profile_files:
+        should_update = profile_file.exists()
+        # Create the profile for the user's current shell if it does not exist
+        if not should_update and profile_file == current_shell_profile:
+            should_update = True
 
-                        # Use marker block for managed entries
-                        if SHELL_CONFIG_MARKER_START in content:
-                            # Append inside existing marker block
-                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
-                            if marker_end_idx != -1:
-                                content = (
-                                    content[:marker_end_idx]
-                                    + export_line + '\n'
-                                    + content[marker_end_idx:]
-                                )
-                            else:
-                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+        if should_update:
+            try:
+                content = profile_file.read_text() if profile_file.exists() else ''
+                if '.local/bin' not in content:
+                    if _is_fish_config(profile_file):
+                        export_line = 'fish_add_path ~/.local/bin'
+                    else:
+                        export_line = 'export PATH="$HOME/.local/bin:$PATH"'
+
+                    if SHELL_CONFIG_MARKER_START in content:
+                        marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                        if marker_end_idx != -1:
+                            content = (
+                                content[:marker_end_idx]
+                                + export_line + '\n'
+                                + content[marker_end_idx:]
+                            )
                         else:
                             content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
+                    else:
+                        content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
 
-                        # Ensure parent directory exists (e.g. ~/.config/fish/)
-                        profile_file.parent.mkdir(parents=True, exist_ok=True)
-                        profile_file.write_text(content)
-                        updated_files.append(profile_file)
-                except Exception as e:
-                    warning(f'Could not update {profile_file}: {e}')
+                    profile_file.parent.mkdir(parents=True, exist_ok=True)
+                    profile_file.write_text(content)
+                    updated_files.append(profile_file)
+            except Exception as e:
+                warning(f'Could not update {profile_file}: {e}')
 
-        if updated_files:
-            info(f"Added ~/.local/bin to PATH in: {', '.join(str(f) for f in updated_files)}")
+    if updated_files:
+        info(f"Added ~/.local/bin to PATH in: {', '.join(str(f) for f in updated_files)}")
 
     return True
 
@@ -2586,7 +2584,9 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         Windows only. Returns False on other platforms (should not be called).
         All network errors are caught internally and result in False return.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        pass  # Guard: function body below is Windows-only
+    else:
         return False
 
     # Clean up any leftover .old files from previous installations
@@ -2922,7 +2922,6 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         macOS only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform == 'darwin':
         # Hybrid approach: Use native installer for "latest", direct download for specific versions
         if version is None or version.lower() == 'latest':
@@ -3085,9 +3084,9 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         Linux only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    # Use platform.system() for cross-platform MyPy compatibility
-    # (MyPy cannot statically evaluate function call results)
-    if platform.system() != 'Linux':
+    if platform.system() == 'Linux':
+        pass  # Guard: function body below is Linux-only
+    else:
         return False
 
     # Hybrid approach: Use native installer for "latest", direct download for specific versions
@@ -3508,16 +3507,14 @@ def ensure_claude() -> bool:
 
 def update_path() -> None:
     """Update PATH environment variable."""
-    if platform.system() != 'Windows':
-        return
-
-    # Add npm global path to PATH if not already there
-    npm_path = os.path.expandvars(r'%APPDATA%\npm')
-    if Path(npm_path).exists():
-        current_path = os.environ.get('PATH', '')
-        if npm_path not in current_path:
-            os.environ['PATH'] = f'{npm_path};{current_path}'
-            info(f'Added {npm_path} to PATH')
+    if platform.system() == 'Windows':
+        npm_path = os.path.expandvars(r'%APPDATA%\npm')
+        if Path(npm_path).exists():
+            current_path = os.environ.get('PATH', '')
+            if npm_path not in current_path:
+                os.environ['PATH'] = f'{npm_path};{current_path}'
+                info(f'Added {npm_path} to PATH')
+    # Non-Windows: no-op
 
 
 def ensure_local_bin_in_path_windows() -> bool:
@@ -3600,7 +3597,9 @@ def main() -> None:
     banner()
 
     # Refuse to run as root on Unix unless explicitly allowed
-    if platform.system() != 'Windows':
+    if sys.platform == 'win32':
+        pass  # Root guard not applicable on Windows
+    else:
         geteuid = getattr(os, 'geteuid', None)
         if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')

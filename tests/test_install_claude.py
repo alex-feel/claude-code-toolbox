@@ -2792,7 +2792,7 @@ class TestDevTtySudoAvailable:
         mock_file = MagicMock()
         mock_file.__enter__ = MagicMock(return_value=mock_file)
         mock_file.__exit__ = MagicMock(return_value=False)
-        with patch('builtins.open', return_value=mock_file):
+        with patch('platform.system', return_value='Linux'), patch('builtins.open', return_value=mock_file):
             assert install_claude._dev_tty_sudo_available() is True
 
 
@@ -2805,13 +2805,15 @@ class TestRunWithSudoFallback:
         result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier1_interactive_success(
-        self, mock_run: MagicMock, mock_stdin: MagicMock,
+        self, mock_run: MagicMock, mock_stdin: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 1: uses sudo directly when stdin is a TTY."""
+        del mock_system
         mock_stdin.isatty.return_value = True
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.return_value = expected
@@ -2836,16 +2838,17 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=False)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier2_cached_credentials(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock,
+        mock_tty: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 2: uses cached credentials when available."""
-        del mock_tty
+        del mock_tty, mock_system
         mock_stdin.isatty.return_value = False
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.side_effect = [
@@ -2876,16 +2879,17 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=True)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier3_dev_tty_fallback(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock,
+        mock_tty: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 3: uses /dev/tty when available and other tiers fail."""
-        del mock_tty
+        del mock_tty, mock_system
         mock_stdin.isatty.return_value = False
         # Tier 2: cached creds fail
         cred_fail = subprocess.CompletedProcess([], 1, '', '')
@@ -3147,7 +3151,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .bashrc when current shell is bash and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None):
+             patch('install_claude.shutil.which', return_value=None), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         bashrc = tmp_path / '.bashrc'
@@ -3161,7 +3166,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .zshrc when current shell is zsh and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/zsh', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         zshrc = tmp_path / '.zshrc'
@@ -3175,7 +3181,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates config.fish when current shell is fish and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/usr/bin/fish', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/fish'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/fish'), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         fish_config = tmp_path / '.config' / 'fish' / 'config.fish'
@@ -3203,7 +3210,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
 
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None):
+             patch('install_claude.shutil.which', return_value=None), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         content = bashrc.read_text()
@@ -3458,6 +3466,7 @@ class TestRootGuard:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -3469,6 +3478,7 @@ class TestRootGuard:
     def test_root_guard_allows_when_override_set(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed past the guard."""
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1', 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3496,6 +3506,7 @@ class TestRootGuard:
     def test_root_guard_skipped_for_non_root(self) -> None:
         """Non-root users (euid != 0) pass through root guard."""
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=1000),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3511,6 +3522,7 @@ class TestRootGuard:
         """Root guard error message contains key information."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -3526,6 +3538,7 @@ class TestRootGuard:
         """Root guard activates on macOS (Darwin) the same as Linux."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),

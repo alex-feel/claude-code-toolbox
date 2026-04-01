@@ -1595,6 +1595,7 @@ class TestEnsureLocalBinInPathUnix:
 
         assert result is True
 
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude.sys.platform', 'linux')
     @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
@@ -1608,8 +1609,10 @@ class TestEnsureLocalBinInPathUnix:
         mock_exists: MagicMock,
         mock_mkdir: MagicMock,
         mock_home: MagicMock,
+        mock_system: MagicMock,
     ) -> None:
         """Test that function updates PATH on Unix."""
+        del mock_system
         # Mock home directory
         mock_home.return_value = Path('/home/testuser')
         # Profile files don't exist
@@ -1643,6 +1646,7 @@ class TestEnsureLocalBinInPathUnix:
             else:
                 os.environ.pop('SHELL', None)
 
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude.sys.platform', 'linux')
     @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
@@ -1656,8 +1660,10 @@ class TestEnsureLocalBinInPathUnix:
         mock_exists: MagicMock,
         mock_mkdir: MagicMock,
         mock_home: MagicMock,
+        mock_system: MagicMock,
     ) -> None:
         """Test that function updates shell profile files."""
+        del mock_system
         # Mock home directory
         mock_home.return_value = Path('/home/testuser')
         # .bashrc exists, doesn't have .local/bin

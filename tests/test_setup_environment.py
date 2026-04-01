@@ -9868,6 +9868,7 @@ class TestRootGuard:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -9879,6 +9880,7 @@ class TestRootGuard:
     def test_root_guard_allows_when_override_set(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed."""
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1'}),
@@ -9907,6 +9909,7 @@ class TestRootGuard:
         """Root guard error message contains key information."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -9922,6 +9925,7 @@ class TestRootGuard:
         """Root guard activates on macOS the same as Linux."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -9937,6 +9941,7 @@ class TestRootGuard:
         """
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -10543,6 +10548,7 @@ class TestGetUserConfirmation:
         with (
             patch('sys.stdin') as mock_stdin,
             patch('sys.platform', 'linux'),
+            patch('platform.system', return_value='Linux'),
             patch('builtins.open', create=True) as mock_open,
             patch('sys.stderr'),
         ):
@@ -11268,6 +11274,7 @@ class TestFishSetUx:
     def test_fish_set_ux_called_when_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When fish is installed, set -Ux is called for setting values."""
         monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
         monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
 
         fish_cmds: list[list[str]] = []
@@ -11294,6 +11301,7 @@ class TestFishSetUx:
     def test_fish_set_ue_called_for_deletion(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When fish is installed, set -Ue is called for deletions."""
         monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(platform, 'system', lambda: 'Linux')
         monkeypatch.setattr(setup_environment, 'get_all_shell_config_files', lambda: [])
 
         fish_cmds: list[list[str]] = []
