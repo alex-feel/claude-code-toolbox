@@ -1591,7 +1591,8 @@ class TestEnsureLocalBinInPathUnix:
     @patch('sys.platform', 'win32')
     def test_ensure_local_bin_in_path_unix_noop_on_windows(self) -> None:
         """Test that function is a no-op on Windows."""
-        result = install_claude._ensure_local_bin_in_path_unix()
+        with patch('platform.system', return_value='Windows'):
+            result = install_claude._ensure_local_bin_in_path_unix()
 
         assert result is True
 

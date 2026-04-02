@@ -1436,6 +1436,7 @@ class TestGetAllShellConfigFiles:
     def test_returns_empty_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Test returns empty list on Windows."""
         monkeypatch.setattr(sys, 'platform', 'win32')
+        monkeypatch.setattr(platform, 'system', lambda: 'Windows')
         result = setup_environment.get_all_shell_config_files()
         assert result == []
 
