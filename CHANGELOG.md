@@ -1,5 +1,15 @@
 # Changelog
 
+## [5.6.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.1...v5.6.2) (2026-04-02)
+
+
+### Bug Fixes
+
+* add global-config dual-write, stale auto-update cleanup, and MCP config dir propagation ([37b0b06](https://github.com/alex-feel/claude-code-toolbox/commit/37b0b06202d9d3f21d47d0ba00578f70a7d81ab0))
+* harden MCP server configuration and Windows PATH handling ([f7e8116](https://github.com/alex-feel/claude-code-toolbox/commit/f7e8116de2f97e5c51fdf498bd512c32fb0b1034))
+* prevent unit tests from writing to real home directory ([29c2d0e](https://github.com/alex-feel/claude-code-toolbox/commit/29c2d0ebab66117457767f761eadd6eb51619b3b))
+* resolve CI failures for Pyright complexity and missing platform mocks ([f76e804](https://github.com/alex-feel/claude-code-toolbox/commit/f76e804d229ed08a66e2b3be4e20452ae21feb87))
+
 ## [5.6.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.0...v5.6.1) (2026-03-31)
 
 
