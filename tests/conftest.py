@@ -253,3 +253,100 @@ def mock_ssl_context(monkeypatch: pytest.MonkeyPatch) -> None:
         return MockSSLContext()
 
     monkeypatch.setattr(ssl, 'create_default_context', mock_create_default_context)
+
+
+@pytest.fixture(autouse=True)
+def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent unit tests from writing to the real ~/.claude/ directory.
+
+    Autouse safety guard that intercepts Path.open(), Path.write_text(),
+    Path.write_bytes(), Path.mkdir(), and Path.unlink() to detect writes
+    targeting the real user home. Tests that legitimately need real home
+    access can mark themselves with @pytest.mark.allow_real_home.
+
+    This guard does NOT apply to E2E tests (which have their own
+    e2e_isolated_home fixture providing complete isolation).
+    """
+    # Skip for tests explicitly marked as allowing real home access
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+
+    # Skip for E2E tests (they have e2e_isolated_home fixture)
+    if 'e2e' in str(request.fspath):
+        return
+
+    real_home = Path.home()
+    real_claude_dir = real_home / '.claude'
+    real_claude_json = real_home / '.claude.json'
+    real_local_bin = real_home / '.local' / 'bin'
+
+    original_open = Path.open
+    original_write_text = Path.write_text
+    original_write_bytes = Path.write_bytes
+    original_mkdir = Path.mkdir
+    original_unlink = Path.unlink
+
+    def _check_path(path: Path, operation: str) -> None:
+        """Raise if a test attempts to write under real home directories."""
+        try:
+            resolved = path.resolve()
+        except (OSError, ValueError):
+            return
+        resolved_str = str(resolved)
+        real_claude_resolved = str(real_claude_dir.resolve())
+        real_local_bin_resolved = str(real_local_bin.resolve())
+        real_claude_json_resolved = str(real_claude_json.resolve())
+        protected_prefixes = (real_claude_resolved, real_local_bin_resolved)
+        if resolved_str.startswith(protected_prefixes) or resolved_str == real_claude_json_resolved:
+            pytest.fail(
+                f'Unit test attempted {operation} to real home directory: {resolved}\n'
+                f'This test is missing mocks for Path.home() or filesystem writers.\n'
+                f'Add @pytest.mark.allow_real_home to override (not recommended).',
+            )
+
+    def guarded_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get('mode', 'r')
+        if isinstance(mode, str) and ('w' in mode or 'a' in mode or 'x' in mode):
+            _check_path(self, f'open({mode!r})')
+        return original_open(self, *args, **kwargs)
+
+    def guarded_write_text(self, *args, **kwargs):
+        _check_path(self, 'write_text()')
+        return original_write_text(self, *args, **kwargs)
+
+    def guarded_write_bytes(self, *args, **kwargs):
+        _check_path(self, 'write_bytes()')
+        return original_write_bytes(self, *args, **kwargs)
+
+    def guarded_mkdir(self, *args, **kwargs):
+        _check_path(self, 'mkdir()')
+        return original_mkdir(self, *args, **kwargs)
+
+    def guarded_unlink(self, *args, **kwargs):
+        _check_path(self, 'unlink()')
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'open', guarded_open)
+    monkeypatch.setattr(Path, 'write_text', guarded_write_text)
+    monkeypatch.setattr(Path, 'write_bytes', guarded_write_bytes)
+    monkeypatch.setattr(Path, 'mkdir', guarded_mkdir)
+    monkeypatch.setattr(Path, 'unlink', guarded_unlink)
+
+
+@pytest.fixture(autouse=True)
+def _mock_cleanup_stale_auto_update_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent cleanup_stale_auto_update_controls from touching real filesystem.
+
+    This function iterates ~/.claude/ subdirectories and writes to settings.json
+    and .claude.json files. In test environments, it must be mocked to prevent
+    the conftest safety guard from blocking writes to real user paths.
+    """
+    try:
+        import setup_environment
+        monkeypatch.setattr(
+            setup_environment,
+            'cleanup_stale_auto_update_controls',
+            lambda **_kwargs: None,
+        )
+    except (ImportError, AttributeError):
+        pass  # Not all test modules import setup_environment

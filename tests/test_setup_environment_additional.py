@@ -765,7 +765,12 @@ class TestMCPServerConfigurationEdgeCases:
         # Check that cmd /c was used for npx in the add command (last bash call)
         bash_cmd = mock_bash.call_args[0][0]
         assert 'cmd /c npx @modelcontextprotocol/server-memory' in bash_cmd
-        assert 'export PATH=' in bash_cmd
+        # PATH should NOT be in the bash command (passed via extra_env)
+        assert 'export PATH=' not in bash_cmd
+        # Verify extra_env was passed with PATH
+        call_kwargs = mock_bash.call_args
+        assert call_kwargs.kwargs.get('extra_env') is not None
+        assert 'PATH' in call_kwargs.kwargs['extra_env']
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value='claude')

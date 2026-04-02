@@ -933,8 +933,10 @@ class TestClaudeInstallation:
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
     @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('install_claude.update_install_method_config')
     def test_install_claude_native_windows(
         self,
+        mock_update_config,
         mock_ensure_path,
         mock_verify,
         mock_run,
@@ -945,6 +947,7 @@ class TestClaudeInstallation:
         """Test native Claude installer on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_update_config is not None
         # Mock installer script download
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer script'
@@ -1132,8 +1135,10 @@ class TestEnsureClaudeSourceAwareUpgrade:
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.update_install_method_config')
     def test_upgrade_native_source_fallback_to_npm_on_failure(
         self,
+        mock_update_config,
         mock_verify,
         mock_get_version,
         mock_get_latest,
@@ -1142,6 +1147,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm,
     ):
         """When native upgrade fails in auto mode, should fall back to npm."""
+        assert mock_update_config is not None
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
 
@@ -1250,8 +1256,10 @@ class TestEnsureClaudeSourceAwareUpgrade:
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
     @patch('install_claude.get_claude_version')
     @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.update_install_method_config')
     def test_upgrade_unknown_source_npm_fallback(
         self,
+        mock_update_config,
         mock_verify,
         mock_get_version,
         mock_get_latest,
@@ -1260,6 +1268,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm,
     ):
         """When source is unknown and native fails, fall back to npm."""
+        assert mock_update_config is not None
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/usr/bin/claude', 'unknown')
 
@@ -2783,7 +2792,7 @@ class TestDevTtySudoAvailable:
         mock_file = MagicMock()
         mock_file.__enter__ = MagicMock(return_value=mock_file)
         mock_file.__exit__ = MagicMock(return_value=False)
-        with patch('builtins.open', return_value=mock_file):
+        with patch('platform.system', return_value='Linux'), patch('builtins.open', return_value=mock_file):
             assert install_claude._dev_tty_sudo_available() is True
 
 
@@ -2793,16 +2802,19 @@ class TestRunWithSudoFallback:
     @patch('sys.platform', 'win32')
     def test_returns_none_on_windows(self) -> None:
         """Returns None immediately on Windows."""
-        result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
+        with patch('platform.system', return_value='Windows'):
+            result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier1_interactive_success(
-        self, mock_run: MagicMock, mock_stdin: MagicMock,
+        self, mock_run: MagicMock, mock_stdin: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 1: uses sudo directly when stdin is a TTY."""
+        del mock_system
         mock_stdin.isatty.return_value = True
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.return_value = expected
@@ -2827,16 +2839,17 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=False)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier2_cached_credentials(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock,
+        mock_tty: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 2: uses cached credentials when available."""
-        del mock_tty
+        del mock_tty, mock_system
         mock_stdin.isatty.return_value = False
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.side_effect = [
@@ -2867,16 +2880,17 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
+    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=True)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier3_dev_tty_fallback(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock,
+        mock_tty: MagicMock, mock_system: MagicMock,
     ) -> None:
         """Tier 3: uses /dev/tty when available and other tiers fail."""
-        del mock_tty
+        del mock_tty, mock_system
         mock_stdin.isatty.return_value = False
         # Tier 2: cached creds fail
         cred_fail = subprocess.CompletedProcess([], 1, '', '')
@@ -3138,7 +3152,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .bashrc when current shell is bash and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None):
+             patch('install_claude.shutil.which', return_value=None), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         bashrc = tmp_path / '.bashrc'
@@ -3152,7 +3167,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .zshrc when current shell is zsh and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/zsh', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         zshrc = tmp_path / '.zshrc'
@@ -3166,7 +3182,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates config.fish when current shell is fish and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/usr/bin/fish', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/fish'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/fish'), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         fish_config = tmp_path / '.config' / 'fish' / 'config.fish'
@@ -3194,7 +3211,8 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
 
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None):
+             patch('install_claude.shutil.which', return_value=None), \
+             patch('platform.system', return_value='Linux'):
             install_claude._ensure_local_bin_in_path_unix()
 
         content = bashrc.read_text()
@@ -3449,6 +3467,7 @@ class TestRootGuard:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -3460,6 +3479,7 @@ class TestRootGuard:
     def test_root_guard_allows_when_override_set(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed past the guard."""
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1', 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3487,6 +3507,7 @@ class TestRootGuard:
     def test_root_guard_skipped_for_non_root(self) -> None:
         """Non-root users (euid != 0) pass through root guard."""
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=1000),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3502,6 +3523,7 @@ class TestRootGuard:
         """Root guard error message contains key information."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -3517,6 +3539,7 @@ class TestRootGuard:
         """Root guard activates on macOS (Darwin) the same as Linux."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
+            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),

@@ -47,11 +47,6 @@ from urllib.request import urlretrieve
 
 import yaml
 
-# Import pwd module for Unix-like systems (used for detecting real user home under sudo)
-# The import happens here but pwd is used in get_real_user_home() function
-if sys.platform != 'win32':
-    pass  # Used in get_real_user_home() for resolving sudo user's home directory
-
 # Configuration inheritance constants
 MAX_INHERITANCE_DEPTH = 10
 INHERIT_KEY = 'inherit'
@@ -356,26 +351,24 @@ def is_admin() -> bool:
     Returns:
         True if running as admin or not on Windows, False otherwise.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        try:
+            import ctypes
+
+            windll = getattr(ctypes, 'windll', None)
+            if windll is None:
+                return False
+            shell32 = getattr(windll, 'shell32', None)
+            if shell32 is None:
+                return False
+            is_user_admin = getattr(shell32, 'IsUserAnAdmin', None)
+            if is_user_admin is None:
+                return False
+            return bool(is_user_admin())
+        except Exception:
+            return False
+    else:
         return True  # Not Windows, no admin check needed
-
-    try:
-        import ctypes
-
-        # Use getattr to access Windows-specific attributes dynamically
-        # This prevents type checkers from failing on non-Windows platforms
-        windll = getattr(ctypes, 'windll', None)
-        if windll is None:
-            return False
-        shell32 = getattr(windll, 'shell32', None)
-        if shell32 is None:
-            return False
-        is_user_admin = getattr(shell32, 'IsUserAnAdmin', None)
-        if is_user_admin is None:
-            return False
-        return bool(is_user_admin())
-    except Exception:
-        return False
 
 
 def request_admin_elevation(script_args: list[str] | None = None) -> None:
@@ -384,104 +377,84 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
     Args:
         script_args: Optional list of arguments to pass to elevated script.
     """
-    if platform.system() != 'Windows':
-        return
+    if sys.platform == 'win32':
+        try:
+            import ctypes
 
-    try:
-        import ctypes
+            # Collect critical environment variables to pass to elevated process
+            env_vars_to_pass: list[str] = []
+            critical_env_vars = [
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
+                'GITHUB_TOKEN',
+                'GITLAB_TOKEN',
+                'REPO_TOKEN',
+                'CLAUDE_CODE_TOOLBOX_VERSION',
+            ]
 
-        # Collect critical environment variables to pass to elevated process
-        env_vars_to_pass: list[str] = []
-        critical_env_vars = [
-            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
-            'GITHUB_TOKEN',
-            'GITLAB_TOKEN',
-            'REPO_TOKEN',
-            'CLAUDE_CODE_TOOLBOX_VERSION',
-        ]
+            for var_name in critical_env_vars:
+                var_value = os.environ.get(var_name)
+                if var_value:
+                    env_vars_to_pass.append(f'--env-{var_name}={var_value}')
 
-        for var_name in critical_env_vars:
-            var_value = os.environ.get(var_name)
-            if var_value:
-                # Don't escape here - we'll handle escaping when building the params string
-                env_vars_to_pass.append(f'--env-{var_name}={var_value}')
-
-        # Build command line with script path, environment variables, then original arguments
-        # Important: sys.argv[0] is the script path, sys.argv[1:] are the actual arguments
-        # Add special flag to indicate UAC elevation created a new window
-        uac_flag = ['--elevated-via-uac']
-        if script_args:
-            # When script_args is provided, use it instead of sys.argv[1:]
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
-        else:
-            # Use original arguments (excluding script path)
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
-
-        # Build parameters string with proper quoting for Windows
-        # Quote each argument that contains spaces or special characters
-        params_list: list[str] = []
-        for arg in all_args:
-            # Always quote arguments with = to ensure proper parsing
-            if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
-                # For Windows command line, we need to escape quotes properly
-                # Use \" for quotes inside quoted strings
-                escaped_arg = arg.replace('"', '\\"')
-                quoted_arg = f'"{escaped_arg}"'
-                params_list.append(quoted_arg)
+            uac_flag = ['--elevated-via-uac']
+            if script_args:
+                all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
             else:
-                params_list.append(arg)
-        params = ' '.join(params_list)
+                all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
 
-        # Use getattr to access Windows-specific attributes dynamically
-        windll = getattr(ctypes, 'windll', None)
-        if windll is None:
-            return
-        shell32 = getattr(windll, 'shell32', None)
-        if shell32 is None:
-            return
-        shell_execute_w = getattr(shell32, 'ShellExecuteW', None)
-        if shell_execute_w is None:
-            return
+            params_list: list[str] = []
+            for arg in all_args:
+                if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
+                    escaped_arg = arg.replace('"', '\\\\"')
+                    quoted_arg = f'"{escaped_arg}"'
+                    params_list.append(quoted_arg)
+                else:
+                    params_list.append(arg)
+            params = ' '.join(params_list)
 
-        # Request elevation
-        result = shell_execute_w(
-            None,
-            'runas',
-            sys.executable,
-            params,
-            None,
-            1,
-        )
+            windll = getattr(ctypes, 'windll', None)
+            if windll is None:
+                return
+            shell32 = getattr(windll, 'shell32', None)
+            if shell32 is None:
+                return
+            shell_execute_w = getattr(shell32, 'ShellExecuteW', None)
+            if shell_execute_w is None:
+                return
 
-        # Exit current process if elevation was requested
-        if result > 32:  # Success
-            # Show message that elevated window is opening
-            print()
-            info('Administrator privileges granted!')
-            info('A new window is opening with elevated privileges...')
-            info('Please check the new window to see the setup progress.')
-            print()
+            result = shell_execute_w(
+                None,
+                'runas',
+                sys.executable,
+                params,
+                None,
+                1,
+            )
 
-            # Wait briefly to ensure elevated process starts
-            time.sleep(1.0)
-            # Exit the non-elevated process so only the elevated one continues
-            sys.exit(0)
-        else:
-            # Elevation was denied or failed
-            error('Administrator elevation was denied')
-            error('Installation cannot proceed without administrator privileges')
-            error('')
-            error('Please run this script as administrator manually:')
-            error('  1. Right-click on your terminal')
-            error('  2. Select "Run as administrator"')
-            error('  3. Run the setup command again')
+            if result > 32:  # Success
+                print()
+                info('Administrator privileges granted!')
+                info('A new window is opening with elevated privileges...')
+                info('Please check the new window to see the setup progress.')
+                print()
+
+                time.sleep(1.0)
+                sys.exit(0)
+            else:
+                error('Administrator elevation was denied')
+                error('Installation cannot proceed without administrator privileges')
+                error('')
+                error('Please run this script as administrator manually:')
+                error('  1. Right-click on your terminal')
+                error('  2. Select "Run as administrator"')
+                error('  3. Run the setup command again')
+                sys.exit(1)
+
+        except Exception as e:
+            error(f'Failed to request elevation: {e}')
+            error('Please run this script as administrator manually')
             sys.exit(1)
-
-    except Exception as e:
-        # If elevation fails due to an error, report it
-        error(f'Failed to request elevation: {e}')
-        error('Please run this script as administrator manually')
-        sys.exit(1)
+    # Non-Windows: no-op
 
 
 def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
@@ -494,31 +467,24 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
     Returns:
         True if admin needed, False otherwise.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        if not args.skip_install:
+            return True
+
+        dependencies = config.get('dependencies', {})
+        if dependencies:
+            win_deps = dependencies.get('windows', [])
+            common_deps = dependencies.get('common', [])
+            all_deps = win_deps + common_deps
+
+            for dep in all_deps:
+                if 'winget' in dep and '--scope machine' in dep:
+                    return True
+                if 'npm install -g' in dep:
+                    return True
+
         return False
-
-    # Check if Claude Code installation is needed
-    if not args.skip_install:
-        # Installing Node.js and Git typically requires admin on Windows
-        return True
-
-    # Check for dependencies that need admin
-    dependencies = config.get('dependencies', {})
-    if dependencies:
-        # Check Windows-specific dependencies
-        win_deps = dependencies.get('windows', [])
-        common_deps = dependencies.get('common', [])
-        all_deps = win_deps + common_deps
-
-        for dep in all_deps:
-            # Check for commands that typically need admin
-            if 'winget' in dep and '--scope machine' in dep:
-                return True
-            if 'npm install -g' in dep:
-                # Global npm installs may need admin depending on Node.js installation
-                return True
-
-    return False
+    return False  # Non-Windows, admin not applicable
 
 
 # ANSI color codes for pretty output
@@ -905,6 +871,7 @@ def run_bash_command(
     command: str,
     capture_output: bool = True,
     login_shell: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Execute command via bash (Git Bash on Windows, native bash on Unix).
 
@@ -915,6 +882,9 @@ def run_bash_command(
         command: The bash command string to execute
         capture_output: Whether to capture stdout/stderr
         login_shell: Whether to use login shell (-l flag)
+        extra_env: Additional environment variables to merge into the subprocess
+            environment. When provided, these values override any existing
+            environment variables (e.g., passing PATH replaces the inherited PATH).
 
     Returns:
         subprocess.CompletedProcess with the result
@@ -949,6 +919,10 @@ def run_bash_command(
     env = os.environ.copy()
     if sys.platform == 'win32':
         env['MSYS_NO_PATHCONV'] = '1'
+
+    # Merge additional environment variables (e.g., PATH for MCP server configuration)
+    if extra_env:
+        env.update(extra_env)
 
     try:
         result = subprocess.run(args, capture_output=capture_output, text=True, env=env)
@@ -987,6 +961,9 @@ def convert_to_unix_path(windows_path: str) -> str:
     """
     if not windows_path:
         return windows_path
+
+    # Strip surrounding double quotes from Windows registry PATH entries
+    windows_path = windows_path.strip('"')
 
     # If already a Unix path (starts with / and no drive letter), return as-is
     if windows_path.startswith('/') and len(windows_path) > 1 and windows_path[1] != ':':
@@ -1535,24 +1512,25 @@ def validate_global_config(global_config: dict[str, Any]) -> list[str]:
 
 def write_global_config(
     global_config: dict[str, Any],
+    artifact_base_dir: Path | None = None,
 ) -> bool:
     """Write global configuration to ~/.claude.json with deep merge.
 
-    Implements the three-step merge process via _write_merged_json():
-    1. READ existing ~/.claude.json (or empty dict if not exists)
-    2. DEEP MERGE new config values into existing (no array union)
-    3. WRITE merged result back to file
-
-    Uses array_union_keys=set() because ~/.claude.json has no
-    permissions.allow/deny/ask paths (those are settings.json-specific).
+    Implements asymmetric dual-write: always writes to ~/.claude.json
+    (machine baseline for bare claude sessions), and additionally writes
+    to artifact_base_dir/.claude.json when command-names creates an
+    isolated environment (since Claude Code CLI resolves getGlobalClaudeFile()
+    via CLAUDE_CONFIG_DIR with no fallback to the home directory).
 
     Args:
         global_config: Global config dict from YAML global-config section.
+        artifact_base_dir: Isolated config directory path, or None.
 
     Returns:
-        True if config was written successfully, False on write failure.
+        True if config was written successfully to all targets, False on any failure.
     """
-    config_file = get_real_user_home() / '.claude.json'
+    home_dir = get_real_user_home()
+    config_file = home_dir / '.claude.json'
 
     ok, _ = _write_merged_json(
         config_file,
@@ -1564,6 +1542,20 @@ def write_global_config(
         success(f'Wrote global config to {config_file}')
     else:
         warning(f'Failed to write global config to {config_file}')
+
+    # Dual-write to isolated environment when command-names is present
+    if artifact_base_dir is not None and artifact_base_dir != home_dir:
+        isolated_config_file = artifact_base_dir / '.claude.json'
+        iso_ok, _ = _write_merged_json(
+            isolated_config_file,
+            global_config,
+            array_union_keys=set(),
+        )
+        if iso_ok:
+            success(f'Wrote global config to {isolated_config_file}')
+        else:
+            warning(f'Failed to write global config to {isolated_config_file}')
+        ok = ok and iso_ok
 
     return ok
 
@@ -1745,10 +1737,15 @@ def _remove_auto_update_controls(
             )
 
     # Target 2: Remove DISABLE_AUTOUPDATER from user_settings.env
+    # Uses None for RFC 7396 null-as-delete: _write_merged_json() ->
+    # _merge_recursive() requires None to trigger target.pop(key, None)
+    # on disk. Using del only removes from in-memory dict; absent key
+    # is preserved during merge. (Target 3 uses del correctly because
+    # create_profile_config() writes atomically, not via merge.)
     if user_settings is not None:
         env_section = user_settings.get('env')
         if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
-            del env_section[DISABLE_AUTOUPDATER_KEY]
+            env_section[DISABLE_AUTOUPDATER_KEY] = None
 
     # Target 3: Remove DISABLE_AUTOUPDATER from env_variables
     if env_variables is not None and DISABLE_AUTOUPDATER_KEY in env_variables:
@@ -1759,6 +1756,152 @@ def _remove_auto_update_controls(
         os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
 
     return global_config, user_settings, env_variables, os_env_variables
+
+
+def cleanup_stale_auto_update_controls(
+    home_dir: Path,
+    is_pinned: bool,
+) -> None:
+    """Remove stale auto-update controls from all filesystem locations.
+
+    Implements write-remove symmetry: writes go to specific locations
+    via scope-based routing, but removal sweeps ALL locations
+    unconditionally to clean up artifacts from prior configurations.
+
+    Called AFTER all write steps in main() as a post-write cleanup pass.
+
+    Args:
+        home_dir: User home directory.
+        is_pinned: Whether a specific Claude Code version is pinned.
+    """
+    claude_dir = home_dir / '.claude'
+
+    if not is_pinned:
+        # When NOT pinned: remove auto-update controls from EVERYWHERE
+
+        # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
+        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+
+        # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    settings_path = subdir / 'settings.json'
+                    if settings_path.exists():
+                        _cleanup_settings_json_autoupdater(settings_path)
+
+        # 3. Clean autoUpdates: false from ~/.claude.json
+        _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
+
+        # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    claude_json_path = subdir / '.claude.json'
+                    if claude_json_path.exists():
+                        _cleanup_claude_json_auto_updates(claude_json_path)
+
+    else:
+        # When pinned WITH command-names: clean stale DISABLE_AUTOUPDATER
+        # from ~/.claude/settings.json (bare sessions must not inherit
+        # isolated environment restrictions)
+        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+
+
+def _cleanup_settings_json_autoupdater(settings_path: Path) -> None:
+    """Remove stale DISABLE_AUTOUPDATER from a settings.json file via merge."""
+    if not settings_path.exists():
+        return
+    try:
+        content = json.loads(settings_path.read_text(encoding='utf-8'))
+        env_section = content.get('env')
+        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {'env': {DISABLE_AUTOUPDATER_KEY: None}}
+            ok, merged = _write_merged_json(settings_path, cleanup_dict)
+            if ok and merged.get('env') == {}:
+                # Clean empty env: {} after removal
+                merged.pop('env')
+                settings_path.write_text(
+                    json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8',
+                )
+            if ok:
+                info(f'Cleaned stale {DISABLE_AUTOUPDATER_KEY} from {settings_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
+    """Remove stale autoUpdates: false from a .claude.json file.
+
+    Only removes when value is false (auto-injected by toolbox).
+    Preserves autoUpdates: true (explicit user preference).
+    """
+    if not claude_json_path.exists():
+        return
+    try:
+        content = json.loads(claude_json_path.read_text(encoding='utf-8'))
+        if content.get(AUTO_UPDATE_KEY) is False:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {AUTO_UPDATE_KEY: None}
+            ok, _ = _write_merged_json(
+                claude_json_path, cleanup_dict, array_union_keys=set(),
+            )
+            if ok:
+                info(f'Cleaned stale {AUTO_UPDATE_KEY}: false from {claude_json_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def _run_os_env_variables_step(
+    os_env_variables: dict[str, str | None] | None,
+    command_names: list[str] | None,
+    artifact_base_dir: Path,
+) -> dict[str, Path]:
+    """Set OS environment variables and generate env loader files.
+
+    Handles Step 6 of the setup workflow: sets OS-level environment
+    variables and generates shell-specific env loader files for all
+    configured commands.
+
+    Args:
+        os_env_variables: OS environment variable mappings to set.
+        command_names: List of command names for env loader generation.
+        artifact_base_dir: Base directory for command artifacts.
+
+    Returns:
+        Dictionary mapping command names to generated env file paths.
+    """
+    print()
+    print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
+    if os_env_variables:
+        set_all_os_env_variables(os_env_variables)
+    else:
+        info('No OS environment variables to configure')
+
+    generated_env_files: dict[str, Path] = {}
+    if os_env_variables:
+        generated_env_files = generate_env_loader_files(
+            os_env_variables, command_names, artifact_base_dir if command_names else None,
+        )
+        if generated_env_files:
+            success(f'Generated {len(generated_env_files)} env loader file(s)')
+
+    return generated_env_files
+
+
+def _run_stale_auto_update_cleanup(claude_code_version_normalized: str | None) -> None:
+    """Execute Step 15: cleanup stale auto-update controls.
+
+    Extracted from main() to reduce function complexity for static analysis.
+    """
+    print()
+    print(f'{Colors.CYAN}Step 15: Cleaning stale auto-update controls...{Colors.NC}')
+    cleanup_stale_auto_update_controls(
+        home_dir=get_real_user_home(),
+        is_pinned=claude_code_version_normalized is not None,
+    )
 
 
 def detect_settings_conflicts(
@@ -1925,6 +2068,41 @@ def _broadcast_wm_settingchange() -> None:
         )
 
 
+def _is_temp_path(path: str) -> bool:
+    """Check if a path belongs to a temporary directory.
+
+    Detects paths under the user's TEMP/TMP directories, including paths
+    with Windows 8.3 short filename format mismatches. Also detects pytest
+    temp directories.
+
+    Args:
+        path: The file system path to check (will be lowercased internally).
+
+    Returns:
+        True if the path is in a temporary directory, False otherwise.
+    """
+    if platform.system() == 'Windows':
+        path_lower = path.lower()
+
+        for env_var in ('TEMP', 'TMP'):
+            temp_dir = os.environ.get(env_var, '')
+            if temp_dir:
+                try:
+                    temp_dir_resolved = str(Path(temp_dir).resolve()).lower()
+                except (OSError, ValueError):
+                    temp_dir_resolved = temp_dir.lower()
+                if temp_dir_resolved and temp_dir_resolved in path_lower:
+                    return True
+                if temp_dir.lower() in path_lower:
+                    return True
+
+        return (
+            r'\appdata\local\temp\pytest-of-' in path_lower
+            or r'\appdata\local\temp\tmp' in path_lower
+        )
+    return False
+
+
 def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
     """Add a directory to the Windows user PATH environment variable.
 
@@ -1951,31 +2129,14 @@ def add_directory_to_windows_path(directory: str) -> tuple[bool, str]:
             normalized_dir = str(Path(directory).resolve())
 
             # CRITICAL: Prevent adding temporary directory paths to PATH
-            # Temporary directories cause PATH pollution and don't persist
-            temp_dir_env = os.environ.get('TEMP', '').lower()
-            temp_dir_alt = os.environ.get('TMP', '').lower()
-            normalized_lower = normalized_dir.lower()
-
-            # Check if path is in a temp directory
-            if temp_dir_env and temp_dir_env in normalized_lower:
-                return (
-                    False,
-                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
-                )
-            if temp_dir_alt and temp_dir_alt in normalized_lower:
-                return (
-                    False,
-                    f'Refusing to add temporary directory to PATH: {normalized_dir}',
-                )
-
-            # Additional check for common temp path patterns
-            if r'\appdata\local\temp\tmp' in normalized_lower:
+            if _is_temp_path(normalized_dir):
                 return (
                     False,
                     f'Refusing to add temporary directory to PATH: {normalized_dir}',
                 )
 
             # Validate it's the expected .local\bin directory
+            normalized_lower = normalized_dir.lower()
             expected_local_bin = str(get_real_user_home() / '.local' / 'bin')
             if normalized_dir != expected_local_bin and not normalized_lower.startswith(str(get_real_user_home()).lower()):
                 # Allow only paths under user's home directory
@@ -2077,16 +2238,15 @@ def ensure_local_bin_in_path() -> None:
         - Updates current session's os.environ['PATH']
         - Provides user feedback only if PATH was newly added
     """
-    if platform.system() != 'Windows':
-        return
+    if sys.platform == 'win32':
+        local_bin = get_real_user_home() / '.local' / 'bin'
+        local_bin.mkdir(parents=True, exist_ok=True)
 
-    local_bin = get_real_user_home() / '.local' / 'bin'
-    local_bin.mkdir(parents=True, exist_ok=True)
+        path_success, path_message = add_directory_to_windows_path(str(local_bin))
 
-    path_success, path_message = add_directory_to_windows_path(str(local_bin))
-
-    if path_success and 'already in PATH' not in path_message:
-        info('Pre-configured .local/bin in PATH for tool installations')
+        if path_success and 'already in PATH' not in path_message:
+            info('Pre-configured .local/bin in PATH for tool installations')
+    # Non-Windows: no-op
 
 
 def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
@@ -2095,6 +2255,7 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
     This function scans the user's PATH environment variable and removes any
     entries that point to temporary directories. These paths are typically
     added by mistake when scripts execute from temporary locations.
+    Also removes literal %PATH% self-references that cause recursive expansion.
 
     Returns:
         tuple[int, list[str]]: (count of removed paths, list of removed path strings)
@@ -2109,8 +2270,6 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
     if sys.platform == 'win32':
         try:
             removed_paths: list[str] = []
-            temp_dir_env = os.environ.get('TEMP', '').lower()
-            temp_dir_alt = os.environ.get('TMP', '').lower()
 
             # Open the registry key for user environment variables
             reg_key = winreg.OpenKey(
@@ -2132,24 +2291,14 @@ def cleanup_temp_paths_from_registry() -> tuple[int, list[str]]:
             clean_components: list[str] = []
 
             for path_entry in path_components:
-                path_lower = path_entry.lower()
+                # Check if this is a temporary directory path or a self-reference
+                should_remove = _is_temp_path(path_entry)
 
-                # Check if this is a temporary directory path
-                is_temp_path = False
+                # Also remove %PATH% self-references that cause recursive expansion
+                if path_entry.strip() == '%PATH%':
+                    should_remove = True
 
-                # Check against TEMP environment variable
-                if temp_dir_env and temp_dir_env in path_lower:
-                    is_temp_path = True
-
-                # Check against TMP environment variable
-                if temp_dir_alt and temp_dir_alt in path_lower:
-                    is_temp_path = True
-
-                # Check for common temp path patterns
-                if r'\appdata\local\temp\tmp' in path_lower:
-                    is_temp_path = True
-
-                if is_temp_path:
+                if should_remove:
                     removed_paths.append(path_entry)
                 else:
                     clean_components.append(path_entry)
@@ -4103,13 +4252,13 @@ def display_installation_summary(
 
 def _dev_tty_available() -> bool:
     """Check if /dev/tty is available for interactive input."""
-    if sys.platform != 'win32':
-        try:
-            with open('/dev/tty'):
-                return True
-        except OSError:
-            pass
-    return False
+    if platform.system() == 'Windows':
+        return False
+    try:
+        with open('/dev/tty'):
+            return True
+    except OSError:
+        return False
 
 
 def _get_user_confirmation(prompt: str) -> str:
@@ -4133,18 +4282,15 @@ def _get_user_confirmation(prompt: str) -> str:
             return ''
 
     # Best-effort /dev/tty fallback (Unix only)
-    if sys.platform != 'win32':
-        try:
-            with open('/dev/tty') as tty:
-                # Write prompt to stderr (stdout may be piped)
-                sys.stderr.write(prompt)
-                sys.stderr.flush()
-                return tty.readline().strip()
-        except (OSError, EOFError):
-            pass
-
-    # No interactive input available
-    return ''
+    if platform.system() == 'Windows':
+        return ''
+    try:
+        with open('/dev/tty') as tty:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            return tty.readline().strip()
+    except (OSError, EOFError):
+        return ''
 
 
 def confirm_installation(
@@ -4189,7 +4335,9 @@ def confirm_installation(
 
     # Try /dev/tty fallback on Unix when stdin is piped
     can_tty_fallback = False
-    if not can_interact and sys.platform != 'win32':
+    if sys.platform == 'win32':
+        pass  # No /dev/tty on Windows
+    elif not can_interact:
         can_tty_fallback = _dev_tty_available()
 
     if not can_interact and not can_tty_fallback:
@@ -4227,22 +4375,19 @@ def get_real_user_home() -> Path:
     Returns:
         Path: The real user's home directory.
     """
-    if sys.platform != 'win32':
-        # Check if running under sudo (Unix-only)
+    result: Path | None = None
+    if sys.platform == 'win32':
+        pass  # Windows: no sudo resolution needed
+    else:
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user:
             try:
-                # Get the home directory of the user who invoked sudo
-                # pwd is imported at module level for non-Windows platforms
                 import pwd as pwd_module
 
-                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
+                result = Path(pwd_module.getpwnam(sudo_user).pw_dir)
             except KeyError:
-                # User not found in password database, fall back
                 warning(f'Could not find home directory for sudo user: {sudo_user}')
-
-    # Windows or not running under sudo - use default home
-    return Path.home()
+    return result if result is not None else Path.home()
 
 
 def get_all_shell_config_files() -> list[Path]:
@@ -4254,35 +4399,25 @@ def get_all_shell_config_files() -> list[Path]:
     Returns:
         list[Path]: List of shell config file paths that exist or should be created.
     """
-    # Windows uses registry, not shell config files
-    config_files: list[Path] = []
+    if platform.system() == 'Windows':
+        return []
+    home = get_real_user_home()
 
-    if sys.platform != 'win32':
-        # Unix-like systems - get all shell config files
-        home = get_real_user_home()
+    config_files = [
+        home / '.bashrc',
+        home / '.bash_profile',
+        home / '.profile',
+        home / '.zshenv',
+        home / '.zprofile',
+        home / '.zshrc',
+        home / '.config' / 'fish' / 'config.fish',
+    ]
 
-        # All possible shell config files for environment variables
-        # Listed in order of preference/importance
-        config_files = [
-            # Bash files
-            home / '.bashrc',       # Interactive bash shells (most common on Linux)
-            home / '.bash_profile',  # Login bash shells (macOS Terminal.app, SSH)
-            home / '.profile',      # Fallback for sh/dash (Ubuntu default login shell)
-            # Zsh files
-            home / '.zshenv',       # All zsh instances (recommended for env vars)
-            home / '.zprofile',     # Zsh login shells (macOS default since Catalina)
-            home / '.zshrc',        # Interactive zsh shells
-            # Fish files
-            home / '.config' / 'fish' / 'config.fish',  # Fish shell config
-        ]
+    if platform.system() == 'Linux' and not shutil.which('zsh'):
+        config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
-        # On Linux, only include zsh files if zsh is installed
-        if platform.system() == 'Linux' and not shutil.which('zsh'):
-            config_files = [f for f in config_files if not f.name.startswith('.zsh')]
-
-        # On both Linux and macOS, only include fish config if fish is installed
-        if not shutil.which('fish'):
-            config_files = [f for f in config_files if 'fish' not in str(f)]
+    if not shutil.which('fish'):
+        config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
 
@@ -4629,40 +4764,33 @@ def set_os_env_variable_unix(name: str, value: str | None) -> bool:
     Returns:
         bool: True if all operations succeeded, False if any failed.
     """
-    # Windows doesn't use shell config files
-    all_success = False
+    if platform.system() == 'Windows':
+        return False
+    config_files = get_all_shell_config_files()
+    all_success = True
 
-    if sys.platform != 'win32':
-        config_files = get_all_shell_config_files()
-        all_success = True
+    for config_file in config_files:
+        if value is None:
+            if not remove_export_from_file(config_file, name):
+                all_success = False
+        else:
+            if not add_export_to_file(config_file, name, value):
+                all_success = False
 
-        for config_file in config_files:
+    if shutil.which('fish'):
+        try:
             if value is None:
-                # Delete the variable
-                if not remove_export_from_file(config_file, name):
-                    all_success = False
+                subprocess.run(
+                    ['fish', '-c', f'set -Ue {name}'],
+                    capture_output=True, check=False, timeout=5,
+                )
             else:
-                # Set the variable
-                if not add_export_to_file(config_file, name, value):
-                    all_success = False
-
-        # Fish universal variables: propagate immediately to all running Fish instances
-        # config.fish (set -gx) remains the durable persistence mechanism;
-        # set -Ux provides instant propagation to open Fish sessions
-        if shutil.which('fish'):
-            try:
-                if value is None:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ue {name}'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-                else:
-                    subprocess.run(
-                        ['fish', '-c', f'set -Ux {name} "{value}"'],
-                        capture_output=True, check=False, timeout=5,
-                    )
-            except (OSError, subprocess.TimeoutExpired):
-                pass  # Non-critical: config.fish write is the durable mechanism
+                subprocess.run(
+                    ['fish', '-c', f'set -Ux {name} "{value}"'],
+                    capture_output=True, check=False, timeout=5,
+                )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     return all_success
 
@@ -4744,7 +4872,9 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
         warning(f'Failed to configure {failed_count} environment variable(s)')
 
     # Print unset guidance for deleted variables on Unix
-    if sys.platform != 'win32' and deleted_names:
+    if sys.platform == 'win32':
+        pass  # Unset guidance is Unix-only
+    elif deleted_names:
         info('To remove deleted variable(s) from your current shell session, run:')
         for var_name in deleted_names:
             print(f'  unset {var_name}')
@@ -6332,54 +6462,50 @@ def verify_nodejs_available() -> str | None:
     Returns:
         Parent directory of the verified Node.js executable, or None if not found.
     """
-    if platform.system() != 'Windows':
+    if platform.system() == 'Windows':
+        # Primary: Use shutil.which for proper PATH-based detection
         node_path = shutil.which('node')
         if node_path:
-            return str(Path(node_path).parent)
-        warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
-        return None
+            try:
+                result = subprocess.run(
+                    [node_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
+                    return str(Path(node_path).parent)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
-    # Primary: Use shutil.which for proper PATH-based detection
+        # Secondary: Try find_command with common installation paths
+        node_path = find_command('node')
+        if node_path:
+            try:
+                result = subprocess.run(
+                    [node_path, '--version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    node_dir = str(Path(node_path).parent)
+                    current_path = os.environ.get('PATH', '')
+                    if node_dir.lower() not in current_path.lower():
+                        os.environ['PATH'] = f'{node_dir};{current_path}'
+                        info(f'Added {node_dir} to PATH')
+                    success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
+                    return str(Path(node_path).parent)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+        error('Node.js not found in PATH')
+        return None
     node_path = shutil.which('node')
     if node_path:
-        # Verify node actually works
-        try:
-            result = subprocess.run(
-                [node_path, '--version'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return str(Path(node_path).parent)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    # Secondary: Try find_command with common installation paths
-    node_path = find_command('node')
-    if node_path:
-        # Verify node actually works
-        try:
-            result = subprocess.run(
-                [node_path, '--version'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Add to PATH if not already there
-                node_dir = str(Path(node_path).parent)
-                current_path = os.environ.get('PATH', '')
-                if node_dir.lower() not in current_path.lower():
-                    os.environ['PATH'] = f'{node_dir};{current_path}'
-                    info(f'Added {node_dir} to PATH')
-                success(f'Node.js verified at: {node_path} ({result.stdout.strip()})')
-                return str(Path(node_path).parent)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-
-    error('Node.js not found in PATH')
+        return str(Path(node_path).parent)
+    warning('Node.js not found in PATH - npx-based MCP servers may fail at runtime')
     return None
 
 
@@ -6540,7 +6666,11 @@ def _prepare_windows_bash_env(
     )
 
 
-def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) -> bool:
+def configure_mcp_server(
+    server: dict[str, Any],
+    nodejs_dir: str | None = None,
+    artifact_base_dir: Path | None = None,
+) -> bool:
     """Configure a single MCP server."""
     name = server.get('name')
     scope = server.get('scope', 'user')
@@ -6595,19 +6725,29 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
             # as the add operation, preventing "not found" errors due to asymmetric execution
             env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
 
+            remove_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+            if artifact_base_dir is not None:
+                remove_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+
             for remove_scope in ['user', 'local', 'project']:
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
                 )
                 # Best-effort: ignore exit code, server may not exist in this scope
-                run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env=remove_extra_env,
+                )
         else:
             # Unix: Direct subprocess execution
+            remove_env: dict[str, str] | None = None
+            if artifact_base_dir is not None:
+                remove_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
+
             for remove_scope in ['user', 'local', 'project']:
                 remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
                 # Best-effort: ignore exit code, server may not exist in this scope
-                run_command(remove_cmd, capture_output=True)
+                run_command(remove_cmd, capture_output=True, env=remove_env)
 
         # Profile-scoped servers are configured via create_mcp_config_file(), not claude mcp add
         if scope == 'profile':
@@ -6651,14 +6791,19 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 header_part = f' --header "{header}"' if header else ''
 
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
                     f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
                 bash_cmd_preview = bash_cmd[:300] + '...' if len(bash_cmd) > 300 else bash_cmd
                 debug_log(f'First attempt bash_cmd: {bash_cmd_preview}')
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                http_win_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+                if artifact_base_dir is not None:
+                    http_win_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env=http_win_extra_env,
+                )
                 debug_log(f'First attempt result: returncode={result.returncode}')
                 if result.returncode != 0:
                     debug_log(f'First attempt failed! stdout={result.stdout}, stderr={result.stderr}')
@@ -6670,11 +6815,19 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 # Use double quotes for header to allow ${VAR} expansion in bash
                 header_part = f' --header "{header}"' if header else ''
                 bash_cmd = (
-                    f'export PATH="{parent_dir}:$PATH" && '
                     f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)}{env_part} '
                     f'--transport {shlex.quote(transport)} {shlex.quote(name)} {shlex.quote(url)}{header_part}'
                 )
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                current_path = os.environ.get('PATH', '')
+                parent_str = str(parent_dir)
+                extra_path = f'{parent_str}:{current_path}' if parent_str not in current_path else current_path
+                http_unix_extra_env: dict[str, str] = {'PATH': extra_path}
+                if artifact_base_dir is not None:
+                    http_unix_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env=http_unix_extra_env,
+                )
         elif command:
             # Stdio transport (command)
 
@@ -6711,7 +6864,6 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
-                    f'export PATH="{env.unix_explicit_path}:$PATH" && '
                     f'"{env.unix_claude_cmd}" mcp add --scope {scope} {name}{env_part} '
                     f'-- {command_str}'
                 )
@@ -6720,7 +6872,13 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                 debug_log(f'STDIO bash_cmd: {bash_cmd_preview}')
 
                 info(f'Configuring stdio MCP server {name}...')
-                result = run_bash_command(bash_cmd, capture_output=True, login_shell=True)
+                stdio_win_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+                if artifact_base_dir is not None:
+                    stdio_win_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+                result = run_bash_command(
+                    bash_cmd, capture_output=True, login_shell=True,
+                    extra_env=stdio_win_extra_env,
+                )
                 debug_log(f'STDIO result: returncode={result.returncode}')
                 if result.returncode != 0:
                     debug_log(f'STDIO failed! stdout={result.stdout}, stderr={result.stderr}')
@@ -6738,7 +6896,10 @@ def configure_mcp_server(server: dict[str, Any], nodejs_dir: str | None = None) 
                         separator_idx = [str(arg) for arg in base_cmd].index('--')
                         base_cmd = list(base_cmd[:separator_idx + 1]) + expanded_command.split()
 
-                result = run_command(base_cmd, capture_output=True)
+                stdio_unix_env: dict[str, str] | None = None
+                if artifact_base_dir is not None:
+                    stdio_unix_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
+                result = run_command(base_cmd, capture_output=True, env=stdio_unix_env)
         else:
             error(f'MCP server {name} missing url or command')
             return False
@@ -6774,6 +6935,7 @@ def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
     nodejs_dir: str | None = None,
+    artifact_base_dir: Path | None = None,
 ) -> tuple[bool, list[dict[str, Any]], dict[str, int]]:
     """Configure all MCP servers from configuration.
 
@@ -6841,13 +7003,19 @@ def configure_all_mcp_servers(
             if not has_global:
                 server_copy = server.copy()
                 server_copy['scope'] = 'profile'
-                configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
+                configure_mcp_server(
+                    server_copy, nodejs_dir=nodejs_dir,
+                    artifact_base_dir=artifact_base_dir,
+                )
 
         # Configure for each non-profile scope via claude mcp add
         for scope in non_profile_scopes:
             server_copy = server.copy()
             server_copy['scope'] = scope
-            configure_mcp_server(server_copy, nodejs_dir=nodejs_dir)
+            configure_mcp_server(
+                server_copy, nodejs_dir=nodejs_dir,
+                artifact_base_dir=artifact_base_dir,
+            )
 
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:
@@ -8295,7 +8463,9 @@ def main() -> None:
             print()
 
     # Refuse to run as root on Unix unless explicitly allowed
-    if platform.system() != 'Windows':
+    if sys.platform == 'win32':
+        pass  # Root guard not applicable on Windows
+    else:
         geteuid = getattr(os, 'geteuid', None)
         if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
@@ -8736,21 +8906,9 @@ def main() -> None:
         install_dependencies(dependencies)
 
         # Step 6: Set OS environment variables
-        print()
-        print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
-        if os_env_variables:
-            set_all_os_env_variables(os_env_variables)
-        else:
-            info('No OS environment variables to configure')
-
-        # Generate env loader files for OS environment variables
-        generated_env_files: dict[str, Path] = {}
-        if os_env_variables:
-            generated_env_files = generate_env_loader_files(
-                os_env_variables, command_names, artifact_base_dir if command_names else None,
-            )
-            if generated_env_files:
-                success(f'Generated {len(generated_env_files)} env loader file(s)')
+        generated_env_files = _run_os_env_variables_step(
+            os_env_variables, command_names, artifact_base_dir,
+        )
 
         # Step 7: Process agents
         print()
@@ -8850,6 +9008,7 @@ def main() -> None:
 
         _, profile_servers, mcp_stats = configure_all_mcp_servers(
             mcp_servers, profile_mcp_config_path, nodejs_dir=nodejs_dir,
+            artifact_base_dir=artifact_base_dir if primary_command_name else None,
         )
         has_profile_mcp_servers = len(profile_servers) > 0
 
@@ -8869,27 +9028,33 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 14: Writing global config...{Colors.NC}')
         if global_config:
-            if write_global_config(global_config):
+            if write_global_config(
+                global_config,
+                artifact_base_dir=artifact_base_dir if primary_command_name else None,
+            ):
                 success('Global config written successfully')
             else:
                 warning('Failed to write global config (non-fatal)')
         else:
             info('No global config to write')
 
+        # Step 15: Cleanup stale auto-update controls
+        _run_stale_auto_update_cleanup(claude_code_version_normalized)
+
         # Check if command creation is needed
         if primary_command_name:
-            # Step 15: Download hooks
+            # Step 16: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 15: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 16: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
                                        hooks_base_dir=hooks_base_dir_arg):
                 download_failures.append('hook files')
 
-            # Step 16: Create profile configuration
+            # Step 17: Create profile configuration
             print()
-            print(f'{Colors.CYAN}Step 16: Creating profile configuration...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 17: Creating profile configuration...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -8909,9 +9074,9 @@ def main() -> None:
                 hooks_base_dir=hooks_base_dir_arg,
             )
 
-            # Step 17: Write installation manifest
+            # Step 18: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 17: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 18: Writing installation manifest...{Colors.NC}')
             cleanup_stale_marker(artifact_base_dir)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -8925,9 +9090,9 @@ def main() -> None:
                 command_names=command_names or [primary_command_name],
             )
 
-            # Step 18: Create launcher script
+            # Step 19: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 18: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 19: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -8937,15 +9102,15 @@ def main() -> None:
                 artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 19: Register global command(s)
+            # Step 20: Register global command(s)
             if launcher_result:
                 main_launcher, launch_script = launcher_result
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 19: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 20: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 19: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 20: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(
                     main_launcher, primary_command_name, additional_command_names,
                     launch_script_path=launch_script,
@@ -8955,7 +9120,7 @@ def main() -> None:
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 15-19: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 16-20: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 

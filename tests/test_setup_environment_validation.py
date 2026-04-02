@@ -1,6 +1,5 @@
 """Tests for pre-download validation functionality in setup_environment.py."""
 
-import contextlib
 import os
 import sys
 import tempfile
@@ -801,14 +800,34 @@ class TestMainFlowWithValidation:
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.load_config_from_source')
     @patch('argparse.ArgumentParser.parse_args')
+    @patch('pathlib.Path.mkdir')
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_profile_config')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
     def test_main_validation_failure_exits(
         self,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_profile: MagicMock,
+        mock_mcp: MagicMock,
+        mock_cleanup_stale: MagicMock,
+        mock_write_manifest: MagicMock,
+        mock_mkdir: MagicMock,
         mock_args: MagicMock,
         mock_load: MagicMock,
         mock_validate: MagicMock,
         mock_exit: MagicMock,
     ) -> None:
         """Test that main exits on validation failure."""
+        # Prevent real filesystem writes (mocked sys.exit does not halt execution)
+        del mock_mkdir, mock_write_manifest, mock_cleanup_stale
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_profile.return_value = True
+        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
+        mock_register.return_value = True
         # Setup mocks
         mock_args.return_value = MagicMock(
             config='test',
@@ -835,6 +854,7 @@ class TestMainFlowWithValidation:
         with (
             patch('setup_environment.find_command', return_value='claude'),
             patch('setup_environment.error') as mock_error,
+            patch('setup_environment.is_admin', return_value=True),
         ):
             setup_environment.main()
 
@@ -852,8 +872,22 @@ class TestMainFlowWithValidation:
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.load_config_from_source')
     @patch('argparse.ArgumentParser.parse_args')
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_profile_config')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('pathlib.Path.mkdir')
     def test_main_validation_success_continues(
         self,
+        mock_mkdir: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_profile: MagicMock,
+        mock_mcp: MagicMock,
+        mock_cleanup_stale: MagicMock,
+        mock_write_manifest: MagicMock,
         mock_args: MagicMock,
         mock_load: MagicMock,
         mock_validate: MagicMock,
@@ -862,7 +896,7 @@ class TestMainFlowWithValidation:
         mock_download: MagicMock,
     ) -> None:
         """Test that main continues when validation succeeds."""
-        del mock_download  # Unused but required by decorator
+        del mock_mkdir, mock_write_manifest, mock_cleanup_stale  # Prevent real filesystem writes
         # Setup mocks
         mock_args.return_value = MagicMock(
             config='test',
@@ -885,12 +919,16 @@ class TestMainFlowWithValidation:
             True,
             [('agent', 'good.md', True, 'HEAD')],
         )
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_profile.return_value = True
+        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
+        mock_register.return_value = True
+        mock_download.return_value = True
 
-        # Run main (will fail later but that's ok for this test)
+        # Run main
         with (
             patch('setup_environment.find_command', return_value='claude'),
-            patch('setup_environment.Path.mkdir'),
-            contextlib.suppress(Exception),  # Expected to fail at later steps
+            patch('setup_environment.is_admin', return_value=True),
         ):
             setup_environment.main()
 

@@ -524,6 +524,8 @@ mcp-servers:
     url: "http://localhost:3000/api"
 ```
 
+> **Isolated environments:** When `command-names` creates an isolated environment, `scope: user` MCP servers are configured with `CLAUDE_CONFIG_DIR` pointing to the isolated directory. This ensures `claude mcp add --scope user` writes to the isolated `.claude.json` instead of the home-directory one.
+
 #### The `env` Field
 
 Defines environment variables for the MCP server.
@@ -794,7 +796,7 @@ user-settings:
 
 #### `global-config`
 
-Settings merged into `~/.claude.json` (the Claude Code global configuration file). Uses deep merge with no array union (arrays are replaced, not merged).
+Settings merged into `~/.claude.json` (the Claude Code global configuration file). When `command-names` is present, additionally written to `~/.claude/{cmd}/.claude.json` for isolated environments (Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback to the home directory). Uses deep merge with no array union (arrays are replaced, not merged).
 
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
@@ -1310,7 +1312,10 @@ All four targets are injected unconditionally regardless of whether `command-nam
 When the version is `"latest"` or absent:
 
 - `autoUpdates` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
-- `DISABLE_AUTOUPDATER` is removed from `user-settings.env`, `env-variables`, and `os-env-variables`.
+- `DISABLE_AUTOUPDATER` in `user-settings.env` is set to `null` for RFC 7396 null-as-delete (not `del`, because merge semantics require `None` to trigger removal from disk).
+- `DISABLE_AUTOUPDATER` is removed from `env-variables` (using `del`, correct because `create_profile_config()` uses atomic overwrite) and `os-env-variables` (set to `None` for OS-level deletion).
+
+**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass. When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). When pinned, it only cleans `~/.claude/settings.json` to prevent bare sessions from inheriting isolated environment restrictions.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1373,13 +1378,14 @@ Here is a conceptual overview of what the setup script does when you run it with
 12. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
 13. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
 14. **Write global config** -- Merges `global-config` into `~/.claude.json`.
-15. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-16. **Configure profile** -- Creates the profile configuration file for the command.
-17. **Write manifest** -- Creates an installation tracking manifest.
-18. **Create launcher** -- Creates the launcher script for the command.
-19. **Register commands** -- Creates global command wrappers.
+15. **Cleanup stale auto-update controls** -- Sweeps all filesystem locations for stale auto-update artifacts from prior configurations.
+16. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
+17. **Configure profile** -- Creates the profile configuration file for the command.
+18. **Write manifest** -- Creates an installation tracking manifest.
+19. **Create launcher** -- Creates the launcher script for the command.
+20. **Register commands** -- Creates global command wrappers.
 
-Steps 15 through 19 are skipped if `command-names` is not specified.
+Steps 16 through 20 are skipped if `command-names` is not specified.
 
 ## Complete Annotated Example
 

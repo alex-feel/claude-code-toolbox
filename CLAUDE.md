@@ -78,7 +78,9 @@ YAML configs define complete environments: dependencies, agents, MCP servers (au
 
 ### Global Config (`global-config`)
 
-Writes to `~/.claude.json`. Merge: `deep_merge_settings()` with `array_union_keys=set()` (arrays replaced, not unioned -- differs from `user-settings` which unions `permissions.allow/deny/ask`). Only `oauthAccount` blocked from non-null values (`GLOBAL_CONFIG_EXCLUDED_KEYS`); `null` allowed for clearing OAuth. `install_claude.py`'s `update_install_method_config()` also writes to `~/.claude.json` via the same pattern. Both `write_user_settings()` and `write_global_config()` delegate to `_write_merged_json()`.
+Writes to `~/.claude.json`. When `command-names` is present, dual-writes to BOTH `~/.claude.json` (machine baseline for bare `claude` sessions) AND `~/.claude/{cmd}/.claude.json` (for isolated sessions, since Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback). Content is identical in both files. Merge: `deep_merge_settings()` with `array_union_keys=set()` (arrays replaced, not unioned -- differs from `user-settings` which unions `permissions.allow/deny/ask`). Only `oauthAccount` blocked from non-null values (`GLOBAL_CONFIG_EXCLUDED_KEYS`); `null` allowed for clearing OAuth. `install_claude.py`'s `update_install_method_config()` also writes to `~/.claude.json` via the same pattern. Both `write_user_settings()` and `write_global_config()` delegate to `_write_merged_json()`.
+
+**Asymmetric write strategy:** `.claude.json` uses dual-write (global semantics, bare sessions need it). `settings.json` uses single-write with scope-based routing (environment-specific semantics, dual-write would cause cross-environment contamination). Root cause: CLI resolves `.claude.json` via `getGlobalClaudeFile()` using `homedir()` as base, while `settings.json` is resolved via `getClaudeConfigHomeDir()` using `join(homedir(), '.claude')` as base. Neither has fallback or inheritance.
 
 **Null-as-delete (RFC 7396):** `null` values in `user-settings`/`global-config` delete the key from the target JSON. `_merge_recursive()` handles via `target.pop(key, None)`. Null in arrays is NOT deletion. Bare YAML keys (`key:` with no value) also trigger deletion -- use `key: ""` for empty strings. Dry-run shows `[DELETE]` markers in RED.
 
@@ -191,11 +193,15 @@ Conventional Commits enforced by commitizen: `feat:` (minor bump), `fix:` (patch
 
 ### MCP Server Permissions
 
-MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servername"]` in the profile configuration (`config.json`).
+MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servername"]` in the profile configuration (`config.json`). When `command-names` creates an isolated environment, `configure_mcp_server()` propagates `CLAUDE_CONFIG_DIR` to the subprocess for `scope: user` servers, ensuring they are written to the isolated `.claude.json`.
 
 ### Automatic Auto-Update Management
 
 `setup_environment.py` automatically disables auto-updates when a specific Claude Code version is pinned via `claude-code-version` in YAML, and removes those controls when using latest/absent version. Manages 4 in-memory dict targets (`global-config`, `user-settings.env`, `env-variables`, `os-env-variables`) via `apply_auto_update_settings()`. WARN-but-Respect semantics: if the user explicitly sets a contradicting value in their YAML configuration (e.g., `autoUpdates: true` in `global-config` while pinning a version), the user value is preserved and a warning is emitted. The `[auto]` marker in the installation summary shows auto-injected values. Auto-update management is solely the responsibility of `setup_environment.py`; `install_claude.py` does not participate in auto-update configuration.
+
+**Write-remove symmetry:** Auto-update controls are written to specific targets via scope-based routing, but removal must clean ALL filesystem locations unconditionally. `cleanup_stale_auto_update_controls()` runs as a post-write pass in `main()`, sweeping `~/.claude/settings.json`, all `~/.claude/*/settings.json`, `~/.claude.json`, and all `~/.claude/*/.claude.json`. Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved.
+
+**Target 2 null-as-delete:** `_remove_auto_update_controls()` Target 2 (`user_settings.env`) uses `env_section[key] = None` (not `del`) because `_write_merged_json()` -> `_merge_recursive()` requires `None` to trigger key deletion from the target file. Target 3 (`env_variables`) correctly uses `del` because `create_profile_config()` uses atomic overwrite, not merge.
 
 ### Environment Variables for Debugging
 

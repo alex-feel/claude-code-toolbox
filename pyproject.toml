@@ -192,6 +192,9 @@ timeout = 120
 filterwarnings = [
     "ignore:coroutine 'AsyncMockMixin._execute_mock_call' was never awaited:RuntimeWarning",
 ]
+markers = [
+    "allow_real_home: Allow test to write to real home directory (bypasses safety guard)",
+]
 
 [tool.coverage.run]
 relative_files = true
