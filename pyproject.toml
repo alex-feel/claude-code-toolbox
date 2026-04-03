@@ -22,6 +22,7 @@ dev = [
     "mypy>=1.13.0",
     "pyright>=1.1.390",
     "types-PyYAML>=6.0.12",
+    "ty>=0.0.28",
 ]
 
 [tool.ruff]
@@ -98,6 +99,16 @@ force-single-line = true
 
 [tool.ruff.lint.pydoclint]
 ignore-one-line-docstrings = true
+
+[tool.ty.environment]
+root = ["./scripts"]
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+redundant-cast = "ignore"
+
+[tool.ty.src]
+exclude = ["tests"]
 
 [tool.mypy]
 # Core safety, balanced for production
