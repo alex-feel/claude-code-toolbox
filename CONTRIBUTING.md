@@ -154,8 +154,7 @@ uv run pre-commit run --all-files
 
 **Configured hooks:**
 - **Ruff**: Python linting with `--fix` for auto-correction
-- **MyPy**: Python type checking
-- **Pyright**: Additional Python type checking
+- **ty**: Python type checking
 - **Markdownlint**: Markdown formatting and style checking
 - **PSScriptAnalyzer**: PowerShell script analysis (Windows only)
 - **Shellcheck**: Shell script linting
@@ -186,7 +185,7 @@ uv run pre-commit run --all-files
 ### Python Scripts
 
 1. **Compatibility**: Python 3.12 (managed by uv)
-2. **Style**: Must pass all pre-commit hooks (Ruff, MyPy, Pyright)
+2. **Style**: Must pass all pre-commit hooks (Ruff, ty)
 3. **Error Handling**: Comprehensive try-except blocks
 4. **Cross-platform**: Test on Windows, Linux, and macOS
 5. **Dependencies**: Use uv for package management
@@ -247,8 +246,7 @@ uv run pre-commit run --all-files
 
 # Run specific pre-commit hooks
 uv run pre-commit run ruff-check       # Linting + autofix
-uv run pre-commit run mypy             # Type checking
-uv run pre-commit run pyright          # Additional type checking
+uv run pre-commit run ty               # Type checking
 uv run pre-commit run shellcheck       # Shell script linting
 uv run pre-commit run markdownlint     # Markdown linting
 uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)

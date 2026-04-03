@@ -357,7 +357,7 @@ Platform-specific shell commands to execute during setup.
 dependencies:
   common:
     - "uv tool install ruff"
-    - "uv tool install mypy"
+    - "uv tool install ty"
   windows:
     - "winget install --id Git.Git --scope machine --accept-package-agreements --accept-source-agreements"
   macos:
@@ -1251,7 +1251,7 @@ mcp-servers:
     command: "npx @example/new-mcp"
 dependencies:
   common:
-    - "uv tool install mypy"  # Appended to parent's common list
+    - "uv tool install ty"  # Appended to parent's common list
   linux:
     - "sudo apt-get install -y shellcheck"  # New platform
 ```
@@ -1261,7 +1261,7 @@ Result after merge:
 - `name`: `"Extended Environment"` (replaced)
 - `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` (merged)
 - `mcp-servers`: context-server with updated URL at index 0, new-server appended (merged)
-- `dependencies.common`: `["uv tool install ruff", "uv tool install mypy"]` (merged)
+- `dependencies.common`: `["uv tool install ruff", "uv tool install ty"]` (merged)
 - `dependencies.linux`: `["sudo apt-get install -y shellcheck"]` (new platform from child)
 
 ### Authentication for Private Repositories
@@ -1418,7 +1418,7 @@ install-nodejs: true
 dependencies:
   common:
     - "uv tool install ruff"
-    - "uv tool install mypy"
+    - "uv tool install ty"
   windows:
     - "winget install --id Git.Git --scope machine --accept-package-agreements --accept-source-agreements"
   macos:

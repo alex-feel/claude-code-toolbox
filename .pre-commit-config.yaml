@@ -12,34 +12,13 @@ repos:
 - repo: local
   hooks:
     - id: ty
-      name: Ty (uv)
+      name: ty (uv)
       language: system
       entry: uv
       args: ['run', '--frozen', '--group', 'dev', '--', 'ty', 'check']
       pass_filenames: false
       always_run: true
       types_or: [python, pyi]
-
-- repo: local
-  hooks:
-    - id: mypy
-      name: Mypy (uv)
-      language: system
-      entry: uv
-      args: ['run', '--frozen', '--group', 'dev', '--', 'mypy', '--config-file=pyproject.toml']
-      pass_filenames: false
-      always_run: true
-      types_or: [python, pyi]
-
-- repo: local
-  hooks:
-    - id: pyright
-      name: Pyright (uv)
-      language: system
-      entry: uv
-      args: ['run', '--frozen', '--group', 'dev', '--', 'pyright']
-      pass_filenames: false
-      always_run: true
 
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v6.0.0

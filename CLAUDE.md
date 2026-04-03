@@ -168,8 +168,7 @@ uv run pytest tests/e2e/ -k "test_launcher" -v     # Pattern matching
 ```bash
 uv run pre-commit run --all-files      # Run ALL hooks (the correct way)
 uv run pre-commit run ruff-check       # Linting + autofix
-uv run pre-commit run mypy             # Type checking
-uv run pre-commit run pyright          # Additional type checking
+uv run pre-commit run ty               # Type checking
 uv run pre-commit run shellcheck       # Shell script linting
 uv run pre-commit run markdownlint     # Markdown linting
 uv run pre-commit run psscriptanalyzer # PowerShell linting (Windows only)
@@ -336,19 +335,3 @@ gh api repos/{owner}/{repo}/contents/action.yml?ref={tag} \
   --jq '.content' | base64 -d | grep -A1 "^runs:"
 ```
 `node24` (preferred) | `composite`/`docker` (always compatible) | `node20` (deprecated, stops June 2, 2026). Note: some actions use `action.yaml` instead of `action.yml`.
-
-## Platform-Specific Code Patterns (MyPy)
-
-**CRITICAL:** MyPy on Linux CI treats negative platform checks (`if sys.platform != 'win32': return`) as making subsequent code unreachable. MyPy may pass locally on Windows but fail in CI.
-
-**Always use positive platform checks:**
-
-```python
-# CORRECT: positive check (MyPy-friendly)
-if sys.platform == 'win32':
-    return windows_result
-return default_value
-# WRONG: `if sys.platform != 'win32': return` makes everything after "unreachable" on Linux CI
-```
-
-Test with `uv run mypy scripts/` before pushing.
