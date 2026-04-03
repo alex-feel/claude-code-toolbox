@@ -3454,13 +3454,12 @@ class TestNativeInstallCallsConfigUpdate:
 class TestRootGuard:
     """Test root detection guard in install_claude.py main()."""
 
-    def test_root_guard_exits_when_root_without_override(self) -> None:
+    def test_root_guard_exits_when_root_without_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             install_claude.main()
@@ -3506,14 +3505,13 @@ class TestRootGuard:
             install_claude.main()
 
     def test_root_guard_error_message_content(
-        self, capsys: pytest.CaptureFixture[str],
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit),
         ):
             install_claude.main()
@@ -3522,13 +3520,12 @@ class TestRootGuard:
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
         assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
-    def test_root_guard_works_on_macos(self) -> None:
+    def test_root_guard_works_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Root guard activates on macOS (Darwin) the same as Linux."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             install_claude.main()

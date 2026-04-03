@@ -7133,8 +7133,7 @@ def create_mcp_config_file(
 
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(config_path, 'w') as f:
-            json.dump(mcp_config, f, indent=2)
+        config_path.write_text(json.dumps(mcp_config, indent=2), encoding='utf-8')
         success(f'Created profile MCP config: {config_path.name}')
         return True
     except PermissionError:
@@ -7579,8 +7578,7 @@ def create_profile_config(
     settings_path = config_base_dir / 'config.json'
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
-        with open(settings_path, 'w') as f:
-            json.dump(settings, f, indent=2)
+        settings_path.write_text(json.dumps(settings, indent=2), encoding='utf-8')
         success('Created config.json')
         return True
     except Exception as e:
@@ -7629,8 +7627,7 @@ def write_manifest(
 
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
-        with open(manifest_path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2)
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         success('Created manifest.json')
         return True
     except Exception as e:

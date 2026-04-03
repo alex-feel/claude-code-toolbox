@@ -4598,10 +4598,14 @@ class TestMainFunction:
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_success(
         self,
         mock_mkdir,
+        mock_cleanup_stale_marker,
+        mock_write_manifest,
         mock_is_admin,
         mock_register,
         mock_launcher,
@@ -4615,6 +4619,7 @@ class TestMainFunction:
     ):
         """Test successful main flow."""
         # Verify mock configuration is available
+        del mock_cleanup_stale_marker, mock_write_manifest  # Required for isolation
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         mock_load.return_value = (
@@ -4712,10 +4717,14 @@ class TestMainFunction:
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_invalid_effort_level_warns_and_skips(
         self,
         mock_mkdir: MagicMock,
+        mock_cleanup_stale_marker: MagicMock,
+        mock_write_manifest: MagicMock,
         mock_is_admin: MagicMock,
         mock_register: MagicMock,
         mock_launcher: MagicMock,
@@ -4732,6 +4741,7 @@ class TestMainFunction:
         """main() warns and skips invalid effort-level value (non-fatal)."""
         # Mocks required by @patch decorators but not directly asserted
         del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        del mock_cleanup_stale_marker, mock_write_manifest
         mock_load.return_value = (
             {
                 'name': 'Effort Level Test',
@@ -9864,13 +9874,12 @@ user-settings:
 class TestRootGuard:
     """Test root detection guard in setup_environment.py main()."""
 
-    def test_root_guard_exits_when_root_without_override(self) -> None:
+    def test_root_guard_exits_when_root_without_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
@@ -9902,14 +9911,13 @@ class TestRootGuard:
             setup_environment.main()
 
     def test_root_guard_error_message_content(
-        self, capsys: pytest.CaptureFixture[str],
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit),
         ):
             setup_environment.main()
@@ -9918,13 +9926,12 @@ class TestRootGuard:
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
         assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
-    def test_root_guard_works_on_macos(self) -> None:
+    def test_root_guard_works_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Root guard activates on macOS the same as Linux."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()

@@ -1203,7 +1203,7 @@ class TestCreateSettingsComplex:
             settings_file = claude_dir / 'config.json'
             settings_file.write_text('dummy')
 
-            with patch('builtins.open', side_effect=PermissionError('Cannot write')):
+            with patch.object(Path, 'write_text', side_effect=PermissionError('Cannot write')):
                 result = setup_environment.create_profile_config(
                     {},
                     claude_dir,
@@ -1463,10 +1463,14 @@ class TestMainFunctionErrorPaths:
     )
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_no_launcher_created(
         self,
         _mock_mkdir,
+        _mock_cleanup_stale_marker,
+        _mock_write_manifest,
         mock_launcher,
         mock_settings,
         mock_mcp,
@@ -1481,6 +1485,7 @@ class TestMainFunctionErrorPaths:
         """Test main when launcher creation fails."""
         assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
+        del _mock_cleanup_stale_marker, _mock_write_manifest  # Required for isolation
         del mock_launcher  # Unused but required for patch
         del mock_settings  # Unused but required for patch
         del mock_mcp  # Unused but required for patch
@@ -1516,10 +1521,14 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
     @patch('setup_environment.register_global_command', return_value=True)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_from_env_variable(
         self,
         _mock_mkdir,
+        _mock_cleanup_stale_marker,
+        _mock_write_manifest,
         mock_register,
         mock_launcher,
         mock_settings,
@@ -1533,6 +1542,7 @@ class TestMainFunctionErrorPaths:
         """Test main using CLAUDE_CODE_TOOLBOX_ENV_CONFIG environment variable."""
         assert mock_is_admin.return_value is True
         del _mock_mkdir  # Unused but required for patch
+        del _mock_cleanup_stale_marker, _mock_write_manifest  # Required for isolation
         del mock_register  # Unused but required for patch
         del mock_settings  # Unused but required for patch
         del mock_mcp  # Unused but required for patch
@@ -2918,7 +2928,7 @@ class TestMCPProfileScope:
 
             servers = [{'name': 'test', 'command': 'test'}]
 
-            with patch('builtins.open', side_effect=PermissionError('Access denied')):
+            with patch.object(Path, 'write_text', side_effect=PermissionError('Access denied')):
                 result = setup_environment.create_mcp_config_file(servers, config_path)
 
             assert result is False
