@@ -1854,43 +1854,6 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
         pass  # Best-effort cleanup; non-fatal
 
 
-def _run_os_env_variables_step(
-    os_env_variables: dict[str, str | None] | None,
-    command_names: list[str] | None,
-    artifact_base_dir: Path,
-) -> dict[str, Path]:
-    """Set OS environment variables and generate env loader files.
-
-    Handles Step 6 of the setup workflow: sets OS-level environment
-    variables and generates shell-specific env loader files for all
-    configured commands.
-
-    Args:
-        os_env_variables: OS environment variable mappings to set.
-        command_names: List of command names for env loader generation.
-        artifact_base_dir: Base directory for command artifacts.
-
-    Returns:
-        Dictionary mapping command names to generated env file paths.
-    """
-    print()
-    print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
-    if os_env_variables:
-        set_all_os_env_variables(os_env_variables)
-    else:
-        info('No OS environment variables to configure')
-
-    generated_env_files: dict[str, Path] = {}
-    if os_env_variables:
-        generated_env_files = generate_env_loader_files(
-            os_env_variables, command_names, artifact_base_dir if command_names else None,
-        )
-        if generated_env_files:
-            success(f'Generated {len(generated_env_files)} env loader file(s)')
-
-    return generated_env_files
-
-
 def _run_stale_auto_update_cleanup(claude_code_version_normalized: str | None) -> None:
     """Execute Step 15: cleanup stale auto-update controls.
 
@@ -8906,9 +8869,21 @@ def main() -> None:
         install_dependencies(dependencies)
 
         # Step 6: Set OS environment variables
-        generated_env_files = _run_os_env_variables_step(
-            os_env_variables, command_names, artifact_base_dir,
-        )
+        print()
+        print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
+        if os_env_variables:
+            set_all_os_env_variables(os_env_variables)
+        else:
+            info('No OS environment variables to configure')
+
+        # Generate env loader files for OS environment variables
+        generated_env_files: dict[str, Path] = {}
+        if os_env_variables:
+            generated_env_files = generate_env_loader_files(
+                os_env_variables, command_names, artifact_base_dir if command_names else None,
+            )
+            if generated_env_files:
+                success(f'Generated {len(generated_env_files)} env loader file(s)')
 
         # Step 7: Process agents
         print()

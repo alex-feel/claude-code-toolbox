@@ -2802,8 +2802,7 @@ class TestRunWithSudoFallback:
     @patch('sys.platform', 'win32')
     def test_returns_none_on_windows(self) -> None:
         """Returns None immediately on Windows."""
-        with patch('platform.system', return_value='Windows'):
-            result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
+        result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
         assert result is None
 
     @patch('platform.system', return_value='Linux')
