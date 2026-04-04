@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 from setup_environment import AuthHeaderCache
 from setup_environment import FileValidator
+from setup_environment import _fetch_url_core
 
 
 class TestAuthHeaderCacheGetOrigin:
@@ -316,3 +317,81 @@ class TestValidationPopulatesAuthCache:
         is_cached_gl, gl_headers = cache.get_cached_headers(gitlab_url)
         assert is_cached_gl is True
         assert gl_headers == gitlab_headers
+
+
+class TestGitHubApiHeaders:
+    """Test GitHub API transport headers on Request objects."""
+
+    @patch('setup_environment.urlopen')
+    def test_github_api_url_gets_accept_header_unauthenticated(self, mock_urlopen: MagicMock) -> None:
+        """Public GitHub API URLs include Accept header even without auth."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'raw file content'
+        mock_urlopen.return_value = mock_response
+
+        result = _fetch_url_core(
+            'https://raw.githubusercontent.com/owner/repo/main/file.txt',
+            as_text=True,
+        )
+
+        assert result == 'raw file content'
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.get_header('Accept') == 'application/vnd.github.raw+json'
+        assert request.get_header('X-github-api-version') == '2022-11-28'
+
+    @patch('setup_environment.urlopen')
+    def test_github_api_url_gets_accept_header_with_auth(self, mock_urlopen: MagicMock) -> None:
+        """GitHub API URLs include Accept header alongside auth headers."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'private content'
+        mock_urlopen.return_value = mock_response
+
+        auth_headers = {'Authorization': 'Bearer test-token'}
+        result = _fetch_url_core(
+            'https://raw.githubusercontent.com/owner/repo/main/file.txt',
+            as_text=True,
+            auth_headers=auth_headers,
+        )
+
+        assert result == 'private content'
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.get_header('Accept') == 'application/vnd.github.raw+json'
+        assert request.get_header('Authorization') == 'Bearer test-token'
+
+    @patch('setup_environment.urlopen')
+    def test_non_github_url_no_accept_header(self, mock_urlopen: MagicMock) -> None:
+        """Non-GitHub URLs should not receive GitHub API headers."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'gitlab content'
+        mock_urlopen.return_value = mock_response
+
+        result = _fetch_url_core(
+            'https://gitlab.com/owner/repo/-/raw/main/file.txt',
+            as_text=True,
+        )
+
+        assert result == 'gitlab content'
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.get_header('Accept') is None
+
+    @patch('setup_environment.urlopen')
+    def test_github_api_url_with_cache_gets_accept_header(self, mock_urlopen: MagicMock) -> None:
+        """GitHub API URL using cached auth headers also includes Accept."""
+        cache = AuthHeaderCache()
+        raw_url = 'https://raw.githubusercontent.com/owner/repo/main/file.txt'
+        cache.cache_headers(raw_url, {'Authorization': 'Bearer cached-token'})
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'cached content'
+        mock_urlopen.return_value = mock_response
+
+        result = _fetch_url_core(raw_url, as_text=True, auth_cache=cache)
+
+        assert result == 'cached content'
+        call_args = mock_urlopen.call_args
+        request = call_args[0][0]
+        assert request.get_header('Accept') == 'application/vnd.github.raw+json'
+        assert request.get_header('Authorization') == 'Bearer cached-token'
