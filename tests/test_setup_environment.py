@@ -2078,6 +2078,63 @@ class TestInstallDependencies:
         assert '~/.local/tools/custom-tool' in call_arg
 
 
+class TestCheckAdminNeeded:
+    """Tests for check_admin_needed()."""
+
+    @staticmethod
+    def _make_args(skip_install: bool = True) -> MagicMock:
+        args = MagicMock()
+        args.skip_install = skip_install
+        return args
+
+    def test_returns_false_on_non_windows(self) -> None:
+        """Non-Windows platforms never need admin."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['npm install -g something'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Linux'):
+            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+
+    def test_returns_true_when_skip_install_false_on_windows(self) -> None:
+        """Windows needs admin when installation is not skipped."""
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.check_admin_needed({}, self._make_args(skip_install=False)) is True
+
+    def test_detects_admin_needed_for_machine_scope_winget(self) -> None:
+        """Windows admin needed for machine-scope winget commands."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'windows': ['winget install Something --scope machine'],
+                'common': [],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+
+    def test_detects_admin_needed_for_global_npm(self) -> None:
+        """Windows admin needed for global npm installs."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['npm install -g typescript'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+
+    def test_no_admin_needed_when_no_elevated_deps(self) -> None:
+        """Windows does not need admin for non-elevated deps."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'windows': ['winget install Something --scope user'],
+                'common': ['pip install requests'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+
+
 class TestInstallNodejsIfRequested:
     """Test install_nodejs_if_requested() function."""
 
@@ -10070,11 +10127,27 @@ class TestCollectInstallationPlan:
         assert '~/.ssh/authorized_keys' in plan.sensitive_paths
         assert '~/.claude/data/safe.txt' not in plan.sensitive_paths
 
-    def test_collect_plan_dependency_commands(self) -> None:
-        """All platform dependency commands are collected."""
+    @pytest.mark.parametrize(
+        ('mocked_system', 'expected_keys', 'unexpected_keys'),
+        [
+            ('Linux', {'common', 'linux'}, {'windows', 'macos'}),
+            ('Windows', {'common', 'windows'}, {'linux', 'macos'}),
+            ('Darwin', {'common', 'macos'}, {'linux', 'windows'}),
+            ('FreeBSD', {'common'}, {'linux', 'windows', 'macos'}),
+        ],
+        ids=['linux', 'windows', 'macos', 'unknown-platform'],
+    )
+    def test_collect_plan_dependency_commands(
+        self,
+        mocked_system: str,
+        expected_keys: set[str],
+        unexpected_keys: set[str],
+    ) -> None:
+        """Only common + current OS dependency commands are collected."""
         config: dict[str, Any] = {
             'dependencies': {
                 'common': ['pip install requests'],
+                'windows': ['winget install something'],
                 'linux': ['apt-get install -y curl'],
                 'macos': ['brew install wget'],
             },
@@ -10082,18 +10155,19 @@ class TestCollectInstallationPlan:
         chain = [setup_environment.InheritanceChainEntry(
             source='test', source_type='repo', name='test',
         )]
-        plan = setup_environment.collect_installation_plan(
-            config=config,
-            config_source='test',
-            config_name='test',
-            config_version=None,
-            inheritance_chain=chain,
-            args=self._make_args(),
-        )
-        assert 'common' in plan.dependency_commands
-        assert 'linux' in plan.dependency_commands
-        assert 'macos' in plan.dependency_commands
-        assert 'windows' not in plan.dependency_commands
+        with patch.object(setup_environment.platform, 'system', return_value=mocked_system):
+            plan = setup_environment.collect_installation_plan(
+                config=config,
+                config_source='test',
+                config_name='test',
+                config_version=None,
+                inheritance_chain=chain,
+                args=self._make_args(),
+            )
+        for key in expected_keys:
+            assert key in plan.dependency_commands, f'{key} should be in plan'
+        for key in unexpected_keys:
+            assert key not in plan.dependency_commands, f'{key} should NOT be in plan'
         assert plan.dependency_commands['common'] == ['pip install requests']
 
     def test_collect_plan_total_resources(self) -> None:

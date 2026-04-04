@@ -8,6 +8,7 @@ Uses isolated home directories and golden config for comprehensive validation.
 from __future__ import annotations
 
 import io
+import platform
 from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -146,12 +147,25 @@ class TestConfirmationSummaryContent:
     def test_summary_shows_dependency_commands(
         self, golden_config: dict[str, Any],
     ) -> None:
-        """Full dependency commands from golden config are visible."""
+        """Only common + current platform dependency commands are visible."""
         plan = self._make_plan_from_golden(golden_config)
         buf = io.StringIO()
         setup_environment.display_installation_summary(plan, output=buf)
         output = buf.getvalue()
+        # Common deps always present
         assert "echo 'common-dependency-installed'" in output
+
+        # Current platform deps present, other platforms absent
+        current_platform = setup_environment.PLATFORM_SYSTEM_TO_CONFIG_KEY.get(
+            platform.system(),
+        )
+        if current_platform:
+            assert f"echo '{current_platform}-dependency-installed'" in output
+
+        # Other platform deps must NOT appear
+        other_platforms = {'windows', 'linux', 'macos'} - {current_platform}
+        for other in other_platforms:
+            assert f"echo '{other}-dependency-installed'" not in output
 
     def test_summary_shows_resource_counts(
         self, golden_config: dict[str, Any],
