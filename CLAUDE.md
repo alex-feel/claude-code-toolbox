@@ -21,7 +21,7 @@ This is the Claude Code Toolbox - a community project providing automated instal
 
 ### Native Claude Code Installation Support
 
-The installer uses a native-first approach with automatic npm fallback. Entry point: `ensure_claude()` → `install_claude_native_cross_platform()` → platform-specific `install_claude_native_{windows,macos,linux}()`.
+The installer uses a native-first approach with automatic npm fallback. Entry point: `ensure_claude()` → `install_claude_native_cross_platform()` → platform-specific `install_claude_native_{windows,macos,linux}()`. Platform-specific fallback chains: Windows uses Native installer → winget → npm; macOS/Linux use Native installer → GCS direct download → npm. In `native` mode, npm is excluded from the chain.
 
 ### Standalone Script Policy
 
@@ -33,18 +33,19 @@ The installer uses a native-first approach with automatic npm fallback. Entry po
 
 **Native Path Priority:** `find_command()` and `verify_claude_installation()` check the native path (`~/.local/bin/claude[.exe]`) first, before `shutil.which()` PATH search. This ensures native binary is preferred even when PATH would resolve to npm first. Validates file exists with `st_size > 1000` to skip empty/corrupt files.
 
-**Environment Variables:** `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` (`auto`/`native`/`npm`, default `auto` -- unknown sources → native-first with npm fallback), `CLAUDE_CODE_TOOLBOX_VERSION` (installs a specific Claude Code version; works with both native via GCS download and npm methods), `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` (`1` only -- see Root Detection Guard).
+**Environment Variables:** `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD` (`auto`/`native`/`npm`, default `auto` -- unknown sources → native-first with npm fallback), `CLAUDE_CODE_TOOLBOX_VERSION` (installs a specific Claude Code version; all methods support version pinning -- native via GCS download, winget via `--version`, and npm), `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT` (`1` only -- see Root Detection Guard).
 
-**Native Path Detection (Non-Windows):** `verify_claude_installation()` classifies the binary location for upgrade strategy:
+**Native Path Detection:** `verify_claude_installation()` classifies the binary location for upgrade strategy:
 
-| Path Pattern                           | Source    | Upgrade Method             |
-|----------------------------------------|-----------|----------------------------|
-| Contains `npm` or `.npm-global`        | `npm`     | npm directly               |
-| Contains `.local/bin` or `.claude/bin` | `native`  | Native installer           |
-| Other / `/usr/local/bin`               | `unknown` | Native-first, npm fallback |
-| Not found                              | `none`    | Fresh install              |
+| Path Pattern                           | Source    | Upgrade Method                    |
+|----------------------------------------|-----------|-----------------------------------|
+| Contains `npm` or `.npm-global`        | `npm`     | npm directly                      |
+| Contains `.local/bin` or `.claude/bin` | `native`  | Native installer                  |
+| Windows: `Programs\claude` (winget)    | `winget`  | winget upgrade, then npm fallback |
+| Other / `/usr/local/bin`               | `unknown` | Native-first, npm fallback        |
+| Not found                              | `none`    | Fresh install                     |
 
-In `auto` mode, `native` and `unknown` sources attempt native first with npm fallback. Only confirmed `npm`/`winget` sources go directly to npm.
+In `auto` mode, `native` and `unknown` sources attempt native first with npm fallback. Confirmed `npm` sources go directly to npm. Confirmed `winget` sources try `winget upgrade` first, falling back to npm on failure.
 
 ### Node.js Compatibility
 

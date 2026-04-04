@@ -253,9 +253,11 @@ class TestClaudeInstallationAdditional:
         mock_run.assert_called()
         mock_verify.assert_called()
 
+    @patch('install_claude._install_claude_winget', return_value=False)
     @patch('install_claude.urlopen')
-    def test_install_claude_native_download_error(self, mock_urlopen):
+    def test_install_claude_native_download_error(self, mock_urlopen, mock_winget):
         """Test native Claude installation with download error."""
+        assert mock_winget.return_value is False
         mock_urlopen.side_effect = urllib.error.URLError('Connection error')
         result = install_claude.install_claude_native_windows()
         assert result is False

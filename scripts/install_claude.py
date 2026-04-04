@@ -574,12 +574,17 @@ def _run_with_sudo_fallback(
     return None
 
 
-def _finalize_native_install() -> None:
-    """Finalize native installation by removing npm Claude and updating config.
+def _finalize_native_install(method: str = 'native') -> None:
+    """Finalize installation by removing npm Claude and updating config.
 
-    Performs the standard post-native-install cleanup sequence:
+    Performs the standard post-install cleanup sequence:
     1. Remove npm Claude Code installation to prevent PATH conflicts
-    2. Update installation method config to 'native'
+    2. Update installation method config to the specified method
+
+    Args:
+        method: Installation method identifier to record in config.
+            Defaults to 'native' for standard native installations.
+            Use 'winget' for winget installations, etc.
 
     When remove_npm_claude() reports success (True), the secondary
     npm-list verification is skipped. Direct file removal may leave
@@ -589,7 +594,84 @@ def _finalize_native_install() -> None:
     """
     if not remove_npm_claude() and _check_npm_claude_installed():
         warning('npm Claude Code package is STILL installed after removal attempt')
-    update_install_method_config('native')
+    update_install_method_config(method)
+
+
+def _install_claude_winget(version: str | None = None) -> bool:
+    """Install Claude Code using winget on Windows.
+
+    Uses the official Anthropic winget package (Anthropic.ClaudeCode).
+    Supports version pinning via winget's --version flag, though specific
+    versions may not be available due to winget manifest publishing lag.
+
+    Args:
+        version: Specific version to install (e.g., "2.0.76"). If None,
+                 installs the latest available version.
+
+    Returns:
+        True if installation succeeded and was verified, False otherwise.
+
+    Note:
+        Windows only. Returns False if winget is not available.
+        Exit code -1978335189 (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE)
+        is treated as success (already installed at the requested version).
+    """
+    if not check_winget():
+        return False
+
+    info('Installing Claude Code via winget...')
+    cmd = [
+        'winget',
+        'install',
+        '--id',
+        'Anthropic.ClaudeCode',
+        '-e',
+        '--source',
+        'winget',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity',
+    ]
+
+    if version:
+        cmd.extend(['--version', version])
+
+    result = run_command(cmd, capture_output=True)
+
+    # Exit code -1978335189 = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
+    # Means the requested version (or latest) is already installed
+    if result.returncode == 0 or result.returncode == -1978335189:
+        if result.returncode == -1978335189:
+            info('winget reports Claude Code is already installed at the requested version')
+        else:
+            success('Claude Code installed via winget')
+
+        # Verify installation
+        is_installed, claude_path, source = verify_claude_installation()
+        if is_installed:
+            update_install_method_config('winget')
+            return True
+        warning('winget installation reported success but Claude executable not found')
+        return False
+
+    # Distinguish version-not-available from other failures for specific versions
+    if version:
+        stderr_lower = (result.stderr or '').lower()
+        if 'no applicable update' in stderr_lower or 'no package found' in stderr_lower or 'version' in stderr_lower:
+            warning(f'winget: version {version} not yet available in winget manifest')
+            info('winget manifest updates may lag behind official releases by hours/days')
+            info('Cascading to next fallback method...')
+        else:
+            warning(f'winget install exited with code {result.returncode}')
+        if result.stderr and result.stderr.strip():
+            info(f'winget error: {result.stderr.strip()[:500]}')
+        return False
+
+    warning(f'winget install exited with code {result.returncode}')
+    if result.stderr and result.stderr.strip():
+        info(f'winget error: {result.stderr.strip()[:500]}')
+    return False
 
 
 def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
@@ -887,6 +969,7 @@ def update_install_method_config(method: str = 'native') -> bool:
     Args:
         method: Installation method to set. Valid values:
             - 'native': For native (non-npm) installations
+            - 'winget': For winget package manager installations (Windows)
             - 'npm-global': For npm global installations
             - 'system': For system-level installations
             - 'local': For local installations
@@ -2563,11 +2646,9 @@ def _ensure_local_bin_in_path_unix() -> bool:
 def install_claude_native_windows(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Windows.
 
-    Uses a hybrid approach to handle the Anthropic installer bug:
-    - If version is None or "latest": Uses native installer with "latest"
-      (safe because string "latest" != numeric version bypasses the bug)
-    - If specific version requested: Downloads directly from GCS bucket
-      to completely bypass the buggy installer version-check logic
+    Uses a hybrid approach with multiple fallback methods:
+    - If version is None or "latest": Native installer -> winget
+    - If specific version: GCS direct download -> winget --version -> native installer "latest"
 
     See: https://github.com/anthropics/claude-code/issues/14942
 
@@ -2592,13 +2673,14 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     native_target = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
 
     # CASE 1: No specific version or "latest" requested
-    # Safe to use native installer - "latest" string bypasses version check bug
     if not version or version.lower() == 'latest':
-        return _install_claude_native_windows_installer(version='latest')
+        if _install_claude_native_windows_installer(version='latest'):
+            return True
+        # Native installer failed -- try winget
+        info('Native installer failed, trying winget...')
+        return _install_claude_winget()
 
     # CASE 2: Specific version requested
-    # MUST use direct download - installer bug makes it impossible to
-    # reliably install specific versions through the native installer
     info(f'Specific version {version} requested.')
     info('Using direct download to bypass Anthropic installer bug.')
 
@@ -2631,8 +2713,13 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         error('Installation verification failed')
         return False
 
-    # Direct download failed - fall back to native installer with "latest"
-    warning(f'Direct download of version {version} failed.')
+    # Direct download failed -- try winget with version
+    info(f'Direct download failed for version {version}, trying winget...')
+    if _install_claude_winget(version=version):
+        return True
+
+    # winget also failed -- fall back to native installer with "latest"
+    warning(f'winget installation of version {version} also failed.')
     warning('Falling back to native installer with "latest" version.')
     info('Note: This will install the latest version instead of the requested version.')
 
@@ -2903,10 +2990,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
 def install_claude_native_macos(version: str | None = None) -> bool:
     """Install Claude Code using native installer on macOS.
 
-    Implements a hybrid approach to work around Anthropic's installer bug:
-    - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then configure
-      PATH directly via shell profiles (avoids auto-update behavior)
+    Implements a hybrid approach with GCS direct download fallback:
+    - For latest version (None or 'latest'): Native installer -> GCS direct download
+    - For specific versions: GCS direct download -> native installer "latest"
 
     Args:
         version: Specific version to install (e.g., "2.0.76"). If None or
@@ -2920,11 +3006,31 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         See: https://github.com/anthropics/claude-code/issues/14942
     """
     if sys.platform == 'darwin':
-        # Hybrid approach: Use native installer for "latest", direct download for specific versions
         if version is None or version.lower() == 'latest':
-            # Native installer is safe when using "latest"
             info('Installing latest version via native installer...')
-            return _install_claude_native_macos_installer(version='latest')
+            if _install_claude_native_macos_installer(version='latest'):
+                return True
+
+            # Native installer failed -- try GCS direct download
+            info('Native installer failed, attempting GCS direct download...')
+            latest_version = get_latest_claude_version()
+            if latest_version:
+                native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+                if _download_claude_direct_from_gcs(latest_version, native_path):
+                    native_path.chmod(0o755)
+                    _ensure_local_bin_in_path_unix()
+                    time.sleep(1)
+                    is_installed, claude_path, source = verify_claude_installation()
+                    if is_installed and source == 'native':
+                        success(f'GCS download installation verified at: {claude_path}')
+                        _finalize_native_install()
+                        return True
+                    if is_installed:
+                        warning(f'Claude found but from {source} source at: {claude_path}')
+                warning('GCS direct download failed')
+            else:
+                warning('Could not determine latest version for GCS download')
+            return False
 
         # Specific version requested - use direct GCS download to bypass buggy installer
         info(f'Specific version {version} requested - using direct GCS download...')
@@ -3063,10 +3169,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
 def install_claude_native_linux(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Linux.
 
-    Implements a hybrid approach to work around Anthropic's installer bug:
-    - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then configure
-      PATH directly via shell profiles (avoids auto-update behavior)
+    Implements a hybrid approach with GCS direct download fallback:
+    - For latest version (None or 'latest'): Native installer -> GCS direct download
+    - For specific versions: GCS direct download -> native installer "latest"
 
     Supports: Ubuntu 20.04+, Debian 10+, and other modern Linux distributions.
 
@@ -3084,11 +3189,31 @@ def install_claude_native_linux(version: str | None = None) -> bool:
     if platform.system() != 'Linux':
         return False
 
-    # Hybrid approach: Use native installer for "latest", direct download for specific versions
     if version is None or version.lower() == 'latest':
-        # Native installer is safe when using "latest"
         info('Installing latest version via native installer...')
-        return _install_claude_native_linux_installer(version='latest')
+        if _install_claude_native_linux_installer(version='latest'):
+            return True
+
+        # Native installer failed -- try GCS direct download
+        info('Native installer failed, attempting GCS direct download...')
+        latest_version = get_latest_claude_version()
+        if latest_version:
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+            if _download_claude_direct_from_gcs(latest_version, native_path):
+                native_path.chmod(0o755)
+                _ensure_local_bin_in_path_unix()
+                time.sleep(1)
+                is_installed, claude_path, source = verify_claude_installation()
+                if is_installed and source == 'native':
+                    success(f'GCS download installation verified at: {claude_path}')
+                    _finalize_native_install()
+                    return True
+                if is_installed:
+                    warning(f'Claude found but from {source} source at: {claude_path}')
+            warning('GCS direct download failed')
+        else:
+            warning('Could not determine latest version for GCS download')
+        return False
 
     # Specific version requested - use direct GCS download to bypass buggy installer
     info(f'Specific version {version} requested - using direct GCS download...')
@@ -3169,10 +3294,11 @@ def ensure_claude() -> bool:
 
     Installation method can be controlled via CLAUDE_CODE_TOOLBOX_INSTALL_METHOD environment variable:
     - 'auto' (default): Try native first, fall back to npm if needed
-    - 'native': Only use native installer, no npm fallback
+    - 'native': Only use native installer (includes GCS and winget on Windows), no npm fallback
     - 'npm': Only use npm installer
 
-    Specific versions can only be installed via npm (set CLAUDE_CODE_TOOLBOX_VERSION environment variable).
+    Specific versions can be requested via CLAUDE_CODE_TOOLBOX_VERSION environment variable.
+    All methods (native, GCS, winget, npm) support version pinning.
 
     Returns:
         True if Claude Code is installed successfully, False otherwise.
@@ -3390,9 +3516,42 @@ def ensure_claude() -> bool:
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
 
-            # npm or winget source - use npm
-            if upgrade_source in ('npm', 'winget'):
-                info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
+            if upgrade_source == 'winget':
+                info(f'Detected winget installation at: {upgrade_claude_path}')
+                info(f'Upgrading to {latest_version} via winget...')
+                # Try winget upgrade first
+                upgrade_cmd = [
+                    'winget',
+                    'upgrade',
+                    '--id',
+                    'Anthropic.ClaudeCode',
+                    '-e',
+                    '--source',
+                    'winget',
+                    '--accept-package-agreements',
+                    '--accept-source-agreements',
+                    '--silent',
+                    '--disable-interactivity',
+                ]
+                upgrade_result = run_command(upgrade_cmd, capture_output=True)
+                if upgrade_result.returncode == 0 or upgrade_result.returncode == -1978335189:
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via winget')
+                    return True
+                # winget upgrade failed -- fall back to npm in auto mode
+                warning('winget upgrade failed, falling back to npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
+                    return True
+                warning('All upgrade methods failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            if upgrade_source == 'npm':
+                info(f'Detected npm installation at: {upgrade_claude_path}')
                 info(f'Upgrading to {latest_version} via npm...')
                 if install_claude_npm(upgrade=True, version=latest_version):
                     new_version = get_claude_version()
