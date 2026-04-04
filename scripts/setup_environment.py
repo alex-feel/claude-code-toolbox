@@ -2491,6 +2491,18 @@ class FileValidator:
             Tuple of (is_valid, method_used)
             method_used is 'HEAD', 'Range', or 'None'
         """
+        # ARCHITECTURAL NOTE: URL domain asymmetry between validation and download
+        #
+        # Validation uses raw.githubusercontent.com URLs for GitHub (only GitLab
+        # web URLs are converted to API format here). The download phase in
+        # _fetch_url_core() additionally converts GitHub raw URLs to
+        # api.github.com/repos/.../contents/... format. This asymmetry is benign:
+        # - Validation needs only HEAD/Range requests, which work on raw URLs
+        # - Downloads need the Contents API for auth + Accept header control
+        # - AuthHeaderCache.get_origin() normalizes both URL forms to the same
+        #   cache key (github.com/owner/repo), so auth cached during validation
+        #   is correctly reused during download.
+        #
         # Convert GitLab web URLs to API format
         original_url = url
         if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
@@ -5684,8 +5696,14 @@ class AuthHeaderCache:
         host = parsed.hostname or ''
         path_parts = [p for p in parsed.path.split('/') if p]
 
-        # GitHub: github.com/owner/repo, raw.githubusercontent.com/owner/repo,
-        # or api.github.com/repos/owner/repo
+        # GitHub: normalize raw.githubusercontent.com/owner/repo,
+        # github.com/owner/repo, and api.github.com/repos/owner/repo to the
+        # same cache key (github.com/owner/repo). This cross-domain sharing is
+        # intentional: the validation phase resolves auth headers against
+        # raw.githubusercontent.com URLs, while _fetch_url_core() converts
+        # those same URLs to api.github.com for download. Normalizing both
+        # forms to one key ensures auth cached during validation is reused
+        # during download without redundant token resolution.
         if 'github.com' in host or 'raw.githubusercontent.com' in host:
             if 'api.github.com' in host and len(path_parts) >= 3 and path_parts[0] == 'repos':
                 return f'github.com/{path_parts[1]}/{path_parts[2]}'
