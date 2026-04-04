@@ -28,7 +28,7 @@ jobs:
       - name: Install pre-commit
         run: pip install pre-commit
 
-      - name: Install uv for Mypy and Pyright
+      - name: Install uv for ty
         uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies

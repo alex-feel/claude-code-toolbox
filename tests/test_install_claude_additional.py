@@ -253,9 +253,11 @@ class TestClaudeInstallationAdditional:
         mock_run.assert_called()
         mock_verify.assert_called()
 
+    @patch('install_claude._install_claude_winget', return_value=False)
     @patch('install_claude.urlopen')
-    def test_install_claude_native_download_error(self, mock_urlopen):
+    def test_install_claude_native_download_error(self, mock_urlopen, mock_winget):
         """Test native Claude installation with download error."""
+        assert mock_winget.return_value is False
         mock_urlopen.side_effect = urllib.error.URLError('Connection error')
         result = install_claude.install_claude_native_windows()
         assert result is False
@@ -1591,12 +1593,10 @@ class TestEnsureLocalBinInPathUnix:
     @patch('sys.platform', 'win32')
     def test_ensure_local_bin_in_path_unix_noop_on_windows(self) -> None:
         """Test that function is a no-op on Windows."""
-        with patch('platform.system', return_value='Windows'):
-            result = install_claude._ensure_local_bin_in_path_unix()
+        result = install_claude._ensure_local_bin_in_path_unix()
 
         assert result is True
 
-    @patch('platform.system', return_value='Linux')
     @patch('install_claude.sys.platform', 'linux')
     @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
@@ -1610,10 +1610,8 @@ class TestEnsureLocalBinInPathUnix:
         mock_exists: MagicMock,
         mock_mkdir: MagicMock,
         mock_home: MagicMock,
-        mock_system: MagicMock,
     ) -> None:
         """Test that function updates PATH on Unix."""
-        del mock_system
         # Mock home directory
         mock_home.return_value = Path('/home/testuser')
         # Profile files don't exist
@@ -1647,7 +1645,6 @@ class TestEnsureLocalBinInPathUnix:
             else:
                 os.environ.pop('SHELL', None)
 
-    @patch('platform.system', return_value='Linux')
     @patch('install_claude.sys.platform', 'linux')
     @patch('install_claude.get_real_user_home')
     @patch('pathlib.Path.mkdir')
@@ -1661,10 +1658,8 @@ class TestEnsureLocalBinInPathUnix:
         mock_exists: MagicMock,
         mock_mkdir: MagicMock,
         mock_home: MagicMock,
-        mock_system: MagicMock,
     ) -> None:
         """Test that function updates shell profile files."""
-        del mock_system
         # Mock home directory
         mock_home.return_value = Path('/home/testuser')
         # .bashrc exists, doesn't have .local/bin

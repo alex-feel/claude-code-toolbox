@@ -19,11 +19,20 @@ from scripts import setup_environment
 def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent E2E tests from executing real Claude CLI commands.
 
-    When Claude is installed locally, configure_mcp_server() would execute
-    `claude mcp add --scope project ...` which writes to .mcp.json in CWD.
-    This mock prevents that by making find_command return None for 'claude'.
+    When Claude is installed locally, configure_mcp_server() calls
+    find_command('claude') to locate the binary and then runs
+    ``claude mcp add --scope {scope} ...`` which writes to real config files:
+    - scope=project: writes to .mcp.json in the current working directory
+    - scope=user: writes to ~/.claude.json (the global Claude config)
+
+    By returning None for 'claude', this fixture ensures:
+    1. No real ``claude mcp add`` subprocess is spawned during tests
+    2. MCP server configuration is tested via file output verification only
+    3. All other find_command() lookups (e.g., 'node', 'npm') pass through
+       to the real implementation, preserving their test behavior
 
     This fixture is autouse=True to automatically apply to all E2E tests.
+    Individual tests do NOT need to mock find_command separately for Claude.
     """
     original_find = setup_environment.find_command
 
@@ -209,7 +218,7 @@ def golden_config() -> dict[str, Any]:
     if config is None:
         raise ValueError('golden_config.yaml is empty or contains only comments')
 
-    # Ensure proper type for mypy (yaml.safe_load returns Any)
+    # Ensure proper type (yaml.safe_load returns Any)
     result: dict[str, Any] = config
     return result
 

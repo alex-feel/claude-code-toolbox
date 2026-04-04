@@ -27,7 +27,6 @@ class TestRootGuardInstallClaude:
         """Verify main() exits with code 1 when running as root without override."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -40,7 +39,6 @@ class TestRootGuardInstallClaude:
     def test_root_guard_allows_with_override(self) -> None:
         """Verify main() proceeds when CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 is set."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1', 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -64,7 +62,6 @@ class TestRootGuardInstallClaude:
         """Verify root guard produces informative error message with actionable guidance."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -82,7 +79,6 @@ class TestRootGuardInstallClaude:
         """Verify root guard also activates on macOS (Darwin)."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -110,7 +106,6 @@ class TestRootGuardInstallClaude:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT='' (empty string) should NOT bypass root guard."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': ''}, clear=False),
@@ -123,7 +118,6 @@ class TestRootGuardInstallClaude:
     def test_root_guard_with_non_one_value(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=true (not '1') should NOT bypass root guard."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': 'true'}, clear=False),
@@ -141,7 +135,6 @@ class TestRootGuardSetupEnvironment:
         """Verify setup_environment main() exits when running as root."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -154,7 +147,6 @@ class TestRootGuardSetupEnvironment:
     def test_root_guard_allows_with_override(self) -> None:
         """Verify setup_environment proceeds when CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 is set."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1'}),
@@ -169,7 +161,6 @@ class TestRootGuardSetupEnvironment:
         """Verify setup_environment root guard message contains key information."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -186,7 +177,6 @@ class TestRootGuardSetupEnvironment:
         """Verify root guard on macOS for setup_environment."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -203,7 +193,6 @@ class TestRootGuardSetupEnvironment:
         """
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
@@ -231,7 +220,6 @@ class TestRootGuardSetupEnvironment:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT='' should NOT bypass root guard in setup_environment."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': ''}, clear=False),
@@ -244,7 +232,6 @@ class TestRootGuardSetupEnvironment:
     def test_root_guard_with_non_one_value(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=yes should NOT bypass root guard in setup_environment."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': 'yes'}, clear=False),

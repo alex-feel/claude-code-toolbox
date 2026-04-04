@@ -2792,7 +2792,7 @@ class TestDevTtySudoAvailable:
         mock_file = MagicMock()
         mock_file.__enter__ = MagicMock(return_value=mock_file)
         mock_file.__exit__ = MagicMock(return_value=False)
-        with patch('platform.system', return_value='Linux'), patch('builtins.open', return_value=mock_file):
+        with patch('builtins.open', return_value=mock_file):
             assert install_claude._dev_tty_sudo_available() is True
 
 
@@ -2802,19 +2802,16 @@ class TestRunWithSudoFallback:
     @patch('sys.platform', 'win32')
     def test_returns_none_on_windows(self) -> None:
         """Returns None immediately on Windows."""
-        with patch('platform.system', return_value='Windows'):
-            result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
+        result = install_claude._run_with_sudo_fallback(['npm', 'uninstall', '-g', 'pkg'])
         assert result is None
 
-    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier1_interactive_success(
-        self, mock_run: MagicMock, mock_stdin: MagicMock, mock_system: MagicMock,
+        self, mock_run: MagicMock, mock_stdin: MagicMock,
     ) -> None:
         """Tier 1: uses sudo directly when stdin is a TTY."""
-        del mock_system
         mock_stdin.isatty.return_value = True
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.return_value = expected
@@ -2839,17 +2836,16 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
-    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=False)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier2_cached_credentials(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock, mock_system: MagicMock,
+        mock_tty: MagicMock,
     ) -> None:
         """Tier 2: uses cached credentials when available."""
-        del mock_tty, mock_system
+        del mock_tty
         mock_stdin.isatty.return_value = False
         expected = subprocess.CompletedProcess(['sudo', 'cmd'], 0, '', '')
         mock_run.side_effect = [
@@ -2880,17 +2876,16 @@ class TestRunWithSudoFallback:
 
         assert result is None
 
-    @patch('platform.system', return_value='Linux')
     @patch('sys.platform', 'linux')
     @patch('install_claude._dev_tty_sudo_available', return_value=True)
     @patch('sys.stdin')
     @patch('subprocess.run')
     def test_tier3_dev_tty_fallback(
         self, mock_run: MagicMock, mock_stdin: MagicMock,
-        mock_tty: MagicMock, mock_system: MagicMock,
+        mock_tty: MagicMock,
     ) -> None:
         """Tier 3: uses /dev/tty when available and other tiers fail."""
-        del mock_tty, mock_system
+        del mock_tty
         mock_stdin.isatty.return_value = False
         # Tier 2: cached creds fail
         cred_fail = subprocess.CompletedProcess([], 1, '', '')
@@ -3152,8 +3147,7 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .bashrc when current shell is bash and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None), \
-             patch('platform.system', return_value='Linux'):
+             patch('install_claude.shutil.which', return_value=None):
             install_claude._ensure_local_bin_in_path_unix()
 
         bashrc = tmp_path / '.bashrc'
@@ -3167,8 +3161,7 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates .zshrc when current shell is zsh and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/zsh', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'), \
-             patch('platform.system', return_value='Linux'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/zsh'):
             install_claude._ensure_local_bin_in_path_unix()
 
         zshrc = tmp_path / '.zshrc'
@@ -3182,8 +3175,7 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
         """Creates config.fish when current shell is fish and file does not exist."""
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/usr/bin/fish', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value='/usr/bin/fish'), \
-             patch('platform.system', return_value='Linux'):
+             patch('install_claude.shutil.which', return_value='/usr/bin/fish'):
             install_claude._ensure_local_bin_in_path_unix()
 
         fish_config = tmp_path / '.config' / 'fish' / 'config.fish'
@@ -3211,8 +3203,7 @@ class TestEnsureLocalBinInPathUnixProfileCreation:
 
         with patch('install_claude.get_real_user_home', return_value=tmp_path), \
              patch.dict(os.environ, {'SHELL': '/bin/bash', 'PATH': ''}), \
-             patch('install_claude.shutil.which', return_value=None), \
-             patch('platform.system', return_value='Linux'):
+             patch('install_claude.shutil.which', return_value=None):
             install_claude._ensure_local_bin_in_path_unix()
 
         content = bashrc.read_text()
@@ -3463,14 +3454,12 @@ class TestNativeInstallCallsConfigUpdate:
 class TestRootGuard:
     """Test root detection guard in install_claude.py main()."""
 
-    def test_root_guard_exits_when_root_without_override(self) -> None:
+    def test_root_guard_exits_when_root_without_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Running as root without CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 exits with code 1."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             install_claude.main()
@@ -3479,7 +3468,6 @@ class TestRootGuard:
     def test_root_guard_allows_when_override_set(self) -> None:
         """CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 allows root execution to proceed past the guard."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': '1', 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3507,7 +3495,6 @@ class TestRootGuard:
     def test_root_guard_skipped_for_non_root(self) -> None:
         """Non-root users (euid != 0) pass through root guard."""
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=1000),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}),
@@ -3518,15 +3505,13 @@ class TestRootGuard:
             install_claude.main()
 
     def test_root_guard_error_message_content(
-        self, capsys: pytest.CaptureFixture[str],
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Root guard error message contains key information."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
-            patch('sys.platform', 'linux'),
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit),
         ):
             install_claude.main()
@@ -3535,14 +3520,12 @@ class TestRootGuard:
         assert 'root' in combined.lower() or 'sudo' in combined.lower()
         assert 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT' in combined
 
-    def test_root_guard_works_on_macos(self) -> None:
+    def test_root_guard_works_on_macos(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Root guard activates on macOS (Darwin) the same as Linux."""
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', raising=False)
         with (
-            patch('sys.platform', 'darwin'),
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
-            patch.dict('os.environ', {}, clear=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             install_claude.main()
@@ -4646,3 +4629,314 @@ class TestNativeInstallerRecoveryChain:
         # Only the initial 1-second sleep for PATH update, no 2-second recovery sleeps
         sleep_calls = [c.args[0] for c in mock_sleep.call_args_list]
         assert 2 not in sleep_calls
+
+
+class TestInstallClaudeWinget:
+    """Tests for _install_claude_winget() function."""
+
+    WINGET_PATH = r'C:\Users\Test\AppData\Local\Programs\claude\claude.exe'
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_success_latest(self, mock_winget, mock_run, mock_verify, mock_config):
+        """Winget installs latest version successfully."""
+        assert mock_winget.return_value is True
+        mock_verify.return_value = (True, self.WINGET_PATH, 'winget')
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        result = install_claude._install_claude_winget()
+        assert result is True
+        mock_config.assert_called_once_with('winget')
+        # Verify correct winget command args
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == 'winget'
+        assert call_args[1] == 'install'
+        assert '--id' in call_args
+        assert 'Anthropic.ClaudeCode' in call_args
+        assert '--version' not in call_args
+
+    @patch('install_claude.check_winget', return_value=False)
+    def test_no_winget(self, mock_winget):
+        """Returns False when winget is not available."""
+        assert mock_winget.return_value is False
+        result = install_claude._install_claude_winget()
+        assert result is False
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_with_version(self, mock_winget, mock_run, mock_verify, mock_config):
+        """Winget installs specific version with --version flag."""
+        assert mock_winget.return_value is True
+        assert mock_verify is not None
+        assert mock_config is not None
+        mock_verify.return_value = (True, self.WINGET_PATH, 'winget')
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        result = install_claude._install_claude_winget(version='2.0.76')
+        assert result is True
+        call_args = mock_run.call_args[0][0]
+        assert '--version' in call_args
+        version_idx = call_args.index('--version')
+        assert call_args[version_idx + 1] == '2.0.76'
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_already_installed_exit_code(self, mock_winget, mock_run, mock_verify, mock_config):
+        """Exit code -1978335189 treated as success (already installed)."""
+        assert mock_winget.return_value is True
+        mock_verify.return_value = (True, self.WINGET_PATH, 'winget')
+        mock_run.return_value = MagicMock(returncode=-1978335189, stdout='', stderr='')
+        result = install_claude._install_claude_winget()
+        assert result is True
+        mock_config.assert_called_once_with('winget')
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_failure(self, mock_winget, mock_run):
+        """Non-zero exit code returns False."""
+        assert mock_winget.return_value is True
+        mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='some error')
+        result = install_claude._install_claude_winget()
+        assert result is False
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.verify_claude_installation')
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_no_remove_npm(self, mock_winget, mock_run, mock_verify, mock_config):
+        """Verify remove_npm_claude() is NOT called by _install_claude_winget."""
+        assert mock_winget.return_value is True
+        assert mock_verify is not None
+        assert mock_config is not None
+        mock_verify.return_value = (True, self.WINGET_PATH, 'winget')
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        with patch('install_claude.remove_npm_claude') as mock_remove:
+            install_claude._install_claude_winget()
+            mock_remove.assert_not_called()
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_manifest_lag_warning(self, mock_winget, mock_run):
+        """Version-not-available produces lag-specific warning."""
+        assert mock_winget.return_value is True
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout='', stderr='No package found matching version 99.0.0',
+        )
+        result = install_claude._install_claude_winget(version='99.0.0')
+        assert result is False
+
+    @patch('install_claude.verify_claude_installation', return_value=(False, None, 'none'))
+    @patch('install_claude.run_command')
+    @patch('install_claude.check_winget', return_value=True)
+    def test_success_but_verify_fails(self, mock_winget, mock_run, mock_verify):
+        """Winget reports success but verification fails."""
+        assert mock_winget.return_value is True
+        assert mock_verify.return_value == (False, None, 'none')
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+        result = install_claude._install_claude_winget()
+        assert result is False
+
+
+class TestInstallClaudeNativeWindowsWingetFallback:
+    """Tests for winget fallback in install_claude_native_windows()."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+    @patch('install_claude._install_claude_winget', return_value=True)
+    @patch('install_claude._install_claude_native_windows_installer', return_value=False)
+    @patch('install_claude._cleanup_old_claude_files')
+    def test_latest_winget_fallback(self, mock_cleanup, mock_native, mock_winget):
+        """Native installer fails for latest, winget succeeds."""
+        assert mock_cleanup is not None
+        result = install_claude.install_claude_native_windows()
+        assert result is True
+        mock_native.assert_called_once_with(version='latest')
+        mock_winget.assert_called_once_with()
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+    @patch('install_claude._install_claude_native_windows_installer', return_value=False)
+    @patch('install_claude._install_claude_winget', return_value=True)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude._cleanup_old_claude_files')
+    def test_specific_gcs_fail_winget_success(self, mock_cleanup, mock_gcs, mock_winget, mock_native):
+        """GCS fails for specific version, winget succeeds."""
+        assert mock_cleanup is not None
+        result = install_claude.install_claude_native_windows(version='2.0.76')
+        assert result is True
+        mock_gcs.assert_called_once()
+        mock_winget.assert_called_once_with(version='2.0.76')
+        # Native installer "latest" fallback should NOT be called (winget succeeded)
+        mock_native.assert_not_called()
+
+
+class TestInstallClaudeNativeMacosGcsFallback:
+    """Tests for GCS fallback in install_claude_native_macos() for latest."""
+
+    @pytest.mark.skipif(sys.platform != 'darwin', reason='macOS-only test')
+    @patch('install_claude._finalize_native_install')
+    @patch('install_claude.verify_claude_installation')
+    @patch('time.sleep')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('pathlib.Path.chmod')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude._install_claude_native_macos_installer', return_value=False)
+    def test_latest_gcs_fallback_success(
+        self, mock_native, mock_latest, mock_gcs, mock_chmod, mock_path, mock_sleep,
+        mock_verify, mock_finalize,
+    ):
+        """Native installer fails for latest, GCS fallback succeeds."""
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_chmod is not None
+        assert mock_path is not None
+        assert mock_sleep is not None
+        mock_verify.return_value = (True, '/Users/test/.local/bin/claude', 'native')
+        result = install_claude.install_claude_native_macos()
+        assert result is True
+        mock_native.assert_called_once_with(version='latest')
+        mock_gcs.assert_called_once()
+        mock_finalize.assert_called_once()
+
+
+class TestInstallClaudeNativeLinuxGcsFallback:
+    """Tests for GCS fallback in install_claude_native_linux() for latest."""
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Not applicable on Windows')
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._finalize_native_install')
+    @patch('install_claude.verify_claude_installation')
+    @patch('time.sleep')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('pathlib.Path.chmod')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude._install_claude_native_linux_installer', return_value=False)
+    def test_latest_gcs_fallback_success(
+        self, mock_native, mock_latest, mock_gcs, mock_chmod, mock_path, mock_sleep,
+        mock_verify, mock_finalize, mock_platform,
+    ):
+        """Native installer fails for latest, GCS fallback succeeds."""
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_chmod is not None
+        assert mock_path is not None
+        assert mock_sleep is not None
+        assert mock_platform.return_value == 'Linux'
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+        result = install_claude.install_claude_native_linux()
+        assert result is True
+        mock_native.assert_called_once_with(version='latest')
+        mock_gcs.assert_called_once()
+        mock_finalize.assert_called_once()
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Not applicable on Windows')
+    @patch('platform.system', return_value='Linux')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude._install_claude_native_linux_installer', return_value=False)
+    def test_latest_all_fallbacks_fail(self, mock_native, mock_latest, mock_gcs, mock_platform):
+        """Both native installer and GCS fail for latest."""
+        assert mock_native.return_value is False
+        assert mock_platform.return_value == 'Linux'
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_gcs.return_value is False
+        result = install_claude.install_claude_native_linux()
+        assert result is False
+
+
+class TestEnsureClaudeWingetUpgrade:
+    """Tests for winget-source upgrade routing in ensure_claude()."""
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_winget_source_tries_winget_upgrade(
+        self, mock_verify, mock_get_version, mock_get_latest,
+        mock_compare, mock_npm, mock_config, mock_run,
+    ):
+        """Winget source tries winget upgrade before npm."""
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        assert mock_config is not None
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (
+            True,
+            r'C:\Users\Test\AppData\Local\Programs\claude\claude.exe',
+            'winget',
+        )
+        # winget upgrade succeeds
+        mock_run.return_value = MagicMock(returncode=0, stdout='', stderr='')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # npm should NOT be called
+        mock_npm.assert_not_called()
+        # winget upgrade command should have been called
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == 'winget'
+        assert call_args[1] == 'upgrade'
+
+    @patch('install_claude.run_command')
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_winget_upgrade_fails_npm_fallback(
+        self, mock_verify, mock_get_version, mock_get_latest,
+        mock_compare, mock_npm, mock_config, mock_run,
+    ):
+        """Winget upgrade fails, falls back to npm."""
+        assert mock_get_latest.return_value == '2.1.39'
+        assert mock_compare.return_value is False
+        mock_get_version.side_effect = ['2.0.76', '2.1.39']
+        mock_verify.return_value = (
+            True,
+            r'C:\Users\Test\AppData\Local\Programs\claude\claude.exe',
+            'winget',
+        )
+        # winget upgrade fails
+        mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='')
+
+        result = install_claude.ensure_claude()
+        assert result is True
+        # npm should be called as fallback
+        mock_npm.assert_called_once()
+        mock_config.assert_called_with('npm')
+
+
+class TestFinalizeNativeInstallMethodParam:
+    """Tests for _finalize_native_install() method parameter (Step 12 refactoring)."""
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    def test_default_method(self, mock_remove, mock_config):
+        """Default method parameter is 'native'."""
+        assert mock_remove.return_value is True
+        install_claude._finalize_native_install()
+        mock_config.assert_called_once_with('native')
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.remove_npm_claude', return_value=True)
+    def test_custom_method(self, mock_remove, mock_config):
+        """Custom method parameter is passed to update_install_method_config."""
+        assert mock_remove.return_value is True
+        install_claude._finalize_native_install(method='winget')
+        mock_config.assert_called_once_with('winget')
+
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude._check_npm_claude_installed', return_value=True)
+    @patch('install_claude.remove_npm_claude', return_value=False)
+    def test_custom_method_with_npm_check(self, mock_remove, mock_check, mock_config):
+        """Custom method works even when npm removal fails."""
+        assert mock_remove.return_value is False
+        install_claude._finalize_native_install(method='custom')
+        mock_check.assert_called_once()
+        mock_config.assert_called_once_with('custom')

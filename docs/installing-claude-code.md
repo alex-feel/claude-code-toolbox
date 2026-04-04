@@ -28,7 +28,7 @@ The installer automatically handles all dependencies (uv, Python, Node.js if nee
 
 ### Native Installation (Default)
 
-The native method uses official Anthropic installers (`https://claude.ai/install.ps1` on Windows, `https://claude.ai/install.sh` on macOS and Linux). This is the default and recommended approach because it does not require Node.js, provides more reliable auto-updates via the official update mechanism, and supports specific version installation via direct binary download from Google Cloud Storage.
+The native method uses official Anthropic installers (`https://claude.ai/install.ps1` on Windows, `https://claude.ai/install.sh` on macOS and Linux) with platform-specific fallback chains. On Windows, if the native installer fails, the installer tries winget (`Anthropic.ClaudeCode`) before falling back to npm. On macOS and Linux, the fallback is GCS direct binary download. This is the default and recommended approach because it does not require Node.js, provides more reliable auto-updates via the official update mechanism, and supports specific version installation via direct binary download from Google Cloud Storage and winget's `--version` flag (Windows).
 
 ### npm Installation (Fallback)
 
@@ -36,7 +36,7 @@ The npm method installs via the `@anthropic-ai/claude-code` npm package. It requ
 
 ### Auto Mode (Default Behavior)
 
-In `auto` mode (the default), the installer tries native first. If native fails, it automatically falls back to npm. This is the recommended approach for most users and requires no additional configuration.
+In `auto` mode (the default), the installer tries the full native fallback chain first: native installer, then platform-specific alternatives (winget on Windows, GCS direct download on macOS/Linux). If all native methods fail, it automatically falls back to npm. This is the recommended approach for most users and requires no additional configuration.
 
 ## Environment Variables
 
@@ -44,11 +44,11 @@ In `auto` mode (the default), the installer tries native first. If native fails,
 
 Controls which installation method the installer uses.
 
-| Value            | Behavior                                                  |
-|------------------|-----------------------------------------------------------|
-| `auto` (default) | Try native installation first, fall back to npm if needed |
-| `native`         | Use only native installer, no npm fallback                |
-| `npm`            | Use only npm installer, requires Node.js 18+              |
+| Value            | Behavior                                                                                            |
+|------------------|-----------------------------------------------------------------------------------------------------|
+| `auto` (default) | Try native installation first (including GCS and winget on Windows), fall back to npm if needed     |
+| `native`         | Use only native methods (native installer, GCS direct download, winget on Windows), no npm fallback |
+| `npm`            | Use only npm installer, requires Node.js 18+                                                        |
 
 Invalid values default to `auto` with a warning.
 
@@ -66,7 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_CODE_TOOLBOX
 
 ### `CLAUDE_CODE_TOOLBOX_VERSION`
 
-Specify a particular version to install (e.g., `2.0.76`). Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. Auto-update management is handled by `setup_environment.py` when used; see the [Environment Configuration Guide](environment-configuration-guide.md) for details. If the requested version is not found via GCS download, the installer falls back to the native installer with the latest version.
+Specify a particular version to install (e.g., `2.0.76`). All installation methods support version pinning: native via direct binary download from Google Cloud Storage, winget via `--version` flag (Windows), and npm. Auto-update management is handled by `setup_environment.py` when used; see the [Environment Configuration Guide](environment-configuration-guide.md) for details. If the requested version is not available via one method, the installer cascades through the fallback chain (e.g., GCS → winget → native installer "latest" → npm on Windows).
 
 **Linux/macOS example:**
 
@@ -109,7 +109,7 @@ The bootstrap scripts install `uv` (Astral's Python package manager) and Python 
 
 ### Automatic Upgrades
 
-When Claude Code is already installed, the installer checks for updates against the npm registry and upgrades using the same method that was originally used (source-matching). Native installations are upgraded via the native installer, npm installations are upgraded via npm, and unknown-source installations try native first with npm fallback.
+When Claude Code is already installed, the installer checks for updates against the npm registry and upgrades using the same method that was originally used (source-matching). Native installations are upgraded via the native installer, npm installations are upgraded via npm, winget installations try `winget upgrade` first with npm fallback, and unknown-source installations try native first with npm fallback.
 
 ### Auto-Migration from npm to Native
 
@@ -119,14 +119,14 @@ In `auto` mode, when an npm installation is detected, the installer automaticall
 
 The installer classifies the existing installation by examining the binary path.
 
-| Path Pattern                           | Detected Source | Upgrade Method             |
-|----------------------------------------|-----------------|----------------------------|
-| Contains `npm` or `.npm-global`        | npm             | npm directly               |
-| Contains `.local/bin` or `.claude/bin` | native          | Native installer           |
-| Contains `/usr/local/bin`              | unknown         | Native-first, npm fallback |
-| Windows: contains `Programs\claude`    | winget          | npm                        |
-| Any other path                         | unknown         | Native-first, npm fallback |
-| Not found                              | none            | Fresh install              |
+| Path Pattern                           | Detected Source | Upgrade Method                    |
+|----------------------------------------|-----------------|-----------------------------------|
+| Contains `npm` or `.npm-global`        | npm             | npm directly                      |
+| Contains `.local/bin` or `.claude/bin` | native          | Native installer                  |
+| Contains `/usr/local/bin`              | unknown         | Native-first, npm fallback        |
+| Windows: contains `Programs\claude`    | winget          | winget upgrade, then npm fallback |
+| Any other path                         | unknown         | Native-first, npm fallback        |
+| Not found                              | none            | Fresh install                     |
 
 ### Switching from npm to Native
 
@@ -150,10 +150,14 @@ The Claude Code auto-updater may ignore disable settings in some versions:
 
 ### Native Installation Fails
 
-The installer automatically falls back to npm in `auto` mode, so most users do not need to take any action. To isolate the issue, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native` to see only native installer output without the npm fallback. You can also try the native installer directly:
+The installer automatically tries platform-specific alternatives before falling back to npm in `auto` mode (winget on Windows, GCS direct download on macOS/Linux), so most users do not need to take any action. To isolate the issue, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native` to see only native method output without the npm fallback. You can also try the native installer directly:
 
 - **Windows:** `irm https://claude.ai/install.ps1 | iex`
 - **macOS/Linux:** `curl -fsSL https://claude.ai/install.sh | bash`
+
+### Winget Version Not Available (Windows)
+
+When requesting a specific version via `CLAUDE_CODE_TOOLBOX_VERSION`, winget may fail if the version has not yet been published to the winget manifest repository (`microsoft/winget-pkgs`). Winget manifests typically lag official releases by hours to days. The installer detects this condition and automatically falls through to the next available method (native installer with "latest", then npm). A warning message indicates when this manifest lag is the likely cause.
 
 ### Node.js v25+ Compatibility
 

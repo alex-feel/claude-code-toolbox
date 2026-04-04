@@ -52,7 +52,7 @@ class Colors:
     def strip(cls) -> None:
         """Strip ANSI color codes for environments that don't support them."""
         if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
-            # Use setattr to avoid pyright's constant redefinition error
+            # Use setattr for dynamic attribute assignment on class variables
             for attr in ['RED', 'GREEN', 'YELLOW', 'BLUE', 'CYAN', 'NC', 'BOLD']:
                 setattr(cls, attr, '')
 
@@ -113,19 +113,22 @@ def get_real_user_home() -> Path:
     Returns:
         Path: The real user's home directory.
     """
-    result: Path | None = None
-    if sys.platform == 'win32':
-        pass  # Windows: no sudo resolution needed
-    else:
+    if sys.platform != 'win32':
+        # Check if running under sudo (Unix-only)
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user:
             try:
+                # Get the home directory of the user who invoked sudo
+                # pwd is imported at module level for non-Windows platforms
                 import pwd as pwd_module
 
-                result = Path(pwd_module.getpwnam(sudo_user).pw_dir)
+                return Path(pwd_module.getpwnam(sudo_user).pw_dir)
             except KeyError:
+                # User not found in password database, fall back
                 warning(f'Could not find home directory for sudo user: {sudo_user}')
-    return result if result is not None else Path.home()
+
+    # Windows or not running under sudo - use default home
+    return Path.home()
 
 
 def _get_shell_config_files() -> list[Path]:
@@ -158,9 +161,7 @@ def _get_shell_config_files() -> list[Path]:
         config_files = [f for f in config_files if not f.name.startswith('.zsh')]
 
     # On both Linux and macOS, only include fish config if fish is installed
-    if sys.platform == 'win32':
-        pass  # Shell config files not used on Windows
-    elif not shutil.which('fish'):
+    if sys.platform != 'win32' and not shutil.which('fish'):
         config_files = [f for f in config_files if 'fish' not in str(f)]
 
     return config_files
@@ -473,13 +474,13 @@ def _dev_tty_sudo_available() -> bool:
         True if /dev/tty is available and sudo can be used through it,
         False otherwise.
     """
-    if platform.system() == 'Windows':
-        return False
-    try:
-        with open('/dev/tty'):
-            return True
-    except OSError:
-        return False
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
 
 
 def _run_with_sudo_fallback(
@@ -509,36 +510,11 @@ def _run_with_sudo_fallback(
         CompletedProcess if sudo was attempted (check returncode for success),
         None if no sudo mechanism was available.
     """
-    if platform.system() == 'Windows':
-        return None  # sudo not applicable on Windows
+    if sys.platform != 'win32':
+        sudo_cmd = ['sudo'] + cmd
 
-    sudo_cmd = ['sudo'] + cmd
-
-    # Tier 1: Interactive mode -- user can enter password at stdin
-    if sys.stdin.isatty():
-        try:
-            return subprocess.run(
-                sudo_cmd,
-                capture_output=capture_output,
-                encoding='utf-8',
-                errors='replace',
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired:
-            warning(f'Sudo command timed out after {timeout} seconds')
-            return None
-        except FileNotFoundError:
-            warning('sudo command not found')
-            return None
-
-    # Tier 2: Non-interactive with cached credentials
-    try:
-        cred_check = subprocess.run(
-            ['sudo', '-n', 'true'],
-            capture_output=True,
-            timeout=5,
-        )
-        if cred_check.returncode == 0:
+        # Tier 1: Interactive mode -- user can enter password at stdin
+        if sys.stdin.isatty():
             try:
                 return subprocess.run(
                     sudo_cmd,
@@ -551,36 +527,64 @@ def _run_with_sudo_fallback(
                 warning(f'Sudo command timed out after {timeout} seconds')
                 return None
             except FileNotFoundError:
+                warning('sudo command not found')
                 return None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
 
-    # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
-    if _dev_tty_sudo_available():
-        info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
+        # Tier 2: Non-interactive with cached credentials
         try:
-            with open('/dev/tty') as tty:
-                return subprocess.run(
-                    sudo_cmd,
-                    stdin=tty,
-                    capture_output=capture_output,
-                    encoding='utf-8',
-                    errors='replace',
-                    timeout=tty_timeout,
-                )
-        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            cred_check = subprocess.run(
+                ['sudo', '-n', 'true'],
+                capture_output=True,
+                timeout=5,
+            )
+            if cred_check.returncode == 0:
+                try:
+                    return subprocess.run(
+                        sudo_cmd,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    warning(f'Sudo command timed out after {timeout} seconds')
+                    return None
+                except FileNotFoundError:
+                    return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
 
-    # All tiers exhausted
+        # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
+        if _dev_tty_sudo_available():
+            info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
+            try:
+                with open('/dev/tty') as tty:
+                    return subprocess.run(
+                        sudo_cmd,
+                        stdin=tty,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=tty_timeout,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+    # Windows or all tiers exhausted
     return None
 
 
-def _finalize_native_install() -> None:
-    """Finalize native installation by removing npm Claude and updating config.
+def _finalize_native_install(method: str = 'native') -> None:
+    """Finalize installation by removing npm Claude and updating config.
 
-    Performs the standard post-native-install cleanup sequence:
+    Performs the standard post-install cleanup sequence:
     1. Remove npm Claude Code installation to prevent PATH conflicts
-    2. Update installation method config to 'native'
+    2. Update installation method config to the specified method
+
+    Args:
+        method: Installation method identifier to record in config.
+            Defaults to 'native' for standard native installations.
+            Use 'winget' for winget installations, etc.
 
     When remove_npm_claude() reports success (True), the secondary
     npm-list verification is skipped. Direct file removal may leave
@@ -590,7 +594,84 @@ def _finalize_native_install() -> None:
     """
     if not remove_npm_claude() and _check_npm_claude_installed():
         warning('npm Claude Code package is STILL installed after removal attempt')
-    update_install_method_config('native')
+    update_install_method_config(method)
+
+
+def _install_claude_winget(version: str | None = None) -> bool:
+    """Install Claude Code using winget on Windows.
+
+    Uses the official Anthropic winget package (Anthropic.ClaudeCode).
+    Supports version pinning via winget's --version flag, though specific
+    versions may not be available due to winget manifest publishing lag.
+
+    Args:
+        version: Specific version to install (e.g., "2.0.76"). If None,
+                 installs the latest available version.
+
+    Returns:
+        True if installation succeeded and was verified, False otherwise.
+
+    Note:
+        Windows only. Returns False if winget is not available.
+        Exit code -1978335189 (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE)
+        is treated as success (already installed at the requested version).
+    """
+    if not check_winget():
+        return False
+
+    info('Installing Claude Code via winget...')
+    cmd = [
+        'winget',
+        'install',
+        '--id',
+        'Anthropic.ClaudeCode',
+        '-e',
+        '--source',
+        'winget',
+        '--accept-package-agreements',
+        '--accept-source-agreements',
+        '--silent',
+        '--disable-interactivity',
+    ]
+
+    if version:
+        cmd.extend(['--version', version])
+
+    result = run_command(cmd, capture_output=True)
+
+    # Exit code -1978335189 = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
+    # Means the requested version (or latest) is already installed
+    if result.returncode == 0 or result.returncode == -1978335189:
+        if result.returncode == -1978335189:
+            info('winget reports Claude Code is already installed at the requested version')
+        else:
+            success('Claude Code installed via winget')
+
+        # Verify installation
+        is_installed, claude_path, source = verify_claude_installation()
+        if is_installed:
+            update_install_method_config('winget')
+            return True
+        warning('winget installation reported success but Claude executable not found')
+        return False
+
+    # Distinguish version-not-available from other failures for specific versions
+    if version:
+        stderr_lower = (result.stderr or '').lower()
+        if 'no applicable update' in stderr_lower or 'no package found' in stderr_lower or 'version' in stderr_lower:
+            warning(f'winget: version {version} not yet available in winget manifest')
+            info('winget manifest updates may lag behind official releases by hours/days')
+            info('Cascading to next fallback method...')
+        else:
+            warning(f'winget install exited with code {result.returncode}')
+        if result.stderr and result.stderr.strip():
+            info(f'winget error: {result.stderr.strip()[:500]}')
+        return False
+
+    warning(f'winget install exited with code {result.returncode}')
+    if result.stderr and result.stderr.strip():
+        info(f'winget error: {result.stderr.strip()[:500]}')
+    return False
 
 
 def _warn_npm_removal_failed(npm_path: str | None = None) -> None:
@@ -746,9 +827,7 @@ def remove_npm_claude() -> bool:
         return True
 
     # Non-sudo uninstall failed - try with sudo on Unix systems
-    if sys.platform == 'win32':
-        pass  # No sudo fallback on Windows
-    else:
+    if sys.platform != 'win32':
         sudo_result = _run_with_sudo_fallback(
             [npm_path, 'uninstall', '-g', CLAUDE_NPM_PACKAGE],
             capture_output=True,
@@ -761,15 +840,14 @@ def remove_npm_claude() -> bool:
             return True
 
         if sudo_result is None:
+            # No sudo mechanism available -- provide guidance
             warning('Cannot use sudo (non-interactive mode, no terminal available)')
             info('When running via curl | bash, sudo cannot prompt for a password.')
 
     # Dynamic prefix rm-rf fallback (Unix only)
     # When npm uninstall fails (e.g., ENOTEMPTY from npm/cli#5825),
     # remove package files directly using the npm global prefix path.
-    if sys.platform == 'win32':
-        pass  # No prefix rm-rf fallback on Windows
-    else:
+    if sys.platform != 'win32':
         prefix = _get_npm_global_prefix(npm_path)
         if prefix:
             parent_dir = Path(prefix) / 'lib' / 'node_modules' / '@anthropic-ai'
@@ -891,6 +969,7 @@ def update_install_method_config(method: str = 'native') -> bool:
     Args:
         method: Installation method to set. Valid values:
             - 'native': For native (non-npm) installations
+            - 'winget': For winget package manager installations (Windows)
             - 'npm-global': For npm global installations
             - 'system': For system-level installations
             - 'local': For local installations
@@ -2074,7 +2153,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         info(f'{action} Claude Code CLI (latest version) via npm (npm path: {npm_path})...')
 
     # Check if sudo will be needed on Unix-like systems
-    will_need_sudo = False if platform.system() == 'Windows' else needs_sudo_for_npm()
+    will_need_sudo = platform.system() != 'Windows' and needs_sudo_for_npm()
     if will_need_sudo:
         info('Global npm directory requires elevated permissions')
 
@@ -2088,9 +2167,7 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
         return True
 
     # Try with sudo on Unix systems using the three-tier fallback strategy
-    if platform.system() == 'Windows':
-        pass  # No sudo fallback on Windows
-    else:
+    if platform.system() != 'Windows':
         if will_need_sudo:
             warning('Global npm directory requires elevated permissions - attempting sudo...')
         else:
@@ -2487,76 +2564,81 @@ def _ensure_local_bin_in_path_unix() -> bool:
     Note:
         No-op on Windows (returns True immediately).
     """
-    if platform.system() == 'Windows':
-        return True  # No-op on Windows
+    if sys.platform != 'win32':
+        home = get_real_user_home()
+        local_bin = home / '.local' / 'bin'
+        local_bin.mkdir(parents=True, exist_ok=True)
+        local_bin_str = str(local_bin)
 
-    home = get_real_user_home()
-    local_bin = home / '.local' / 'bin'
-    local_bin.mkdir(parents=True, exist_ok=True)
-    local_bin_str = str(local_bin)
+        # Update current process PATH
+        current_path = os.environ.get('PATH', '')
+        if local_bin_str not in current_path:
+            os.environ['PATH'] = f'{local_bin_str}:{current_path}'
+            info(f'Updated current session PATH with {local_bin_str}')
 
-    # Update current process PATH
-    current_path = os.environ.get('PATH', '')
-    if local_bin_str not in current_path:
-        os.environ['PATH'] = f'{local_bin_str}:{current_path}'
-        info(f'Updated current session PATH with {local_bin_str}')
+        # Update shell profile files
+        profile_files = _get_shell_config_files()
 
-    # Update shell profile files
-    profile_files = _get_shell_config_files()
+        # Detect the user's login shell to ensure its profile exists
+        current_shell = os.environ.get('SHELL', '')
+        shell_profile_map: dict[str, Path] = {
+            'bash': home / '.bashrc',
+            'zsh': home / '.zshrc',
+            'fish': home / '.config' / 'fish' / 'config.fish',
+        }
 
-    # Detect the user's login shell to ensure its profile exists
-    current_shell = os.environ.get('SHELL', '')
-    shell_profile_map: dict[str, Path] = {
-        'bash': home / '.bashrc',
-        'zsh': home / '.zshrc',
-        'fish': home / '.config' / 'fish' / 'config.fish',
-    }
+        # Identify which profile corresponds to the current shell
+        current_shell_profile: Path | None = None
+        for shell_name, profile_path in shell_profile_map.items():
+            if shell_name in current_shell:
+                current_shell_profile = profile_path
+                break
 
-    # Identify which profile corresponds to the current shell
-    current_shell_profile: Path | None = None
-    for shell_name, profile_path in shell_profile_map.items():
-        if shell_name in current_shell:
-            current_shell_profile = profile_path
-            break
+        updated_files: list[Path] = []
 
-    updated_files: list[Path] = []
+        for profile_file in profile_files:
+            should_update = profile_file.exists()
+            # Create the profile for the user's current shell if it does not exist
+            if not should_update and profile_file == current_shell_profile:
+                should_update = True
 
-    for profile_file in profile_files:
-        should_update = profile_file.exists()
-        # Create the profile for the user's current shell if it does not exist
-        if not should_update and profile_file == current_shell_profile:
-            should_update = True
+            if should_update:
+                try:
+                    content = profile_file.read_text() if profile_file.exists() else ''
+                    # .local/bin substring check correctly detects the PATH entry regardless
+                    # of format (~/.local/bin, $HOME/.local/bin, or absolute path).
+                    # Theoretical false-match risk from comments is negligible.
+                    if '.local/bin' not in content:
+                        # Use Fish-specific PATH syntax
+                        if _is_fish_config(profile_file):
+                            export_line = 'fish_add_path ~/.local/bin'
+                        else:
+                            export_line = 'export PATH="$HOME/.local/bin:$PATH"'
 
-        if should_update:
-            try:
-                content = profile_file.read_text() if profile_file.exists() else ''
-                if '.local/bin' not in content:
-                    if _is_fish_config(profile_file):
-                        export_line = 'fish_add_path ~/.local/bin'
-                    else:
-                        export_line = 'export PATH="$HOME/.local/bin:$PATH"'
-
-                    if SHELL_CONFIG_MARKER_START in content:
-                        marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
-                        if marker_end_idx != -1:
-                            content = (
-                                content[:marker_end_idx]
-                                + export_line + '\n'
-                                + content[marker_end_idx:]
-                            )
+                        # Use marker block for managed entries
+                        if SHELL_CONFIG_MARKER_START in content:
+                            # Append inside existing marker block
+                            marker_end_idx = content.find(SHELL_CONFIG_MARKER_END)
+                            if marker_end_idx != -1:
+                                content = (
+                                    content[:marker_end_idx]
+                                    + export_line + '\n'
+                                    + content[marker_end_idx:]
+                                )
+                            else:
+                                content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
                         else:
                             content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
-                    else:
-                        content += f'\n{SHELL_CONFIG_MARKER_START}\n{export_line}\n{SHELL_CONFIG_MARKER_END}\n'
 
-                    profile_file.parent.mkdir(parents=True, exist_ok=True)
-                    profile_file.write_text(content)
-                    updated_files.append(profile_file)
-            except Exception as e:
-                warning(f'Could not update {profile_file}: {e}')
+                        # Ensure parent directory exists (e.g. ~/.config/fish/)
+                        profile_file.parent.mkdir(parents=True, exist_ok=True)
+                        profile_file.write_text(content)
+                        updated_files.append(profile_file)
+                except Exception as e:
+                    warning(f'Could not update {profile_file}: {e}')
 
-    if updated_files:
-        info(f"Added ~/.local/bin to PATH in: {', '.join(str(f) for f in updated_files)}")
+        if updated_files:
+            info(f"Added ~/.local/bin to PATH in: {', '.join(str(f) for f in updated_files)}")
 
     return True
 
@@ -2564,11 +2646,9 @@ def _ensure_local_bin_in_path_unix() -> bool:
 def install_claude_native_windows(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Windows.
 
-    Uses a hybrid approach to handle the Anthropic installer bug:
-    - If version is None or "latest": Uses native installer with "latest"
-      (safe because string "latest" != numeric version bypasses the bug)
-    - If specific version requested: Downloads directly from GCS bucket
-      to completely bypass the buggy installer version-check logic
+    Uses a hybrid approach with multiple fallback methods:
+    - If version is None or "latest": Native installer -> winget
+    - If specific version: GCS direct download -> winget --version -> native installer "latest"
 
     See: https://github.com/anthropics/claude-code/issues/14942
 
@@ -2584,9 +2664,7 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         Windows only. Returns False on other platforms (should not be called).
         All network errors are caught internally and result in False return.
     """
-    if platform.system() == 'Windows':
-        pass  # Guard: function body below is Windows-only
-    else:
+    if platform.system() != 'Windows':
         return False
 
     # Clean up any leftover .old files from previous installations
@@ -2595,13 +2673,14 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     native_target = get_real_user_home() / '.local' / 'bin' / 'claude.exe'
 
     # CASE 1: No specific version or "latest" requested
-    # Safe to use native installer - "latest" string bypasses version check bug
     if not version or version.lower() == 'latest':
-        return _install_claude_native_windows_installer(version='latest')
+        if _install_claude_native_windows_installer(version='latest'):
+            return True
+        # Native installer failed -- try winget
+        info('Native installer failed, trying winget...')
+        return _install_claude_winget()
 
     # CASE 2: Specific version requested
-    # MUST use direct download - installer bug makes it impossible to
-    # reliably install specific versions through the native installer
     info(f'Specific version {version} requested.')
     info('Using direct download to bypass Anthropic installer bug.')
 
@@ -2634,8 +2713,13 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         error('Installation verification failed')
         return False
 
-    # Direct download failed - fall back to native installer with "latest"
-    warning(f'Direct download of version {version} failed.')
+    # Direct download failed -- try winget with version
+    info(f'Direct download failed for version {version}, trying winget...')
+    if _install_claude_winget(version=version):
+        return True
+
+    # winget also failed -- fall back to native installer with "latest"
+    warning(f'winget installation of version {version} also failed.')
     warning('Falling back to native installer with "latest" version.')
     info('Note: This will install the latest version instead of the requested version.')
 
@@ -2906,10 +2990,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
 def install_claude_native_macos(version: str | None = None) -> bool:
     """Install Claude Code using native installer on macOS.
 
-    Implements a hybrid approach to work around Anthropic's installer bug:
-    - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then configure
-      PATH directly via shell profiles (avoids auto-update behavior)
+    Implements a hybrid approach with GCS direct download fallback:
+    - For latest version (None or 'latest'): Native installer -> GCS direct download
+    - For specific versions: GCS direct download -> native installer "latest"
 
     Args:
         version: Specific version to install (e.g., "2.0.76"). If None or
@@ -2923,11 +3006,31 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         See: https://github.com/anthropics/claude-code/issues/14942
     """
     if sys.platform == 'darwin':
-        # Hybrid approach: Use native installer for "latest", direct download for specific versions
         if version is None or version.lower() == 'latest':
-            # Native installer is safe when using "latest"
             info('Installing latest version via native installer...')
-            return _install_claude_native_macos_installer(version='latest')
+            if _install_claude_native_macos_installer(version='latest'):
+                return True
+
+            # Native installer failed -- try GCS direct download
+            info('Native installer failed, attempting GCS direct download...')
+            latest_version = get_latest_claude_version()
+            if latest_version:
+                native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+                if _download_claude_direct_from_gcs(latest_version, native_path):
+                    native_path.chmod(0o755)
+                    _ensure_local_bin_in_path_unix()
+                    time.sleep(1)
+                    is_installed, claude_path, source = verify_claude_installation()
+                    if is_installed and source == 'native':
+                        success(f'GCS download installation verified at: {claude_path}')
+                        _finalize_native_install()
+                        return True
+                    if is_installed:
+                        warning(f'Claude found but from {source} source at: {claude_path}')
+                warning('GCS direct download failed')
+            else:
+                warning('Could not determine latest version for GCS download')
+            return False
 
         # Specific version requested - use direct GCS download to bypass buggy installer
         info(f'Specific version {version} requested - using direct GCS download...')
@@ -3066,10 +3169,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
 def install_claude_native_linux(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Linux.
 
-    Implements a hybrid approach to work around Anthropic's installer bug:
-    - For latest version (None or 'latest'): Use native installer with 'latest'
-    - For specific versions: Download directly from GCS bucket, then configure
-      PATH directly via shell profiles (avoids auto-update behavior)
+    Implements a hybrid approach with GCS direct download fallback:
+    - For latest version (None or 'latest'): Native installer -> GCS direct download
+    - For specific versions: GCS direct download -> native installer "latest"
 
     Supports: Ubuntu 20.04+, Debian 10+, and other modern Linux distributions.
 
@@ -3084,16 +3186,34 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         Linux only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    if platform.system() == 'Linux':
-        pass  # Guard: function body below is Linux-only
-    else:
+    if platform.system() != 'Linux':
         return False
 
-    # Hybrid approach: Use native installer for "latest", direct download for specific versions
     if version is None or version.lower() == 'latest':
-        # Native installer is safe when using "latest"
         info('Installing latest version via native installer...')
-        return _install_claude_native_linux_installer(version='latest')
+        if _install_claude_native_linux_installer(version='latest'):
+            return True
+
+        # Native installer failed -- try GCS direct download
+        info('Native installer failed, attempting GCS direct download...')
+        latest_version = get_latest_claude_version()
+        if latest_version:
+            native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
+            if _download_claude_direct_from_gcs(latest_version, native_path):
+                native_path.chmod(0o755)
+                _ensure_local_bin_in_path_unix()
+                time.sleep(1)
+                is_installed, claude_path, source = verify_claude_installation()
+                if is_installed and source == 'native':
+                    success(f'GCS download installation verified at: {claude_path}')
+                    _finalize_native_install()
+                    return True
+                if is_installed:
+                    warning(f'Claude found but from {source} source at: {claude_path}')
+            warning('GCS direct download failed')
+        else:
+            warning('Could not determine latest version for GCS download')
+        return False
 
     # Specific version requested - use direct GCS download to bypass buggy installer
     info(f'Specific version {version} requested - using direct GCS download...')
@@ -3174,10 +3294,11 @@ def ensure_claude() -> bool:
 
     Installation method can be controlled via CLAUDE_CODE_TOOLBOX_INSTALL_METHOD environment variable:
     - 'auto' (default): Try native first, fall back to npm if needed
-    - 'native': Only use native installer, no npm fallback
+    - 'native': Only use native installer (includes GCS and winget on Windows), no npm fallback
     - 'npm': Only use npm installer
 
-    Specific versions can only be installed via npm (set CLAUDE_CODE_TOOLBOX_VERSION environment variable).
+    Specific versions can be requested via CLAUDE_CODE_TOOLBOX_VERSION environment variable.
+    All methods (native, GCS, winget, npm) support version pinning.
 
     Returns:
         True if Claude Code is installed successfully, False otherwise.
@@ -3395,9 +3516,42 @@ def ensure_claude() -> bool:
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
 
-            # npm or winget source - use npm
-            if upgrade_source in ('npm', 'winget'):
-                info(f'Detected {upgrade_source} installation at: {upgrade_claude_path}')
+            if upgrade_source == 'winget':
+                info(f'Detected winget installation at: {upgrade_claude_path}')
+                info(f'Upgrading to {latest_version} via winget...')
+                # Try winget upgrade first
+                upgrade_cmd = [
+                    'winget',
+                    'upgrade',
+                    '--id',
+                    'Anthropic.ClaudeCode',
+                    '-e',
+                    '--source',
+                    'winget',
+                    '--accept-package-agreements',
+                    '--accept-source-agreements',
+                    '--silent',
+                    '--disable-interactivity',
+                ]
+                upgrade_result = run_command(upgrade_cmd, capture_output=True)
+                if upgrade_result.returncode == 0 or upgrade_result.returncode == -1978335189:
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via winget')
+                    return True
+                # winget upgrade failed -- fall back to npm in auto mode
+                warning('winget upgrade failed, falling back to npm...')
+                if install_claude_npm(upgrade=True, version=latest_version):
+                    new_version = get_claude_version()
+                    if new_version:
+                        success(f'Claude Code upgraded to version {new_version} via npm fallback')
+                    update_install_method_config('npm')
+                    return True
+                warning('All upgrade methods failed, continuing with current version')
+                return True  # Don't fail the entire installation
+
+            if upgrade_source == 'npm':
+                info(f'Detected npm installation at: {upgrade_claude_path}')
                 info(f'Upgrading to {latest_version} via npm...')
                 if install_claude_npm(upgrade=True, version=latest_version):
                     new_version = get_claude_version()
@@ -3507,14 +3661,16 @@ def ensure_claude() -> bool:
 
 def update_path() -> None:
     """Update PATH environment variable."""
-    if platform.system() == 'Windows':
-        npm_path = os.path.expandvars(r'%APPDATA%\npm')
-        if Path(npm_path).exists():
-            current_path = os.environ.get('PATH', '')
-            if npm_path not in current_path:
-                os.environ['PATH'] = f'{npm_path};{current_path}'
-                info(f'Added {npm_path} to PATH')
-    # Non-Windows: no-op
+    if platform.system() != 'Windows':
+        return
+
+    # Add npm global path to PATH if not already there
+    npm_path = os.path.expandvars(r'%APPDATA%\npm')
+    if Path(npm_path).exists():
+        current_path = os.environ.get('PATH', '')
+        if npm_path not in current_path:
+            os.environ['PATH'] = f'{npm_path};{current_path}'
+            info(f'Added {npm_path} to PATH')
 
 
 def ensure_local_bin_in_path_windows() -> bool:
@@ -3597,9 +3753,7 @@ def main() -> None:
     banner()
 
     # Refuse to run as root on Unix unless explicitly allowed
-    if sys.platform == 'win32':
-        pass  # Root guard not applicable on Windows
-    else:
+    if platform.system() != 'Windows':
         geteuid = getattr(os, 'geteuid', None)
         if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
             error('This script should NOT be run as root or with sudo')
