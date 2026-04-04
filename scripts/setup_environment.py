@@ -13,6 +13,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import glob as glob_module
+import http.client
 import json
 import os
 import platform
@@ -2461,14 +2462,18 @@ class FileValidator:
             (auto-detects header based on URL) or explicit header:value format.
     """
 
-    def __init__(self, auth_param: str | None = None) -> None:
+    def __init__(self, auth_param: str | None = None, auth_cache: 'AuthHeaderCache | None' = None) -> None:
         """Initialize FileValidator.
 
         Args:
             auth_param: Optional auth parameter in format "header:value" or "header=value"
                        or just a token (will auto-detect header based on URL)
+            auth_cache: Optional shared auth header cache for origin-level caching.
+                       When provided, validation results populate the cache for
+                       reuse by the download phase.
         """
         self.auth_param = auth_param
+        self.auth_cache = auth_cache
         self._validation_results: list[tuple[str, str, bool, str]] = []
 
     def validate_remote_url(self, url: str) -> tuple[bool, str]:
@@ -2476,6 +2481,8 @@ class FileValidator:
 
         Generates authentication headers specific to this URL (GitHub vs GitLab)
         and attempts validation using HEAD request, then Range request as fallback.
+        When an auth_cache is provided, uses cached headers to avoid redundant
+        resolution and populates the cache for downstream consumers.
 
         Args:
             url: Remote URL to validate
@@ -2491,8 +2498,17 @@ class FileValidator:
             if url != original_url:
                 info(f'Using API URL for validation: {url}')
 
-        # Generate auth headers for THIS specific URL
-        auth_headers = get_auth_headers(url, self.auth_param)
+        # Generate auth headers for THIS specific URL, using cache when available
+        if self.auth_cache is not None:
+            is_cached, cached_headers = self.auth_cache.get_cached_headers(url)
+            if is_cached:
+                auth_headers = cached_headers
+            else:
+                auth_headers = get_auth_headers(url, self.auth_param)
+                # Cache the result for the download phase
+                self.auth_cache.cache_headers(url, auth_headers or None)
+        else:
+            auth_headers = get_auth_headers(url, self.auth_param)
 
         # Try HEAD request first
         if self._check_with_head(url, auth_headers):
@@ -2654,6 +2670,7 @@ def validate_all_config_files(
     config: dict[str, Any],
     config_source: str,
     auth_param: str | None = None,
+    auth_cache: 'AuthHeaderCache | None' = None,
 ) -> tuple[bool, list[tuple[str, str, bool, str]]]:
     """Validate all files in the configuration (both remote and local).
 
@@ -2661,6 +2678,9 @@ def validate_all_config_files(
         config: Environment configuration dictionary
         config_source: Source of the configuration (URL or path)
         auth_param: Optional authentication parameter
+        auth_cache: Optional shared auth header cache for origin-level caching.
+            When provided, validation results populate the cache for reuse
+            by the download phase.
 
     Returns:
         Tuple of (all_valid, validation_results)
@@ -2669,9 +2689,13 @@ def validate_all_config_files(
     files_to_check: list[tuple[str, str, str, bool]] = []
     results: list[tuple[str, str, bool, str]] = []
 
+    # Create shared auth cache if not provided
+    if auth_cache is None:
+        auth_cache = AuthHeaderCache(auth_param)
+
     # Create file validator - generates authentication per-URL for proper
     # handling of mixed repositories (e.g., GitHub + GitLab files)
-    validator = FileValidator(auth_param)
+    validator = FileValidator(auth_param, auth_cache)
 
     # Collect all files that need to be validated
     base_url = config.get('base-url')
@@ -5627,6 +5651,119 @@ class RateLimitCoordinator:
             return max(0.0, remaining)
 
 
+class AuthHeaderCache:
+    """Thread-safe per-origin cache for resolved authentication headers.
+
+    Caches auth headers by normalized URL origin (e.g., 'github.com/org/repo')
+    to avoid redundant unauthenticated probes for files from the same repository.
+    The first request to each origin tries unauthenticated; on auth resolution,
+    subsequent requests reuse the cached headers.
+
+    Modeled after RateLimitCoordinator for thread-safe cross-thread sharing.
+
+    Attributes:
+        auth_param: Raw authentication parameter (token or header:value format).
+    """
+
+    def __init__(self, auth_param: str | None = None) -> None:
+        self._lock = threading.Lock()
+        self._cache: dict[str, dict[str, str] | None] = {}
+        self.auth_param = auth_param
+
+    def get_origin(self, url: str) -> str:
+        """Extract normalized origin key from URL.
+
+        For GitHub: 'github.com/{owner}/{repo}'
+        For GitLab: '{host}/api/v4/projects/{id}' or '{host}/{namespace}/{project}'
+        For others: '{host}'
+
+        Args:
+            url: URL to extract origin from.
+
+        Returns:
+            Normalized origin string for cache keying.
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = parsed.hostname or ''
+        path_parts = [p for p in parsed.path.split('/') if p]
+
+        # GitHub: github.com/owner/repo, raw.githubusercontent.com/owner/repo,
+        # or api.github.com/repos/owner/repo
+        if 'github.com' in host or 'raw.githubusercontent.com' in host:
+            if 'api.github.com' in host and len(path_parts) >= 3 and path_parts[0] == 'repos':
+                return f'github.com/{path_parts[1]}/{path_parts[2]}'
+            if len(path_parts) >= 2:
+                return f'github.com/{path_parts[0]}/{path_parts[1]}'
+
+        # GitLab API: /api/v4/projects/{id}/...
+        if '/api/v4/projects/' in url and len(path_parts) >= 4:
+            return f'{host}/api/v4/projects/{path_parts[3]}'
+
+        # GitLab web: host/namespace/project
+        if 'gitlab' in host.lower() and len(path_parts) >= 2:
+            return f'{host}/{path_parts[0]}/{path_parts[1]}'
+
+        # Fallback: host only
+        return host
+
+    def get_cached_headers(self, url: str) -> tuple[bool, dict[str, str] | None]:
+        """Look up cached auth headers for the origin of this URL.
+
+        Args:
+            url: URL to look up.
+
+        Returns:
+            Tuple of (is_cached, headers).
+            is_cached=False means this origin has not been seen yet.
+            is_cached=True, headers=None means origin was probed and needs no auth.
+            is_cached=True, headers={...} means cached auth headers.
+        """
+        origin = self.get_origin(url)
+        with self._lock:
+            if origin in self._cache:
+                return (True, self._cache[origin])
+            return (False, None)
+
+    def cache_headers(self, url: str, headers: dict[str, str] | None) -> None:
+        """Cache resolved auth headers for this URL's origin.
+
+        Args:
+            url: URL whose origin to cache for.
+            headers: Resolved auth headers, or None if origin needs no auth.
+        """
+        origin = self.get_origin(url)
+        with self._lock:
+            self._cache[origin] = headers
+
+    def resolve_and_cache(self, url: str) -> dict[str, str]:
+        """Resolve auth headers for a URL, using cache if available.
+
+        Thread-safe resolution that avoids redundant get_auth_headers() calls.
+        Uses double-checked locking pattern.
+
+        Args:
+            url: URL to resolve auth for.
+
+        Returns:
+            Resolved auth headers dict (may be empty if no auth available).
+        """
+        origin = self.get_origin(url)
+        with self._lock:
+            if origin in self._cache:
+                return self._cache[origin] or {}
+
+        # Resolve outside lock (get_auth_headers may do I/O including interactive prompts)
+        headers = get_auth_headers(url, self.auth_param)
+
+        with self._lock:
+            # Only cache if not already set by another thread
+            if origin not in self._cache:
+                self._cache[origin] = headers or None
+            return self._cache.get(origin) or {}
+
+
 def fetch_with_retry[T](
     request_func: Callable[[], T],
     url: str,
@@ -5724,26 +5861,30 @@ def fetch_with_retry[T](
     raise RuntimeError(msg)
 
 
-def fetch_url_with_auth(
+def _fetch_url_core(
     url: str,
+    *,
+    as_text: bool = True,
     auth_headers: dict[str, str] | None = None,
     auth_param: str | None = None,
+    auth_cache: AuthHeaderCache | None = None,
     rate_limiter: RateLimitCoordinator | None = None,
-) -> str:
-    """Fetch URL content, trying without auth first, then with auth if needed.
+) -> str | bytes:
+    """Fetch URL content with auth resolution, caching, and retry logic.
 
-    Includes retry logic with linear additive backoff for rate limiting (HTTP 429).
-    May raise HTTPError if the request fails after authentication and retry attempts,
-    or URLError if there's a network error (including SSL issues).
+    Handles URL conversion (GitLab/GitHub API), authentication with
+    origin-level caching, SSL fallback, and rate-limit retry.
 
     Args:
-        url: URL to fetch
-        auth_headers: Optional pre-computed auth headers
-        auth_param: Optional auth parameter for getting headers
-        rate_limiter: Optional coordinator sharing rate-limit state across threads
+        url: URL to fetch.
+        as_text: If True, decode response as UTF-8 text. If False, return raw bytes.
+        auth_headers: Pre-computed auth headers (highest priority, skips probing).
+        auth_param: Raw auth parameter for header resolution.
+        auth_cache: Shared auth header cache for origin-level caching.
+        rate_limiter: Shared rate-limit coordinator for cross-thread backoff.
 
     Returns:
-        str: Content of the URL
+        str if as_text=True, bytes if as_text=False.
     """
     # Convert GitLab web URLs to API URLs for authentication
     original_url = url
@@ -5758,10 +5899,27 @@ def fetch_url_with_auth(
         if url != original_url:
             info(f'Using API URL: {url}')
 
-    # Use mutable container to allow inner function to modify auth_headers
-    auth_state: dict[str, dict[str, str] | None] = {'headers': auth_headers}
+    def _read_response(response: http.client.HTTPResponse) -> str | bytes:
+        """Read response data in the appropriate format."""
+        if as_text:
+            return str(response.read().decode('utf-8'))
+        return bytes(response.read())
 
-    def _do_fetch() -> str:
+    # Resolve effective auth headers via priority chain:
+    # 1. Explicit auth_headers parameter (highest priority)
+    # 2. Cached headers from auth_cache
+    # 3. Try unauthenticated, then resolve on 401/403/404
+    effective_headers = auth_headers
+
+    if effective_headers is None and auth_cache is not None:
+        is_cached, cached = auth_cache.get_cached_headers(url)
+        if is_cached:
+            effective_headers = cached
+
+    # Use mutable container to allow inner function to modify auth_headers
+    auth_state: dict[str, dict[str, str] | None] = {'headers': effective_headers}
+
+    def _do_fetch() -> str | bytes:
         """Internal fetch logic wrapped for retry."""
         # Skip unauthenticated attempt when auth headers are already known
         if auth_state['headers']:
@@ -5769,7 +5927,7 @@ def fetch_url_with_auth(
                 request = Request(url)
                 for header, value in auth_state['headers'].items():
                     request.add_header(header, value)
-                return str(urlopen(request).read().decode('utf-8'))
+                return _read_response(urlopen(request))
             except urllib.error.URLError as e:
                 if 'SSL' in str(e) or 'certificate' in str(e).lower():
                     warning('SSL certificate verification failed, trying with unverified context')
@@ -5780,14 +5938,14 @@ def fetch_url_with_auth(
                     request = Request(url)
                     for header, value in auth_state['headers'].items():
                         request.add_header(header, value)
-                    return str(urlopen(request, context=ctx).read().decode('utf-8'))
+                    return _read_response(urlopen(request, context=ctx))
                 raise
 
         # Try without auth first (for public repos)
         try:
             request = Request(url)
             response = urlopen(request)
-            return str(response.read().decode('utf-8'))
+            return _read_response(response)
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404):
                 # Authentication might be needed
@@ -5796,6 +5954,10 @@ def fetch_url_with_auth(
                     auth_state['headers'] = get_auth_headers(url, auth_param)
 
                 if auth_state['headers']:
+                    # Populate cache on successful auth discovery
+                    if auth_cache is not None:
+                        auth_cache.cache_headers(url, auth_state['headers'])
+
                     # Retry with authentication
                     info('Retrying with authentication...')
                     request = Request(url)
@@ -5803,8 +5965,7 @@ def fetch_url_with_auth(
                         request.add_header(header, value)
                     try:
                         response = urlopen(request)
-                        result: str = response.read().decode('utf-8')
-                        return result
+                        return _read_response(response)
                     except urllib.error.HTTPError as auth_e:
                         if auth_e.code == 401:
                             error('Authentication failed. Check your token.')
@@ -5835,12 +5996,41 @@ def fetch_url_with_auth(
                         request.add_header(header, value)
 
                 response = urlopen(request, context=ctx)
-                ctx_result: str = response.read().decode('utf-8')
-                return ctx_result
+                return _read_response(response)
             raise
 
     # Wrap with retry logic for rate limiting
     return fetch_with_retry(_do_fetch, url, rate_limiter=rate_limiter)
+
+
+def fetch_url_with_auth(
+    url: str,
+    auth_headers: dict[str, str] | None = None,
+    auth_param: str | None = None,
+    rate_limiter: RateLimitCoordinator | None = None,
+    auth_cache: AuthHeaderCache | None = None,
+) -> str:
+    """Fetch URL content as text with auth caching and retry logic.
+
+    Includes retry logic with linear additive backoff for rate limiting (HTTP 429).
+    May raise HTTPError if the request fails after authentication and retry attempts,
+    or URLError if there's a network error (including SSL issues).
+
+    Args:
+        url: URL to fetch
+        auth_headers: Optional pre-computed auth headers
+        auth_param: Optional auth parameter for getting headers
+        rate_limiter: Optional coordinator sharing rate-limit state across threads
+        auth_cache: Optional shared auth header cache for origin-level caching
+
+    Returns:
+        str: Content of the URL
+    """
+    result = _fetch_url_core(
+        url, as_text=True, auth_headers=auth_headers, auth_param=auth_param,
+        auth_cache=auth_cache, rate_limiter=rate_limiter,
+    )
+    return str(result)
 
 
 def fetch_url_bytes_with_auth(
@@ -5848,8 +6038,9 @@ def fetch_url_bytes_with_auth(
     auth_headers: dict[str, str] | None = None,
     auth_param: str | None = None,
     rate_limiter: RateLimitCoordinator | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bytes:
-    """Fetch URL content as bytes, trying without auth first, then with auth if needed.
+    """Fetch URL content as bytes with auth caching and retry logic.
 
     Similar to fetch_url_with_auth but returns raw bytes without decoding.
     Use this for binary files like .tar.gz, .zip, images, etc.
@@ -5862,102 +6053,17 @@ def fetch_url_bytes_with_auth(
         auth_headers: Optional pre-computed auth headers
         auth_param: Optional auth parameter for getting headers
         rate_limiter: Optional coordinator sharing rate-limit state across threads
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bytes: Raw content of the URL
     """
-    # Convert GitLab web URLs to API URLs for authentication
-    original_url = url
-    if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
-        url = convert_gitlab_url_to_api(url)
-        if url != original_url:
-            info(f'Using API URL: {url}')
-
-    # Convert GitHub raw URLs to API URLs for authentication
-    if detect_repo_type(url) == 'github' and 'raw.githubusercontent.com' in original_url:
-        url = convert_github_raw_to_api(original_url)
-        if url != original_url:
-            info(f'Using API URL: {url}')
-
-    # Use mutable container to allow inner function to modify auth_headers
-    auth_state: dict[str, dict[str, str] | None] = {'headers': auth_headers}
-
-    def _do_fetch() -> bytes:
-        """Internal fetch logic wrapped for retry."""
-        # Skip unauthenticated attempt when auth headers are already known
-        if auth_state['headers']:
-            try:
-                request = Request(url)
-                for header, value in auth_state['headers'].items():
-                    request.add_header(header, value)
-                return bytes(urlopen(request).read())
-            except urllib.error.URLError as e:
-                if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                    warning('SSL certificate verification failed, trying with unverified context')
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
-
-                    request = Request(url)
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
-                    return bytes(urlopen(request, context=ctx).read())
-                raise
-
-        # Try without auth first (for public repos)
-        try:
-            request = Request(url)
-            response = urlopen(request)
-            return bytes(response.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403, 404):
-                # Authentication might be needed
-                if not auth_state['headers']:
-                    auth_state['headers'] = get_auth_headers(url, auth_param)
-
-                if auth_state['headers']:
-                    info('Retrying with authentication...')
-                    request = Request(url)
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
-                    try:
-                        response = urlopen(request)
-                        result: bytes = response.read()
-                        return result
-                    except urllib.error.HTTPError as auth_e:
-                        if auth_e.code == 401:
-                            error('Authentication failed. Check your token.')
-                        elif auth_e.code == 403:
-                            error('Access forbidden. Token may lack permissions.')
-                        elif auth_e.code == 404:
-                            error('Resource not found. Check URL and permissions.')
-                        raise
-                elif e.code == 404:
-                    raise
-                else:
-                    warning('Authentication may be required for this URL')
-                    raise
-            else:
-                raise
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                warning('SSL certificate verification failed, trying with unverified context')
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-
-                request = Request(url)
-                if auth_state['headers']:
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
-
-                response = urlopen(request, context=ctx)
-                ctx_result: bytes = response.read()
-                return ctx_result
-            raise
-
-    # Wrap with retry logic for rate limiting
-    return fetch_with_retry(_do_fetch, url, rate_limiter=rate_limiter)
+    result = _fetch_url_core(
+        url, as_text=False, auth_headers=auth_headers, auth_param=auth_param,
+        auth_cache=auth_cache, rate_limiter=rate_limiter,
+    )
+    assert isinstance(result, bytes)
+    return result
 
 
 def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
@@ -6005,6 +6111,7 @@ def handle_resource(
     base_url: str | None = None,
     auth_param: str | None = None,
     rate_limiter: RateLimitCoordinator | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Handle a resource - either download from URL or copy from local path.
 
@@ -6015,6 +6122,7 @@ def handle_resource(
         base_url: Optional base URL from config
         auth_param: Optional auth parameter for private repos
         rate_limiter: Optional coordinator sharing rate-limit state across threads
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bool: True if successful, False otherwise
@@ -6034,11 +6142,15 @@ def handle_resource(
             # Download from URL
             if is_binary_file(resolved_path):
                 # Binary file - fetch as bytes and write bytes
-                content_bytes = fetch_url_bytes_with_auth(resolved_path, auth_param=auth_param, rate_limiter=rate_limiter)
+                content_bytes = fetch_url_bytes_with_auth(
+                    resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
+                )
                 destination.write_bytes(content_bytes)
             else:
                 # Text file - fetch as text and write text
-                content = fetch_url_with_auth(resolved_path, auth_param=auth_param, rate_limiter=rate_limiter)
+                content = fetch_url_with_auth(
+                    resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
+                )
                 destination.write_text(content, encoding='utf-8')
             success(f'Downloaded: {filename}')
         else:
@@ -6065,6 +6177,7 @@ def process_resources(
     config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Process resources (download from URL or copy from local) based on configuration.
 
@@ -6077,6 +6190,7 @@ def process_resources(
         config_source: Where the config was loaded from
         base_url: Optional base URL from config
         auth_param: Optional auth parameter for private repos
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bool: True if all successful
@@ -6086,6 +6200,10 @@ def process_resources(
         return True
 
     info(f'Processing {resource_type}...')
+
+    # Create shared auth cache if not provided
+    if auth_cache is None:
+        auth_cache = AuthHeaderCache(auth_param)
 
     # Prepare download tasks
     download_tasks: list[tuple[str, Path]] = []
@@ -6102,7 +6220,7 @@ def process_resources(
     def download_single_resource(task: tuple[str, Path]) -> bool:
         """Download a single resource and return success status."""
         resource, destination = task
-        return handle_resource(resource, destination, config_source, base_url, auth_param, rate_limiter)
+        return handle_resource(resource, destination, config_source, base_url, auth_param, rate_limiter, auth_cache)
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(download_tasks, download_single_resource, False, stagger_delay=0.5)
@@ -6114,6 +6232,7 @@ def process_file_downloads(
     config_source: str,
     base_url: str | None = None,
     auth_param: str | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Process file downloads/copies from configuration.
 
@@ -6127,6 +6246,7 @@ def process_file_downloads(
         config_source: Where the config was loaded from (for resolving relative paths)
         base_url: Optional base URL override from config
         auth_param: Optional auth parameter for private repos
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         True if all files processed successfully, False if any failed.
@@ -6143,6 +6263,10 @@ def process_file_downloads(
         return True
 
     info(f'Processing {len(file_specs)} file downloads...')
+
+    # Create shared auth cache if not provided
+    if auth_cache is None:
+        auth_cache = AuthHeaderCache(auth_param)
 
     # Pre-validate file specs and prepare download tasks
     valid_downloads: list[tuple[str, Path]] = []
@@ -6184,7 +6308,7 @@ def process_file_downloads(
     def download_single_file(download_info: tuple[str, Path]) -> bool:
         """Download a single file and return success status."""
         source, dest_path = download_info
-        return handle_resource(source, dest_path, config_source, base_url, auth_param, rate_limiter)
+        return handle_resource(source, dest_path, config_source, base_url, auth_param, rate_limiter, auth_cache)
 
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     if valid_downloads:
@@ -6211,6 +6335,7 @@ def process_skill(
     config_source: str,
     auth_param: str | None = None,
     rate_limiter: RateLimitCoordinator | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Process and install a single skill.
 
@@ -6223,6 +6348,7 @@ def process_skill(
         config_source: Where the config was loaded from
         auth_param: Optional authentication parameter for private repos
         rate_limiter: Optional coordinator sharing rate-limit state across threads
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bool: True if skill installed successfully, False otherwise
@@ -6267,11 +6393,15 @@ def process_skill(
             try:
                 if is_binary_file(file_path):
                     # Binary file - fetch as bytes and write bytes
-                    content_bytes = fetch_url_bytes_with_auth(source_url, auth_param=auth_param, rate_limiter=rate_limiter)
+                    content_bytes = fetch_url_bytes_with_auth(
+                        source_url, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
+                    )
                     destination.write_bytes(content_bytes)
                 else:
                     # Text file - fetch as text and write text
-                    content = fetch_url_with_auth(source_url, auth_param=auth_param, rate_limiter=rate_limiter)
+                    content = fetch_url_with_auth(
+                        source_url, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
+                    )
                     destination.write_text(content, encoding='utf-8')
                 success(f'  Downloaded: {file_path}')
                 success_count += 1
@@ -6308,6 +6438,7 @@ def process_skills(
     skills_dir: Path,
     config_source: str,
     auth_param: str | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Process all skills from configuration.
 
@@ -6319,6 +6450,7 @@ def process_skills(
         skills_dir: Base skills directory (.claude/skills/)
         config_source: Where the config was loaded from
         auth_param: Optional authentication parameter for private repos
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bool: True if all skills installed successfully, False otherwise
@@ -6329,12 +6461,16 @@ def process_skills(
 
     info(f'Processing {len(skills_config)} skill(s)...')
 
+    # Create shared auth cache if not provided
+    if auth_cache is None:
+        auth_cache = AuthHeaderCache(auth_param)
+
     # Per-batch coordinator shares rate-limit state across skill download threads
     rate_limiter = RateLimitCoordinator()
 
     def install_single_skill(skill_config: dict[str, Any]) -> bool:
         """Install a single skill and return success status."""
-        return process_skill(skill_config, skills_dir, config_source, auth_param, rate_limiter)
+        return process_skill(skill_config, skills_dir, config_source, auth_param, rate_limiter, auth_cache)
 
     # Execute skill installations in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(skills_config, install_single_skill, False, stagger_delay=0.5)
@@ -7184,6 +7320,7 @@ def download_hook_files(
     base_url: str | None = None,
     auth_param: str | None = None,
     hooks_base_dir: Path | None = None,
+    auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
     """Download hook files from configuration.
 
@@ -7199,6 +7336,7 @@ def download_hook_files(
         hooks_base_dir: Optional base directory for hook files.
             When provided, hook files are downloaded to this directory
             instead of claude_user_dir / 'hooks'.
+        auth_cache: Optional shared auth header cache for origin-level caching
 
     Returns:
         bool: True if all downloads successful, False otherwise.
@@ -7210,7 +7348,7 @@ def download_hook_files(
         return True
 
     hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
-    return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param)
+    return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
 
 
 def _apply_common_hook_fields(
@@ -8785,10 +8923,13 @@ def main() -> None:
 
         header(environment_name)
 
+        # Create shared auth cache (validation phase populates, download phase reuses)
+        auth_cache = AuthHeaderCache(args.auth)
+
         # Validate all downloadable files before proceeding
         print()
         print(f'{Colors.CYAN}Validating configuration files...{Colors.NC}')
-        all_valid, validation_results = validate_all_config_files(config, config_source, args.auth)
+        all_valid, validation_results = validate_all_config_files(config, config_source, args.auth, auth_cache)
 
         if not all_valid:
             print()
@@ -8916,7 +9057,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 3: Processing file downloads...{Colors.NC}')
         files_to_download = config.get('files-to-download', [])
         if files_to_download:
-            if not process_file_downloads(files_to_download, config_source, base_url, args.auth):
+            if not process_file_downloads(files_to_download, config_source, base_url, args.auth, auth_cache):
                 download_failures.append('file downloads')
         else:
             info('No custom files to download')
@@ -8955,7 +9096,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 7: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
         if agents:
-            if not process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth):
+            if not process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('agents')
         else:
             info('No agents to process')
@@ -8965,7 +9106,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 8: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
         if commands:
-            if not process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth):
+            if not process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('slash commands')
         else:
             info('No slash commands to process')
@@ -8975,7 +9116,7 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 9: Processing rules...{Colors.NC}')
         rules = config.get('rules', [])
         if rules:
-            if not process_resources(rules, rules_dir, 'rules', config_source, base_url, args.auth):
+            if not process_resources(rules, rules_dir, 'rules', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('rules')
         else:
             info('No rules to process')
@@ -8991,7 +9132,7 @@ def main() -> None:
             else []
         )
         if skills:
-            if not process_skills(skills, skills_dir, config_source, args.auth):
+            if not process_skills(skills, skills_dir, config_source, args.auth, auth_cache):
                 download_failures.append('skills')
         else:
             info('No skills configured')
@@ -9005,7 +9146,7 @@ def main() -> None:
             clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
             sys_prompt_filename = Path(clean_prompt).name
             prompt_path = prompts_dir / sys_prompt_filename
-            if not handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth):
+            if not handle_resource(system_prompt, prompt_path, config_source, base_url, args.auth, auth_cache=auth_cache):
                 download_failures.append('system prompt')
         else:
             info('No additional system prompt configured')
@@ -9089,7 +9230,7 @@ def main() -> None:
             hooks = config.get('hooks', {})
             hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
-                                       hooks_base_dir=hooks_base_dir_arg):
+                                       hooks_base_dir=hooks_base_dir_arg, auth_cache=auth_cache):
                 download_failures.append('hook files')
 
             # Step 17: Create profile configuration
