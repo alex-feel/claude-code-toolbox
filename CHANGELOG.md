@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.1...v5.7.2) (2026-04-04)
+
+
+### Bug Fixes
+
+* eliminate redundant per-file auth probes with origin-level caching ([3442485](https://github.com/alex-feel/claude-code-toolbox/commit/34424853b82a40b1f7dd46a2a4658d029298e8f9))
+
 ## [5.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.0...v5.7.1) (2026-04-04)
 
 
