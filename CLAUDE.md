@@ -286,7 +286,7 @@ Step comments/print statements in `main()` MUST use continuous whole integers (n
 
 **Windows-style paths:** Tests with Windows paths MUST use `@pytest.mark.skipif(sys.platform != 'win32', ...)`. `Path(r'C:\...')` on Linux becomes a single component -- `Path` uses the running OS's semantics.
 
-**Platform detection mocks:** Mock ALL detection methods (`sys.platform`, `platform.system()`, `os.name`) in the code path. Mocking only one passes on that platform's CI but fails on others. Prefer ONE method per function (`sys.platform` for MyPy).
+**Platform detection mocks:** Mock ALL detection methods (`sys.platform`, `platform.system()`, `os.name`) in the code path. Mocking only one passes on that platform's CI but fails on others. Prefer ONE method per function (`sys.platform` recommended).
 
 | Platform | `sys.platform` | `platform.system()` | `os.name` |
 |----------|----------------|---------------------|-----------|

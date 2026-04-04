@@ -352,7 +352,7 @@ class HookEvent(BaseModel):
         Raises:
             ValueError: If field requirements are not met for the hook type.
         """
-        # Fields exclusive to each type group (typed as object for mypy compatibility)
+        # Fields exclusive to each type group (typed as object for type checker compatibility)
         _command_only_fields: dict[str, object] = {
             'command': self.command,
             'config': self.config,

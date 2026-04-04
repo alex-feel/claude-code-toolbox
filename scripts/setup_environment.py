@@ -651,7 +651,7 @@ class Colors:
     def strip(cls) -> None:
         """Strip ANSI color codes for environments that don't support them."""
         if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
-            # Use setattr to avoid pyright's constant redefinition error
+            # Use setattr for dynamic attribute assignment on class variables
             for attr in ['RED', 'GREEN', 'YELLOW', 'BLUE', 'CYAN', 'NC', 'BOLD']:
                 setattr(cls, attr, '')
 
@@ -1095,9 +1095,8 @@ def is_wsl() -> bool:
     Checks /proc/version for Microsoft/WSL indicators, which is the
     standard detection method for WSL environments.
 
-    Uses EAFP (try/except) instead of platform guards to avoid
-    MyPy unreachable-code errors on Linux CI where sys.platform
-    is always 'linux'.
+    Uses EAFP (try/except) for robust cross-platform detection
+    without platform-specific guards.
 
     Returns:
         True if running in WSL, False otherwise
@@ -2695,7 +2694,7 @@ def validate_all_config_files(
         hooks_typed = cast(dict[str, Any], hooks)
         hook_files_raw = hooks_typed.get('files', [])
         if isinstance(hook_files_raw, list):
-            # Cast to typed list for pyright
+            # Cast to typed list for type safety
             hook_files_list = cast(list[object], hook_files_raw)
             for hook_file_item in hook_files_list:
                 if isinstance(hook_file_item, str):
@@ -3918,7 +3917,7 @@ def resolve_config_inheritance(
                 f"got {type(merge_keys_value).__name__}: {merge_keys_value!r}",
             )
 
-        # Cast to list[object] for Pyright after isinstance narrowing
+        # Cast to list[object] after isinstance narrowing
         merge_keys_list = cast(list[object], merge_keys_value)
 
         # Validate all entries are strings
@@ -5983,7 +5982,7 @@ def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
         result = yaml.safe_load(front_matter_text)
         # Explicitly type check and return properly typed dict
         if isinstance(result, dict):
-            # Cast to typed dict to satisfy pyright
+            # Cast to typed dict for type safety
             return cast(dict[str, Any], result)
         return None
 
@@ -7420,7 +7419,7 @@ def create_profile_config(
 
         # Find or create matcher group
         matcher_group: dict[str, Any] | None = None
-        hooks_list_raw = cast(Any, settings['hooks'][event])  # Cast for pyright
+        hooks_list_raw = settings['hooks'][event]
         if isinstance(hooks_list_raw, list):
             hooks_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_list_raw)
             for group_item in hooks_list:
@@ -7433,7 +7432,7 @@ def create_profile_config(
                 'matcher': matcher,
                 'hooks': [],
             }
-            hooks_event_list_raw = cast(Any, settings['hooks'][event])  # Cast for pyright
+            hooks_event_list_raw = settings['hooks'][event]
             if isinstance(hooks_event_list_raw, list):
                 hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
                 hooks_event_list.append(matcher_group)
@@ -7570,7 +7569,7 @@ def create_profile_config(
         if matcher_group and 'hooks' in matcher_group:
             matcher_hooks_raw = matcher_group['hooks']
             if isinstance(matcher_hooks_raw, list):
-                # Cast to typed list for pyright
+                # Cast to typed list for type safety
                 matcher_hooks_list = cast(list[object], matcher_hooks_raw)
                 matcher_hooks_list.append(hook_config)
 

@@ -52,7 +52,7 @@ class Colors:
     def strip(cls) -> None:
         """Strip ANSI color codes for environments that don't support them."""
         if platform.system() == 'Windows' and not os.environ.get('WT_SESSION'):
-            # Use setattr to avoid pyright's constant redefinition error
+            # Use setattr for dynamic attribute assignment on class variables
             for attr in ['RED', 'GREEN', 'YELLOW', 'BLUE', 'CYAN', 'NC', 'BOLD']:
                 setattr(cls, attr, '')
 
@@ -474,7 +474,6 @@ def _dev_tty_sudo_available() -> bool:
         True if /dev/tty is available and sudo can be used through it,
         False otherwise.
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform != 'win32':
         try:
             with open('/dev/tty'):
@@ -511,7 +510,6 @@ def _run_with_sudo_fallback(
         CompletedProcess if sudo was attempted (check returncode for success),
         None if no sudo mechanism was available.
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform != 'win32':
         sudo_cmd = ['sudo'] + cmd
 
@@ -2483,7 +2481,6 @@ def _ensure_local_bin_in_path_unix() -> bool:
     Note:
         No-op on Windows (returns True immediately).
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform != 'win32':
         home = get_real_user_home()
         local_bin = home / '.local' / 'bin'
@@ -2922,7 +2919,6 @@ def install_claude_native_macos(version: str | None = None) -> bool:
         macOS only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    # Use positive platform check to avoid MyPy "unreachable" errors on Linux CI
     if sys.platform == 'darwin':
         # Hybrid approach: Use native installer for "latest", direct download for specific versions
         if version is None or version.lower() == 'latest':
@@ -3085,8 +3081,6 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         Linux only. Returns False on other platforms.
         See: https://github.com/anthropics/claude-code/issues/14942
     """
-    # Use platform.system() for cross-platform MyPy compatibility
-    # (MyPy cannot statically evaluate function call results)
     if platform.system() != 'Linux':
         return False
 

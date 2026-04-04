@@ -218,7 +218,7 @@ def golden_config() -> dict[str, Any]:
     if config is None:
         raise ValueError('golden_config.yaml is empty or contains only comments')
 
-    # Ensure proper type for mypy (yaml.safe_load returns Any)
+    # Ensure proper type (yaml.safe_load returns Any)
     result: dict[str, Any] = config
     return result
 
