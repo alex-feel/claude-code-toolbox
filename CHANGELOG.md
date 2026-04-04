@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.2...v5.7.3) (2026-04-04)
+
+
+### Bug Fixes
+
+* apply GitHub API headers to all requests including unauthenticated ([6da4913](https://github.com/alex-feel/claude-code-toolbox/commit/6da491312c89274c9f72ee0d7ec60761ceca3adc))
+
 ## [5.7.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.1...v5.7.2) (2026-04-04)
 
 
