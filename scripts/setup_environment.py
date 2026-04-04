@@ -123,6 +123,15 @@ SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
     '~/.config/',
 )
 
+# Mapping from platform.system() return values to dependency config keys.
+# Used by collect_installation_plan(), install_dependencies(), and check_admin_needed()
+# to determine which platform-specific dependencies apply to the current OS.
+PLATFORM_SYSTEM_TO_CONFIG_KEY: dict[str, str] = {
+    'Windows': 'windows',
+    'Darwin': 'macos',
+    'Linux': 'linux',
+}
+
 # OS environment variables constants
 OS_ENV_VARIABLES_KEY = 'os-env-variables'
 ENV_VAR_MARKER_START = '# >>> claude-code-toolbox >>>'
@@ -505,10 +514,11 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
     # Check for dependencies that need admin
     dependencies = config.get('dependencies', {})
     if dependencies:
-        # Check Windows-specific dependencies
-        win_deps = dependencies.get('windows', [])
+        # Check current platform + common dependencies
+        current_platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
+        platform_deps = dependencies.get(current_platform_key, []) if current_platform_key else []
         common_deps = dependencies.get('common', [])
-        all_deps = win_deps + common_deps
+        all_deps = list(platform_deps) + list(common_deps)
 
         for dep in all_deps:
             # Check for commands that typically need admin
@@ -4000,10 +4010,14 @@ def collect_installation_plan(
         cast(dict[str, Any], s) for s in mcp_raw if isinstance(s, dict)
     ]
 
-    # Extract dependency commands by platform
+    # Extract dependency commands for current OS only
     dependency_commands: dict[str, list[str]] = {}
     deps_raw: dict[str, Any] = config.get('dependencies') or {}
-    for platform_key in ('common', 'windows', 'linux', 'macos'):
+    current_platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
+    relevant_keys = ['common']
+    if current_platform_key:
+        relevant_keys.append(current_platform_key)
+    for platform_key in relevant_keys:
         dep_cmds: list[Any] = deps_raw.get(platform_key) or []
         if dep_cmds:
             dependency_commands[platform_key] = [str(c) for c in dep_cmds]
@@ -5471,11 +5485,12 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 
     info('Installing dependencies...')
 
-    # Check if any Windows dependencies need admin
+    # Check if any dependencies on the current platform need admin
     if platform.system() == 'Windows' and not is_admin():
-        win_deps = dependencies.get('windows', [])
+        platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
+        platform_deps = dependencies.get(platform_key, []) if platform_key else []
         common_deps = dependencies.get('common', [])
-        all_deps = win_deps + common_deps
+        all_deps = list(platform_deps) + list(common_deps)
 
         admin_needed_deps = [dep for dep in all_deps if 'winget' in dep and '--scope machine' in dep]
 
@@ -5498,15 +5513,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 
     # Get system platform
     system = platform.system()
-
-    # Platform mapping: platform.system() returns -> config key
-    platform_map = {
-        'Windows': 'windows',
-        'Darwin': 'macos',
-        'Linux': 'linux',
-    }
-
-    current_platform_key = platform_map.get(system)
+    current_platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(system)
 
     if not current_platform_key:
         warning(f'Unknown platform: {system}. Skipping platform-specific dependencies.')
