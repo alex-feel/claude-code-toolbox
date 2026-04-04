@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.0...v5.7.1) (2026-04-04)
+
+
+### Bug Fixes
+
+* filter installation summary dependencies to current OS only ([b2f82b4](https://github.com/alex-feel/claude-code-toolbox/commit/b2f82b43bce442e898cb581027026579b7c82772))
+
 ## [5.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.2...v5.7.0) (2026-04-04)
 
 
