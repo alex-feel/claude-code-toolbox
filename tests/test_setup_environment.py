@@ -1108,28 +1108,23 @@ class TestRepoTypeDetectionGitHubRaw:
 class TestGitHubAuthHeaders:
     """Test GitHub authentication headers generation."""
 
-    def test_github_api_headers_include_accept(self, monkeypatch):
-        """Test that GitHub API URLs get Accept header."""
+    def test_github_auth_headers_contain_authorization(self, monkeypatch):
+        """Auth headers for GitHub API URLs contain only Authorization."""
         monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
         url = 'https://api.github.com/repos/owner/repo/contents/file.yaml'
         headers = setup_environment.get_auth_headers(url)
-        assert headers.get('Accept') == 'application/vnd.github.raw+json'
         assert headers.get('Authorization') == 'Bearer test_token'
-
-    def test_github_api_headers_include_version(self, monkeypatch):
-        """Test that GitHub API URLs get API version header."""
-        monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
-        url = 'https://api.github.com/repos/owner/repo/contents/file.yaml'
-        headers = setup_environment.get_auth_headers(url)
-        assert headers.get('X-GitHub-Api-Version') == '2022-11-28'
+        # Transport headers are managed by github_api_headers in _fetch_url_core
+        assert 'Accept' not in headers
+        assert 'X-GitHub-Api-Version' not in headers
 
     def test_github_non_api_no_extra_headers(self, monkeypatch):
-        """Test that non-API GitHub URLs don't get extra headers."""
+        """Non-API GitHub URLs don't get extra headers."""
         monkeypatch.setenv('GITHUB_TOKEN', 'test_token')
         url = 'https://raw.githubusercontent.com/owner/repo/main/file.yaml'
         headers = setup_environment.get_auth_headers(url)
-        # Raw URLs don't get Accept header - only API URLs do
         assert 'Accept' not in headers
+        assert 'X-GitHub-Api-Version' not in headers
         assert headers.get('Authorization') == 'Bearer test_token'
 
 

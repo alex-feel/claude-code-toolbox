@@ -3132,12 +3132,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     def build_github_headers(token: str) -> dict[str, str]:
         # Handle Bearer prefix - avoid duplication if already present
         auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
-        headers = {'Authorization': auth_value}
-        # Add headers required for GitHub API to return raw content
-        if 'api.github.com' in url:
-            headers['Accept'] = 'application/vnd.github.raw+json'
-            headers['X-GitHub-Api-Version'] = '2022-11-28'
-        return headers
+        return {'Authorization': auth_value}
 
     # Method 1: Command-line parameter (highest priority)
     if auth_param:
@@ -5899,6 +5894,16 @@ def _fetch_url_core(
         if url != original_url:
             info(f'Using API URL: {url}')
 
+    # GitHub Contents API requires specific headers to return raw content
+    # instead of JSON metadata. These are transport-level headers independent
+    # of auth headers and must be applied to every Request construction.
+    github_api_headers: dict[str, str] = {}
+    if 'api.github.com' in url:
+        github_api_headers = {
+            'Accept': 'application/vnd.github.raw+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+        }
+
     def _read_response(response: http.client.HTTPResponse) -> str | bytes:
         """Read response data in the appropriate format."""
         if as_text:
@@ -5919,33 +5924,34 @@ def _fetch_url_core(
     # Use mutable container to allow inner function to modify auth_headers
     auth_state: dict[str, dict[str, str] | None] = {'headers': effective_headers}
 
+    def _build_request(auth_headers: dict[str, str] | None = None) -> Request:
+        """Build a Request with GitHub API headers and optional auth."""
+        request = Request(url)
+        for header, value in github_api_headers.items():
+            request.add_header(header, value)
+        if auth_headers:
+            for header, value in auth_headers.items():
+                request.add_header(header, value)
+        return request
+
     def _do_fetch() -> str | bytes:
         """Internal fetch logic wrapped for retry."""
         # Skip unauthenticated attempt when auth headers are already known
         if auth_state['headers']:
             try:
-                request = Request(url)
-                for header, value in auth_state['headers'].items():
-                    request.add_header(header, value)
-                return _read_response(urlopen(request))
+                return _read_response(urlopen(_build_request(auth_state['headers'])))
             except urllib.error.URLError as e:
                 if 'SSL' in str(e) or 'certificate' in str(e).lower():
                     warning('SSL certificate verification failed, trying with unverified context')
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
-
-                    request = Request(url)
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
-                    return _read_response(urlopen(request, context=ctx))
+                    return _read_response(urlopen(_build_request(auth_state['headers']), context=ctx))
                 raise
 
         # Try without auth first (for public repos)
         try:
-            request = Request(url)
-            response = urlopen(request)
-            return _read_response(response)
+            return _read_response(urlopen(_build_request()))
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404):
                 # Authentication might be needed
@@ -5960,12 +5966,8 @@ def _fetch_url_core(
 
                     # Retry with authentication
                     info('Retrying with authentication...')
-                    request = Request(url)
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
                     try:
-                        response = urlopen(request)
-                        return _read_response(response)
+                        return _read_response(urlopen(_build_request(auth_state['headers'])))
                     except urllib.error.HTTPError as auth_e:
                         if auth_e.code == 401:
                             error('Authentication failed. Check your token.')
@@ -5989,14 +5991,10 @@ def _fetch_url_core(
                 ctx = ssl.create_default_context()
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
-
-                request = Request(url)
-                if auth_state['headers']:
-                    for header, value in auth_state['headers'].items():
-                        request.add_header(header, value)
-
-                response = urlopen(request, context=ctx)
-                return _read_response(response)
+                return _read_response(urlopen(
+                    _build_request(auth_state['headers'] or None),
+                    context=ctx,
+                ))
             raise
 
     # Wrap with retry logic for rate limiting
