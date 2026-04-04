@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.7.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.2...v5.7.0) (2026-04-04)
+
+
+### Features
+
+* add winget fallback for Windows and GCS fallback for macOS/Linux ([a2e0ed1](https://github.com/alex-feel/claude-code-toolbox/commit/a2e0ed16f6268f9b068c1ea98ff876f4bad6762e))
+
 ## [5.6.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.6.1...v5.6.2) (2026-04-02)
 
 
