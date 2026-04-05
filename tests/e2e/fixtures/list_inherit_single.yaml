@@ -1,0 +1,6 @@
+name: "List Inherit Single"
+inherit:
+  - list_inherit_base.yaml
+agents:
+  - "agents/single-agent.md"
+model: "opus"

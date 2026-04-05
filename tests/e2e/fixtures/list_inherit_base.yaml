@@ -1,0 +1,13 @@
+name: "List Inherit Base"
+agents:
+  - "agents/base-agent.md"
+mcp-servers:
+  - name: "base-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/base"
+rules:
+  - "rules/base-rule.md"
+env-variables:
+  BASE_VAR: "base_val"
+  SHARED_VAR: "from_base"

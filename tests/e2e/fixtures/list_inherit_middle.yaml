@@ -1,0 +1,17 @@
+name: "List Inherit Middle"
+inherit: "some-parent-that-should-be-ignored.yaml"
+merge-keys:
+  - agents
+  - rules
+agents:
+  - "agents/middle-agent.md"
+mcp-servers:
+  - name: "middle-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/middle"
+rules:
+  - "rules/middle-rule.md"
+env-variables:
+  MIDDLE_VAR: "middle_val"
+  SHARED_VAR: "from_middle"

@@ -743,10 +743,13 @@ class EnvironmentConfig(BaseModel):
         'Semantic versioning string (e.g., "1.0.0"). Optional; configs without '
         'this field skip all version checking.',
     )
-    inherit: str | None = Field(
+    inherit: str | list[str] | None = Field(
         None,
-        description='URL or path to parent configuration to inherit from. '
-        'Supports full URLs, local paths, or repository config names.',
+        description='Parent configuration(s) to inherit from. '
+        'Accepts a single string (URL, path, or repo name) or a list of strings '
+        'for composition chains. When a list with >1 entries: entries are composed '
+        "left-to-right, each entry's own inherit key is ignored, merge-keys "
+        'apply per-entry. Single-element list is normalized to string.',
     )
     merge_keys: list[str] | None = Field(
         None,
@@ -920,28 +923,55 @@ class EnvironmentConfig(BaseModel):
 
     @field_validator('inherit')
     @classmethod
-    def validate_inherit(cls, v: str | None) -> str | None:
-        """Validate inherit path or URL format.
+    def validate_inherit(cls, v: str | list[str] | None) -> str | list[str] | None:
+        """Validate inherit value: string, list of strings, or None.
+
+        When a list is provided:
+        - Must be non-empty
+        - All elements must be non-empty, non-blank strings
+        - No null bytes allowed in any element
+
+        A single-element list is valid at the model level; normalization to string
+        happens at runtime in resolve_config_inheritance().
 
         Args:
-            v: Inherit path/URL string to validate.
+            v: Inherit path/URL string, list of strings, or None.
 
         Returns:
             The validated inherit value.
 
         Raises:
-            ValueError: If inherit path is empty or contains null bytes.
+            ValueError: If inherit value is invalid.
         """
         if v is None:
             return v
 
-        if not v or not v.strip():
-            raise ValueError('inherit cannot be empty string')
+        if isinstance(v, str):
+            if not v or not v.strip():
+                raise ValueError('inherit cannot be empty string')
+            if '\x00' in v:
+                raise ValueError('inherit cannot contain null bytes')
+            return v
 
-        if '\x00' in v:
-            raise ValueError('inherit cannot contain null bytes')
+        if isinstance(v, list):
+            if not v:
+                raise ValueError('inherit list cannot be empty')
+            for i, entry in enumerate(v):
+                if not isinstance(entry, str):
+                    raise ValueError(
+                        f'inherit[{i}] must be a string, '
+                        f'got {type(entry).__name__}',
+                    )
+                if not entry or not entry.strip():
+                    raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
+                if '\x00' in entry:
+                    raise ValueError(f'inherit[{i}] cannot contain null bytes')
+            return v
 
-        return v
+        raise ValueError(
+            f"The 'inherit' key must be a string or list of strings, "
+            f"got {type(v).__name__}: {v!r}",
+        )
 
     @field_validator('merge_keys')
     @classmethod

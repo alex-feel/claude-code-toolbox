@@ -1482,3 +1482,87 @@ class TestMergeKeysField:
                 'name': 'Test',
                 'merge-keys': ['agents', 'model', 'name'],
             })
+
+
+class TestInheritValidation:
+    """Tests for inherit field validation (str | list[str] | None)."""
+
+    def test_inherit_string_valid(self) -> None:
+        """String inherit value is accepted."""
+        config = EnvironmentConfig.model_validate({'name': 'Test', 'inherit': 'base.yaml'})
+        assert config.inherit == 'base.yaml'
+
+    def test_inherit_list_valid(self) -> None:
+        """List of strings is accepted."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': ['base.yaml', 'aegis.yaml'],
+        })
+        assert config.inherit == ['base.yaml', 'aegis.yaml']
+
+    def test_inherit_single_element_list_valid(self) -> None:
+        """Single-element list is valid at model level."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': ['base.yaml'],
+        })
+        assert config.inherit == ['base.yaml']
+
+    def test_inherit_none_valid(self) -> None:
+        """None inherit is accepted (no inheritance)."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.inherit is None
+
+    def test_inherit_empty_list_rejected(self) -> None:
+        """Empty list raises ValidationError."""
+        with pytest.raises(ValidationError, match='inherit list cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': []})
+
+    def test_inherit_list_with_empty_string_rejected(self) -> None:
+        """List with empty string raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['']})
+
+    def test_inherit_list_with_blank_string_rejected(self) -> None:
+        """List with whitespace-only string raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['   ']})
+
+    def test_inherit_list_with_non_string_rejected(self) -> None:
+        """List with non-string element raises ValidationError."""
+        with pytest.raises(ValidationError, match='Input should be a valid string'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': [123]})
+
+    def test_inherit_list_with_null_bytes_rejected(self) -> None:
+        """List with null bytes in element raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot contain null bytes'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['base\x00.yaml']})
+
+    def test_inherit_dict_rejected(self) -> None:
+        """Dict value raises ValidationError."""
+        with pytest.raises(ValidationError, match='Input should be a valid'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'inherit': {'source': 'base.yaml'},
+            })
+
+    def test_inherit_int_rejected(self) -> None:
+        """Integer value raises ValidationError."""
+        with pytest.raises(ValidationError, match='Input should be a valid'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': 42})
+
+    def test_inherit_list_second_element_invalid(self) -> None:
+        """Second element validation error includes correct index."""
+        with pytest.raises(ValidationError, match=r'inherit\[1\] cannot be empty'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'inherit': ['valid.yaml', ''],
+            })
+
+    def test_inherit_three_element_list_valid(self) -> None:
+        """Three-element list is accepted."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': ['a.yaml', 'b.yaml', 'c.yaml'],
+        })
+        assert config.inherit == ['a.yaml', 'b.yaml', 'c.yaml']

@@ -1,0 +1,5 @@
+name: "Base With Own Inherit"
+inherit: "some-deeply-nested-parent.yaml"
+agents:
+  - "agents/base-own-agent.md"
+model: "haiku"

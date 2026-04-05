@@ -131,38 +131,38 @@ Browse the [repository](https://github.com/alex-feel/claude-code-artifacts-publi
 
 Quick-reference table of all configuration keys. Each key links to its detailed documentation in the [Configuration Keys](#configuration-keys) section below.
 
-| YAML Key                                              | Type                   | Required | Default | Brief Description                          |
-|-------------------------------------------------------|------------------------|----------|---------|--------------------------------------------|
-| [`name`](#name)                                       | `str`                  | **Yes**  | --      | Display name for the environment           |
-| [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)      |
-| [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation  |
-| [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
-| [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
-| [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace           |
-| [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
-| [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths       |
-| [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"` |
-| [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies    |
-| [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands      |
-| [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                  |
-| [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                   |
-| [`rules`](#rules)                                     | `list[str]`            | No       | `[]`    | Rule markdown file paths (user-scope)      |
-| [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                       |
-| [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup             |
-| [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`              |
-| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)     |
-| [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                  |
-| [`model`](#model)                                     | `str`                  | No       | `None`  | Model alias or custom model name           |
-| [`permissions`](#permissions)                         | `Permissions`          | No       | `None`  | Permission rules for tools                 |
-| [`env-variables`](#env-variables)                     | `dict[str, str]`       | No       | `None`  | Claude-level environment variables         |
-| [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables  |
-| [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                     |
-| [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Merged into `settings.json`                |
-| [`always-thinking-enabled`](#always-thinking-enabled) | `bool`                 | No       | `None`  | Enable always-on thinking mode             |
-| [`effort-level`](#effort-level)                       | `str`                  | No       | `None`  | Adaptive reasoning effort level            |
-| [`company-announcements`](#company-announcements)     | `list[str]`            | No       | `None`  | Announcement strings for users             |
-| [`attribution`](#attribution)                         | `Attribution`          | No       | `None`  | Commit and PR attribution strings          |
-| [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration           |
+| YAML Key                                              | Type                   | Required | Default | Brief Description                                          |
+|-------------------------------------------------------|------------------------|----------|---------|------------------------------------------------------------|
+| [`name`](#name)                                       | `str`                  | **Yes**  | --      | Display name for the environment                           |
+| [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)                      |
+| [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation                  |
+| [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                                    |
+| [`inherit`](#inherit)                                 | `str \| list[str]`     | No       | `None`  | Parent config URL/path/name or list for composition chains |
+| [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace                           |
+| [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                                  |
+| [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths                       |
+| [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"`                 |
+| [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies                    |
+| [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands                      |
+| [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                                  |
+| [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                                   |
+| [`rules`](#rules)                                     | `list[str]`            | No       | `[]`    | Rule markdown file paths (user-scope)                      |
+| [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                                       |
+| [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup                             |
+| [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`                              |
+| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)                     |
+| [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
+| [`model`](#model)                                     | `str`                  | No       | `None`  | Model alias or custom model name                           |
+| [`permissions`](#permissions)                         | `Permissions`          | No       | `None`  | Permission rules for tools                                 |
+| [`env-variables`](#env-variables)                     | `dict[str, str]`       | No       | `None`  | Claude-level environment variables                         |
+| [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
+| [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                                     |
+| [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Merged into `settings.json`                                |
+| [`always-thinking-enabled`](#always-thinking-enabled) | `bool`                 | No       | `None`  | Enable always-on thinking mode                             |
+| [`effort-level`](#effort-level)                       | `str`                  | No       | `None`  | Adaptive reasoning effort level                            |
+| [`company-announcements`](#company-announcements)     | `list[str]`            | No       | `None`  | Announcement strings for users                             |
+| [`attribution`](#attribution)                         | `Attribution`          | No       | `None`  | Commit and PR attribution strings                          |
+| [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration                           |
 
 > `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
 
@@ -271,22 +271,30 @@ Base URL for resolving relative resource paths (agents, commands, skills, hooks,
 
 #### `inherit`
 
-URL, local path, or repository config name to inherit from. The child configuration overrides parent values at the top level by default. Use `merge-keys` to selectively merge specific keys instead of replacing them.
+URL, local path, or repository config name to inherit from. Accepts a single string or a list of strings for composition chains.
 
-- **Type:** `str | None`
+- **Type:** `str | list[str] | None`
 - **Default:** `None`
-- **Validation:** Cannot be empty, no null bytes
+- **Single string:** Standard recursive inheritance (child overrides parent). Use `merge-keys` to selectively merge.
+- **List of strings:** Flat composition chain (left-to-right). Each entry's own `inherit` is stripped. Each entry's `merge-keys` applies normally. See [List Inherit (Composition Chains)](#list-inherit-composition-chains).
+- **Validation:** Cannot be empty, no null bytes. Lists must be non-empty with all entries as non-empty, non-blank strings.
 - **Max depth:** 10 levels
 - **Circular dependency detection:** Automatic
 - **Inheritance:** Not applicable (structural meta-key consumed during resolution)
 - **Example:**
 
 ```yaml
+# Single string (standard recursive inheritance)
 inherit: "https://raw.githubusercontent.com/org/repo/main/base.yaml"
 # or
 inherit: "./base-config.yaml"
 # or
 inherit: "base-config"  # fetched from artifacts-public repo
+
+# List (composition chain)
+inherit:
+  - base.yaml
+  - extensions.yaml
 ```
 
 See [Configuration Inheritance](#configuration-inheritance) for details.
@@ -1132,7 +1140,7 @@ hooks:
 
 ### Configuration Inheritance
 
-The `inherit` key allows a configuration to extend a parent configuration.
+The `inherit` key allows a configuration to extend a parent configuration. It accepts a single string for standard recursive inheritance or a list of strings for explicit composition chains (see [List Inherit (Composition Chains)](#list-inherit-composition-chains)).
 
 #### How Inheritance Works
 
@@ -1171,6 +1179,91 @@ agents:                       # Completely REPLACES parent's agents list
 effort-level: "high"          # Added (not in parent)
 # model: "sonnet" is inherited from parent (not overridden)
 ```
+
+### List Inherit (Composition Chains)
+
+The `inherit` key also accepts a list of configuration paths for explicit composition chains. Three mandatory rules govern list inherit behavior:
+
+#### Rule 1: Own inherit stripped
+
+When `inherit` is a list with more than one entry, each listed file's own `inherit` key is **completely ignored**. It does not participate in chain resolution. The user explicitly specifies the full chain in one place -- if additional parent files are needed, they must be added to the list in the correct order.
+
+#### Rule 2: Equivalent to separate-file chains
+
+`inherit: [base.yaml, extensions.yaml]` behaves **identically** to:
+
+- `leaf.yaml` sets `inherit: extensions.yaml`
+- `extensions.yaml` sets `inherit: base.yaml`
+
+Resolution order is left-to-right: the first entry is the base (lowest priority), subsequent entries override earlier ones, and the leaf config overrides everything.
+
+#### Rule 3: merge-keys per entry
+
+Each file in the list can declare its own `merge-keys`, which applies normally at its composition step, as if it were a separate file with single-value inherit.
+
+#### Virtual Chain Equivalence
+
+`inherit: [A, B, C]` is equivalent to creating a virtual chain of separate files:
+
+```text
+A (base, no inherit)
+B_virtual (inherits A, own inherit stripped, B's merge-keys applied)
+C_virtual (inherits B_virtual, own inherit stripped, C's merge-keys applied)
+leaf (inherits C_virtual, leaf's merge-keys applied)
+```
+
+Each file's `merge-keys` determines whether its keys merge with or replace the accumulated values at that step.
+
+#### Single-Element List
+
+`inherit: ["x"]` is normalized to `inherit: "x"` and uses the standard recursive single-string path. The file `x.yaml`'s own `inherit` **is** recursively resolved. Rule 1 only applies when the list has more than one entry.
+
+#### Example
+
+```yaml
+# base.yaml
+name: "Base"
+agents:
+  - "agents/core-agent.md"
+rules:
+  - "rules/base-rule.md"
+model: "sonnet"
+env-variables:
+  SHARED_VAR: "from_base"
+  BASE_VAR: "base_val"
+
+# extensions.yaml (has own inherit that will be ignored when used in a list)
+name: "Extensions"
+inherit: "some-parent.yaml"  # IGNORED when this file is part of a multi-element list
+merge-keys:
+  - agents
+  - rules
+agents:
+  - "agents/extra-agent.md"
+rules:
+  - "rules/extra-rule.md"
+env-variables:
+  SHARED_VAR: "from_extensions"
+  EXT_VAR: "ext_val"
+
+# leaf.yaml
+inherit:
+  - base.yaml
+  - extensions.yaml
+name: "My Environment"
+model: "opus"
+env-variables:
+  LEAF_VAR: "leaf_val"
+```
+
+Result:
+
+- `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` -- merged by extensions.yaml's `merge-keys`
+- `rules`: `["rules/base-rule.md", "rules/extra-rule.md"]` -- merged by extensions.yaml's `merge-keys`
+- `model`: `"opus"` -- leaf overrides
+- `name`: `"My Environment"` -- leaf overrides
+- `env-variables`: `{"LEAF_VAR": "leaf_val"}` -- extensions replaces base's env-variables entirely (not in `merge-keys`), then leaf replaces again (no `merge-keys`)
+- `some-parent.yaml` referenced in extensions.yaml's own inherit is **never loaded**
 
 ### Selective Merge (`merge-keys`)
 

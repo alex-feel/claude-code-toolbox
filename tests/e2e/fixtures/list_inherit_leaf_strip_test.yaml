@@ -1,0 +1,5 @@
+name: "Strip Test Leaf"
+inherit:
+  - list_inherit_base_with_own.yaml
+  - list_inherit_middle.yaml
+model: "sonnet"

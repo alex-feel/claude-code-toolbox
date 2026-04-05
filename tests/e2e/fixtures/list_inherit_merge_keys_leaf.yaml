@@ -1,0 +1,11 @@
+name: "Merge Keys Leaf"
+inherit:
+  - list_inherit_base.yaml
+  - list_inherit_middle.yaml
+merge-keys:
+  - agents
+  - rules
+agents:
+  - "agents/mk-leaf-agent.md"
+rules:
+  - "rules/mk-leaf-rule.md"
