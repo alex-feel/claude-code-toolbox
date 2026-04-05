@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.3...v5.8.0) (2026-04-05)
+
+
+### Features
+
+* add IDE extension version management for pinned Claude Code versions ([490297f](https://github.com/alex-feel/claude-code-toolbox/commit/490297fb37d4000b44b50e60cb90908083847e54))
+
 ## [5.7.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.2...v5.7.3) (2026-04-04)
 
 
