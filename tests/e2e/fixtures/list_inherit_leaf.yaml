@@ -2,5 +2,8 @@ name: "List Inherit Leaf"
 inherit:
   - list_inherit_base.yaml
   - list_inherit_middle.yaml
+agents:
+  - "agents/leaf-agent.md"
+model: "sonnet"
 env-variables:
-  LEAF_VAR: "from-leaf"
+  LEAF_VAR: "leaf_val"

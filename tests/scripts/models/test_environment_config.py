@@ -1484,91 +1484,85 @@ class TestMergeKeysField:
             })
 
 
-class TestInheritField:
-    """Tests for the inherit field in EnvironmentConfig."""
+class TestInheritValidation:
+    """Tests for inherit field validation (str | list[str] | None)."""
 
-    def test_inherit_single_string(self) -> None:
-        """Field accepts a single string path."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'inherit': 'base.yaml',
-        })
+    def test_inherit_string_valid(self) -> None:
+        """String inherit value is accepted."""
+        config = EnvironmentConfig.model_validate({'name': 'Test', 'inherit': 'base.yaml'})
         assert config.inherit == 'base.yaml'
 
-    def test_inherit_list_of_strings(self) -> None:
-        """Field accepts a list of string paths."""
+    def test_inherit_list_valid(self) -> None:
+        """List of strings is accepted."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
-            'inherit': ['a.yaml', 'b.yaml'],
+            'inherit': ['base.yaml', 'aegis.yaml'],
         })
-        assert config.inherit == ['a.yaml', 'b.yaml']
+        assert config.inherit == ['base.yaml', 'aegis.yaml']
 
-    def test_inherit_single_element_list(self) -> None:
-        """Single-element list is accepted without normalization to string."""
+    def test_inherit_single_element_list_valid(self) -> None:
+        """Single-element list is valid at model level."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
-            'inherit': ['a.yaml'],
+            'inherit': ['base.yaml'],
         })
-        assert config.inherit == ['a.yaml']
-        assert isinstance(config.inherit, list)
+        assert config.inherit == ['base.yaml']
 
-    def test_inherit_none_default(self) -> None:
-        """Default value is None when not provided."""
+    def test_inherit_none_valid(self) -> None:
+        """None inherit is accepted (no inheritance)."""
         config = EnvironmentConfig.model_validate({'name': 'Test'})
         assert config.inherit is None
 
-    def test_inherit_empty_string_rejected(self) -> None:
-        """Empty string is rejected."""
-        with pytest.raises(ValidationError, match='inherit cannot be empty string'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'inherit': '',
-            })
-
     def test_inherit_empty_list_rejected(self) -> None:
-        """Empty list is rejected."""
+        """Empty list raises ValidationError."""
         with pytest.raises(ValidationError, match='inherit list cannot be empty'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'inherit': [],
-            })
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': []})
 
     def test_inherit_list_with_empty_string_rejected(self) -> None:
-        """List containing an empty string is rejected with index."""
-        with pytest.raises(ValidationError, match=r'inherit\[1\] cannot be empty string'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'inherit': ['a.yaml', ''],
-            })
+        """List with empty string raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['']})
 
-    def test_inherit_list_with_null_bytes_rejected(self) -> None:
-        """List containing a string with null bytes is rejected."""
-        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot contain null bytes'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'inherit': ['a\x00b'],
-            })
+    def test_inherit_list_with_blank_string_rejected(self) -> None:
+        """List with whitespace-only string raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['   ']})
 
     def test_inherit_list_with_non_string_rejected(self) -> None:
-        """List containing a non-string entry is rejected."""
+        """List with non-string element raises ValidationError."""
         with pytest.raises(ValidationError, match='Input should be a valid string'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': [123]})
+
+    def test_inherit_list_with_null_bytes_rejected(self) -> None:
+        """List with null bytes in element raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\] cannot contain null bytes'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['base\x00.yaml']})
+
+    def test_inherit_dict_rejected(self) -> None:
+        """Dict value raises ValidationError."""
+        with pytest.raises(ValidationError, match='Input should be a valid'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
-                'inherit': [123],
+                'inherit': {'source': 'base.yaml'},
             })
 
-    def test_inherit_whitespace_string_rejected(self) -> None:
-        """Whitespace-only string is rejected."""
-        with pytest.raises(ValidationError, match='inherit cannot be empty string'):
+    def test_inherit_int_rejected(self) -> None:
+        """Integer value raises ValidationError."""
+        with pytest.raises(ValidationError, match='Input should be a valid'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'inherit': 42})
+
+    def test_inherit_list_second_element_invalid(self) -> None:
+        """Second element validation error includes correct index."""
+        with pytest.raises(ValidationError, match=r'inherit\[1\] cannot be empty'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
-                'inherit': '   ',
+                'inherit': ['valid.yaml', ''],
             })
 
-    def test_inherit_list_with_whitespace_entry_rejected(self) -> None:
-        """List containing a whitespace-only entry is rejected."""
-        with pytest.raises(ValidationError, match=r'inherit\[1\] cannot be empty string'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'inherit': ['a.yaml', '   '],
-            })
+    def test_inherit_three_element_list_valid(self) -> None:
+        """Three-element list is accepted."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': ['a.yaml', 'b.yaml', 'c.yaml'],
+        })
+        assert config.inherit == ['a.yaml', 'b.yaml', 'c.yaml']

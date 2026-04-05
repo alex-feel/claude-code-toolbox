@@ -4220,25 +4220,29 @@ def _merge_configs(
 
 def _validate_merge_keys(
     merge_keys_value: object,
+    context: str = '',
 ) -> frozenset[str] | None:
-    """Validate and convert merge-keys from config to a frozenset.
+    """Validate and return a frozenset of merge-keys, or None if not present.
 
     Args:
-        merge_keys_value: Raw value from config's 'merge-keys' key.
+        merge_keys_value: The raw value from config.get(MERGE_KEYS_KEY).
+        context: Label for error messages (e.g., 'inherit[1]' or '').
 
     Returns:
-        Validated frozenset of merge key names, or None if not specified.
+        Validated frozenset of merge key names, or None if merge_keys_value is None.
 
     Raises:
-        ValueError: If merge-keys is not a list of valid string key names.
+        ValueError: If merge_keys_value is invalid.
     """
     if merge_keys_value is None:
         return None
 
+    prefix = f'{context}: ' if context else ''
+
     if not isinstance(merge_keys_value, list):
-        error(f"Invalid 'merge-keys' value: expected list, got {type(merge_keys_value).__name__}")
+        error(f"{prefix}Invalid 'merge-keys' value: expected list, got {type(merge_keys_value).__name__}")
         raise ValueError(
-            f"The 'merge-keys' key must be a list of strings, "
+            f"{prefix}The 'merge-keys' key must be a list of strings, "
             f"got {type(merge_keys_value).__name__}: {merge_keys_value!r}",
         )
 
@@ -4246,19 +4250,128 @@ def _validate_merge_keys(
 
     for i, entry in enumerate(merge_keys_list):
         if not isinstance(entry, str):
-            error(f'Invalid merge-keys[{i}]: expected string, got {type(entry).__name__}')
-            raise ValueError(f'merge-keys[{i}] must be a string, got {type(entry).__name__}')
+            error(f'{prefix}Invalid merge-keys[{i}]: expected string, got {type(entry).__name__}')
+            raise ValueError(f'{prefix}merge-keys[{i}] must be a string, got {type(entry).__name__}')
 
     merge_keys_str = cast(list[str], merge_keys_list)
     invalid_keys = [k for k in merge_keys_str if k not in MERGEABLE_CONFIG_KEYS]
     if invalid_keys:
-        error(f'Invalid merge-keys: {invalid_keys}')
+        error(f'{prefix}Invalid merge-keys: {invalid_keys}')
         raise ValueError(
-            f'Invalid keys in merge-keys: {invalid_keys}. '
+            f'{prefix}Invalid keys in merge-keys: {invalid_keys}. '
             f'Valid mergeable keys: {sorted(MERGEABLE_CONFIG_KEYS)}',
         )
 
     return frozenset(merge_keys_str)
+
+
+def _resolve_list_inherit(
+    config: dict[str, Any],
+    inherit_list: list[str],
+    source: str,
+    auth_param: str | None,
+    visited: set[str],
+    chain: list[InheritanceChainEntry],
+) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
+    """Resolve list-based inheritance via flat left-to-right composition.
+
+    When inherit is a list with >1 entries, each entry is loaded raw,
+    its own 'inherit' key is stripped, its 'merge-keys' is captured and
+    validated, and entries are composed left-to-right.
+
+    This is equivalent to creating a virtual chain where:
+    inherit: [A, B, C] behaves identically to C inherits B inherits A,
+    with each entry's own inherit ignored.
+
+    Args:
+        config: The leaf configuration (contains the list inherit).
+        inherit_list: List of inherit values (already validated, len > 1).
+        source: Source path/URL of the leaf config.
+        auth_param: Optional authentication parameter for private repositories.
+        visited: Set of already-visited sources for circular dependency detection.
+        chain: Accumulator for the inheritance chain entries.
+
+    Returns:
+        Tuple of (merged_config, inheritance_chain).
+
+    Raises:
+        ValueError: If circular dependency detected or entry loading fails.
+        FileNotFoundError: If a listed config file is not found.
+    """
+    accumulated: dict[str, Any] | None = None
+
+    for i, entry_value in enumerate(inherit_list):
+        entry_value = entry_value.strip()
+
+        # Resolve path relative to leaf source
+        entry_source = _resolve_inherit_path(entry_value, source)
+
+        # Normalize for circular dependency detection
+        normalized = _normalize_source_for_comparison(entry_source)
+        if normalized in visited:
+            cycle_path = ' -> '.join(list(visited) + [normalized])
+            error(f'Circular dependency detected at inherit[{i}]')
+            error(f'Cycle: {cycle_path}')
+            raise ValueError(
+                f'Circular dependency detected: {normalized} was already visited. '
+                f'Inheritance chain: {cycle_path}',
+            )
+        visited.add(normalized)
+
+        # Load raw config
+        info(f'Loading inherit[{i}]: {entry_value}')
+        try:
+            entry_config, actual_source = load_config_from_source(
+                entry_source, auth_param,
+            )
+        except FileNotFoundError:
+            error(f'Configuration not found at inherit[{i}]: {entry_value}')
+            error(f'Resolved path: {entry_source}')
+            raise
+        except Exception as e:
+            error(f'Failed to load inherit[{i}]: {entry_value}')
+            error(f'Error: {e}')
+            raise
+
+        # Rule 1: Strip own inherit from entry (completely ignored)
+        own_inherit = entry_config.get(INHERIT_KEY)
+        if own_inherit is not None:
+            info(f"inherit[{i}]: own 'inherit' key stripped (list composition mode)")
+
+        # Rule 3: Capture and validate entry's merge-keys
+        entry_merge_keys = _validate_merge_keys(
+            entry_config.get(MERGE_KEYS_KEY),
+            context=f'inherit[{i}]',
+        )
+
+        # Add entry to inheritance chain
+        chain.append(InheritanceChainEntry(
+            source=actual_source,
+            source_type=classify_config_source(actual_source),
+            name=entry_config.get('name', entry_value),
+        ))
+
+        if accumulated is None:
+            # First entry becomes the base (its merge-keys are moot: no predecessor)
+            accumulated = {
+                k: v for k, v in entry_config.items()
+                if k not in (INHERIT_KEY, MERGE_KEYS_KEY)
+            }
+            if entry_merge_keys is not None:
+                debug_log(f'inherit[{i}]: merge-keys ignored (first entry, no predecessor)')
+        else:
+            # Subsequent entries: compose with accumulated using entry's merge-keys
+            accumulated = _merge_configs(accumulated, entry_config, merge_keys=entry_merge_keys)
+
+        success(f'Loaded inherit[{i}]: {entry_value}')
+
+    # Final: merge leaf config on top of accumulated base
+    # accumulated is guaranteed non-None: inherit_list has >1 entries (validated by caller)
+    assert accumulated is not None
+    leaf_merge_keys = _validate_merge_keys(config.get(MERGE_KEYS_KEY))
+    merged = _merge_configs(accumulated, config, merge_keys=leaf_merge_keys)
+
+    return merged, chain
 
 
 def resolve_config_inheritance(
@@ -4271,32 +4384,59 @@ def resolve_config_inheritance(
 ) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
     """Resolve configuration inheritance by loading and merging parent configs.
 
-    Supports single-string inherit (backward compatible) and list-of-strings
-    inherit for composition chains. When inherit is a list, configs are composed
-    sequentially: the first entry is the base, each subsequent entry overrides
-    the previous, and the current config's own keys are the final override.
+    Implements top-level key override semantics by default: child config values
+    completely replace parent values for the same key. When 'merge-keys' is
+    specified, listed keys are merged using type-aware strategies instead.
+
+    Supports two modes of inheritance:
+    - Single string: recursive chain resolution (child -> parent -> grandparent)
+    - List of strings: flat left-to-right composition where each entry's own
+      'inherit' key is stripped and merge-keys apply per-entry
 
     Args:
         config: The configuration dictionary to resolve inheritance for.
         source: Source path/URL where this config was loaded from.
+            Used to resolve relative inherit paths.
         auth_param: Optional authentication parameter for private repositories.
+            Passed through the inheritance chain.
         visited: Set of already-visited sources for circular dependency detection.
+            Used internally for recursion tracking. Callers should not provide this.
         depth: Current recursion depth for safety limits.
+            Used internally. Callers should not provide this.
         chain: Accumulator for the inheritance chain entries.
+            Used internally. Callers should not provide this.
 
     Returns:
-        Tuple of (merged_config, inheritance_chain).
+        Tuple of (merged_config, inheritance_chain) where merged_config is the
+        configuration with inheritance resolved and inheritance_chain is the
+        list of InheritanceChainEntry from root ancestor to immediate parent.
 
     Raises:
-        ValueError: If circular dependency detected, max depth exceeded,
-            or inherit value is invalid.
-        FileNotFoundError: If a parent config file is not found.
+        ValueError: If circular dependency is detected, maximum inheritance
+            depth is exceeded, or inherit value is invalid.
+        FileNotFoundError: If parent config file not found (propagated from
+            load_config_from_source).
+
+    Examples:
+        >>> # Simple inheritance
+        >>> child = {'inherit': 'base.yaml', 'name': 'Child'}
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
+        >>> # resolved contains parent's keys + child's 'name' override
+
+        >>> # List inheritance (flat composition)
+        >>> child = {'inherit': ['base.yaml', 'ext.yaml'], 'model': 'opus'}
+        >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
+        >>> # entries composed left-to-right, each entry's own inherit stripped
     """
+    # Initialize visited set for circular dependency detection
     if visited is None:
         visited = set()
+
+    # Initialize chain accumulator
     if chain is None:
         chain = []
 
+    # Check for maximum depth exceeded
     if depth > MAX_INHERITANCE_DEPTH:
         error(f'Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded')
         error('This may indicate a very deep inheritance chain or a logic error')
@@ -4305,6 +4445,7 @@ def resolve_config_inheritance(
             f'Check your configuration inheritance chain.',
         )
 
+    # Check if this config has inheritance
     inherit_value = config.get(INHERIT_KEY)
     if inherit_value is None:
         # Warn if merge-keys present without inherit
@@ -4313,114 +4454,117 @@ def resolve_config_inheritance(
                 "Warning: 'merge-keys' has no effect without 'inherit'. "
                 "Did you mean to add an 'inherit' key?",
             )
+        # No inheritance - return config as-is (without meta-keys)
         return {k: v for k, v in config.items() if k not in (INHERIT_KEY, MERGE_KEYS_KEY)}, chain
 
-    # Normalize to list for uniform processing
-    if isinstance(inherit_value, str):
-        inherit_list = [inherit_value]
-    elif isinstance(inherit_value, list):
+    # Handle list inherit
+    if isinstance(inherit_value, list):
         if not inherit_value:
             error("Empty 'inherit' list in configuration")
-            raise ValueError(
-                "The 'inherit' key must be a string or list of strings, "
-                f"got {type(inherit_value).__name__}: {inherit_value!r}",
-            )
-        # Defense-in-depth validation (Pydantic validates upstream)
+            raise ValueError("The 'inherit' list cannot be empty")
+
+        # Validate all entries are non-empty strings
         for i, entry in enumerate(inherit_value):
             if not isinstance(entry, str):
                 error(f'Invalid inherit[{i}]: expected string, got {type(entry).__name__}')
                 raise ValueError(
-                    f'inherit[{i}] must be a string, got {type(entry).__name__}: {entry!r}',
+                    f'inherit[{i}] must be a string, '
+                    f'got {type(entry).__name__}: {entry!r}',
                 )
-        inherit_list = inherit_value
-    else:
+            stripped = entry.strip()
+            if not stripped:
+                error(f'Empty string in inherit[{i}]')
+                raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
+
+        # Single-element list: normalize to string, use existing recursive path
+        if len(inherit_value) == 1:
+            inherit_value = inherit_value[0].strip()
+            # Fall through to the string path below
+        else:
+            # Multi-element list: flat composition (Rule 1, 2, 3)
+            return _resolve_list_inherit(
+                config=config,
+                inherit_list=inherit_value,
+                source=source,
+                auth_param=auth_param,
+                visited=visited,
+                chain=chain,
+            )
+    elif not isinstance(inherit_value, str):
         error(f"Invalid 'inherit' value: expected string or list, got {type(inherit_value).__name__}")
         raise ValueError(
             f"The 'inherit' key must be a string or list of strings, "
             f"got {type(inherit_value).__name__}: {inherit_value!r}",
         )
 
-    # Validate no empty entries
-    for i, entry in enumerate(inherit_list):
-        stripped = entry.strip()
-        if not stripped:
-            idx_label = f'inherit[{i}]' if len(inherit_list) > 1 else 'inherit'
-            error(f"Empty '{idx_label}' value in configuration")
-            raise ValueError(f"The '{idx_label}' key cannot be empty")
+    # --- String path (single inherit) ---
 
-    # Process each inherit entry sequentially to build the accumulated base
-    accumulated: dict[str, Any] | None = None
+    # Validate inherit value is not empty
+    inherit_value = inherit_value.strip()
+    if not inherit_value:
+        error("Empty 'inherit' value in configuration")
+        raise ValueError("The 'inherit' key cannot be empty")
 
-    for i, entry in enumerate(inherit_list):
-        entry = entry.strip()
-        parent_source = _resolve_inherit_path(entry, source)
-        normalized_source = _normalize_source_for_comparison(parent_source)
+    # Resolve the parent path (could be URL, local path, or repo name)
+    parent_source = _resolve_inherit_path(inherit_value, source)
 
-        # Circular dependency check
-        if normalized_source in visited:
-            cycle_path = ' -> '.join(list(visited) + [normalized_source])
-            error('Circular dependency detected in configuration inheritance')
-            error(f'Cycle: {cycle_path}')
-            raise ValueError(
-                f'Circular dependency detected: {normalized_source} was already visited. '
-                f'Inheritance chain: {cycle_path}',
-            )
+    # Normalize source for circular dependency detection
+    normalized_source = _normalize_source_for_comparison(parent_source)
 
-        visited.add(normalized_source)
-
-        idx_label = f'inherit[{i}]' if len(inherit_list) > 1 else 'inherit'
-        info(f'Resolving inheritance from: {entry} ({idx_label})')
-
-        # Load the entry's config
-        try:
-            entry_config, actual_entry_source = load_config_from_source(
-                parent_source, auth_param,
-            )
-        except FileNotFoundError:
-            error(f'Failed to load {idx_label}: {entry} - File not found')
-            error(f'Resolved path: {parent_source}')
-            raise
-        except Exception as e:
-            error(f'Failed to load {idx_label}: {entry}')
-            error(f'Error: {e}')
-            raise
-
-        # Recursively resolve this entry's OWN inheritance
-        resolved_entry, chain = resolve_config_inheritance(
-            entry_config,
-            actual_entry_source,
-            auth_param=auth_param,
-            visited=visited,
-            depth=depth + 1,
-            chain=chain,
+    # Check for circular dependency
+    if normalized_source in visited:
+        cycle_path = ' -> '.join(list(visited) + [normalized_source])
+        error('Circular dependency detected in configuration inheritance')
+        error(f'Cycle: {cycle_path}')
+        raise ValueError(
+            f'Circular dependency detected: {normalized_source} was already visited. '
+            f'Inheritance chain: {cycle_path}',
         )
 
-        # Append entry to the chain
-        chain.append(InheritanceChainEntry(
-            source=actual_entry_source,
-            source_type=classify_config_source(actual_entry_source),
-            name=entry_config.get('name', entry),
-        ))
+    # Add current source to visited set
+    visited.add(normalized_source)
 
-        # Compose: REPLACE semantics between list entries (no merge-keys)
-        accumulated = resolved_entry if accumulated is None else _merge_configs(accumulated, resolved_entry)
+    # Log inheritance resolution
+    info(f'Resolving inheritance from: {inherit_value}')
 
-        success(f'Inherited from: {entry} ({idx_label})')
+    # Load parent configuration
+    try:
+        parent_config, actual_parent_source = load_config_from_source(
+            parent_source, auth_param,
+        )
+    except FileNotFoundError:
+        error(f'Parent configuration not found: {inherit_value}')
+        error(f'Resolved path: {parent_source}')
+        raise
+    except Exception as e:
+        error(f'Failed to load parent configuration: {inherit_value}')
+        error(f'Error: {e}')
+        raise
 
-    # Merge the accumulated base with the leaf config's own keys
-    # Leaf's merge-keys applies ONLY to this final merge
-    merge_keys_value = config.get(MERGE_KEYS_KEY)
-    validated_merge_keys = _validate_merge_keys(merge_keys_value)
+    # Recursively resolve parent's inheritance (chain accumulates ancestors)
+    resolved_parent, chain = resolve_config_inheritance(
+        parent_config,
+        actual_parent_source,
+        auth_param=auth_param,
+        visited=visited,
+        depth=depth + 1,
+        chain=chain,
+    )
 
-    if accumulated is None:
-        accumulated = {}
+    # Append the parent entry to the chain after recursion resolves deeper ancestors
+    chain.append(InheritanceChainEntry(
+        source=actual_parent_source,
+        source_type=classify_config_source(actual_parent_source),
+        name=parent_config.get('name', inherit_value),
+    ))
 
-    merged = _merge_configs(accumulated, config, merge_keys=validated_merge_keys)
+    # Extract and validate merge-keys from child config
+    validated_merge_keys = _validate_merge_keys(config.get(MERGE_KEYS_KEY))
 
-    if len(inherit_list) == 1:
-        success(f'Inherited from: {inherit_list[0]}')
-    else:
-        success(f'Composed from {len(inherit_list)} sources')
+    # Merge: parent first, then child overrides
+    merged = _merge_configs(resolved_parent, config, merge_keys=validated_merge_keys)
+
+    success(f'Inherited from: {inherit_value}')
 
     return merged, chain
 

@@ -7075,12 +7075,12 @@ class TestConfigInheritance:
             with pytest.raises(ValueError, match='Maximum inheritance depth'):
                 setup_environment.resolve_config_inheritance(config, 'start.yaml')
 
-    def test_invalid_inherit_value_not_string(self):
-        """Test error when inherit value is not a string or list."""
-        config = {'inherit': 123, 'name': 'Test'}  # Integer instead of string or list
+    def test_invalid_inherit_value_int(self):
+        """Test error when inherit value is an integer."""
+        config = {'inherit': 42, 'name': 'Test'}
         import pytest
 
-        with pytest.raises(ValueError, match='must be a string or list of strings'):
+        with pytest.raises(ValueError, match='must be a string or list'):
             setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
     def test_invalid_inherit_value_dict(self):
@@ -7088,7 +7088,7 @@ class TestConfigInheritance:
         config = {'inherit': {'source': 'parent.yaml'}, 'name': 'Test'}
         import pytest
 
-        with pytest.raises(ValueError, match='must be a string or list of strings'):
+        with pytest.raises(ValueError, match='must be a string or list'):
             setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
     def test_empty_inherit_value(self):
@@ -7242,231 +7242,226 @@ agents:
             assert resolved['dependencies'] == {'common': ['pip install base']}  # From grandparent
             assert 'inherit' not in resolved
 
-    # --- List inherit tests ---
 
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_two_sources(self, mock_load: MagicMock) -> None:
-        """Two-source list: first is base, second overrides, leaf overrides both."""
-        mock_load.side_effect = [
-            ({'name': 'Base', 'model': 'sonnet', 'agents': ['a.md']}, '/path/base.yaml'),
-            ({'name': 'Middle', 'agents': ['b.md']}, '/path/middle.yaml'),
-        ]
+class TestValidateMergeKeysHelper:
+    """Tests for the extracted _validate_merge_keys() function."""
 
-        child: dict[str, Any] = {
-            'inherit': ['base.yaml', 'middle.yaml'],
-            'name': 'Leaf',
-        }
+    def test_none_returns_none(self):
+        """None input returns None (no merge-keys present)."""
+        result = setup_environment._validate_merge_keys(None)
+        assert result is None
 
-        result, chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
+    def test_valid_keys(self):
+        """Valid merge-keys return a frozenset."""
+        result = setup_environment._validate_merge_keys(['agents', 'rules'])
+        assert result == frozenset({'agents', 'rules'})
 
-        assert result['name'] == 'Leaf'
-        assert result['model'] == 'sonnet'
-        assert result['agents'] == ['b.md']
-        assert len(chain) == 2
+    def test_invalid_type_string(self):
+        """String value raises ValueError."""
+        with pytest.raises(ValueError, match='must be a list'):
+            setup_environment._validate_merge_keys('agents')
 
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_three_sources(self, mock_load: MagicMock) -> None:
-        """Three-source list: sequential override chain."""
-        mock_load.side_effect = [
-            ({'name': 'A', 'x': 1, 'y': 2, 'z': 3}, '/path/a.yaml'),
-            ({'name': 'B', 'y': 20}, '/path/b.yaml'),
-            ({'name': 'C', 'z': 300}, '/path/c.yaml'),
-        ]
+    def test_non_string_entry(self):
+        """Non-string list entry raises ValueError."""
+        with pytest.raises(ValueError, match='must be a string'):
+            setup_environment._validate_merge_keys([123])
 
-        child: dict[str, Any] = {
-            'inherit': ['a.yaml', 'b.yaml', 'c.yaml'],
-        }
+    def test_invalid_key(self):
+        """Key not in MERGEABLE_CONFIG_KEYS raises ValueError."""
+        with pytest.raises(ValueError, match='Invalid keys'):
+            setup_environment._validate_merge_keys(['model'])
 
-        result, chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
+    def test_context_in_error_message(self):
+        """Context string appears in error messages."""
+        with pytest.raises(ValueError, match=r'inherit\[1\]:'):
+            setup_environment._validate_merge_keys(['model'], context='inherit[1]')
 
-        assert result['name'] == 'C'
-        assert result['x'] == 1
-        assert result['y'] == 20
-        assert result['z'] == 300
-        assert len(chain) == 3
+    def test_empty_list_returns_empty_frozenset(self):
+        """Empty list returns empty frozenset (no keys to merge)."""
+        result = setup_environment._validate_merge_keys([])
+        assert result == frozenset()
 
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_single_element(self, mock_load: MagicMock) -> None:
-        """Single-element list works identically to a string inherit."""
-        mock_load.return_value = ({'name': 'Parent', 'model': 'opus'}, '/path/parent.yaml')
 
-        child: dict[str, Any] = {
-            'inherit': ['parent.yaml'],
-            'name': 'Child',
-        }
+class TestListInherit:
+    """Tests for inherit: [list] composition."""
 
-        result, chain = setup_environment.resolve_config_inheritance(child, '/path/child.yaml')
+    @pytest.fixture
+    def mock_load(self):
+        """Mock load_config_from_source for list inherit tests."""
+        with patch('setup_environment.load_config_from_source') as mock:
+            yield mock
 
+    def test_single_element_list_normalized_to_string(self, mock_load):
+        """inherit: ['x'] normalized to inherit: 'x', recursive resolution enabled."""
+        mock_load.return_value = ({'name': 'Parent', 'model': 'opus'}, 'parent.yaml')
+        child = {'inherit': ['parent.yaml'], 'name': 'Child'}
+        result, chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
         assert result['name'] == 'Child'
         assert result['model'] == 'opus'
-        assert len(chain) == 1
 
-    def test_list_inherit_empty_raises(self) -> None:
-        """Empty list raises ValueError."""
-        child: dict[str, Any] = {'inherit': [], 'name': 'Child'}
-
-        with pytest.raises(ValueError, match='string or list of strings'):
-            setup_environment.resolve_config_inheritance(child, '/path/child.yaml')
-
-    def test_list_inherit_invalid_entry_type(self) -> None:
-        """Non-string entry in list raises ValueError."""
-        child: dict[str, Any] = {'inherit': [123], 'name': 'Child'}
-
-        with pytest.raises(ValueError, match='inherit\\[0\\] must be a string'):
-            setup_environment.resolve_config_inheritance(child, '/path/child.yaml')
-
-    def test_list_inherit_empty_entry(self) -> None:
-        """Empty string entry in list raises ValueError with index."""
-        child: dict[str, Any] = {'inherit': ['a.yaml', ''], 'name': 'Child'}
-
-        with pytest.raises(ValueError, match='inherit\\[1\\].*cannot be empty'):
-            setup_environment.resolve_config_inheritance(child, '/path/child.yaml')
-
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_circular_dependency(self, mock_load: MagicMock) -> None:
-        """Circular dependency across list entries detected."""
-        mock_load.side_effect = [
-            ({'name': 'A', 'inherit': 'b.yaml'}, '/path/a.yaml'),
-            ({'name': 'B'}, '/path/b.yaml'),
-        ]
-
-        # b.yaml is in list AND also inherited by a.yaml
-        child: dict[str, Any] = {'inherit': ['a.yaml', 'b.yaml'], 'name': 'Leaf'}
-
-        with pytest.raises(ValueError, match='Circular dependency'):
-            setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_depth_exceeded(self, mock_load: MagicMock) -> None:
-        """Depth exceeding MAX_INHERITANCE_DEPTH raises ValueError."""
-        # Create a chain deeper than MAX_INHERITANCE_DEPTH
-        def deep_chain(source: str, _auth: str | None = None) -> tuple[dict[str, Any], str]:
-            # Each config inherits from a deeper one
-            depth_num = int(source.split('_')[-1].replace('.yaml', ''))
-            if depth_num > 0:
-                return (
-                    {'name': f'Config_{depth_num}', 'inherit': f'config_{depth_num - 1}.yaml'},
-                    source,
-                )
-            return ({'name': 'Config_0'}, source)
-
-        mock_load.side_effect = deep_chain
-
-        child: dict[str, Any] = {'inherit': ['config_15.yaml'], 'name': 'Leaf'}
-
-        with pytest.raises(ValueError, match='Maximum inheritance depth'):
-            setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_merge_keys_leaf_only(self, mock_load: MagicMock) -> None:
-        """Leaf merge-keys applies only to the final merge, not between entries."""
-        mock_load.side_effect = [
-            ({'name': 'Base', 'agents': ['base.md']}, '/path/base.yaml'),
-            ({'name': 'Middle', 'agents': ['middle.md']}, '/path/middle.yaml'),
-        ]
-
-        child: dict[str, Any] = {
-            'inherit': ['base.yaml', 'middle.yaml'],
-            'merge-keys': ['agents'],
-            'agents': ['leaf.md'],
-        }
-
-        result, _chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
-        # Between base and middle: REPLACE (no merge-keys)
-        # So accumulated agents = ['middle.md'] after composing base+middle
-        # Final merge with leaf: MERGE (leaf declares merge-keys: [agents])
-        # So final agents = ['middle.md', 'leaf.md']
-        assert 'base.md' not in result['agents']
-        assert 'middle.md' in result['agents']
-        assert 'leaf.md' in result['agents']
-
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_entry_has_own_inheritance(self, mock_load: MagicMock) -> None:
-        """Entry with its own inherit is recursively resolved before composing."""
-        mock_load.side_effect = [
-            # First entry (base.yaml) has its own parent
-            ({'name': 'Base', 'inherit': 'grandparent.yaml', 'agents': ['base.md']}, '/path/base.yaml'),
-            # Grandparent loaded during base resolution
-            ({'name': 'Grandparent', 'model': 'opus', 'agents': ['gp.md']}, '/path/grandparent.yaml'),
-            # Second entry (middle.yaml) has no parent
-            ({'name': 'Middle', 'agents': ['middle.md']}, '/path/middle.yaml'),
-        ]
-
-        child: dict[str, Any] = {
-            'inherit': ['base.yaml', 'middle.yaml'],
-            'name': 'Leaf',
-        }
-
-        result, chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
-        # Grandparent's model survives through base resolution
-        assert result['model'] == 'opus'
-        # Middle replaces base's agents (inter-entry replace)
-        assert result['agents'] == ['middle.md']
+    def test_two_element_list_left_to_right(self, mock_load):
+        """inherit: [base, ext] -> base is lowest priority, ext overrides base."""
+        def load_side_effect(src, _auth_param=None):
+            if 'base' in src:
+                return ({'name': 'Base', 'model': 'sonnet', 'agents': ['a.md']}, 'base.yaml')
+            if 'ext' in src:
+                return ({'name': 'Ext', 'model': 'opus'}, 'ext.yaml')
+            return ({}, src)
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
+        result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
         assert result['name'] == 'Leaf'
-        # Chain: grandparent, base, middle
-        assert len(chain) == 3
+        assert result['model'] == 'opus'
+        assert result['agents'] == ['a.md']
 
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_inter_entry_replace_semantics(self, mock_load: MagicMock) -> None:
-        """No merge-keys between list entries, even when entry declares merge-keys."""
-        mock_load.side_effect = [
-            (
-                {
+    def test_list_strips_own_inherit(self, mock_load):
+        """Own inherit in list entries is completely ignored (Rule 1)."""
+        def load_side_effect(src, _auth_param=None):
+            if 'base' in src:
+                return ({'name': 'Base', 'model': 'sonnet'}, 'base.yaml')
+            if 'ext' in src:
+                return ({'name': 'Ext', 'inherit': 'some-parent.yaml', 'model': 'opus'}, 'ext.yaml')
+            return ({}, src)
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
+        result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+        # some-parent.yaml is NOT loaded -- own inherit stripped
+        assert mock_load.call_count == 2
+        assert result['model'] == 'opus'
+
+    def test_list_merge_keys_per_entry(self, mock_load):
+        """Each entry's merge-keys applies normally (Rule 3)."""
+        def load_side_effect(src, _auth_param=None):
+            if 'base' in src:
+                return ({
                     'name': 'Base',
-                    'agents': ['base.md'],
+                    'agents': ['base-agent.md'],
+                }, 'base.yaml')
+            if 'ext' in src:
+                return ({
+                    'name': 'Ext',
                     'merge-keys': ['agents'],
-                },
-                '/path/base.yaml',
-            ),
-            ({'name': 'Middle', 'agents': ['middle.md']}, '/path/middle.yaml'),
-        ]
+                    'agents': ['ext-agent.md'],
+                }, 'ext.yaml')
+            return ({}, src)
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
+        result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+        assert 'base-agent.md' in result['agents']
+        assert 'ext-agent.md' in result['agents']
 
-        child: dict[str, Any] = {
-            'inherit': ['base.yaml', 'middle.yaml'],
-            'name': 'Leaf',
-        }
+    def test_list_empty_raises(self):
+        """inherit: [] raises ValueError."""
+        config = {'inherit': [], 'name': 'Test'}
+        with pytest.raises(ValueError, match='cannot be empty'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
-        result, _chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
+    def test_list_non_string_entry_raises(self):
+        """inherit: [123] raises ValueError."""
+        config = {'inherit': [123], 'name': 'Test'}
+        with pytest.raises(ValueError, match='must be a string'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
-        # Base's merge-keys is consumed during its own resolution (it has no parent),
-        # so inter-entry merge between base and middle uses REPLACE
-        assert result['agents'] == ['middle.md']
+    def test_list_blank_entry_raises(self):
+        """inherit: ['  '] raises ValueError."""
+        config = {'inherit': ['  '], 'name': 'Test'}
+        with pytest.raises(ValueError, match='cannot be empty'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_error_message_includes_index(self, mock_load: MagicMock) -> None:
-        """Error message includes list index when second entry fails to load."""
-        mock_load.side_effect = [
-            ({'name': 'Base'}, '/path/base.yaml'),
-            FileNotFoundError('not found'),
-        ]
+    def test_list_circular_dependency(self, mock_load):
+        """Circular dependency in list entries detected."""
+        mock_load.return_value = ({'name': 'A'}, 'a.yaml')
+        config = {'inherit': ['a.yaml', 'a.yaml'], 'name': 'Test'}
+        with pytest.raises(ValueError, match='Circular dependency'):
+            setup_environment.resolve_config_inheritance(config, 'test.yaml')
 
-        child: dict[str, Any] = {'inherit': ['base.yaml', 'missing.yaml'], 'name': 'Leaf'}
-
-        with pytest.raises(FileNotFoundError):
-            setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
-    @patch('setup_environment.load_config_from_source')
-    def test_list_inherit_chain_entries_accumulated(self, mock_load: MagicMock) -> None:
-        """InheritanceChainEntry list contains all resolved entries in order."""
-        mock_load.side_effect = [
-            ({'name': 'Alpha'}, '/path/alpha.yaml'),
-            ({'name': 'Beta'}, '/path/beta.yaml'),
-            ({'name': 'Gamma'}, '/path/gamma.yaml'),
-        ]
-
-        child: dict[str, Any] = {
-            'inherit': ['alpha.yaml', 'beta.yaml', 'gamma.yaml'],
-            'name': 'Leaf',
-        }
-
-        _result, chain = setup_environment.resolve_config_inheritance(child, '/path/leaf.yaml')
-
+    def test_list_chain_entries(self, mock_load):
+        """List entries appear in inheritance chain in order."""
+        def load_side_effect(src, _auth_param=None):
+            return ({'name': f'Entry-{src}'}, src)
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': ['a.yaml', 'b.yaml', 'c.yaml'], 'name': 'Leaf'}
+        result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
         assert len(chain) == 3
-        assert chain[0].name == 'Alpha'
-        assert chain[1].name == 'Beta'
-        assert chain[2].name == 'Gamma'
+        assert chain[0].source == 'a.yaml'
+        assert chain[1].source == 'b.yaml'
+        assert chain[2].source == 'c.yaml'
+
+    def test_list_auth_param_propagated(self, mock_load):
+        """auth_param is passed to load_config_from_source for each entry."""
+        mock_load.return_value = ({'name': 'Entry'}, 'entry.yaml')
+        child = {'inherit': ['a.yaml', 'b.yaml'], 'name': 'Leaf'}
+        setup_environment.resolve_config_inheritance(
+            child, 'leaf.yaml', auth_param='my-token',
+        )
+        for call in mock_load.call_args_list:
+            assert call[0][1] == 'my-token'
+
+    def test_three_element_equivalence(self, mock_load):
+        """inherit: [A, B, C] == C overrides B overrides A."""
+        def load_side_effect(src, _auth_param=None):
+            if 'alpha' in src:
+                return ({'name': 'A', 'key_a': 'from_a', 'shared': 'a_val'}, 'alpha.yaml')
+            if 'bravo' in src:
+                return ({'name': 'B', 'key_b': 'from_b', 'shared': 'b_val'}, 'bravo.yaml')
+            if 'charlie' in src:
+                return ({'name': 'C', 'key_c': 'from_c', 'shared': 'c_val'}, 'charlie.yaml')
+            return ({}, src)
+        mock_load.side_effect = load_side_effect
+        child = {
+            'inherit': ['alpha.yaml', 'bravo.yaml', 'charlie.yaml'],
+            'name': 'Leaf',
+            'shared': 'leaf_val',
+        }
+        result, _ = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+        assert result['key_a'] == 'from_a'
+        assert result['key_b'] == 'from_b'
+        assert result['key_c'] == 'from_c'
+        assert result['shared'] == 'leaf_val'
+        assert result['name'] == 'Leaf'
+
+    def test_list_meta_keys_stripped(self, mock_load):
+        """inherit and merge-keys stripped from final result."""
+        mock_load.return_value = ({'name': 'Base', 'model': 'sonnet'}, 'base.yaml')
+        child = {'inherit': ['base.yaml', 'base2.yaml'], 'name': 'Leaf'}
+        mock_load.side_effect = [
+            ({'name': 'Base1'}, 'base.yaml'),
+            ({'name': 'Base2'}, 'base2.yaml'),
+        ]
+        result, _ = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+        assert 'inherit' not in result
+        assert 'merge-keys' not in result
+
+    def test_leaf_merge_keys_applied(self, mock_load):
+        """Leaf's own merge-keys applies on top of accumulated."""
+        def load_side_effect(src, _auth_param=None):
+            if 'base' in src:
+                return ({'name': 'Base', 'agents': ['base-agent.md']}, 'base.yaml')
+            if 'ext' in src:
+                return ({
+                    'name': 'Ext',
+                    'merge-keys': ['agents'],
+                    'agents': ['ext-agent.md'],
+                }, 'ext.yaml')
+            return ({}, src)
+        mock_load.side_effect = load_side_effect
+        child = {
+            'inherit': ['base.yaml', 'ext.yaml'],
+            'merge-keys': ['agents'],
+            'agents': ['leaf-agent.md'],
+            'name': 'Leaf',
+        }
+        result, _ = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+        assert 'base-agent.md' in result['agents']
+        assert 'ext-agent.md' in result['agents']
+        assert 'leaf-agent.md' in result['agents']
+
+    def test_list_file_not_found_raises(self, mock_load):
+        """FileNotFoundError propagated when list entry not found."""
+        mock_load.side_effect = FileNotFoundError('not found')
+        child = {'inherit': ['missing.yaml', 'other.yaml'], 'name': 'Leaf'}
+        with pytest.raises(FileNotFoundError):
+            setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
 
 
 class TestVersionInheritance:
