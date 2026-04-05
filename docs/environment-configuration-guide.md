@@ -326,6 +326,7 @@ Specific Claude Code version to install.
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
 - **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, those controls are automatically removed. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
+- **IDE extension management:** When a specific version is set, IDE extension auto-install is disabled and the matching extension version is installed into detected VS Code family IDEs. See [Automatic IDE Extension Version Management](#automatic-ide-extension-version-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
 
@@ -1341,6 +1342,69 @@ Auto-injected settings (version pinning):
 
 The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all four targets provides the best protection.
 
+### Automatic IDE Extension Version Management
+
+When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, any previously injected IDE extension controls are automatically removed.
+
+This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture: same 4-target write matrix, same WARN-but-Respect conflict resolution, same write-remove symmetry cleanup.
+
+#### Injection Targets
+
+| Target             | Key                                     | Value   | Config Section                    |
+|--------------------|-----------------------------------------|---------|-----------------------------------|
+| `global-config`    | `autoInstallIdeExtension`               | `false` | `~/.claude.json`                  |
+| `user-settings`    | `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` | `"1"`   | `settings.json`                   |
+| `env-variables`    | `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`     | `"1"`   | `config.json` (profile)           |
+| `os-env-variables` | `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`     | `"1"`   | Shell profiles / Windows registry |
+
+All four targets are injected unconditionally regardless of whether `command-names` is present, consistent with auto-update management behavior.
+
+#### Removal Behavior
+
+When the version is `"latest"` or absent:
+
+- `autoInstallIdeExtension` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
+- `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` in `user-settings.env` is set to `null` for RFC 7396 null-as-delete (not `del`, because merge semantics require `None` to trigger removal from disk).
+- `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` is removed from `env-variables` (using `del`, correct because `create_profile_config()` uses atomic overwrite) and `os-env-variables` (set to `None` for OS-level deletion).
+
+**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files. When pinned, it only cleans `~/.claude/settings.json` to prevent bare sessions from inheriting isolated environment restrictions.
+
+#### Conflict Resolution (WARN-but-Respect)
+
+Identical to auto-update management: if the user explicitly sets a value that contradicts the automatic intent, the user value is preserved and a warning is emitted.
+
+#### `[auto]` Marker in Installation Summary
+
+Auto-injected IDE extension values are displayed with the same green `[auto]` marker as auto-update values:
+
+```text
+Auto-injected settings (version pinning):
+  [auto] global-config.autoInstallIdeExtension: false
+  [auto] user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
+  [auto] env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
+  [auto] os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
+```
+
+#### VSIX Installation
+
+When a version is pinned, the setup installs the matching Claude Code extension (`anthropic.claude-code`) into all detected VS Code family IDEs using a three-tier fallback chain:
+
+1. **Tier 1 -- Bundled VSIX:** Check `~/.claude/local/node_modules/@anthropic-ai/claude-code/vendor/claude-code.vsix`. Validates file exists and `st_size > 1000` (same zero-byte guard as `verify_claude_installation()`). No network download needed.
+2. **Tier 2 -- Marketplace CDN download:** Download the VSIX binary from the VS Code Marketplace CDN (primary URL with fallback). Downloaded to a temp file, installed via `--install-extension <path> --force`, then cleaned up.
+3. **Tier 3 -- Marketplace @version syntax:** Use `anthropic.claude-code@{version}` syntax directly. Emits a warning because VS Code may auto-update the extension despite version pinning.
+
+Installation is **non-fatal**: failures produce warnings but do not abort the setup.
+
+#### VS Code Family IDE Detection
+
+IDEs are detected via `shutil.which()` for each CLI name: `code`, `code-insiders`, `cursor`, `windsurf`, `codium`. The extension is installed into all detected IDEs. If no IDEs are detected, the step is a silent no-op.
+
+JetBrains IDEs are excluded because they use their own plugin ecosystem and do not support VSIX extensions.
+
+#### Process Environment Early-Set
+
+When a version is pinned, `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL=1` is set in the process environment before Step 1 (Claude Code installation). This prevents the Claude Code CLI from auto-installing IDE extensions during the installation process itself.
+
 ### Configuration Sources
 
 The setup script determines the configuration source by checking in this order:
@@ -1365,27 +1429,28 @@ For the full technical architecture, see [Cross-Shell Launcher Architecture](cro
 Here is a conceptual overview of what the setup script does when you run it with a configuration:
 
 1. **Install Claude Code** -- Uses the native installer with npm fallback. Skipped with `--skip-install`.
-2. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
-3. **Download custom files** -- Processes `files-to-download` entries.
-4. **Install Node.js** -- If `install-nodejs: true` is set in the config.
-5. **Install dependencies** -- Runs platform-specific dependency commands.
-6. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`. Generates env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) for launcher auto-sourcing.
-7. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
-8. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
-9. **Process rules** -- Downloads rule Markdown files to `~/.claude/rules/`.
-10. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
-11. **Process system prompt** -- Downloads the prompt file if configured.
-12. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
-13. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
-14. **Write global config** -- Merges `global-config` into `~/.claude.json`.
-15. **Cleanup stale auto-update controls** -- Sweeps all filesystem locations for stale auto-update artifacts from prior configurations.
-16. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-17. **Configure profile** -- Creates the profile configuration file for the command.
-18. **Write manifest** -- Creates an installation tracking manifest.
-19. **Create launcher** -- Creates the launcher script for the command.
-20. **Register commands** -- Creates global command wrappers.
+2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs. Skipped if no version is pinned or `--skip-install` is used.
+3. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
+4. **Download custom files** -- Processes `files-to-download` entries.
+5. **Install Node.js** -- If `install-nodejs: true` is set in the config.
+6. **Install dependencies** -- Runs platform-specific dependency commands.
+7. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`. Generates env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) for launcher auto-sourcing.
+8. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
+9. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
+10. **Process rules** -- Downloads rule Markdown files to `~/.claude/rules/`.
+11. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
+12. **Process system prompt** -- Downloads the prompt file if configured.
+13. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
+14. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
+15. **Write global config** -- Merges `global-config` into `~/.claude.json`.
+16. **Cleanup stale controls** -- Sweeps all filesystem locations for stale auto-update and IDE extension artifacts from prior configurations.
+17. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
+18. **Configure profile** -- Creates the profile configuration file for the command.
+19. **Write manifest** -- Creates an installation tracking manifest.
+20. **Create launcher** -- Creates the launcher script for the command.
+21. **Register commands** -- Creates global command wrappers.
 
-Steps 16 through 20 are skipped if `command-names` is not specified.
+Steps 17 through 21 are skipped if `command-names` is not specified.
 
 ## Complete Annotated Example
 
