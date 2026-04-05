@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.9.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.8.0...v5.9.0) (2026-04-05)
+
+
+### Features
+
+* extend inherit to accept a list for composition chains ([521e6e7](https://github.com/alex-feel/claude-code-toolbox/commit/521e6e7a390fc0e8a072b90c62adfcc731c4b7d9))
+
 ## [5.8.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.7.3...v5.8.0) (2026-04-05)
 
 
