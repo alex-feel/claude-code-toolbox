@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/alex-feel/claude-code-toolbox/security/advisories/new
+    about: Report security vulnerabilities privately via GitHub Security Advisories. Do NOT open a public issue.
+  - name: Documentation
+    url: https://github.com/alex-feel/claude-code-toolbox#readme
+    about: Check the documentation before opening an issue. Your question may already be answered.

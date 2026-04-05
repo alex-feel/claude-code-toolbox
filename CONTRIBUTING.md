@@ -425,9 +425,9 @@ claude-code-toolbox/
 
 ## Questions?
 
-- Open a discussion for general questions
-- Check existing issues and discussions
-- Refer to documentation first
+- [Open a question](https://github.com/alex-feel/claude-code-toolbox/issues/new?template=question.yml) for general questions
+- Check [existing issues](https://github.com/alex-feel/claude-code-toolbox/issues) for answers
+- Refer to [documentation](https://github.com/alex-feel/claude-code-toolbox#readme) first
 - Contact maintainers if needed
 
 ## License
