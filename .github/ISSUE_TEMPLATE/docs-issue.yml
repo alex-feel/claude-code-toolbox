@@ -1,0 +1,53 @@
+name: Documentation Issue
+description: Report an issue with the documentation
+labels: [documentation]
+body:
+  # NOTE: Update this dropdown when adding or removing documentation files.
+  - type: dropdown
+    id: affected-docs
+    attributes:
+      label: Affected Documentation
+      description: Select the documentation file(s) with the issue.
+      multiple: true
+      options:
+        - README.md
+        - CONTRIBUTING.md
+        - SECURITY.md
+        - CHANGELOG.md
+        - docs/environment-configuration-guide.md
+        - docs/installing-claude-code.md
+        - docs/cross-shell-launcher-architecture.md
+        - "Other/not sure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      description: What kind of documentation issue is this?
+      options:
+        - Inaccurate
+        - Missing
+        - Unclear
+        - Outdated
+        - Broken link
+        - Typo
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: >-
+        Describe the documentation issue. What is wrong or missing? If applicable, include the
+        section or paragraph where you found the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: If you have a suggestion for how to fix or improve the documentation, describe it here.

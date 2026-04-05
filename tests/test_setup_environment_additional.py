@@ -686,10 +686,14 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
     @patch('setup_environment.find_command', return_value='claude')
-    def test_configure_mcp_server_missing_transport_details(self, mock_find):
+    def test_configure_mcp_server_missing_transport_details(self, mock_find, mock_run, mock_bash):
         """Test MCP configuration with missing transport details."""
         del mock_find  # Unused but required for patch
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
         server = {'name': 'test'}
         result = setup_environment.configure_mcp_server(server)
         assert result is False

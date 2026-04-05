@@ -1,0 +1,168 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the form below to help us investigate.
+
+        **Before submitting, please note:** A clear description and reproduction steps are the most helpful things you can provide. If you have done genuine investigation and have a non-obvious insight into the root cause, include it. But please do not speculate or include LLM-generated diagnoses -- an incorrect analysis is harder to work with than none at all.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Pre-submission Checks
+      options:
+        - label: I am using the latest version of claude-code-toolbox
+          required: true
+        - label: I searched existing issues and found no duplicates
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: >-
+        Describe the bug clearly. Include what happened and what you expected to happen instead.
+      placeholder: |
+        What happened:
+        ...
+
+        What I expected:
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: >-
+        Provide the minimal steps needed to reproduce this bug. Include the command you ran and
+        your configuration if applicable.
+      placeholder: |
+        1. Run command...
+        2. With configuration...
+        3. Observe error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: script
+    attributes:
+      label: Script
+      description: Which script were you using when you encountered this issue?
+      options:
+        - setup-environment (environment configuration)
+        - install-claude (Claude Code installation)
+        - Both
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - WSL (Windows Subsystem for Linux)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS Version
+      description: Your specific OS version.
+      placeholder: "e.g., Windows 11 23H2, macOS 15.2, Ubuntu 24.04"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Installation Method
+      description: How did you run the toolbox?
+      options:
+        - One-liner bootstrap script (curl/bash or PowerShell)
+        - Git clone + manual run
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Shell
+      description: Which shell were you using when the issue occurred?
+      options:
+        - Bash
+        - Zsh
+        - Fish
+        - PowerShell
+        - CMD
+        - Git Bash
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code Version
+      description: "Run `claude --version` and paste the output, if Claude Code is installed."
+      placeholder: "e.g., 1.0.123"
+
+  - type: input
+    id: node-version
+    attributes:
+      label: Node.js Version
+      description: "Run `node --version` and paste the output."
+      placeholder: "e.g., v22.12.0"
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python Version
+      description: "Run `python --version` and paste the output."
+      placeholder: "e.g., 3.12.4"
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error Output
+      description: >-
+        Paste any error messages, tracebacks, or relevant log output. This will be automatically
+        formatted as a code block.
+      render: text
+
+  - type: textarea
+    id: yaml-config
+    attributes:
+      label: YAML Configuration
+      description: >-
+        If the issue involves environment configuration, paste the relevant parts of your YAML
+        configuration (redact any sensitive values like tokens or API keys). This will be
+        automatically formatted as a code block.
+      render: yaml
+
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: Diagnostic Output
+      description: >-
+        If applicable, run `claude doctor` and paste the output. This helps diagnose
+        Claude Code integration issues. This will be automatically formatted as a code block.
+      render: text
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: >-
+        Add any other context about the problem here. Screenshots, environment details, or
+        debug output (set CLAUDE_CODE_TOOLBOX_DEBUG=1 to enable verbose logging) may be helpful.

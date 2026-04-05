@@ -139,4 +139,7 @@ This is a community project and is not officially affiliated with Anthropic. Cla
 
 ## Getting Help
 
-- **Bug reports**: [Open an issue](https://github.com/alex-feel/claude-code-toolbox/issues)
+- **Bug reports**: [Report a bug](https://github.com/alex-feel/claude-code-toolbox/issues/new?template=bug-report.yml)
+- **Feature requests**: [Suggest a feature](https://github.com/alex-feel/claude-code-toolbox/issues/new?template=feature-request.yml)
+- **Documentation issues**: [Report a docs issue](https://github.com/alex-feel/claude-code-toolbox/issues/new?template=docs-issue.yml)
+- **Questions**: [Ask a question](https://github.com/alex-feel/claude-code-toolbox/issues/new?template=question.yml)
