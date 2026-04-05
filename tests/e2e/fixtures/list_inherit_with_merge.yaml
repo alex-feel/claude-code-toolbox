@@ -1,0 +1,11 @@
+name: "List Inherit With Merge"
+inherit:
+  - list_inherit_base.yaml
+  - list_inherit_middle.yaml
+merge-keys:
+  - agents
+  - env-variables
+env-variables:
+  LEAF_VAR: "from-leaf"
+agents:
+  - "agents/leaf-agent.md"

@@ -69,7 +69,7 @@ The setup script requires explicit user confirmation before installing. CLI flag
 
 ### Environment Configuration System
 
-YAML configs define complete environments: dependencies, agents, MCP servers (auto-permission), slash commands, system prompts (append/replace modes), hooks, global config (`~/.claude.json` via deep merge), and selective inheritance via `merge-keys` directive.
+YAML configs define complete environments: dependencies, agents, MCP servers (auto-permission), slash commands, system prompts (append/replace modes), hooks, global config (`~/.claude.json` via deep merge), and selective inheritance via `merge-keys` directive. `inherit` supports both single strings (`inherit: "base.yaml"`) and lists (`inherit: ["base.yaml", "lib.yaml"]`) for composition chains. List entries are composed left-to-right with replace semantics; only the leaf config's `merge-keys` applies to the final merge.
 
 **Env Loader Files:** `generate_env_loader_files()` creates Rustup-style shell scripts containing ONLY `os-env-variables` (not `env-variables`). Per-command files: `~/.claude/{cmd}/env.sh`, `env.fish` (if Fish installed), `env.ps1` (Windows), `env.cmd` (Windows). Global files: `~/.claude/toolbox-env.sh`, `toolbox-env.fish`, `toolbox-env.ps1` (Windows), `toolbox-env.cmd` (Windows). `None`-valued (deletion) vars are excluded. `create_launcher_script()` injects guarded source lines in all 6 launcher variants so commands auto-load env vars.
 

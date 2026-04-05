@@ -1,0 +1,6 @@
+name: "List Inherit Leaf"
+inherit:
+  - list_inherit_base.yaml
+  - list_inherit_middle.yaml
+env-variables:
+  LEAF_VAR: "from-leaf"
