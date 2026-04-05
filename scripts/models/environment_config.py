@@ -743,10 +743,13 @@ class EnvironmentConfig(BaseModel):
         'Semantic versioning string (e.g., "1.0.0"). Optional; configs without '
         'this field skip all version checking.',
     )
-    inherit: str | None = Field(
+    inherit: str | list[str] | None = Field(
         None,
-        description='URL or path to parent configuration to inherit from. '
-        'Supports full URLs, local paths, or repository config names.',
+        description='URL, path, or list of URLs/paths to parent configurations to inherit from. '
+        'Supports full URLs, local paths, or repository config names. '
+        'When a list, configs are composed left-to-right: the first entry is the base, '
+        "each subsequent entry overrides the previous, and the file's own keys "
+        'are the final override.',
     )
     merge_keys: list[str] | None = Field(
         None,
@@ -920,21 +923,43 @@ class EnvironmentConfig(BaseModel):
 
     @field_validator('inherit')
     @classmethod
-    def validate_inherit(cls, v: str | None) -> str | None:
-        """Validate inherit path or URL format.
+    def validate_inherit(cls, v: str | list[str] | None) -> str | list[str] | None:
+        """Validate inherit path, URL, or list of paths/URLs.
+
+        Accepts a single string, a non-empty list of non-empty strings, or None.
+        Each entry must be a non-blank string without null bytes.
 
         Args:
-            v: Inherit path/URL string to validate.
+            v: Inherit value to validate.
 
         Returns:
             The validated inherit value.
 
         Raises:
-            ValueError: If inherit path is empty or contains null bytes.
+            ValueError: If inherit path is empty, contains null bytes,
+                list is empty, or list entries are invalid.
         """
         if v is None:
             return v
 
+        if isinstance(v, list):
+            if not v:
+                raise ValueError('inherit list cannot be empty')
+
+            for i, entry in enumerate(v):
+                if not isinstance(entry, str):
+                    raise ValueError(
+                        f'inherit[{i}] must be a string, '
+                        f'got {type(entry).__name__}',
+                    )
+                if not entry or not entry.strip():
+                    raise ValueError(f'inherit[{i}] cannot be empty string')
+                if '\x00' in entry:
+                    raise ValueError(f'inherit[{i}] cannot contain null bytes')
+
+            return v
+
+        # Single string validation (existing behavior)
         if not v or not v.strip():
             raise ValueError('inherit cannot be empty string')
 

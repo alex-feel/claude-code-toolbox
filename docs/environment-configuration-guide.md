@@ -137,7 +137,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)      |
 | [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation  |
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                    |
-| [`inherit`](#inherit)                                 | `str`                  | No       | `None`  | Parent config URL/path/name                |
+| [`inherit`](#inherit)                                 | `str \| list[str]`     | No       | `None`  | Parent config URL/path/name or list        |
 | [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace           |
 | [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                  |
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths       |
@@ -271,22 +271,29 @@ Base URL for resolving relative resource paths (agents, commands, skills, hooks,
 
 #### `inherit`
 
-URL, local path, or repository config name to inherit from. The child configuration overrides parent values at the top level by default. Use `merge-keys` to selectively merge specific keys instead of replacing them.
+URL, local path, repository config name, or a list of these to inherit from. The child configuration overrides parent values at the top level by default. Use `merge-keys` to selectively merge specific keys instead of replacing them.
 
-- **Type:** `str | None`
+- **Type:** `str | list[str] | None`
 - **Default:** `None`
-- **Validation:** Cannot be empty, no null bytes
-- **Max depth:** 10 levels
+- **Validation:** Cannot be empty string/list; no null bytes; list entries must be non-empty strings
+- **Max depth:** 10 levels (recursive resolution)
 - **Circular dependency detection:** Automatic
 - **Inheritance:** Not applicable (structural meta-key consumed during resolution)
-- **Example:**
+- **Examples:**
 
 ```yaml
+# Single source (backward compatible)
 inherit: "https://raw.githubusercontent.com/org/repo/main/base.yaml"
 # or
 inherit: "./base-config.yaml"
 # or
 inherit: "base-config"  # fetched from artifacts-public repo
+
+# Composition chain (list)
+inherit:
+  - "base-config.yaml"        # Base layer
+  - "library-config.yaml"     # Overrides base
+# File's own keys override everything above
 ```
 
 See [Configuration Inheritance](#configuration-inheritance) for details.
@@ -1138,6 +1145,7 @@ The `inherit` key allows a configuration to extend a parent configuration.
 
 - Child values completely **replace** parent values for the same top-level key by default
 - Use `merge-keys` to selectively **merge** (extend) specific keys instead of replacing them -- see [Selective Merge (merge-keys)](#selective-merge-merge-keys)
+- When `inherit` is a **list**, entries are composed left-to-right (first = base, each subsequent overrides). See [Composition Chain (List Inherit)](#composition-chain-list-inherit).
 - Maximum inheritance depth is 10 levels
 - Circular dependencies are detected automatically
 - The `version` key is extracted from the root config **before** inheritance resolution
@@ -1170,6 +1178,66 @@ agents:                       # Completely REPLACES parent's agents list
   - "agents/extra-agent.md"
 effort-level: "high"          # Added (not in parent)
 # model: "sonnet" is inherited from parent (not overridden)
+```
+
+#### Composition Chain (List Inherit)
+
+When `inherit` is a list, configurations are composed sequentially:
+
+1. The **first entry** is the base layer
+2. Each **subsequent entry** overrides the previous (replace semantics)
+3. The **file's own keys** are the final override
+
+This is analogous to TypeScript 5.0 `extends: [...]` and ESLint flat config.
+
+##### Semantics
+
+- **Inter-entry merges:** Plain REPLACE. No `merge-keys` between list entries.
+- **Per-entry inheritance:** Each list entry's own `inherit` and `merge-keys` are recursively resolved before the entry participates in the composition chain.
+- **Leaf `merge-keys`:** Applies ONLY to the final merge (accumulated chain result + leaf's own keys).
+- **Circular detection:** The `visited` set tracks all resolved sources across the entire composition.
+- **Depth counting:** Each entry resolves at `depth + 1` (entries are siblings, not a recursive chain).
+
+##### Example
+
+```yaml
+# corporate-base.yaml
+name: "Corporate Base"
+model: "sonnet"
+agents:
+  - "agents/compliance.md"
+```
+
+```yaml
+# aegis.yaml (library config, unchanged)
+inherit: "some-parent.yaml"
+merge-keys:
+  - agents
+  - mcp-servers
+# ... hundreds of lines of configuration ...
+```
+
+```yaml
+# my-environment.yaml (leaf config)
+inherit:
+  - "corporate-base.yaml"
+  - "aegis.yaml"
+merge-keys:
+  - agents
+name: "My Custom Environment"
+agents:
+  - "agents/my-extra-agent.md"
+# Result: corporate-base is the base, aegis.yaml overrides it (with its own
+# inheritance resolved first), then this file's agents are MERGED with the
+# accumulated agents list because merge-keys is specified.
+```
+
+##### Error Messages
+
+Error messages include the list index for debugging:
+
+```text
+Failed to load inherit[1]: aegis.yaml - File not found
 ```
 
 ### Selective Merge (`merge-keys`)

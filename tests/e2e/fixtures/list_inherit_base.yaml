@@ -1,0 +1,6 @@
+name: "List Inherit Base"
+model: "sonnet"
+agents:
+  - "agents/base-agent.md"
+env-variables:
+  BASE_VAR: "from-base"

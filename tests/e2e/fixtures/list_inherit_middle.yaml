@@ -1,0 +1,6 @@
+name: "List Inherit Middle"
+agents:
+  - "agents/middle-agent.md"
+env-variables:
+  MIDDLE_VAR: "from-middle"
+  BASE_VAR: "overridden-by-middle"
