@@ -8956,8 +8956,8 @@ class TestMainFunctionUserSettings:
 
         # Verify output shows Steps 16-20 skipped
         captured = capsys.readouterr()
-        assert 'Steps 16-20: Skipping command creation' in captured.out
-        assert 'Step 13: Writing user settings' in captured.out
+        assert 'Steps 17-21: Skipping command creation' in captured.out
+        assert 'Step 14: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -9023,11 +9023,11 @@ class TestMainFunctionUserSettings:
 
         # Verify output shows Step 13 and Steps 16-20
         captured = capsys.readouterr()
-        assert 'Step 13: Writing user settings' in captured.out
-        assert 'Step 16: Downloading hooks' in captured.out
-        assert 'Step 17: Creating profile configuration' in captured.out
-        assert 'Step 19: Creating launcher script' in captured.out
-        assert 'Step 20: Registering global' in captured.out
+        assert 'Step 14: Writing user settings' in captured.out
+        assert 'Step 17: Downloading hooks' in captured.out
+        assert 'Step 18: Creating profile configuration' in captured.out
+        assert 'Step 20: Creating launcher script' in captured.out
+        assert 'Step 21: Registering global' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     def test_main_user_settings_excluded_key_error(
@@ -10979,6 +10979,360 @@ class TestApplyAutoUpdateSettings:
         param_names = list(sig.parameters.keys())
         assert 'command_names' not in param_names
         assert 'primary_command_name' not in param_names
+
+
+class TestApplyIdeExtensionSettings:
+    """Tests for apply_ide_extension_settings() and its helpers."""
+
+    def test_pinned_version_injects_all_four_targets(self) -> None:
+        gc, us, ev, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            '2.1.85', None, None, None, None,
+        )
+        assert gc is not None
+        assert gc.get('autoInstallIdeExtension') is False
+        assert us is not None
+        assert us.get('env', {}).get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
+        assert ev is not None
+        assert ev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
+        assert osev is not None
+        assert osev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
+
+    def test_none_version_removes_all_four_targets(self) -> None:
+        gc = {'autoInstallIdeExtension': False}
+        us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
+        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
+        osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
+        gc_out, us_out, ev_out, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
+            None, gc, us, ev, osev,
+        )
+        # Target 1: null-as-delete
+        assert gc_out is not None
+        assert gc_out.get('autoInstallIdeExtension') is None
+        # Target 2: None for RFC 7396
+        assert us_out is not None
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        # Target 3: key deleted
+        assert ev_out is not None
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in ev_out
+        # Target 4: None for OS-level deletion
+        assert osev_out is not None
+        assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+
+    def test_none_global_config_creates_dict(self) -> None:
+        gc, _, _, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None, None,
+        )
+        assert gc is not None
+
+    def test_none_user_settings_creates_dict(self) -> None:
+        _, us, _, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None, None,
+        )
+        assert us is not None
+
+    def test_none_env_variables_creates_dict(self) -> None:
+        _, _, ev, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None, None,
+        )
+        assert ev is not None
+
+    def test_none_os_env_variables_creates_dict(self) -> None:
+        _, _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None, None,
+        )
+        assert osev is not None
+
+    def test_conflict_detection_respects_user_autoinstall_true(self) -> None:
+        gc = {'autoInstallIdeExtension': True}
+        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, None, None, None,
+        )
+        assert gc_out is not None
+        assert gc_out['autoInstallIdeExtension'] is True
+        assert any('Respecting user value' in w for w in warns)
+
+    def test_conflict_detection_respects_user_skip_env(self) -> None:
+        us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '0'}}
+        _, us_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, us, None, None,
+        )
+        assert us_out is not None
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '0'
+        assert any('Respecting user value' in w for w in warns)
+
+    def test_unset_only_removes_false_autoinstall(self) -> None:
+        gc = {'autoInstallIdeExtension': False}
+        gc_out, _, _, _, _, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
+        assert gc_out is not None
+        assert gc_out['autoInstallIdeExtension'] is None
+
+    def test_unset_leaves_true_autoinstall_alone(self) -> None:
+        gc = {'autoInstallIdeExtension': True}
+        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
+        assert gc_out is not None
+        assert gc_out['autoInstallIdeExtension'] is True
+        assert any('Respecting user value' in w for w in warns)
+
+    def test_idempotent_double_injection(self) -> None:
+        gc, us, ev, osev, _, auto1 = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, None, None, None,
+        )
+        gc2, us2, ev2, osev2, _, auto2 = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, us, ev, osev,
+        )
+        assert len(auto1) == 4
+        assert len(auto2) == 0  # Already injected, no new items
+
+    def test_auto_injected_items_list(self) -> None:
+        _, _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, None, None, None,
+        )
+        assert len(auto) == 4
+        assert any('global-config.autoInstallIdeExtension' in a for a in auto)
+        assert any('user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
+        assert any('env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
+        assert any('os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
+
+    def test_signature_matches_auto_update(self) -> None:
+        import inspect
+        sig_auto = inspect.signature(setup_environment.apply_auto_update_settings)
+        sig_ide = inspect.signature(setup_environment.apply_ide_extension_settings)
+        assert list(sig_auto.parameters.keys()) == list(sig_ide.parameters.keys())
+        assert sig_auto.return_annotation == sig_ide.return_annotation
+
+    def test_target2_null_as_delete(self) -> None:
+        us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
+        _, us_out, _, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None, None)
+        assert us_out is not None
+        # Must be None (not deleted) for RFC 7396 merge semantics
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+
+    def test_target3_del(self) -> None:
+        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
+        _, _, ev_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, None, ev, None)
+        assert ev_out is not None
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in ev_out
+
+
+class TestCleanupStaleIdeExtensionControls:
+    """Tests for cleanup_stale_ide_extension_controls()."""
+
+    def test_not_pinned_cleans_all_locations(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        # Seed stale controls
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoInstallIdeExtension": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
+
+        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+
+        # Verify cleaned
+        data = json.loads(settings.read_text())
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
+        data = json.loads(cmd_settings.read_text())
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
+        data = json.loads(claude_json.read_text())
+        assert 'autoInstallIdeExtension' not in data
+        data = json.loads(cmd_claude_json.read_text())
+        assert 'autoInstallIdeExtension' not in data
+
+    def test_pinned_cleans_global_settings_only(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+
+        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=True)
+
+        # Global settings cleaned
+        data = json.loads(settings.read_text())
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
+        # Command settings NOT cleaned when pinned
+        data = json.loads(cmd_settings.read_text())
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+
+    def test_missing_files_no_crash(self, tmp_path: Path) -> None:
+        home = tmp_path / 'nonexistent'
+        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=True)
+
+    def test_preserves_true_values(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoInstallIdeExtension": true}')
+
+        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+
+        data = json.loads(claude_json.read_text())
+        assert data['autoInstallIdeExtension'] is True
+
+
+class TestInstallIdeExtensions:
+    """Tests for install_ide_extensions()."""
+
+    def test_no_ides_detected_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda _name: None)
+        assert setup_environment.install_ide_extensions('2.1.85') is True
+
+    def test_bundled_vsix_used_when_exists(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Mock IDE detection
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        # Mock home dir with bundled VSIX
+        bundled_dir = tmp_path / '.claude' / 'local' / 'node_modules' / '@anthropic-ai' / 'claude-code' / 'vendor'
+        bundled_dir.mkdir(parents=True)
+        vsix_path = bundled_dir / 'claude-code.vsix'
+        vsix_path.write_bytes(b'x' * 2000)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        commands_run: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            commands_run.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert len(commands_run) == 1
+        assert '--force' in commands_run[0]
+        assert str(vsix_path) in commands_run[0]
+
+    def test_vsix_download_and_install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        def mock_fetch(_url: str, **_kw: object) -> bytes:
+            return b'fake-vsix-data'
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+
+        commands_run: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            commands_run.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert len(commands_run) == 1
+        assert '--install-extension' in commands_run[0]
+        assert '--force' in commands_run[0]
+
+    def test_marketplace_version_fallback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        def mock_fetch_fail(_url: str, **_kw: object) -> bytes:
+            raise Exception('download failed')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_fail)
+
+        commands_run: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            commands_run.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+
+    def test_multiple_ides_installed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        def mock_which(name: str) -> str | None:
+            return f'/usr/bin/{name}' if name in ('code', 'cursor') else None
+
+        def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
+            raise Exception('no download')
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
+
+        commands_run: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            commands_run.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert len(commands_run) == 2
+
+    def test_partial_failure_returns_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        def mock_which(name: str) -> str | None:
+            return f'/usr/bin/{name}' if name in ('code', 'cursor') else None
+
+        def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
+            raise Exception('no download')
+
+        monkeypatch.setattr(shutil, 'which', mock_which)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
+
+        call_count = 0
+
+        def mock_run(_cmd: list[str], **_kw: object) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            return MagicMock(returncode=0 if call_count == 1 else 1, stderr='failed')
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+        assert result is True
+
+    def test_all_failure_returns_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
+            raise Exception('no download')
+
+        def _fail_run(*_args: object, **_kwargs: object) -> MagicMock:
+            return MagicMock(returncode=1, stderr='error')
+
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
+        monkeypatch.setattr(setup_environment, 'run_command', _fail_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+        assert result is False
+
+    def test_non_fatal_behavior(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
+            raise Exception('no download')
+
+        def _fail_run(*_args: object, **_kwargs: object) -> MagicMock:
+            return MagicMock(returncode=1, stderr='error')
+
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
+        monkeypatch.setattr(setup_environment, 'run_command', _fail_run)
+        # Should not raise
+        result = setup_environment.install_ide_extensions('2.1.85')
+        assert isinstance(result, bool)
 
 
 class TestBroadcastWmSettingchange:

@@ -1610,6 +1610,26 @@ AUTO_UPDATE_DISABLED_VALUE = False
 DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
 DISABLE_AUTOUPDATER_VALUE = '1'
 
+# Constants for IDE extension version management
+IDE_AUTO_INSTALL_KEY = 'autoInstallIdeExtension'
+IDE_AUTO_INSTALL_DISABLED_VALUE = False
+IDE_SKIP_AUTO_INSTALL_KEY = 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'
+IDE_SKIP_AUTO_INSTALL_VALUE = '1'
+IDE_EXTENSION_ID = 'anthropic.claude-code'
+IDE_EXTENSION_PUBLISHER = 'anthropic'
+IDE_EXTENSION_NAME = 'claude-code'
+VSIX_DOWNLOAD_URL_PRIMARY = (
+    'https://{publisher}.gallery.vsassets.io/_apis/public/gallery/'
+    'publisher/{publisher}/extension/{extension}/{version}/'
+    'assetbyname/Microsoft.VisualStudio.Services.VSIXPackage'
+)
+VSIX_DOWNLOAD_URL_FALLBACK = (
+    'https://marketplace.visualstudio.com/_apis/public/gallery/'
+    'publishers/{publisher}/vsextensions/{extension}/{version}/vspackage'
+)
+# VS Code family IDE CLIs to detect for extension installation
+VSCODE_FAMILY_CLI_NAMES = ('code', 'code-insiders', 'cursor', 'windsurf', 'codium')
+
 
 def apply_auto_update_settings(
     claude_code_version_normalized: str | None,
@@ -1898,17 +1918,420 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
         pass  # Best-effort cleanup; non-fatal
 
 
-def _run_stale_auto_update_cleanup(claude_code_version_normalized: str | None) -> None:
-    """Execute Step 15: cleanup stale auto-update controls.
-
-    Extracted from main() to reduce function complexity for static analysis.
-    """
+def _run_stale_controls_cleanup(claude_code_version_normalized: str | None) -> None:
+    """Execute Step 16: cleanup stale auto-update and IDE extension controls."""
     print()
-    print(f'{Colors.CYAN}Step 15: Cleaning stale auto-update controls...{Colors.NC}')
-    cleanup_stale_auto_update_controls(
-        home_dir=get_real_user_home(),
-        is_pinned=claude_code_version_normalized is not None,
-    )
+    print(f'{Colors.CYAN}Step 16: Cleaning stale auto-update and IDE extension controls...{Colors.NC}')
+    home = get_real_user_home()
+    is_pinned = claude_code_version_normalized is not None
+    cleanup_stale_auto_update_controls(home_dir=home, is_pinned=is_pinned)
+    cleanup_stale_ide_extension_controls(home_dir=home, is_pinned=is_pinned)
+
+
+def apply_ide_extension_settings(
+    claude_code_version_normalized: str | None,
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+    list[str],
+    list[str],
+]:
+    """Apply automatic IDE extension auto-install settings based on version pinning.
+
+    When a specific version is pinned, disables IDE extension auto-installation
+    across all four available targets. When version is None (latest/absent),
+    removes auto-injected controls.
+
+    Operates on in-memory dicts ONLY -- has no knowledge of command-names,
+    file paths, or environment isolation. The existing write routing
+    infrastructure handles which files get created.
+
+    Args:
+        claude_code_version_normalized: Pinned version string, or None for latest.
+        global_config: Global config dict (may be None).
+        user_settings: User settings dict (may be None).
+        env_variables: Environment variables dict (may be None).
+        os_env_variables: OS-level environment variables dict (may be None).
+
+    Returns:
+        Tuple of (global_config, user_settings, env_variables, os_env_variables,
+        warnings, auto_injected_items).
+    """
+    warnings_list: list[str] = []
+    auto_injected: list[str] = []
+
+    if claude_code_version_normalized is not None:
+        # Pinned version: inject IDE extension auto-install disable controls
+        global_config, user_settings, env_variables, os_env_variables = (
+            _inject_ide_extension_controls(
+                global_config, user_settings, env_variables, os_env_variables,
+                warnings_list, auto_injected,
+            )
+        )
+    else:
+        # Latest/absent: remove auto-injected controls
+        global_config, user_settings, env_variables, os_env_variables = (
+            _remove_ide_extension_controls(
+                global_config, user_settings, env_variables, os_env_variables,
+                warnings_list,
+            )
+        )
+
+    return global_config, user_settings, env_variables, os_env_variables, warnings_list, auto_injected
+
+
+def _inject_ide_extension_controls(
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+    warnings_list: list[str],
+    auto_injected: list[str],
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+]:
+    """Inject IDE extension auto-install disable controls into all four target dicts."""
+    # Target 1: global_config.autoInstallIdeExtension = False
+    if global_config is None:
+        global_config = {}
+    current_auto = global_config.get(IDE_AUTO_INSTALL_KEY)
+    if current_auto is None:
+        global_config[IDE_AUTO_INSTALL_KEY] = IDE_AUTO_INSTALL_DISABLED_VALUE
+        auto_injected.append(f'global-config.{IDE_AUTO_INSTALL_KEY}: false')
+    elif current_auto == IDE_AUTO_INSTALL_DISABLED_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set global-config.{IDE_AUTO_INSTALL_KEY} to {current_auto!r} '
+            f'(auto-install intent is {IDE_AUTO_INSTALL_DISABLED_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 2: user_settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
+    if user_settings is None:
+        user_settings = {}
+    env_raw = user_settings.get('env')
+    if not isinstance(env_raw, dict):
+        env_raw = {}
+        user_settings['env'] = env_raw
+    env_section = cast(dict[str, Any], env_raw)
+    current_disable: object = env_section.get(IDE_SKIP_AUTO_INSTALL_KEY)
+    if current_disable is None:
+        env_section[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
+        auto_injected.append(f'user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
+    elif str(current_disable) == IDE_SKIP_AUTO_INSTALL_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_disable!r} '
+            f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 3: env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
+    if env_variables is None:
+        env_variables = {}
+    current_env = env_variables.get(IDE_SKIP_AUTO_INSTALL_KEY)
+    if current_env is None:
+        env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
+        auto_injected.append(f'env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
+    elif str(current_env) == IDE_SKIP_AUTO_INSTALL_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_env!r} '
+            f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    # Target 4: os_env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
+    if os_env_variables is None:
+        os_env_variables = {}
+    current_os_env = os_env_variables.get(IDE_SKIP_AUTO_INSTALL_KEY)
+    if current_os_env is None:
+        os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
+        auto_injected.append(f'os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
+    elif str(current_os_env) == IDE_SKIP_AUTO_INSTALL_VALUE:
+        pass  # Already matches intent
+    else:
+        warnings_list.append(
+            f'User set os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_os_env!r} '
+            f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
+            f'Respecting user value.',
+        )
+
+    return global_config, user_settings, env_variables, os_env_variables
+
+
+def _remove_ide_extension_controls(
+    global_config: dict[str, Any] | None,
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str] | None,
+    os_env_variables: dict[str, str | None] | None,
+    warnings_list: list[str],
+) -> tuple[
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, str] | None,
+    dict[str, str | None] | None,
+]:
+    """Remove auto-injected IDE extension auto-install controls from all four target dicts."""
+    # Target 1: Remove autoInstallIdeExtension from global_config (only if False)
+    if global_config is not None and IDE_AUTO_INSTALL_KEY in global_config:
+        current_val = global_config[IDE_AUTO_INSTALL_KEY]
+        if current_val == IDE_AUTO_INSTALL_DISABLED_VALUE:
+            # Set to None for RFC 7396 null-as-delete
+            global_config[IDE_AUTO_INSTALL_KEY] = None
+        elif current_val is True:
+            warnings_list.append(
+                f'User explicitly set global-config.{IDE_AUTO_INSTALL_KEY} to True. '
+                f'Respecting user value (not removing).',
+            )
+
+    # Target 2: Remove CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from user_settings.env
+    # Uses None for RFC 7396 null-as-delete: _write_merged_json() ->
+    # _merge_recursive() requires None to trigger target.pop(key, None)
+    # on disk. Using del only removes from in-memory dict; absent key
+    # is preserved during merge. (Target 3 uses del correctly because
+    # create_profile_config() writes atomically, not via merge.)
+    if user_settings is not None:
+        env_section = user_settings.get('env')
+        if isinstance(env_section, dict) and IDE_SKIP_AUTO_INSTALL_KEY in env_section:
+            env_section[IDE_SKIP_AUTO_INSTALL_KEY] = None
+
+    # Target 3: Remove CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from env_variables
+    if env_variables is not None and IDE_SKIP_AUTO_INSTALL_KEY in env_variables:
+        del env_variables[IDE_SKIP_AUTO_INSTALL_KEY]
+
+    # Target 4: Set os_env_variables CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL to None (triggers deletion)
+    if os_env_variables is not None and IDE_SKIP_AUTO_INSTALL_KEY in os_env_variables:
+        os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = None
+
+    return global_config, user_settings, env_variables, os_env_variables
+
+
+def _cleanup_settings_json_ide_skip(settings_path: Path) -> None:
+    """Remove stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from a settings.json file via merge."""
+    if not settings_path.exists():
+        return
+    try:
+        content = json.loads(settings_path.read_text(encoding='utf-8'))
+        env_section = content.get('env')
+        if isinstance(env_section, dict) and IDE_SKIP_AUTO_INSTALL_KEY in env_section:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {'env': {IDE_SKIP_AUTO_INSTALL_KEY: None}}
+            ok, merged = _write_merged_json(settings_path, cleanup_dict)
+            if ok and merged.get('env') == {}:
+                # Clean empty env: {} after removal
+                merged.pop('env')
+                settings_path.write_text(
+                    json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+                    encoding='utf-8',
+                )
+            if ok:
+                info(f'Cleaned stale {IDE_SKIP_AUTO_INSTALL_KEY} from {settings_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
+    """Remove stale autoInstallIdeExtension: false from a .claude.json file.
+
+    Only removes when value is false (auto-injected by toolbox).
+    Preserves autoInstallIdeExtension: true (explicit user preference).
+    """
+    if not claude_json_path.exists():
+        return
+    try:
+        content = json.loads(claude_json_path.read_text(encoding='utf-8'))
+        if content.get(IDE_AUTO_INSTALL_KEY) is False:
+            # Use _write_merged_json with null-as-delete
+            cleanup_dict: dict[str, Any] = {IDE_AUTO_INSTALL_KEY: None}
+            ok, _ = _write_merged_json(
+                claude_json_path, cleanup_dict, array_union_keys=set(),
+            )
+            if ok:
+                info(f'Cleaned stale {IDE_AUTO_INSTALL_KEY}: false from {claude_json_path}')
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass  # Best-effort cleanup; non-fatal
+
+
+def cleanup_stale_ide_extension_controls(
+    home_dir: Path,
+    is_pinned: bool,
+) -> None:
+    """Remove stale IDE extension auto-install controls from all filesystem locations.
+
+    Implements write-remove symmetry: writes go to specific locations
+    via scope-based routing, but removal sweeps ALL locations
+    unconditionally to clean up artifacts from prior configurations.
+
+    Called AFTER all write steps in main() as a post-write cleanup pass.
+
+    Args:
+        home_dir: User home directory.
+        is_pinned: Whether a specific Claude Code version is pinned.
+    """
+    claude_dir = home_dir / '.claude'
+
+    if not is_pinned:
+        # When NOT pinned: remove IDE extension controls from EVERYWHERE
+
+        # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
+        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+
+        # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    settings_path = subdir / 'settings.json'
+                    if settings_path.exists():
+                        _cleanup_settings_json_ide_skip(settings_path)
+
+        # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
+        _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
+
+        # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    claude_json_path = subdir / '.claude.json'
+                    if claude_json_path.exists():
+                        _cleanup_claude_json_ide_auto_install(claude_json_path)
+
+    else:
+        # When pinned WITH command-names: clean stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
+        # from ~/.claude/settings.json (bare sessions must not inherit
+        # isolated environment restrictions)
+        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+
+
+def install_ide_extensions(
+    version: str,
+) -> bool:
+    """Install pinned-version IDE extensions into all detected VS Code family IDEs.
+
+    Uses a three-tier fallback chain:
+    1. Bundled VSIX from CLI package tree (no download needed)
+    2. VSIX download from marketplace CDN (auto-update disabled by VS Code v1.92+)
+    3. Marketplace @version syntax as last resort (with warning about auto-update)
+
+    Non-fatal: returns False on failure but does not raise.
+
+    Args:
+        version: Pinned Claude Code version string (e.g. "2.1.92").
+
+    Returns:
+        True if at least one IDE had the extension installed successfully,
+        or if no IDEs were detected (no-op success).
+    """
+    # Detect installed VS Code family IDEs
+    detected_ides: list[tuple[str, str]] = []
+    for cli_name in VSCODE_FAMILY_CLI_NAMES:
+        cli_path = shutil.which(cli_name)
+        if cli_path:
+            detected_ides.append((cli_name, cli_path))
+
+    if not detected_ides:
+        info('No VS Code family IDEs detected, skipping extension installation')
+        return True
+
+    ide_names = ', '.join(name for name, _ in detected_ides)
+    info(f'Detected VS Code family IDEs: {ide_names}')
+
+    # Resolve VSIX source using three-tier fallback chain
+    vsix_path: str | None = None
+    use_marketplace_syntax = False
+    temp_vsix_path: str | None = None
+
+    try:
+        # Tier 1: Check bundled VSIX from CLI package tree
+        bundled_vsix = (
+            get_real_user_home() / '.claude' / 'local' / 'node_modules'
+            / '@anthropic-ai' / 'claude-code' / 'vendor' / 'claude-code.vsix'
+        )
+        if bundled_vsix.exists() and bundled_vsix.stat().st_size > 1000:
+            vsix_path = str(bundled_vsix)
+            info(f'Using bundled VSIX: {vsix_path}')
+        else:
+            # Tier 2: Download VSIX from marketplace CDN
+            primary_url = VSIX_DOWNLOAD_URL_PRIMARY.format(
+                publisher=IDE_EXTENSION_PUBLISHER,
+                extension=IDE_EXTENSION_NAME,
+                version=version,
+            )
+            fallback_url = VSIX_DOWNLOAD_URL_FALLBACK.format(
+                publisher=IDE_EXTENSION_PUBLISHER,
+                extension=IDE_EXTENSION_NAME,
+                version=version,
+            )
+
+            vsix_data: bytes | None = None
+            for url in (primary_url, fallback_url):
+                try:
+                    vsix_data = fetch_url_bytes_with_auth(url)
+                    if vsix_data:
+                        break
+                except Exception:
+                    continue
+
+            if vsix_data:
+                # Write to temp file
+                tmp_fd, tmp_name = tempfile.mkstemp(suffix='.vsix')
+                try:
+                    os.write(tmp_fd, vsix_data)
+                    os.close(tmp_fd)
+                    vsix_path = tmp_name
+                    temp_vsix_path = tmp_name
+                    info(f'Downloaded VSIX ({len(vsix_data)} bytes) to {vsix_path}')
+                except Exception:
+                    with contextlib.suppress(OSError):
+                        os.close(tmp_fd)
+                    with contextlib.suppress(OSError):
+                        Path(tmp_name).unlink(missing_ok=True)
+            else:
+                # Tier 3: Fall back to marketplace @version syntax
+                use_marketplace_syntax = True
+                warning(
+                    'Using marketplace @version syntax. '
+                    'VS Code may auto-update this extension.',
+                )
+
+        # Install into each detected IDE
+        any_success = False
+        for cli_name, cli_path in detected_ides:
+            try:
+                if use_marketplace_syntax:
+                    cmd = [cli_path, '--install-extension', f'{IDE_EXTENSION_ID}@{version}']
+                else:
+                    install_target = vsix_path or f'{IDE_EXTENSION_ID}@{version}'
+                    cmd = [cli_path, '--install-extension', install_target, '--force']
+                result = run_command(cmd)
+                if result.returncode == 0:
+                    success(f'Installed {IDE_EXTENSION_ID} v{version} into {cli_name}')
+                    any_success = True
+                else:
+                    stderr_msg = result.stderr.strip() if result.stderr else 'unknown error'
+                    warning(f'Failed to install extension into {cli_name}: {stderr_msg}')
+            except Exception as exc:
+                warning(f'Failed to install extension into {cli_name}: {exc}')
+
+        return any_success
+
+    finally:
+        # Cleanup downloaded VSIX temp file
+        if temp_vsix_path:
+            with contextlib.suppress(OSError):
+                Path(temp_vsix_path).unlink(missing_ok=True)
 
 
 def detect_settings_conflicts(
@@ -8893,8 +9316,11 @@ def main() -> None:
                 info(f'Claude Code version specified: {claude_code_version_str}')
                 claude_code_version_normalized = claude_code_version_str
 
+        # Set process env early to prevent CLI auto-install during installation
+        if claude_code_version_normalized is not None:
+            os.environ[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
+
         # Apply automatic auto-update settings based on version pinning
-        # Modifies in-memory dicts BEFORE they flow through write paths
         (
             global_config,
             user_settings,
@@ -8911,6 +9337,26 @@ def main() -> None:
         )
         for warn_msg in auto_update_warnings:
             warning(warn_msg)
+
+        # Apply automatic IDE extension auto-install settings based on version pinning
+        (
+            global_config,
+            user_settings,
+            env_variables,
+            os_env_variables,
+            ide_ext_warnings,
+            ide_ext_auto_injected,
+        ) = apply_ide_extension_settings(
+            claude_code_version_normalized,
+            global_config,
+            user_settings,
+            env_variables,
+            os_env_variables,
+        )
+        for warn_msg in ide_ext_warnings:
+            warning(warn_msg)
+        # Merge auto-injected items from both auto-update and IDE extension management
+        auto_injected_items.extend(ide_ext_auto_injected)
 
         # Validate user-settings section for excluded keys
         if user_settings:
@@ -9050,9 +9496,22 @@ def main() -> None:
                 info('Please install Claude Code first or remove the --skip-install flag')
                 raise Exception('Claude Code not found')
 
-        # Step 2: Create base configuration directory
+        # Step 2: Install IDE extensions (version-pinned)
+        if claude_code_version_normalized is not None and not args.skip_install:
+            print()
+            print(f'{Colors.CYAN}Step 2: Installing IDE extensions...{Colors.NC}')
+            if not install_ide_extensions(claude_code_version_normalized):
+                warning('IDE extension installation failed (non-fatal)')
+        else:
+            print()
+            if claude_code_version_normalized is None:
+                print(f'{Colors.CYAN}Step 2: Skipping IDE extensions (no version pinned){Colors.NC}')
+            else:
+                print(f'{Colors.CYAN}Step 2: Skipping IDE extensions (skip-install mode){Colors.NC}')
+
+        # Step 3: Create base configuration directory
         print()
-        print(f'{Colors.CYAN}Step 2: Creating base configuration directory...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 3: Creating base configuration directory...{Colors.NC}')
         claude_user_dir.mkdir(parents=True, exist_ok=True)
         success(f'Created: {claude_user_dir}')
         if artifact_base_dir != claude_user_dir:
@@ -9068,9 +9527,9 @@ def main() -> None:
         # Track download failures across all steps for final error reporting
         download_failures: list[str] = []
 
-        # Step 3: Download/copy custom files
+        # Step 4: Download/copy custom files
         print()
-        print(f'{Colors.CYAN}Step 3: Processing file downloads...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 4: Processing file downloads...{Colors.NC}')
         files_to_download = config.get('files-to-download', [])
         if files_to_download:
             if not process_file_downloads(files_to_download, config_source, base_url, args.auth, auth_cache):
@@ -9078,21 +9537,21 @@ def main() -> None:
         else:
             info('No custom files to download')
 
-        # Step 4: Install Node.js if requested (before dependencies)
+        # Step 5: Install Node.js if requested (before dependencies)
         print()
-        print(f'{Colors.CYAN}Step 4: Checking Node.js installation...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 5: Checking Node.js installation...{Colors.NC}')
         if not install_nodejs_if_requested(config):
             raise Exception('Node.js installation failed')
 
-        # Step 5: Install dependencies (after Claude Code which provides tools)
+        # Step 6: Install dependencies (after Claude Code which provides tools)
         print()
-        print(f'{Colors.CYAN}Step 5: Installing dependencies...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 6: Installing dependencies...{Colors.NC}')
         dependencies = config.get('dependencies', {})
         install_dependencies(dependencies)
 
-        # Step 6: Set OS environment variables
+        # Step 7: Set OS environment variables
         print()
-        print(f'{Colors.CYAN}Step 6: Setting OS environment variables...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 7: Setting OS environment variables...{Colors.NC}')
         if os_env_variables:
             set_all_os_env_variables(os_env_variables)
         else:
@@ -9107,9 +9566,9 @@ def main() -> None:
             if generated_env_files:
                 success(f'Generated {len(generated_env_files)} env loader file(s)')
 
-        # Step 7: Process agents
+        # Step 8: Process agents
         print()
-        print(f'{Colors.CYAN}Step 7: Processing agents...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 8: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
         if agents:
             if not process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth, auth_cache):
@@ -9117,9 +9576,9 @@ def main() -> None:
         else:
             info('No agents to process')
 
-        # Step 8: Process slash commands
+        # Step 9: Process slash commands
         print()
-        print(f'{Colors.CYAN}Step 8: Processing slash commands...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 9: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
         if commands:
             if not process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth, auth_cache):
@@ -9127,9 +9586,9 @@ def main() -> None:
         else:
             info('No slash commands to process')
 
-        # Step 9: Process rules
+        # Step 10: Process rules
         print()
-        print(f'{Colors.CYAN}Step 9: Processing rules...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 10: Processing rules...{Colors.NC}')
         rules = config.get('rules', [])
         if rules:
             if not process_resources(rules, rules_dir, 'rules', config_source, base_url, args.auth, auth_cache):
@@ -9137,9 +9596,9 @@ def main() -> None:
         else:
             info('No rules to process')
 
-        # Step 10: Process skills
+        # Step 11: Process skills
         print()
-        print(f'{Colors.CYAN}Step 10: Processing skills...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 11: Processing skills...{Colors.NC}')
         skills_raw = config.get('skills', [])
         # Convert to properly typed list using cast and list comprehension
         skills: list[dict[str, Any]] = (
@@ -9153,9 +9612,9 @@ def main() -> None:
         else:
             info('No skills configured')
 
-        # Step 11: Process system prompt (if specified)
+        # Step 12: Process system prompt (if specified)
         print()
-        print(f'{Colors.CYAN}Step 11: Processing system prompt...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 12: Processing system prompt...{Colors.NC}')
         prompt_path = None
         if system_prompt:
             # Strip query parameters from URL to get clean filename
@@ -9167,9 +9626,9 @@ def main() -> None:
         else:
             info('No additional system prompt configured')
 
-        # Step 12: Configure MCP servers
+        # Step 13: Configure MCP servers
         print()
-        print(f'{Colors.CYAN}Step 12: Configuring MCP servers...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 13: Configuring MCP servers...{Colors.NC}')
         mcp_servers_raw = config.get('mcp-servers', [])
         # Convert to properly typed list for type safety
         mcp_servers: list[dict[str, Any]] = (
@@ -9209,9 +9668,9 @@ def main() -> None:
         )
         has_profile_mcp_servers = len(profile_servers) > 0
 
-        # Step 13: Write user settings
+        # Step 14: Write user settings
         print()
-        print(f'{Colors.CYAN}Step 13: Writing user settings...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 14: Writing user settings...{Colors.NC}')
         if user_settings:
             settings_target_dir = artifact_base_dir if primary_command_name else claude_user_dir
             if write_user_settings(user_settings, settings_target_dir):
@@ -9221,9 +9680,9 @@ def main() -> None:
         else:
             info('No user settings to configure')
 
-        # Step 14: Write global config
+        # Step 15: Write global config
         print()
-        print(f'{Colors.CYAN}Step 14: Writing global config...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 15: Writing global config...{Colors.NC}')
         if global_config:
             if write_global_config(
                 global_config,
@@ -9235,23 +9694,23 @@ def main() -> None:
         else:
             info('No global config to write')
 
-        # Step 15: Cleanup stale auto-update controls
-        _run_stale_auto_update_cleanup(claude_code_version_normalized)
+        # Step 16: Cleanup stale auto-update and IDE extension controls
+        _run_stale_controls_cleanup(claude_code_version_normalized)
 
         # Check if command creation is needed
         if primary_command_name:
-            # Step 16: Download hooks
+            # Step 17: Download hooks
             print()
-            print(f'{Colors.CYAN}Step 16: Downloading hooks...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 17: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
             if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
                                        hooks_base_dir=hooks_base_dir_arg, auth_cache=auth_cache):
                 download_failures.append('hook files')
 
-            # Step 17: Create profile configuration
+            # Step 18: Create profile configuration
             print()
-            print(f'{Colors.CYAN}Step 17: Creating profile configuration...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 18: Creating profile configuration...{Colors.NC}')
             # Cast status_line for type safety
             status_line_arg: dict[str, Any] | None = None
             if status_line is not None and isinstance(status_line, dict):
@@ -9271,9 +9730,9 @@ def main() -> None:
                 hooks_base_dir=hooks_base_dir_arg,
             )
 
-            # Step 18: Write installation manifest
+            # Step 19: Write installation manifest
             print()
-            print(f'{Colors.CYAN}Step 18: Writing installation manifest...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
             cleanup_stale_marker(artifact_base_dir)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
@@ -9287,9 +9746,9 @@ def main() -> None:
                 command_names=command_names or [primary_command_name],
             )
 
-            # Step 19: Create launcher script
+            # Step 20: Create launcher script
             print()
-            print(f'{Colors.CYAN}Step 19: Creating launcher script...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 20: Creating launcher script...{Colors.NC}')
             # Strip query parameters from system prompt filename (must match download logic)
             prompt_filename: str | None = None
             if system_prompt:
@@ -9299,15 +9758,15 @@ def main() -> None:
                 artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 20: Register global command(s)
+            # Step 21: Register global command(s)
             if launcher_result:
                 main_launcher, launch_script = launcher_result
                 print()
                 if additional_command_names:
                     all_names = ', '.join(command_names) if command_names else primary_command_name
-                    print(f'{Colors.CYAN}Step 20: Registering global commands: {all_names}...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 21: Registering global commands: {all_names}...{Colors.NC}')
                 else:
-                    print(f'{Colors.CYAN}Step 20: Registering global {primary_command_name} command...{Colors.NC}')
+                    print(f'{Colors.CYAN}Step 21: Registering global {primary_command_name} command...{Colors.NC}')
                 register_global_command(
                     main_launcher, primary_command_name, additional_command_names,
                     launch_script_path=launch_script,
@@ -9317,7 +9776,7 @@ def main() -> None:
         else:
             # Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 16-20: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 17-21: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -9424,6 +9883,8 @@ def main() -> None:
             print('   * User settings: configured in ~/.claude/settings.json')
         if global_config:
             print('   * Global config: configured in ~/.claude.json')
+        if claude_code_version_normalized is not None:
+            print(f'   * IDE extensions: {IDE_EXTENSION_ID} v{claude_code_version_normalized} (auto-install disabled)')
         # Only show hooks count if command was specified (hooks was defined)
         if command_names:
             hooks = config.get('hooks', {})
