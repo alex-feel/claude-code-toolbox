@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.10.0...v5.11.0) (2026-04-06)
+
+
+### Features
+
+* add per-entry merge-keys control for list-based inheritance ([bc105ac](https://github.com/alex-feel/claude-code-toolbox/commit/bc105acd95545cd89f79b71071683c204f7e2922))
+
 ## [5.10.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.9.0...v5.10.0) (2026-04-05)
 
 
