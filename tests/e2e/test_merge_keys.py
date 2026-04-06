@@ -4,6 +4,7 @@ Tests verify that configuration inheritance with merge-keys correctly merges
 specified keys using type-aware strategies while replacing non-listed keys.
 """
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,22 @@ def _resolve(
     return setup_environment.resolve_config_inheritance(config, source)
 
 
+def _contains_path(items: list[str], suffix: str) -> bool:
+    """Check if any item in the list ends with the given path suffix.
+
+    Parent paths are resolved to absolute paths during inheritance, so exact
+    string comparison fails. This helper normalizes by checking path suffixes.
+
+    Returns:
+        True if any item matches the suffix.
+    """
+    normalized_suffix = suffix.replace('/', os.sep)
+    return any(
+        item == suffix or item.endswith((os.sep + normalized_suffix, '/' + suffix))
+        for item in items
+    )
+
+
 class TestTwoLevelMerge:
     """Test two-level parent-child inheritance with merge-keys."""
 
@@ -41,16 +58,16 @@ class TestTwoLevelMerge:
         child_path = fixtures_dir / 'merge_child.yaml'
         config = _load_yaml(child_path)
         resolved, _ = _resolve(config, str(child_path))
-        assert 'agents/parent-agent.md' in resolved['agents']
-        assert 'agents/child-agent.md' in resolved['agents']
+        assert _contains_path(resolved['agents'], 'agents/parent-agent.md')
+        assert _contains_path(resolved['agents'], 'agents/child-agent.md')
 
     def test_rules_merged(self, fixtures_dir):
         """Rules from parent and child are concatenated."""
         child_path = fixtures_dir / 'merge_child.yaml'
         config = _load_yaml(child_path)
         resolved, _ = _resolve(config, str(child_path))
-        assert 'rules/parent-rule.md' in resolved['rules']
-        assert 'rules/child-rule.md' in resolved['rules']
+        assert _contains_path(resolved['rules'], 'rules/parent-rule.md')
+        assert _contains_path(resolved['rules'], 'rules/child-rule.md')
 
     def test_mcp_servers_in_position_replacement(self, fixtures_dir):
         """MCP server with same name replaced in-position; new server appended."""
@@ -82,8 +99,8 @@ class TestTwoLevelMerge:
         config = _load_yaml(child_path)
         resolved, _ = _resolve(config, str(child_path))
         hooks = resolved['hooks']
-        assert 'hooks/parent-hook.py' in hooks['files']
-        assert 'hooks/child-hook.py' in hooks['files']
+        assert _contains_path(hooks['files'], 'hooks/parent-hook.py')
+        assert _contains_path(hooks['files'], 'hooks/child-hook.py')
         assert len(hooks['events']) == 2
 
     def test_global_config_deep_merge(self, fixtures_dir):
@@ -176,11 +193,11 @@ class TestFourLevelChain:
         agents = resolved['agents']
         # L3 replaces everything from L1+L2 with ['agents/l3-agent.md']
         # L4 merges with L3, adding ['agents/l4-agent.md']
-        assert 'agents/l3-agent.md' in agents
-        assert 'agents/l4-agent.md' in agents
+        assert _contains_path(agents, 'agents/l3-agent.md')
+        assert _contains_path(agents, 'agents/l4-agent.md')
         # L1 and L2 agents should NOT be present (L3 replaced)
-        assert 'agents/l1-agent.md' not in agents
-        assert 'agents/l2-agent.md' not in agents
+        assert not _contains_path(agents, 'agents/l1-agent.md')
+        assert not _contains_path(agents, 'agents/l2-agent.md')
 
     def test_mcp_servers_chain(self, fixtures_dir):
         """MCP servers follow same merge-replace-merge pattern."""
@@ -201,10 +218,10 @@ class TestFourLevelChain:
         resolved, _ = _resolve(config, str(l4_path))
 
         rules = resolved['rules']
-        assert 'rules/l3-rule.md' in rules
-        assert 'rules/l4-rule.md' in rules
-        assert 'rules/l1-rule.md' not in rules
-        assert 'rules/l2-rule.md' not in rules
+        assert _contains_path(rules, 'rules/l3-rule.md')
+        assert _contains_path(rules, 'rules/l4-rule.md')
+        assert not _contains_path(rules, 'rules/l1-rule.md')
+        assert not _contains_path(rules, 'rules/l2-rule.md')
 
     def test_chain_length(self, fixtures_dir):
         """Inheritance chain has 3 entries (L1, L2, L3 as ancestors of L4)."""
@@ -232,7 +249,8 @@ class TestTwoLevelReplace:
 
         # L3 has no merge-keys, so it replaces L2's (merged) agents
         agents = resolved['agents']
-        assert agents == ['agents/l3-agent.md']
+        assert len(agents) == 1
+        assert _contains_path(agents, 'agents/l3-agent.md')
 
 
 class TestMergeKeysWithoutInherit:
