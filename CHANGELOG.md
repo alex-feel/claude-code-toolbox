@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.11.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.0...v5.11.1) (2026-04-06)
+
+
+### Bug Fixes
+
+* resolve cross-source relative file paths during config inheritance ([93a36e2](https://github.com/alex-feel/claude-code-toolbox/commit/93a36e247b1557a70c7fd5e5797de3a0c08f7562))
+
 ## [5.11.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.10.0...v5.11.0) (2026-04-06)
 
 
