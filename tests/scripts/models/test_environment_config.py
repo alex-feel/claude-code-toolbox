@@ -15,6 +15,66 @@ import pytest
 from pydantic import ValidationError
 
 from scripts.models.environment_config import EnvironmentConfig
+from scripts.models.environment_config import InheritEntry
+
+
+class TestInheritEntryModel:
+    """Tests for the InheritEntry Pydantic model."""
+
+    def test_inherit_entry_basic_valid(self):
+        """Basic InheritEntry with only config succeeds."""
+        entry = InheritEntry(config='base.yaml')
+        assert entry.config == 'base.yaml'
+        assert entry.merge_keys is None
+
+    def test_inherit_entry_with_merge_keys(self):
+        """InheritEntry with merge-keys via model_validate succeeds."""
+        entry = InheritEntry.model_validate({'config': 'x.yaml', 'merge-keys': ['agents']})
+        assert entry.config == 'x.yaml'
+        assert entry.merge_keys == ['agents']
+
+    def test_inherit_entry_empty_config_rejected(self):
+        """Empty config string raises ValueError."""
+        with pytest.raises(Exception, match='config cannot be empty'):
+            InheritEntry(config='')
+
+    def test_inherit_entry_blank_config_rejected(self):
+        """Whitespace-only config raises ValueError."""
+        with pytest.raises(Exception, match='config cannot be empty'):
+            InheritEntry(config='   ')
+
+    def test_inherit_entry_null_bytes_rejected(self):
+        """Config with null bytes raises ValueError."""
+        with pytest.raises(Exception, match='config cannot contain null bytes'):
+            InheritEntry(config='base\x00.yaml')
+
+    def test_inherit_entry_invalid_merge_key_rejected(self):
+        """Invalid merge-key raises ValueError."""
+        with pytest.raises(Exception, match='Invalid merge-keys'):
+            InheritEntry.model_validate({'config': 'x.yaml', 'merge-keys': ['invalid-key']})
+
+    def test_inherit_entry_extra_field_rejected(self):
+        """Extra field rejected by extra=forbid."""
+        with pytest.raises(ValidationError, match='extra'):
+            InheritEntry.model_validate({'config': 'x.yaml', 'extra': 'y'})
+
+    def test_inherit_entry_missing_config_rejected(self):
+        """Missing config field raises error."""
+        with pytest.raises(ValidationError, match='config'):
+            InheritEntry.model_validate({'merge-keys': ['agents']})
+
+    def test_inherit_entry_model_validate_alias(self):
+        """model_validate works with kebab-case alias."""
+        entry = InheritEntry.model_validate({'config': 'x.yaml', 'merge-keys': ['agents', 'rules']})
+        assert entry.merge_keys == ['agents', 'rules']
+
+    def test_inherit_entry_multiple_merge_keys(self):
+        """Multiple valid merge-keys accepted."""
+        entry = InheritEntry.model_validate({
+            'config': 'x.yaml',
+            'merge-keys': ['agents', 'rules', 'mcp-servers', 'env-variables'],
+        })
+        assert len(entry.merge_keys) == 4
 
 
 class TestHooksUnusedFiles:
@@ -1530,7 +1590,7 @@ class TestInheritValidation:
 
     def test_inherit_list_with_non_string_rejected(self) -> None:
         """List with non-string element raises ValidationError."""
-        with pytest.raises(ValidationError, match='Input should be a valid string'):
+        with pytest.raises(ValidationError, match=r'inherit\[0\] must be a string or'):
             EnvironmentConfig.model_validate({'name': 'Test', 'inherit': [123]})
 
     def test_inherit_list_with_null_bytes_rejected(self) -> None:
@@ -1539,8 +1599,8 @@ class TestInheritValidation:
             EnvironmentConfig.model_validate({'name': 'Test', 'inherit': ['base\x00.yaml']})
 
     def test_inherit_dict_rejected(self) -> None:
-        """Dict value raises ValidationError."""
-        with pytest.raises(ValidationError, match='Input should be a valid'):
+        """Dict value (not in list) raises ValidationError."""
+        with pytest.raises(ValidationError, match='must be a string or list'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'inherit': {'source': 'base.yaml'},
@@ -1548,7 +1608,7 @@ class TestInheritValidation:
 
     def test_inherit_int_rejected(self) -> None:
         """Integer value raises ValidationError."""
-        with pytest.raises(ValidationError, match='Input should be a valid'):
+        with pytest.raises(ValidationError, match='must be a string or list'):
             EnvironmentConfig.model_validate({'name': 'Test', 'inherit': 42})
 
     def test_inherit_list_second_element_invalid(self) -> None:
@@ -1566,3 +1626,35 @@ class TestInheritValidation:
             'inherit': ['a.yaml', 'b.yaml', 'c.yaml'],
         })
         assert config.inherit == ['a.yaml', 'b.yaml', 'c.yaml']
+
+    def test_inherit_list_with_structured_entry_valid(self) -> None:
+        """List with structured entry (dict) is accepted."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': [{'config': 'x.yaml', 'merge-keys': ['agents']}, 'y.yaml'],
+        })
+        assert len(config.inherit) == 2
+
+    def test_inherit_list_mixed_entries_valid(self) -> None:
+        """Mixed strings and dicts in list accepted."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': ['a.yaml', {'config': 'b.yaml', 'merge-keys': ['rules']}, 'c.yaml'],
+        })
+        assert len(config.inherit) == 3
+
+    def test_inherit_list_structured_entry_missing_config(self) -> None:
+        """Dict without config key raises ValidationError."""
+        with pytest.raises(ValidationError, match=r'inherit\[0\]'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'inherit': [{'merge-keys': ['agents']}],
+            })
+
+    def test_inherit_single_structured_entry_valid(self) -> None:
+        """Single structured entry in list passes validation."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': [{'config': 'x.yaml', 'merge-keys': ['agents']}],
+        })
+        assert len(config.inherit) == 1

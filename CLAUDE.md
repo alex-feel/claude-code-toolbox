@@ -71,13 +71,14 @@ The setup script requires explicit user confirmation before installing. CLI flag
 
 YAML configs define complete environments: dependencies, agents, MCP servers (auto-permission), slash commands, system prompts (append/replace modes), hooks, global config (`~/.claude.json` via deep merge), and selective inheritance via `merge-keys` directive.
 
-**List Inherit (`inherit: [list]`):** `inherit` accepts `str | list[str] | None`. Single-element lists normalize to string (recursive resolution -- the entry's own `inherit` IS resolved). Multi-element lists use flat left-to-right composition via `_resolve_list_inherit()`. Three mandatory rules:
+**List Inherit (`inherit: [list]`):** `inherit` accepts `str | list[str | InheritEntry] | None`. Single-element plain-string lists normalize to string (recursive resolution -- the entry's own `inherit` IS resolved). Single-element structured lists (`[{config: ..., merge-keys: [...]}]`) route to `_resolve_list_inherit()` (composition mode). Multi-element lists use flat left-to-right composition via `_resolve_list_inherit()`. Four mandatory rules:
 
-1. **Own inherit stripped (Rule 1):** Each listed file's own `inherit` key is completely ignored when the list has >1 entries. Users must explicitly include all configs in the desired order.
+1. **Own inherit stripped (Rule 1):** Each listed file's own `inherit` key is completely ignored in list composition mode. Users must explicitly include all configs in the desired order.
 2. **Separate-file equivalence (Rule 2):** `inherit: [A, B, C]` behaves identically to a virtual chain where C inherits B which inherits A. First entry = base (lowest priority), last entry overrides earlier ones, leaf overrides everything.
-3. **merge-keys per entry (Rule 3):** Each file's `merge-keys` applies normally at its composition step, as if it were a separate file with single-value inherit.
+3. **Own merge-keys stripped, per-entry from leaf (Rule 3):** Each listed file's own `merge-keys` key is stripped and ignored. Per-entry merge-keys are specified in the leaf config using structured `{config: ..., merge-keys: [...]}` entries. merge-keys are a property of the relationship between the leaf and each listed entry, not an intrinsic property of the listed config.
+4. **Leaf merge-keys for final step (Rule 4):** The leaf config's top-level `merge-keys` applies to the final composition step (leaf on top of accumulated base). Orthogonal to per-entry merge-keys.
 
-`_validate_merge_keys()` is a DRY helper extracted from the former inline validation, reused for both leaf and per-entry merge-keys validation. `_resolve_list_inherit()` threads `auth_param` through `load_config_from_source()` for each entry, extends the existing `visited` set for circular dependency detection, and builds `InheritanceChainEntry` entries for each loaded config.
+`_validate_merge_keys()` is a DRY helper extracted from the former inline validation, reused for both leaf and per-entry merge-keys validation. `InheritEntry` is a Pydantic model (`config: str`, `merge_keys: list[str] | None` with alias `merge-keys`, `extra='forbid'`) containing an inline `mergeable` frozenset (DRY violation covered by parity test `test_mergeable_config_keys_parity.py`). `_resolve_list_inherit()` threads `auth_param` through `load_config_from_source()` for each entry, extends the existing `visited` set for circular dependency detection, and builds `InheritanceChainEntry` entries for each loaded config.
 
 **Env Loader Files:** `generate_env_loader_files()` creates Rustup-style shell scripts containing ONLY `os-env-variables` (not `env-variables`). Per-command files: `~/.claude/{cmd}/env.sh`, `env.fish` (if Fish installed), `env.ps1` (Windows), `env.cmd` (Windows). Global files: `~/.claude/toolbox-env.sh`, `toolbox-env.fish`, `toolbox-env.ps1` (Windows), `toolbox-env.cmd` (Windows). `None`-valued (deletion) vars are excluded. `create_launcher_script()` injects guarded source lines in all 6 launcher variants so commands auto-load env vars.
 
@@ -125,7 +126,7 @@ Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` de
 
 **KNOWN_CONFIG_KEYS parity rule:** When adding new config keys to `setup_environment.py` (extending `KNOWN_CONFIG_KEYS`), the `EnvironmentConfig` model MUST be updated simultaneously (and vice versa). `tests/scripts/models/test_known_config_keys_parity.py` enforces STRICT BIDIRECTIONAL match with ZERO exceptions. Deprecated keys must be DELETED from both, not kept with backward compatibility shims.
 
-**Tests:** `tests/scripts/models/` -- `test_environment_config.py`, `test_mcp_server_scope.py`, `test_known_config_keys_parity.py`.
+**Tests:** `tests/scripts/models/` -- `test_environment_config.py`, `test_mcp_server_scope.py`, `test_known_config_keys_parity.py`, `test_mergeable_config_keys_parity.py`.
 
 **Sync & Runtime:** `.github/workflows/sync-to-repos.yml` syncs model changes to `alex-feel/claude-code-artifacts{,-public}` at `.github/environment_config.py`. The model is NOT imported at runtime -- `KNOWN_CONFIG_KEYS` is the active runtime mechanism.
 

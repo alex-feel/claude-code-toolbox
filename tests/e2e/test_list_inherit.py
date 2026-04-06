@@ -1,9 +1,11 @@
 """E2E tests for inherit: [list] composition chains.
 
-Tests verify that list-based inheritance follows the 3 mandatory rules:
+Tests verify that list-based inheritance follows the 4 mandatory rules:
 1. Own inherit in ALL list entries is completely ignored
 2. List behaves identically to separate-file chains (left-to-right)
-3. merge-keys in each entry applies normally
+3. Own merge-keys in ALL list entries is stripped and ignored;
+   per-entry merge-keys come from structured entries in the leaf
+4. Leaf's top-level merge-keys applies to the final composition step
 
 Each test class focuses on a specific scenario. All tests use real YAML
 fixture files loaded from disk, not mocked configs.
@@ -49,13 +51,12 @@ class TestBasicListComposition:
         assert resolved['name'] == 'List Inherit Leaf'
 
     def test_left_to_right_priority_mcp_servers(self, fixtures_dir):
-        """Middle (right) replaces base (left) MCP servers (no merge-keys for mcp-servers)."""
+        """Middle (right) replaces base (left) MCP servers (no per-entry merge-keys for mcp-servers)."""
         path = fixtures_dir / 'list_inherit_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        # Middle has merge-keys: [agents, rules] but NOT mcp-servers
-        # So middle's mcp-servers replace base's at the accumulated level
-        # Then leaf has no mcp-servers, so accumulated mcp-servers survive
+        # Middle's own merge-keys are STRIPPED (Rule 3), so middle replaces base entirely
+        # Middle's mcp-servers replace base's at the accumulated level
         server_names = [s['name'] for s in resolved.get('mcp-servers', [])]
         assert 'middle-server' in server_names
         assert 'base-server' not in server_names
@@ -131,51 +132,67 @@ class TestOwnInheritStripping:
 
 
 class TestMergeKeysPerEntry:
-    """Test Rule 3: merge-keys in each entry applies normally."""
+    """Test Rules 3+4: Entry's own merge-keys stripped; per-entry from leaf structured entries."""
 
-    def test_middle_merge_keys_merge_agents_visible_via_leaf_merge(self, fixtures_dir):
-        """Middle's merge-keys verified via leaf that also merges agents."""
-        # list_inherit_merge_keys_leaf.yaml has merge-keys: [agents, rules]
-        # so the merge chain is: base agents + middle agents + leaf agents
-        path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
+    def test_entry_own_merge_keys_stripped(self, fixtures_dir):
+        """Middle's own merge-keys are stripped: agents NOT merged with plain string entries."""
+        # list_inherit_leaf.yaml uses plain string entries (no per-entry merge-keys)
+        # Middle.yaml has merge-keys: [agents, rules] but these are STRIPPED (Rule 3)
+        # So middle's agents REPLACE base's agents (no merge)
+        path = fixtures_dir / 'list_inherit_leaf.yaml'
+        config = _load_yaml(path)
+        resolved, _ = _resolve(config, str(path))
+        # Accumulated: middle replaced base (no merge), then leaf replaced accumulated
+        agents = resolved.get('agents', [])
+        assert agents == ['agents/leaf-agent.md']
+
+    def test_leaf_structured_entry_merge_keys_applied(self, fixtures_dir):
+        """Structured entry with merge-keys merges agents from base and middle."""
+        path = fixtures_dir / 'list_inherit_structured_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
         agents = resolved.get('agents', [])
-        # Middle merge-keys merges with base, then leaf merge-keys merges again
-        assert 'agents/base-agent.md' in agents
-        assert 'agents/middle-agent.md' in agents
-        assert 'agents/mk-leaf-agent.md' in agents
+        # Base agents + middle agents (merged via structured per-entry merge-keys) + leaf agents
+        # Leaf has no top-level merge-keys, so leaf REPLACES accumulated agents
+        # Actually: base is first (no merge), middle merges agents via structured entry,
+        # then leaf replaces (no top-level merge-keys for agents)
+        assert 'agents/structured-leaf-agent.md' in agents
 
-    def test_middle_merge_keys_merge_rules_visible_via_leaf_merge(self, fixtures_dir):
-        """Middle's merge-keys for rules verified via leaf that also merges."""
-        path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
+    def test_structured_entry_merges_rules(self, fixtures_dir):
+        """Structured entry merges rules between base and middle."""
+        path = fixtures_dir / 'list_inherit_structured_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
         rules = resolved.get('rules', [])
+        # Structured entry merge-keys: [agents, rules] -- middle merges with base
         assert 'rules/base-rule.md' in rules
         assert 'rules/middle-rule.md' in rules
-        assert 'rules/mk-leaf-rule.md' in rules
 
     def test_leaf_merge_keys_applied(self, fixtures_dir):
-        """Leaf's own merge-keys applies on top of accumulated."""
+        """Leaf's own merge-keys applies on top of accumulated (Rule 4)."""
         path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
+        # Middle's own merge-keys are STRIPPED, so middle REPLACES base agents
+        # But leaf has merge-keys: [agents, rules], so leaf MERGES with accumulated
         agents = resolved.get('agents', [])
-        # All three levels' agents should be present
-        assert 'agents/base-agent.md' in agents
+        # Middle replaced base (no per-entry merge-keys), then leaf merges
         assert 'agents/middle-agent.md' in agents
         assert 'agents/mk-leaf-agent.md' in agents
+        # Base agents were replaced by middle (not merged), so base NOT present
+        assert 'agents/base-agent.md' not in agents
 
     def test_leaf_merge_keys_merge_rules(self, fixtures_dir):
-        """Leaf's merge-keys merges rules from all levels."""
+        """Leaf's merge-keys merges rules from accumulated + leaf."""
         path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
         rules = resolved.get('rules', [])
-        assert 'rules/base-rule.md' in rules
+        # Middle replaced base rules (no per-entry merge-keys), then leaf merges
         assert 'rules/middle-rule.md' in rules
         assert 'rules/mk-leaf-rule.md' in rules
+        # Base rules replaced by middle
+        assert 'rules/base-rule.md' not in rules
 
     def test_leaf_without_merge_keys_replaces_agents(self, fixtures_dir):
         """Leaf without merge-keys replaces accumulated agents."""
@@ -188,12 +205,22 @@ class TestMergeKeysPerEntry:
         assert 'agents/base-agent.md' not in agents
         assert 'agents/middle-agent.md' not in agents
 
+    def test_mixed_plain_and_structured_entries(self, fixtures_dir):
+        """List with plain string first, structured second composes correctly."""
+        path = fixtures_dir / 'list_inherit_structured_leaf.yaml'
+        config = _load_yaml(path)
+        resolved, chain = _resolve(config, str(path))
+        # Base is plain string (first entry), middle is structured with merge-keys
+        assert len(chain) == 2
+        assert 'inherit' not in resolved
+        assert 'merge-keys' not in resolved
+
 
 class TestSingleElementListNormalization:
-    """Test: inherit: ['x'] normalized to string path."""
+    """Test: inherit: ['x'] normalized to string path; [{config: 'x'}] uses composition."""
 
     def test_single_element_resolves_recursively(self, fixtures_dir):
-        """Single-element list uses existing recursive string path."""
+        """Single-element plain-string list uses existing recursive string path."""
         path = fixtures_dir / 'list_inherit_single.yaml'
         config = _load_yaml(path)
         resolved, chain = _resolve(config, str(path))
@@ -210,37 +237,71 @@ class TestSingleElementListNormalization:
         assert 'agents/single-agent.md' in resolved['agents']
 
     def test_single_element_chain_has_one_entry(self, fixtures_dir):
-        """Single-element list produces chain with 1 entry."""
+        """Single-element plain-string list produces chain with 1 entry."""
         path = fixtures_dir / 'list_inherit_single.yaml'
         config = _load_yaml(path)
         _, chain = _resolve(config, str(path))
         assert len(chain) == 1
 
+    def test_single_structured_entry_routes_to_list_path(self, fixtures_dir):
+        """Single structured entry uses composition mode, NOT recursive."""
+        path = fixtures_dir / 'list_inherit_single_structured.yaml'
+        config = _load_yaml(path)
+        resolved, chain = _resolve(config, str(path))
+        # Composition mode: chain has 1 entry (base)
+        assert len(chain) == 1
+        assert resolved['name'] == 'Single Structured'
+        assert resolved['model'] == 'opus'
+
+    def test_single_structured_merges_agents(self, fixtures_dir):
+        """Single structured entry's merge-keys merges agents with base."""
+        path = fixtures_dir / 'list_inherit_single_structured.yaml'
+        config = _load_yaml(path)
+        resolved, _ = _resolve(config, str(path))
+        # The structured entry has merge-keys: [agents], BUT this is the first entry
+        # (no predecessor), so merge-keys is ignored for the first entry.
+        # Leaf replaces agents (no top-level merge-keys).
+        agents = resolved.get('agents', [])
+        assert 'agents/single-structured-agent.md' in agents
+
+    def test_single_structured_strips_own_merge_keys(self, fixtures_dir):
+        """Loaded config's own merge-keys ignored even for single structured entry."""
+        # list_inherit_base.yaml has NO merge-keys, so nothing to strip.
+        # But verify the mechanism works: result has no merge-keys key
+        path = fixtures_dir / 'list_inherit_single_structured.yaml'
+        config = _load_yaml(path)
+        resolved, _ = _resolve(config, str(path))
+        assert 'merge-keys' not in resolved
+        assert 'inherit' not in resolved
+
 
 class TestEquivalenceToSeparateFiles:
-    """Test Rule 2: list must behave IDENTICALLY to separate-file chains."""
+    """Test Rule 2: list must behave IDENTICALLY to separate-file chains.
+
+    With the new Rule 3, each entry's own merge-keys is stripped. So the
+    equivalence is: inherit: [base, middle] == middle replaces base entirely
+    (since merge-keys are stripped), then leaf applied on top.
+    """
 
     def test_equivalence_two_files(self, fixtures_dir):
-        """inherit: [base, middle] == middle inherits base (separate files)."""
+        """inherit: [base, middle] == middle replaces base (merge-keys stripped)."""
         # Method 1: List inherit
         leaf_path = fixtures_dir / 'list_inherit_leaf.yaml'
         leaf_config = _load_yaml(leaf_path)
         list_result, _ = _resolve(leaf_config, str(leaf_path))
 
-        # Method 2: Simulate separate-file chain
+        # Method 2: Manual simulation of new Rule 3 behavior
         base_config = _load_yaml(fixtures_dir / 'list_inherit_base.yaml')
         middle_config = _load_yaml(fixtures_dir / 'list_inherit_middle.yaml')
 
-        # Manually build the chain: base -> middle -> leaf
-        # Step 1: strip middle's own inherit, apply merge-keys
-        middle_mk = middle_config.get('merge-keys')
-        middle_validated_mk = frozenset(middle_mk) if middle_mk else None
+        # Step 1: Strip middle's own merge-keys (Rule 3), compose with REPLACE semantics
         base_stripped = {
             k: v for k, v in base_config.items()
             if k not in ('inherit', 'merge-keys')
         }
+        # With Rule 3, middle's own merge-keys is stripped, so merge_keys=None (REPLACE)
         step1 = setup_environment._merge_configs(
-            base_stripped, middle_config, merge_keys=middle_validated_mk,
+            base_stripped, middle_config, merge_keys=None,
         )
 
         # Step 2: apply leaf on top (leaf has no merge-keys)
@@ -266,8 +327,8 @@ class TestEdgeCases:
         with pytest.raises(ValueError, match='cannot be empty'):
             _resolve(config, 'test.yaml')
 
-    def test_list_with_non_string_raises(self):
-        """List with non-string entry raises ValueError."""
+    def test_list_with_non_string_non_dict_raises(self):
+        """List with non-string, non-dict entry raises ValueError."""
         config = {'inherit': ['a.yaml', 123], 'name': 'Test'}
         with pytest.raises(ValueError, match='must be a string'):
             _resolve(config, 'test.yaml')
@@ -297,7 +358,7 @@ class TestEdgeCases:
             _resolve(config, str(fixtures_dir / 'test.yaml'))
 
     def test_dict_inherit_raises(self):
-        """Dict inherit value raises ValueError."""
+        """Dict inherit value (not in list) raises ValueError."""
         config = {'inherit': {'source': 'base.yaml'}, 'name': 'Test'}
         with pytest.raises(ValueError, match='must be a string or list'):
             _resolve(config, 'test.yaml')
@@ -307,6 +368,28 @@ class TestEdgeCases:
         config = {'inherit': 42, 'name': 'Test'}
         with pytest.raises(ValueError, match='must be a string or list'):
             _resolve(config, 'test.yaml')
+
+    def test_structured_entry_missing_config_raises(self):
+        """Structured entry without config key raises ValueError."""
+        config = {
+            'inherit': [{'merge-keys': ['agents']}],
+            'name': 'Test',
+        }
+        with pytest.raises(ValueError, match='must have a "config" key'):
+            _resolve(config, 'test.yaml')
+
+    def test_dict_entry_in_list_accepted(self, fixtures_dir):
+        """Dict entry in list is accepted (structured entry)."""
+        config = {
+            'inherit': [
+                {'config': 'list_inherit_base.yaml'},
+                'list_inherit_middle.yaml',
+            ],
+            'name': 'Test',
+        }
+        resolved, chain = _resolve(config, str(fixtures_dir / 'test.yaml'))
+        assert len(chain) == 2
+        assert resolved['name'] == 'Test'
 
 
 class TestChainOrdering:
@@ -350,15 +433,13 @@ class TestEnvVariableComposition:
         env_vars = resolved['env-variables']
         assert env_vars == {'LEAF_VAR': 'leaf_val'}
 
-    def test_env_vars_merged_when_merge_keys_used(self, fixtures_dir):
-        """Env-variables merge when merge-keys includes env-variables."""
+    def test_env_vars_from_middle_when_no_leaf_env_vars(self, fixtures_dir):
+        """Middle's env-variables survives when leaf has no env-variables key."""
         path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        # merge_keys_leaf has merge-keys: [agents, rules] but NOT env-variables
-        # Middle has env-variables which replaces base's env-variables
+        # Middle's own merge-keys is STRIPPED, so middle REPLACES base env-variables
         # Leaf has NO env-variables key, so accumulated env-variables survive
         env_vars = resolved.get('env-variables', {})
-        # Middle's env-variables replaced base's (no merge-keys for env-variables in middle)
         assert env_vars.get('MIDDLE_VAR') == 'middle_val'
         assert env_vars.get('SHARED_VAR') == 'from_middle'

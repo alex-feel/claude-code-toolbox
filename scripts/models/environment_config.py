@@ -634,6 +634,57 @@ class CommandDefaults(BaseModel):
         return v
 
 
+class InheritEntry(BaseModel):
+    """Structured entry for list-based inheritance with per-entry merge control.
+
+    Specifies a configuration source and optional per-entry merge-keys that
+    control how that entry's values compose with the accumulated base.
+    merge-keys are a property of the relationship between the leaf config
+    and the listed entry, not an intrinsic property of the listed config.
+
+    Attributes:
+        config: Configuration source (URL, file path, or repo name).
+        merge_keys: Optional list of top-level keys to merge (extend) instead
+            of replace when composing this entry with the accumulated base.
+    """
+
+    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+
+    config: str
+    merge_keys: list[str] | None = Field(None, alias='merge-keys')
+
+    @field_validator('config')
+    @classmethod
+    def validate_config(cls, v: str) -> str:
+        """Validate config source is non-empty and contains no null bytes."""
+        if not v or not v.strip():
+            raise ValueError('config cannot be empty or whitespace-only')
+        if '\x00' in v:
+            raise ValueError('config cannot contain null bytes')
+        return v
+
+    @field_validator('merge_keys')
+    @classmethod
+    def validate_merge_keys(cls, v: list[str] | None) -> list[str] | None:
+        """Validate merge-keys against the set of mergeable configuration keys."""
+        if v is None:
+            return v
+
+        # Inline definition avoids circular import from setup_environment.py
+        mergeable: frozenset[str] = frozenset({
+            'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
+            'files-to-download', 'hooks', 'mcp-servers',
+            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+        })
+        invalid = [k for k in v if k not in mergeable]
+        if invalid:
+            raise ValueError(
+                f'Invalid merge-keys: {invalid}. '
+                f'Valid mergeable keys: {sorted(mergeable)}',
+            )
+        return v
+
+
 class EnvironmentConfig(BaseModel):
     """Complete environment configuration model."""
 
@@ -743,13 +794,14 @@ class EnvironmentConfig(BaseModel):
         'Semantic versioning string (e.g., "1.0.0"). Optional; configs without '
         'this field skip all version checking.',
     )
-    inherit: str | list[str] | None = Field(
+    inherit: str | list[str | InheritEntry] | None = Field(
         None,
         description='Parent configuration(s) to inherit from. '
-        'Accepts a single string (URL, path, or repo name) or a list of strings '
-        'for composition chains. When a list with >1 entries: entries are composed '
-        "left-to-right, each entry's own inherit key is ignored, merge-keys "
-        'apply per-entry. Single-element list is normalized to string.',
+        'Accepts a single string (URL, path, or repo name), a list of strings '
+        'for composition chains, or a list mixing strings and structured entries '
+        '{config: str, merge-keys: list[str]} for per-entry merge control. '
+        'Single-element plain-string list normalizes to string for recursive resolution. '
+        'Single-element structured list routes to composition mode.',
     )
     merge_keys: list[str] | None = Field(
         None,
@@ -921,24 +973,25 @@ class EnvironmentConfig(BaseModel):
             )
         return v
 
-    @field_validator('inherit')
+    @field_validator('inherit', mode='before')
     @classmethod
-    def validate_inherit(cls, v: str | list[str] | None) -> str | list[str] | None:
-        """Validate inherit value: string, list of strings, or None.
+    def validate_inherit(
+        cls, v: str | list[str | dict[str, Any] | InheritEntry] | None,
+    ) -> str | list[str | InheritEntry] | None:
+        """Validate inherit value: string, list of strings/structured entries, or None.
 
         When a list is provided:
         - Must be non-empty
-        - All elements must be non-empty, non-blank strings
-        - No null bytes allowed in any element
-
-        A single-element list is valid at the model level; normalization to string
-        happens at runtime in resolve_config_inheritance().
+        - Elements can be strings (plain inherit) or dicts (structured with per-entry merge-keys)
+        - Dict entries are coerced to InheritEntry via model_validate()
+        - All string entries must be non-empty, non-blank
+        - No null bytes allowed
 
         Args:
-            v: Inherit path/URL string, list of strings, or None.
+            v: Inherit path/URL string, list of strings/dicts, or None.
 
         Returns:
-            The validated inherit value.
+            The validated inherit value with dicts coerced to InheritEntry.
 
         Raises:
             ValueError: If inherit value is invalid.
@@ -956,20 +1009,30 @@ class EnvironmentConfig(BaseModel):
         if isinstance(v, list):
             if not v:
                 raise ValueError('inherit list cannot be empty')
+            result: list[str | InheritEntry] = []
             for i, entry in enumerate(v):
-                if not isinstance(entry, str):
+                if isinstance(entry, str):
+                    if not entry or not entry.strip():
+                        raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
+                    if '\x00' in entry:
+                        raise ValueError(f'inherit[{i}] cannot contain null bytes')
+                    result.append(entry)
+                elif isinstance(entry, dict):
+                    try:
+                        result.append(InheritEntry.model_validate(entry))
+                    except Exception as e:
+                        raise ValueError(f'inherit[{i}]: {e}') from e
+                elif isinstance(entry, InheritEntry):
+                    result.append(entry)
+                else:
                     raise ValueError(
-                        f'inherit[{i}] must be a string, '
+                        f'inherit[{i}] must be a string or {{config: ..., merge-keys: [...]}} object, '
                         f'got {type(entry).__name__}',
                     )
-                if not entry or not entry.strip():
-                    raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
-                if '\x00' in entry:
-                    raise ValueError(f'inherit[{i}] cannot contain null bytes')
-            return v
+            return result
 
         raise ValueError(
-            f"The 'inherit' key must be a string or list of strings, "
+            f"The 'inherit' key must be a string or list of strings/objects, "
             f"got {type(v).__name__}: {v!r}",
         )
 

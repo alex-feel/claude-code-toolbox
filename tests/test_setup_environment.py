@@ -7330,7 +7330,7 @@ class TestListInherit:
         assert result['model'] == 'opus'
 
     def test_list_merge_keys_per_entry(self, mock_load):
-        """Each entry's merge-keys applies normally (Rule 3)."""
+        """Entry's own merge-keys stripped; per-entry from leaf structured entries (Rule 3)."""
         def load_side_effect(src, _auth_param=None):
             if 'base' in src:
                 return ({
@@ -7345,9 +7345,11 @@ class TestListInherit:
                 }, 'ext.yaml')
             return ({}, src)
         mock_load.side_effect = load_side_effect
+        # Plain string entries: ext's own merge-keys is STRIPPED, so ext REPLACES base
         child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
         result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
-        assert 'base-agent.md' in result['agents']
+        # ext replaced base agents (no per-entry merge-keys from leaf)
+        assert 'base-agent.md' not in result['agents']
         assert 'ext-agent.md' in result['agents']
 
     def test_list_empty_raises(self):
@@ -7433,7 +7435,7 @@ class TestListInherit:
         assert 'merge-keys' not in result
 
     def test_leaf_merge_keys_applied(self, mock_load):
-        """Leaf's own merge-keys applies on top of accumulated."""
+        """Leaf's own merge-keys applies on top of accumulated (Rule 4)."""
         def load_side_effect(src, _auth_param=None):
             if 'base' in src:
                 return ({'name': 'Base', 'agents': ['base-agent.md']}, 'base.yaml')
@@ -7452,7 +7454,9 @@ class TestListInherit:
             'name': 'Leaf',
         }
         result, _ = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
-        assert 'base-agent.md' in result['agents']
+        # ext's own merge-keys is STRIPPED (Rule 3), so ext REPLACES base agents
+        # Leaf merge-keys: [agents] merges leaf agents with accumulated (ext's agents)
+        assert 'base-agent.md' not in result['agents']
         assert 'ext-agent.md' in result['agents']
         assert 'leaf-agent.md' in result['agents']
 

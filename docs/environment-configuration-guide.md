@@ -137,7 +137,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`description`](#description)                         | `str`                  | No       | `None`  | Config description (shown in summary)                      |
 | [`post-install-notes`](#post-install-notes)           | `str`                  | No       | `None`  | Notes shown after successful installation                  |
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                                    |
-| [`inherit`](#inherit)                                 | `str \| list[str]`     | No       | `None`  | Parent config URL/path/name or list for composition chains |
+| [`inherit`](#inherit)                                 | `str \| list`          | No       | `None`  | Parent config URL/path/name or list for composition chains |
 | [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace                           |
 | [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                                  |
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths                       |
@@ -271,13 +271,13 @@ Base URL for resolving relative resource paths (agents, commands, skills, hooks,
 
 #### `inherit`
 
-URL, local path, or repository config name to inherit from. Accepts a single string or a list of strings for composition chains.
+URL, local path, or repository config name to inherit from. Accepts a single string or a list of strings/structured objects for composition chains.
 
-- **Type:** `str | list[str] | None`
+- **Type:** `str | list[str | {config: str, merge-keys: list[str]}] | None`
 - **Default:** `None`
 - **Single string:** Standard recursive inheritance (child overrides parent). Use `merge-keys` to selectively merge.
-- **List of strings:** Flat composition chain (left-to-right). Each entry's own `inherit` is stripped. Each entry's `merge-keys` applies normally. See [List Inherit (Composition Chains)](#list-inherit-composition-chains).
-- **Validation:** Cannot be empty, no null bytes. Lists must be non-empty with all entries as non-empty, non-blank strings.
+- **List of strings/objects:** Flat composition chain (left-to-right). Each entry's own `inherit` and `merge-keys` are stripped. Per-entry merge-keys specified via structured `{config: ..., merge-keys: [...]}` entries in the leaf. See [List Inherit (Composition Chains)](#list-inherit-composition-chains).
+- **Validation:** Cannot be empty, no null bytes. Lists must be non-empty with all entries as non-empty strings or valid structured objects.
 - **Max depth:** 10 levels
 - **Circular dependency detection:** Automatic
 - **Inheritance:** Not applicable (structural meta-key consumed during resolution)
@@ -295,6 +295,14 @@ inherit: "base-config"  # fetched from artifacts-public repo
 inherit:
   - base.yaml
   - extensions.yaml
+
+# List with per-entry merge-keys (structured entries)
+inherit:
+  - base.yaml
+  - config: extensions.yaml
+    merge-keys:
+      - agents
+      - rules
 ```
 
 See [Configuration Inheritance](#configuration-inheritance) for details.
@@ -1140,7 +1148,7 @@ hooks:
 
 ### Configuration Inheritance
 
-The `inherit` key allows a configuration to extend a parent configuration. It accepts a single string for standard recursive inheritance or a list of strings for explicit composition chains (see [List Inherit (Composition Chains)](#list-inherit-composition-chains)).
+The `inherit` key allows a configuration to extend a parent configuration. It accepts a single string for standard recursive inheritance or a list of strings/structured objects for explicit composition chains (see [List Inherit (Composition Chains)](#list-inherit-composition-chains)).
 
 #### How Inheritance Works
 
@@ -1182,11 +1190,11 @@ effort-level: "high"          # Added (not in parent)
 
 ### List Inherit (Composition Chains)
 
-The `inherit` key also accepts a list of configuration paths for explicit composition chains. Three mandatory rules govern list inherit behavior:
+The `inherit` key also accepts a list of configuration paths for explicit composition chains. The list may contain plain strings (backward compatible) and structured objects with per-entry merge-keys. Four mandatory rules govern list inherit behavior:
 
 #### Rule 1: Own inherit stripped
 
-When `inherit` is a list with more than one entry, each listed file's own `inherit` key is **completely ignored**. It does not participate in chain resolution. The user explicitly specifies the full chain in one place -- if additional parent files are needed, they must be added to the list in the correct order.
+Each listed file's own `inherit` key is **completely ignored** in list composition mode. It does not participate in chain resolution. The user explicitly specifies the full chain in one place -- if additional parent files are needed, they must be added to the list in the correct order.
 
 #### Rule 2: Equivalent to separate-file chains
 
@@ -1197,9 +1205,63 @@ When `inherit` is a list with more than one entry, each listed file's own `inher
 
 Resolution order is left-to-right: the first entry is the base (lowest priority), subsequent entries override earlier ones, and the leaf config overrides everything.
 
-#### Rule 3: merge-keys per entry
+#### Rule 3: Own merge-keys stripped, per-entry from leaf
 
-Each file in the list can declare its own `merge-keys`, which applies normally at its composition step, as if it were a separate file with single-value inherit.
+Each listed file's own `merge-keys` key is **stripped and ignored**. Per-entry merge behavior is controlled by the leaf config using structured inherit entries: `{config: ..., merge-keys: [...]}`.
+
+This design reflects the principle that **merge-keys are a property of the relationship between the leaf and each listed entry**, not an intrinsic property of the listed config. A config file's own `merge-keys` may have been written for a different inheritance context and should not leak into an unrelated composition chain.
+
+Without structured entries, all composition steps use replace semantics (no merging between entries). To merge specific keys at a composition step, use a structured entry with `merge-keys`.
+
+#### Rule 4: Leaf merge-keys for final step
+
+The leaf config's top-level `merge-keys` applies to the **final composition step** (leaf on top of the accumulated base). This is orthogonal to per-entry merge-keys -- Rule 3 controls how listed entries compose with each other, while Rule 4 controls how the leaf merges on top.
+
+#### Structured Inherit Entries
+
+The inherit list accepts mixed entries: plain strings and structured objects.
+
+**Plain string entry** (replace semantics at that step):
+
+```yaml
+inherit:
+  - base.yaml
+  - extensions.yaml
+```
+
+**Structured entry** (per-entry merge-keys at that step):
+
+```yaml
+inherit:
+  - base.yaml
+  - config: extensions.yaml
+    merge-keys:
+      - agents
+      - rules
+```
+
+Structured entries have the following fields:
+
+| Field        | Type         | Required | Description                                               |
+|--------------|--------------|----------|-----------------------------------------------------------|
+| `config`     | `str`        | Yes      | Configuration source (URL, path, or repo name)            |
+| `merge-keys` | `list[str]`  | No       | Keys to merge instead of replace at this composition step |
+
+The `merge-keys` in a structured entry accepts the same values as the top-level `merge-keys` directive: `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `env-variables`, `os-env-variables`.
+
+Plain strings and structured entries can be mixed in the same list:
+
+```yaml
+inherit:
+  - base.yaml                    # Plain string (replace semantics)
+  - config: extensions.yaml      # Structured (merge agents and rules)
+    merge-keys:
+      - agents
+      - rules
+  - overrides.yaml               # Plain string (replace semantics)
+```
+
+> **Note:** Per-entry merge-keys on the **first** entry in the list is a no-op (there is no predecessor to merge with). The first entry always becomes the base.
 
 #### Virtual Chain Equivalence
 
@@ -1207,16 +1269,15 @@ Each file in the list can declare its own `merge-keys`, which applies normally a
 
 ```text
 A (base, no inherit)
-B_virtual (inherits A, own inherit stripped, B's merge-keys applied)
-C_virtual (inherits B_virtual, own inherit stripped, C's merge-keys applied)
-leaf (inherits C_virtual, leaf's merge-keys applied)
+B_virtual (inherits A, own inherit + merge-keys stripped, per-entry merge-keys from leaf applied)
+C_virtual (inherits B_virtual, own inherit + merge-keys stripped, per-entry merge-keys from leaf applied)
+leaf (inherits C_virtual, leaf's top-level merge-keys applied)
 ```
-
-Each file's `merge-keys` determines whether its keys merge with or replace the accumulated values at that step.
 
 #### Single-Element List
 
-`inherit: ["x"]` is normalized to `inherit: "x"` and uses the standard recursive single-string path. The file `x.yaml`'s own `inherit` **is** recursively resolved. Rule 1 only applies when the list has more than one entry.
+- `inherit: ["x"]` (plain string) is normalized to `inherit: "x"` and uses the standard recursive single-string path. The file `x.yaml`'s own `inherit` **is** recursively resolved.
+- `inherit: [{config: "x", merge-keys: [agents]}]` (structured entry) routes to composition mode. The file's own `inherit` and `merge-keys` are stripped per Rules 1 and 3.
 
 #### Example
 
@@ -1232,10 +1293,10 @@ env-variables:
   SHARED_VAR: "from_base"
   BASE_VAR: "base_val"
 
-# extensions.yaml (has own inherit that will be ignored when used in a list)
+# extensions.yaml (has own inherit and merge-keys that will be ignored in list mode)
 name: "Extensions"
-inherit: "some-parent.yaml"  # IGNORED when this file is part of a multi-element list
-merge-keys:
+inherit: "some-parent.yaml"  # IGNORED (Rule 1)
+merge-keys:                  # IGNORED (Rule 3)
   - agents
   - rules
 agents:
@@ -1246,11 +1307,16 @@ env-variables:
   SHARED_VAR: "from_extensions"
   EXT_VAR: "ext_val"
 
-# leaf.yaml
+# leaf.yaml -- per-entry merge-keys specified in the leaf
 inherit:
   - base.yaml
-  - extensions.yaml
+  - config: extensions.yaml
+    merge-keys:
+      - agents
+      - rules
 name: "My Environment"
+merge-keys:
+  - os-env-variables
 model: "opus"
 env-variables:
   LEAF_VAR: "leaf_val"
@@ -1258,12 +1324,13 @@ env-variables:
 
 Result:
 
-- `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` -- merged by extensions.yaml's `merge-keys`
-- `rules`: `["rules/base-rule.md", "rules/extra-rule.md"]` -- merged by extensions.yaml's `merge-keys`
+- `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` -- merged by the structured entry's `merge-keys` (Rule 3)
+- `rules`: `["rules/base-rule.md", "rules/extra-rule.md"]` -- merged by the structured entry's `merge-keys` (Rule 3)
 - `model`: `"opus"` -- leaf overrides
 - `name`: `"My Environment"` -- leaf overrides
-- `env-variables`: `{"LEAF_VAR": "leaf_val"}` -- extensions replaces base's env-variables entirely (not in `merge-keys`), then leaf replaces again (no `merge-keys`)
-- `some-parent.yaml` referenced in extensions.yaml's own inherit is **never loaded**
+- `env-variables`: `{"LEAF_VAR": "leaf_val"}` -- extensions replaces base's env-variables (not in per-entry merge-keys), then leaf replaces again
+- `some-parent.yaml` referenced in extensions.yaml's own inherit is **never loaded** (Rule 1)
+- extensions.yaml's own `merge-keys: [agents, rules]` is **ignored** (Rule 3)
 
 ### Selective Merge (`merge-keys`)
 

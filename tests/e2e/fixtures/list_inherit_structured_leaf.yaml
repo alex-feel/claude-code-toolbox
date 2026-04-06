@@ -1,0 +1,9 @@
+name: "Structured Leaf"
+inherit:
+  - list_inherit_base.yaml
+  - config: list_inherit_middle.yaml
+    merge-keys:
+      - agents
+      - rules
+agents:
+  - "agents/structured-leaf-agent.md"
