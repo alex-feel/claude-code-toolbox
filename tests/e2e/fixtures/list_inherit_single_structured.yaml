@@ -1,0 +1,8 @@
+name: "Single Structured"
+inherit:
+  - config: list_inherit_base.yaml
+    merge-keys:
+      - agents
+agents:
+  - "agents/single-structured-agent.md"
+model: "opus"

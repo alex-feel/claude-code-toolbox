@@ -4267,7 +4267,7 @@ def _validate_merge_keys(
 
 def _resolve_list_inherit(
     config: dict[str, Any],
-    inherit_list: list[str],
+    inherit_list: list[str | dict[str, Any]],
     source: str,
     auth_param: str | None,
     visited: set[str],
@@ -4275,17 +4275,14 @@ def _resolve_list_inherit(
 ) -> tuple[dict[str, Any], list[InheritanceChainEntry]]:
     """Resolve list-based inheritance via flat left-to-right composition.
 
-    When inherit is a list with >1 entries, each entry is loaded raw,
-    its own 'inherit' key is stripped, its 'merge-keys' is captured and
-    validated, and entries are composed left-to-right.
-
-    This is equivalent to creating a virtual chain where:
-    inherit: [A, B, C] behaves identically to C inherits B inherits A,
-    with each entry's own inherit ignored.
+    When inherit is a list, each entry is loaded raw, its own 'inherit' and
+    'merge-keys' keys are stripped (Rules 1 and 3), and entries are composed
+    left-to-right using per-entry merge-keys specified in the leaf config's
+    structured inherit entries.
 
     Args:
         config: The leaf configuration (contains the list inherit).
-        inherit_list: List of inherit values (already validated, len > 1).
+        inherit_list: List of inherit entries (strings or structured dicts/InheritEntry).
         source: Source path/URL of the leaf config.
         auth_param: Optional authentication parameter for private repositories.
         visited: Set of already-visited sources for circular dependency detection.
@@ -4300,8 +4297,18 @@ def _resolve_list_inherit(
     """
     accumulated: dict[str, Any] | None = None
 
-    for i, entry_value in enumerate(inherit_list):
-        entry_value = entry_value.strip()
+    for i, entry_raw in enumerate(inherit_list):
+        # Extract entry_value (config source) and override_merge_keys from entry
+        if isinstance(entry_raw, str):
+            entry_value = entry_raw.strip()
+            override_merge_keys: list[str] | None = None
+        elif isinstance(entry_raw, dict):
+            entry_value = str(entry_raw.get('config', '')).strip()
+            override_merge_keys = entry_raw.get('merge-keys')
+        else:
+            # InheritEntry object (from model validation)
+            entry_value = entry_raw.config.strip()
+            override_merge_keys = entry_raw.merge_keys
 
         # Resolve path relative to leaf source
         entry_source = _resolve_inherit_path(entry_value, source)
@@ -4338,9 +4345,15 @@ def _resolve_list_inherit(
         if own_inherit is not None:
             info(f"inherit[{i}]: own 'inherit' key stripped (list composition mode)")
 
-        # Rule 3: Capture and validate entry's merge-keys
-        entry_merge_keys = _validate_merge_keys(
-            entry_config.get(MERGE_KEYS_KEY),
+        # Rule 3 (per-entry from leaf): Strip and IGNORE entry's own merge-keys.
+        # Per-entry merge behavior comes from the leaf's structured entries.
+        own_merge_keys = entry_config.get(MERGE_KEYS_KEY)
+        if own_merge_keys is not None:
+            info(f"inherit[{i}]: own 'merge-keys' stripped (leaf controls merge semantics)")
+
+        # Validate override merge-keys from the structured entry (if provided)
+        validated_override = _validate_merge_keys(
+            override_merge_keys,
             context=f'inherit[{i}]',
         )
 
@@ -4352,21 +4365,22 @@ def _resolve_list_inherit(
         ))
 
         if accumulated is None:
-            # First entry becomes the base (its merge-keys are moot: no predecessor)
+            # First entry becomes the base; merge-keys are moot (no predecessor).
+            # Defense-in-depth: strip meta-keys here even though _merge_configs also
+            # strips them, because first entry bypasses _merge_configs entirely.
             accumulated = {
                 k: v for k, v in entry_config.items()
                 if k not in (INHERIT_KEY, MERGE_KEYS_KEY)
             }
-            if entry_merge_keys is not None:
-                debug_log(f'inherit[{i}]: merge-keys ignored (first entry, no predecessor)')
+            if validated_override is not None:
+                debug_log(f'inherit[{i}]: per-entry merge-keys ignored (first entry, no predecessor)')
         else:
-            # Subsequent entries: compose with accumulated using entry's merge-keys
-            accumulated = _merge_configs(accumulated, entry_config, merge_keys=entry_merge_keys)
+            # Subsequent entries: compose with accumulated using leaf-specified per-entry merge-keys
+            accumulated = _merge_configs(accumulated, entry_config, merge_keys=validated_override)
 
         success(f'Loaded inherit[{i}]: {entry_value}')
 
-    # Final: merge leaf config on top of accumulated base
-    # accumulated is guaranteed non-None: inherit_list has >1 entries (validated by caller)
+    # Final: merge leaf config on top of accumulated base (Rule 4)
     assert accumulated is not None
     leaf_merge_keys = _validate_merge_keys(config.get(MERGE_KEYS_KEY))
     merged = _merge_configs(accumulated, config, merge_keys=leaf_merge_keys)
@@ -4390,8 +4404,9 @@ def resolve_config_inheritance(
 
     Supports two modes of inheritance:
     - Single string: recursive chain resolution (child -> parent -> grandparent)
-    - List of strings: flat left-to-right composition where each entry's own
-      'inherit' key is stripped and merge-keys apply per-entry
+    - List of strings/objects: flat left-to-right composition where each entry's
+      own 'inherit' and 'merge-keys' keys are stripped, and per-entry merge-keys
+      are specified via structured {config: ..., merge-keys: [...]} entries
 
     Args:
         config: The configuration dictionary to resolve inheritance for.
@@ -4463,25 +4478,49 @@ def resolve_config_inheritance(
             error("Empty 'inherit' list in configuration")
             raise ValueError("The 'inherit' list cannot be empty")
 
-        # Validate all entries are non-empty strings
+        # Validate all entries are strings or structured dicts
         for i, entry in enumerate(inherit_value):
-            if not isinstance(entry, str):
-                error(f'Invalid inherit[{i}]: expected string, got {type(entry).__name__}')
+            if isinstance(entry, str):
+                stripped = entry.strip()
+                if not stripped:
+                    error(f'Empty string in inherit[{i}]')
+                    raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
+            elif isinstance(entry, dict):
+                if 'config' not in entry:
+                    error(f'inherit[{i}]: structured entry missing required "config" key')
+                    raise ValueError(
+                        f'inherit[{i}] structured entry must have a "config" key',
+                    )
+            elif hasattr(entry, 'config'):
+                # InheritEntry object from model validation
+                pass
+            else:
+                error(f'Invalid inherit[{i}]: expected string or {{config: ...}}, got {type(entry).__name__}')
                 raise ValueError(
-                    f'inherit[{i}] must be a string, '
+                    f'inherit[{i}] must be a string or {{config: ..., merge-keys: [...]}} object, '
                     f'got {type(entry).__name__}: {entry!r}',
                 )
-            stripped = entry.strip()
-            if not stripped:
-                error(f'Empty string in inherit[{i}]')
-                raise ValueError(f'inherit[{i}] cannot be empty or whitespace-only')
 
-        # Single-element list: normalize to string, use existing recursive path
+        # Single-element list handling
         if len(inherit_value) == 1:
-            inherit_value = inherit_value[0].strip()
-            # Fall through to the string path below
+            single = inherit_value[0]
+            if isinstance(single, str):
+                # Plain string: normalize to string, use recursive chain
+                inherit_value = single.strip()
+                # Fall through to the string path below
+            else:
+                # Structured entry: route to _resolve_list_inherit (composition mode).
+                # Preserves per-entry merge-keys and strips loaded config's own merge-keys.
+                return _resolve_list_inherit(
+                    config=config,
+                    inherit_list=inherit_value,
+                    source=source,
+                    auth_param=auth_param,
+                    visited=visited,
+                    chain=chain,
+                )
         else:
-            # Multi-element list: flat composition (Rule 1, 2, 3)
+            # Multi-element list: flat composition (Rules 1, 2, 3, 4)
             return _resolve_list_inherit(
                 config=config,
                 inherit_list=inherit_value,
@@ -4493,7 +4532,7 @@ def resolve_config_inheritance(
     elif not isinstance(inherit_value, str):
         error(f"Invalid 'inherit' value: expected string or list, got {type(inherit_value).__name__}")
         raise ValueError(
-            f"The 'inherit' key must be a string or list of strings, "
+            f"The 'inherit' key must be a string or list of strings/objects, "
             f"got {type(inherit_value).__name__}: {inherit_value!r}",
         )
 
