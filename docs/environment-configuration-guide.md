@@ -1555,6 +1555,26 @@ When a version is pinned, the setup installs the matching Claude Code extension 
 
 Installation is **non-fatal**: failures produce warnings but do not abort the setup.
 
+#### VSIX Auto-Update Behavior
+
+The three installation tiers have different auto-update implications for the installed extension:
+
+| Tier   | Method               | Auto-Update Status                             |
+|--------|----------------------|------------------------------------------------|
+| Tier 1 | Bundled VSIX         | **Disabled by default** (VS Code v1.92+)       |
+| Tier 2 | Downloaded VSIX      | **Disabled by default** (VS Code v1.92+)       |
+| Tier 3 | Marketplace @version | **Active** -- VS Code may update the extension |
+
+Since VS Code v1.92, extensions installed via VSIX files (Tiers 1 and 2) have auto-update disabled by default. This is the primary defense mechanism for version pinning -- the installed extension stays at the pinned version without any additional IDE-level configuration.
+
+Tier 3 (marketplace @version syntax) is a last-resort fallback that only triggers when both the bundled VSIX is unavailable and the marketplace CDN download fails. In this case, VS Code may auto-update the extension despite version pinning. When Tier 3 is used, the setup emits a warning with instructions to manually disable auto-update for the extension:
+
+> In VS Code's Extensions view, right-click the Claude Code extension and set "Auto Update" to off.
+
+This per-extension "Auto Update" toggle is the only targeted control available. There is no `settings.json` key for per-extension auto-update exceptions -- the only JSON setting (`extensions.autoUpdate: false`) disables auto-update for ALL extensions, which is too broad.
+
+**JetBrains IDEs:** JetBrains IDEs use their own plugin ecosystem and do not support VSIX extensions. The Claude Code JetBrains plugin is versioned independently from the CLI, and there is no external mechanism to control per-plugin auto-update from outside the IDE. The existing `autoInstallIdeExtension: false` control is the only applicable protection for JetBrains.
+
 #### VS Code Family IDE Detection
 
 IDEs are detected via `shutil.which()` for each CLI name: `code`, `code-insiders`, `cursor`, `windsurf`, `codium`. The extension is installed into all detected IDEs. If no IDEs are detected, the step is a silent no-op.

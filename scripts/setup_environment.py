@@ -2303,7 +2303,10 @@ def install_ide_extensions(
                 use_marketplace_syntax = True
                 warning(
                     'Using marketplace @version syntax. '
-                    'VS Code may auto-update this extension.',
+                    'VS Code may auto-update this extension. '
+                    'To prevent auto-updates: in VS Code Extensions view, '
+                    'right-click the Claude Code extension and set '
+                    '"Auto Update" to off.',
                 )
 
         # Install into each detected IDE

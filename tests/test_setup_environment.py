@@ -11485,6 +11485,24 @@ class TestInstallIdeExtensions:
         assert result is True
         assert 'anthropic.claude-code@2.1.85' in commands_run[0]
 
+    def test_marketplace_fallback_warning_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        def mock_fetch_fail(_url: str, **_kw: object) -> bytes:
+            raise Exception('download failed')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_fail)
+        monkeypatch.setattr(setup_environment, 'run_command', lambda _cmd, **_kw: MagicMock(returncode=0))
+
+        setup_environment.install_ide_extensions('2.1.85')
+
+        captured = capsys.readouterr()
+        assert 'right-click' in captured.out
+        assert 'Auto Update' in captured.out
+
     def test_multiple_ides_installed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         def mock_which(name: str) -> str | None:
             return f'/usr/bin/{name}' if name in ('code', 'cursor') else None
