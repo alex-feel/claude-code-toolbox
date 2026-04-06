@@ -40,6 +40,24 @@ def _resolve(
     return setup_environment.resolve_config_inheritance(config, source)
 
 
+def _contains_path(items: list[str], suffix: str) -> bool:
+    """Check if any item in the list ends with the given path suffix.
+
+    Parent paths are resolved to absolute paths during inheritance, so exact
+    string comparison fails. This helper normalizes by checking path suffixes.
+
+    Returns:
+        True if any item matches the suffix.
+    """
+    import os
+
+    normalized_suffix = suffix.replace('/', os.sep)
+    return any(
+        item == suffix or item.endswith((os.sep + normalized_suffix, '/' + suffix))
+        for item in items
+    )
+
+
 class TestBasicListComposition:
     """Test basic two-element list composition (Rule 2)."""
 
@@ -165,8 +183,8 @@ class TestMergeKeysPerEntry:
         resolved, _ = _resolve(config, str(path))
         rules = resolved.get('rules', [])
         # Structured entry merge-keys: [agents, rules] -- middle merges with base
-        assert 'rules/base-rule.md' in rules
-        assert 'rules/middle-rule.md' in rules
+        assert _contains_path(rules, 'rules/base-rule.md')
+        assert _contains_path(rules, 'rules/middle-rule.md')
 
     def test_leaf_merge_keys_applied(self, fixtures_dir):
         """Leaf's own merge-keys applies on top of accumulated (Rule 4)."""
@@ -177,10 +195,10 @@ class TestMergeKeysPerEntry:
         # But leaf has merge-keys: [agents, rules], so leaf MERGES with accumulated
         agents = resolved.get('agents', [])
         # Middle replaced base (no per-entry merge-keys), then leaf merges
-        assert 'agents/middle-agent.md' in agents
-        assert 'agents/mk-leaf-agent.md' in agents
+        assert _contains_path(agents, 'agents/middle-agent.md')
+        assert _contains_path(agents, 'agents/mk-leaf-agent.md')
         # Base agents were replaced by middle (not merged), so base NOT present
-        assert 'agents/base-agent.md' not in agents
+        assert not _contains_path(agents, 'agents/base-agent.md')
 
     def test_leaf_merge_keys_merge_rules(self, fixtures_dir):
         """Leaf's merge-keys merges rules from accumulated + leaf."""
@@ -189,10 +207,10 @@ class TestMergeKeysPerEntry:
         resolved, _ = _resolve(config, str(path))
         rules = resolved.get('rules', [])
         # Middle replaced base rules (no per-entry merge-keys), then leaf merges
-        assert 'rules/middle-rule.md' in rules
-        assert 'rules/mk-leaf-rule.md' in rules
+        assert _contains_path(rules, 'rules/middle-rule.md')
+        assert _contains_path(rules, 'rules/mk-leaf-rule.md')
         # Base rules replaced by middle
-        assert 'rules/base-rule.md' not in rules
+        assert not _contains_path(rules, 'rules/base-rule.md')
 
     def test_leaf_without_merge_keys_replaces_agents(self, fixtures_dir):
         """Leaf without merge-keys replaces accumulated agents."""
@@ -291,17 +309,27 @@ class TestEquivalenceToSeparateFiles:
         list_result, _ = _resolve(leaf_config, str(leaf_path))
 
         # Method 2: Manual simulation of new Rule 3 behavior
-        base_config = _load_yaml(fixtures_dir / 'list_inherit_base.yaml')
-        middle_config = _load_yaml(fixtures_dir / 'list_inherit_middle.yaml')
+        base_path = fixtures_dir / 'list_inherit_base.yaml'
+        middle_path = fixtures_dir / 'list_inherit_middle.yaml'
+        base_config = _load_yaml(base_path)
+        middle_config = _load_yaml(middle_path)
+
+        # Resolve file paths using each entry's own source (matching real behavior)
+        base_resolved = setup_environment._resolve_config_file_paths(
+            base_config, str(base_path),
+        )
+        middle_resolved = setup_environment._resolve_config_file_paths(
+            middle_config, str(middle_path),
+        )
 
         # Step 1: Strip middle's own merge-keys (Rule 3), compose with REPLACE semantics
         base_stripped = {
-            k: v for k, v in base_config.items()
+            k: v for k, v in base_resolved.items()
             if k not in ('inherit', 'merge-keys')
         }
         # With Rule 3, middle's own merge-keys is stripped, so merge_keys=None (REPLACE)
         step1 = setup_environment._merge_configs(
-            base_stripped, middle_config, merge_keys=None,
+            base_stripped, middle_resolved, merge_keys=None,
         )
 
         # Step 2: apply leaf on top (leaf has no merge-keys)

@@ -75,6 +75,26 @@ MERGEABLE_CONFIG_KEYS: frozenset[str] = frozenset({
     'os-env-variables',
 })
 
+# Config keys containing file references (paths or URLs) that require
+# resolution and validation. Used as a single source of truth for maintenance.
+# Dot notation indicates nested keys (e.g., 'hooks.files' = hooks['files']).
+#
+# Access patterns differ per key type (simple list, dict-nested list,
+# dict-nested scalar), so this constant serves as a registry, not a
+# dispatch mechanism. validate_all_config_files() and
+# _resolve_config_file_paths() handle type-specific extraction logic.
+FILE_REFERENCE_KEYS: frozenset[str] = frozenset({
+    'agents',                        # list[str] -- simple string list
+    'slash-commands',                 # list[str] -- simple string list
+    'rules',                         # list[str] -- simple string list
+    'hooks.files',                   # list[str] -- nested under hooks dict
+    'files-to-download',             # list[dict] -- each dict has 'source' key
+    'skills',                        # list[dict] -- each dict has 'base' key
+    'command-defaults.system-prompt',  # str -- nested scalar under command-defaults
+    'status-line.file',              # str -- nested scalar under status-line
+    'status-line.config',            # str -- nested scalar under status-line
+})
+
 # Node.js installation constants (standalone -- no imports from install_claude.py)
 MIN_NODE_VERSION = '18.0.0'
 NODE_LTS_API = 'https://nodejs.org/dist/index.json'
@@ -2303,7 +2323,10 @@ def install_ide_extensions(
                 use_marketplace_syntax = True
                 warning(
                     'Using marketplace @version syntax. '
-                    'VS Code may auto-update this extension.',
+                    'VS Code may auto-update this extension. '
+                    'To prevent auto-updates: in VS Code Extensions view, '
+                    'right-click the Claude Code extension and set '
+                    '"Auto Update" to off.',
                 )
 
         # Install into each detected IDE
@@ -3101,6 +3124,53 @@ def _collect_simple_list_files(
     return files
 
 
+def _inject_status_line_into_hooks_files(config: dict[str, Any]) -> None:
+    """Auto-inject status-line file references into hooks.files for validation and download.
+
+    Ensures status-line.file and status-line.config are included in hooks.files
+    so they are validated and downloaded by the existing pipeline.
+
+    Args:
+        config: The configuration dictionary (modified in place).
+    """
+    status_line = config.get('status-line')
+    if not status_line or not isinstance(status_line, dict):
+        return
+
+    # Collect file references from status-line
+    files_to_inject: list[str] = []
+    sl_file = status_line.get('file')
+    if sl_file and isinstance(sl_file, str):
+        files_to_inject.append(sl_file)
+    sl_config = status_line.get('config')
+    if sl_config and isinstance(sl_config, str):
+        files_to_inject.append(sl_config)
+
+    if not files_to_inject:
+        return
+
+    # Ensure hooks dict exists
+    hooks = config.get('hooks')
+    if hooks is None:
+        hooks = {}
+        config['hooks'] = hooks
+    elif not isinstance(hooks, dict):
+        return
+
+    # Ensure hooks.files list exists
+    hook_files = hooks.get('files')
+    if hook_files is None:
+        hook_files = []
+        hooks['files'] = hook_files
+    elif not isinstance(hook_files, list):
+        return
+
+    # Inject each file if not already present
+    for file_ref in files_to_inject:
+        if file_ref not in hook_files:
+            hook_files.append(file_ref)
+
+
 def validate_all_config_files(
     config: dict[str, Any],
     config_source: str,
@@ -3108,6 +3178,9 @@ def validate_all_config_files(
     auth_cache: 'AuthHeaderCache | None' = None,
 ) -> tuple[bool, list[tuple[str, str, bool, str]]]:
     """Validate all files in the configuration (both remote and local).
+
+    Validates accessibility of all file references across config keys defined
+    in FILE_REFERENCE_KEYS.
 
     Args:
         config: Environment configuration dictionary
@@ -3775,6 +3848,113 @@ def resolve_resource_path(resource_path: str, config_source: str, base_url: str 
     return str(resource_full_path), False
 
 
+def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> dict[str, Any]:
+    """Resolve all relative file paths in a config dict using its own source.
+
+    Converts relative file paths to absolute URLs or paths so that after merging,
+    each file reference is self-contained and does not depend on the leaf config's
+    source for resolution.
+
+    Only resolves paths that are RELATIVE. Absolute paths and full URLs are
+    left unchanged (resolve_resource_path passes them through).
+
+    See FILE_REFERENCE_KEYS for the complete list of config keys containing
+    file references.
+
+    Args:
+        config: Configuration dictionary containing file references.
+        config_source: The source URL or path where this config was loaded from.
+
+    Returns:
+        A new config dict with file paths resolved. The original dict is not modified.
+    """
+    result = config.copy()
+    base_url = config.get('base-url')
+
+    # --- Simple list keys: agents, slash-commands, rules ---
+    for key in ('agents', 'slash-commands', 'rules'):
+        items = result.get(key)
+        if isinstance(items, list):
+            resolved_items = []
+            for item in items:
+                if isinstance(item, str):
+                    resolved_path, _ = resolve_resource_path(item, config_source, base_url)
+                    resolved_items.append(resolved_path)
+                else:
+                    resolved_items.append(item)
+            result[key] = resolved_items
+
+    # --- hooks.files ---
+    hooks = result.get('hooks')
+    if isinstance(hooks, dict):
+        hooks = hooks.copy()
+        hook_files = hooks.get('files')
+        if isinstance(hook_files, list):
+            resolved_files = []
+            for item in hook_files:
+                if isinstance(item, str):
+                    resolved_path, _ = resolve_resource_path(item, config_source, base_url)
+                    resolved_files.append(resolved_path)
+                else:
+                    resolved_files.append(item)
+            hooks['files'] = resolved_files
+        result['hooks'] = hooks
+
+    # --- files-to-download[].source ---
+    ftd = result.get('files-to-download')
+    if isinstance(ftd, list):
+        resolved_ftd = []
+        for item in ftd:
+            if isinstance(item, dict):
+                item = item.copy()
+                source = item.get('source')
+                if isinstance(source, str):
+                    resolved_path, _ = resolve_resource_path(source, config_source, base_url)
+                    item['source'] = resolved_path
+            resolved_ftd.append(item)
+        result['files-to-download'] = resolved_ftd
+
+    # --- skills[].base (uses None for base_url to match validate_all_config_files behavior) ---
+    skills = result.get('skills')
+    if isinstance(skills, list):
+        resolved_skills = []
+        for item in skills:
+            if isinstance(item, dict):
+                item = item.copy()
+                skill_base = item.get('base')
+                if isinstance(skill_base, str):
+                    resolved_path, _ = resolve_resource_path(skill_base, config_source, None)
+                    item['base'] = resolved_path
+            resolved_skills.append(item)
+        result['skills'] = resolved_skills
+
+    # --- command-defaults.system-prompt ---
+    cmd_defaults = result.get('command-defaults')
+    if isinstance(cmd_defaults, dict):
+        cmd_defaults = cmd_defaults.copy()
+        sys_prompt = cmd_defaults.get('system-prompt')
+        if isinstance(sys_prompt, str):
+            resolved_path, _ = resolve_resource_path(sys_prompt, config_source, base_url)
+            cmd_defaults['system-prompt'] = resolved_path
+        result['command-defaults'] = cmd_defaults
+
+    # --- status-line.file and status-line.config ---
+    sl = result.get('status-line')
+    if isinstance(sl, dict):
+        sl = sl.copy()
+        sl_file = sl.get('file')
+        if isinstance(sl_file, str):
+            resolved_path, _ = resolve_resource_path(sl_file, config_source, base_url)
+            sl['file'] = resolved_path
+        sl_config = sl.get('config')
+        if isinstance(sl_config, str):
+            resolved_path, _ = resolve_resource_path(sl_config, config_source, base_url)
+            sl['config'] = resolved_path
+        result['status-line'] = sl
+
+    return result
+
+
 def load_config_from_source(config_spec: str, auth_param: str | None = None) -> tuple[dict[str, Any], str]:
     """Load configuration from URL, local path, or repository.
 
@@ -3856,7 +4036,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
         content = fetch_url_with_auth(config_url, auth_param=auth_param)
         config = yaml.safe_load(content)
         success(f"Configuration loaded: {config.get('name', config_spec)}")
-        return config, config_spec
+        return config, config_url
     except urllib.error.HTTPError as e:
         if e.code == 404:
             error(f'Configuration not found in repository: {config_spec}')
@@ -4340,6 +4520,9 @@ def _resolve_list_inherit(
             error(f'Error: {e}')
             raise
 
+        # Resolve entry's file paths using its own source before composition
+        entry_config = _resolve_config_file_paths(entry_config, actual_source)
+
         # Rule 1: Strip own inherit from entry (completely ignored)
         own_inherit = entry_config.get(INHERIT_KEY)
         if own_inherit is not None:
@@ -4589,6 +4772,9 @@ def resolve_config_inheritance(
         depth=depth + 1,
         chain=chain,
     )
+
+    # Resolve parent's file paths using parent's own source before merging
+    resolved_parent = _resolve_config_file_paths(resolved_parent, actual_parent_source)
 
     # Append the parent entry to the chain after recursion resolves deeper ancestors
     chain.append(InheritanceChainEntry(
@@ -9475,6 +9661,9 @@ def main() -> None:
 
         # Extract status_line configuration
         status_line = config.get('status-line')
+
+        # Auto-inject status-line files into hooks.files for validation and download
+        _inject_status_line_into_hooks_files(config)
 
         # Extract and validate effort_level configuration
         effort_level = config.get('effort-level')

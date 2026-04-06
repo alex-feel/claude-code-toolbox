@@ -1383,8 +1383,120 @@ class TestLoadConfig:
 
         config, source = setup_environment.load_config_from_source('python')
         assert config['name'] == 'Repo Config'
-        assert source == 'python.yaml'
+        assert source == 'https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/python.yaml'
         mock_fetch.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ('input_spec', 'expected_url_suffix'),
+        [
+            ('python', 'python.yaml'),
+            ('python.yaml', 'python.yaml'),
+            ('my-config', 'my-config.yaml'),
+            ('my-config.yaml', 'my-config.yaml'),
+        ],
+    )
+    @patch('setup_environment.fetch_url_with_auth')
+    def test_load_config_from_repository_returns_url(self, mock_fetch, input_spec, expected_url_suffix):
+        """Source 3 returns the full GitHub raw URL for proper path resolution."""
+        mock_fetch.return_value = 'name: Test Config'
+        config, source = setup_environment.load_config_from_source(input_spec)
+        expected_url = f'https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/{expected_url_suffix}'
+        assert source == expected_url
+        assert config['name'] == 'Test Config'
+
+    @patch('setup_environment.fetch_url_with_auth')
+    def test_source_3_url_enables_path_resolution(self, mock_fetch):
+        """Source 3 URL enables resolve_resource_path to derive correct base URL."""
+        mock_fetch.return_value = 'name: Test'
+        _, source = setup_environment.load_config_from_source('python')
+        assert source.startswith('https://')
+        resolved, is_remote = setup_environment.resolve_resource_path('agents/my-agent.md', source, None)
+        assert is_remote is True
+        assert 'agents/my-agent.md' in resolved
+
+
+class TestInjectStatusLineIntoHooksFiles:
+    """Tests for _inject_status_line_into_hooks_files() function."""
+
+    def test_inject_creates_hooks_files(self):
+        """Auto-inject creates hooks.files when hooks key is missing."""
+        config = {
+            'status-line': {
+                'file': 'hooks/status.py',
+                'config': 'configs/status-config.yaml',
+            },
+        }
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['hooks/status.py', 'configs/status-config.yaml']
+
+    def test_inject_no_duplicates(self):
+        """Auto-inject does not create duplicates when files already present."""
+        config = {
+            'status-line': {
+                'file': 'hooks/status.py',
+                'config': 'configs/status-config.yaml',
+            },
+            'hooks': {
+                'files': ['hooks/status.py', 'hooks/other.py'],
+            },
+        }
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['hooks/status.py', 'hooks/other.py', 'configs/status-config.yaml']
+
+    def test_inject_no_status_line(self):
+        """Auto-inject is a no-op when status-line is not configured."""
+        config = {'hooks': {'files': ['hooks/other.py']}}
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['hooks/other.py']
+
+    def test_inject_file_only(self):
+        """Auto-inject handles status-line with file but no config."""
+        config = {
+            'status-line': {'file': 'hooks/status.py'},
+        }
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['hooks/status.py']
+
+    def test_inject_config_only(self):
+        """Auto-inject handles status-line with config but no file."""
+        config = {
+            'status-line': {'config': 'configs/status-config.yaml'},
+        }
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['configs/status-config.yaml']
+
+    def test_inject_invalid_status_line_type(self):
+        """Auto-inject handles status-line that is not a dict."""
+        config = {'status-line': 'invalid'}
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert 'hooks' not in config
+
+    def test_inject_invalid_hooks_type(self):
+        """Auto-inject handles hooks that is not a dict."""
+        config = {'status-line': {'file': 'x.py'}, 'hooks': 'invalid'}
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks'] == 'invalid'
+
+    def test_inject_invalid_hooks_files_type(self):
+        """Auto-inject handles hooks.files that is not a list."""
+        config = {'status-line': {'file': 'x.py'}, 'hooks': {'files': 'invalid'}}
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == 'invalid'
+
+    def test_inject_empty_strings(self):
+        """Auto-inject skips empty string values."""
+        config = {'status-line': {'file': '', 'config': ''}}
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert 'hooks' not in config
+
+    def test_inject_with_existing_empty_hooks_files(self):
+        """Auto-inject appends to an empty hooks.files list."""
+        config = {
+            'status-line': {'file': 'hooks/status.py'},
+            'hooks': {'files': []},
+        }
+        setup_environment._inject_status_line_into_hooks_files(config)
+        assert config['hooks']['files'] == ['hooks/status.py']
 
 
 class TestGetRealUserHome:
@@ -7243,6 +7355,262 @@ agents:
             assert 'inherit' not in resolved
 
 
+class TestResolveConfigFilePaths:
+    """Unit tests for _resolve_config_file_paths() helper."""
+
+    def test_resolve_agents_with_url_source(self):
+        """Relative agent paths resolved to full URLs using URL config_source."""
+        config = {'agents': ['agents/my-agent.md', 'agents/helper.md']}
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert result['agents'][0] == 'https://raw.githubusercontent.com/user/repo/main/agents/my-agent.md'
+        assert result['agents'][1] == 'https://raw.githubusercontent.com/user/repo/main/agents/helper.md'
+
+    def test_resolve_agents_with_local_source(self, tmp_path):
+        """Relative agent paths resolved to absolute local paths."""
+        config_file = tmp_path / 'config.yaml'
+        config_file.touch()
+        config = {'agents': ['agents/my-agent.md']}
+        result = setup_environment._resolve_config_file_paths(config, str(config_file))
+        expected = str((tmp_path / 'agents' / 'my-agent.md').resolve())
+        assert result['agents'][0] == expected
+
+    def test_resolve_url_paths_unchanged(self):
+        """Full URL paths in config pass through without modification."""
+        url = 'https://example.com/agents/my-agent.md'
+        config = {
+            'agents': [url],
+            'slash-commands': [url],
+            'rules': [url],
+        }
+        result = setup_environment._resolve_config_file_paths(config, 'some-source.yaml')
+        assert result['agents'][0] == url
+        assert result['slash-commands'][0] == url
+        assert result['rules'][0] == url
+
+    def test_resolve_absolute_paths_unchanged(self):
+        """Absolute local paths pass through without modification."""
+        if sys.platform == 'win32':
+            abs_path = r'C:\Users\test\agents\agent.md'
+        else:
+            abs_path = '/home/user/agents/agent.md'
+        config = {'agents': [abs_path]}
+        result = setup_environment._resolve_config_file_paths(config, 'some-source.yaml')
+        assert Path(result['agents'][0]).is_absolute()
+
+    def test_resolve_hooks_files(self):
+        """hooks.files paths resolved using config_source."""
+        config = {
+            'hooks': {
+                'files': ['hooks/linter.py', 'hooks/formatter.sh'],
+                'events': [{'event': 'PostToolUse'}],
+            },
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert 'raw.githubusercontent.com' in result['hooks']['files'][0]
+        assert 'hooks/linter.py' in result['hooks']['files'][0]
+        assert result['hooks']['events'] == config['hooks']['events']
+
+    def test_resolve_files_to_download_source(self):
+        """files-to-download source paths resolved using config_source."""
+        config = {
+            'files-to-download': [
+                {'source': 'scripts/tool.sh', 'destination': '~/.local/bin/tool.sh'},
+                {'source': 'https://example.com/file.txt', 'destination': '/tmp/file.txt'},
+            ],
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert 'raw.githubusercontent.com' in result['files-to-download'][0]['source']
+        assert result['files-to-download'][1]['source'] == 'https://example.com/file.txt'
+        assert result['files-to-download'][0]['destination'] == '~/.local/bin/tool.sh'
+
+    def test_resolve_skills_base_without_base_url(self):
+        """skills[].base resolved with None base_url (matching validation behavior)."""
+        config = {
+            'base-url': 'https://custom-base.com/{path}',
+            'skills': [
+                {'base': 'skills/my-skill', 'files': ['SKILL.md', 'prompt.md']},
+            ],
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        resolved_base = result['skills'][0]['base']
+        assert 'custom-base.com' not in resolved_base
+        assert 'raw.githubusercontent.com' in resolved_base
+        assert result['skills'][0]['files'] == ['SKILL.md', 'prompt.md']
+
+    def test_resolve_command_defaults_system_prompt(self):
+        """command-defaults.system-prompt resolved using config_source."""
+        config = {
+            'command-defaults': {
+                'system-prompt': 'prompts/my-prompt.md',
+                'mode': 'replace',
+            },
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert 'raw.githubusercontent.com' in result['command-defaults']['system-prompt']
+        assert 'prompts/my-prompt.md' in result['command-defaults']['system-prompt']
+        assert result['command-defaults']['mode'] == 'replace'
+
+    def test_resolve_status_line_paths(self):
+        """status-line.file and status-line.config resolved using config_source."""
+        config = {
+            'status-line': {
+                'file': 'hooks/status.py',
+                'config': 'configs/status-config.yaml',
+                'interval': 10,
+            },
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert 'raw.githubusercontent.com' in result['status-line']['file']
+        assert 'raw.githubusercontent.com' in result['status-line']['config']
+        assert result['status-line']['interval'] == 10
+
+    def test_resolve_with_base_url(self):
+        """Config with base-url uses it for resolution of simple list keys."""
+        config = {
+            'base-url': 'https://custom-cdn.com/files/{path}',
+            'agents': ['agents/my-agent.md'],
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        result = setup_environment._resolve_config_file_paths(config, source)
+        assert result['agents'][0] == 'https://custom-cdn.com/files/agents/my-agent.md'
+
+    def test_resolve_empty_config(self):
+        """Config with no file-bearing keys produces no errors."""
+        config = {'name': 'Test', 'model': 'opus'}
+        result = setup_environment._resolve_config_file_paths(config, 'test.yaml')
+        assert result == config
+
+    def test_resolve_does_not_modify_original(self):
+        """_resolve_config_file_paths returns a new dict without modifying original."""
+        config = {
+            'agents': ['agents/my-agent.md'],
+            'hooks': {'files': ['hooks/linter.py']},
+        }
+        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
+        original_agents = config['agents'].copy()
+        original_hooks_files = config['hooks']['files'].copy()
+        setup_environment._resolve_config_file_paths(config, source)
+        assert config['agents'] == original_agents
+        assert config['hooks']['files'] == original_hooks_files
+
+    def test_resolve_tilde_paths(self):
+        """Tilde paths expanded to absolute local paths."""
+        config = {'agents': ['~/.claude/agents/my-agent.md']}
+        result = setup_environment._resolve_config_file_paths(config, 'test.yaml')
+        assert Path(result['agents'][0]).is_absolute()
+        assert '~' not in result['agents'][0]
+
+
+class TestResolveConfigFilePathsIntegration:
+    """Integration tests for _resolve_config_file_paths with inheritance."""
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_string_inherit_resolves_parent_paths(self, mock_load):
+        """Parent at URL with relative paths: paths resolved to parent's URL after inheritance."""
+        parent_url = 'https://raw.githubusercontent.com/user/repo/main/parent.yaml'
+
+        def load_side_effect(src, _auth_param=None):
+            if 'parent' in src:
+                return (
+                    {'name': 'Parent', 'agents': ['agents/parent-agent.md']},
+                    parent_url,
+                )
+            raise FileNotFoundError(f'Not found: {src}')
+
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': 'parent.yaml', 'name': 'Child'}
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+
+        assert result['agents'][0].startswith('https://raw.githubusercontent.com/')
+        assert 'agents/parent-agent.md' in result['agents'][0]
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_list_inherit_resolves_each_entry_paths(self, mock_load):
+        """Each list entry's paths resolved using its own source."""
+        base_url = 'https://raw.githubusercontent.com/user/repo/main/base.yaml'
+        ext_url = 'https://raw.githubusercontent.com/user/ext-repo/main/ext.yaml'
+
+        def load_side_effect(src, _auth_param=None):
+            if 'base' in src:
+                return (
+                    {'name': 'Base', 'agents': ['agents/base-agent.md']},
+                    base_url,
+                )
+            if 'ext' in src:
+                return (
+                    {'name': 'Ext', 'rules': ['rules/ext-rule.md']},
+                    ext_url,
+                )
+            return ({}, src)
+
+        mock_load.side_effect = load_side_effect
+        child = {
+            'inherit': ['base.yaml', 'ext.yaml'],
+            'name': 'Leaf',
+        }
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
+
+        assert 'user/repo' in result['agents'][0]
+        assert 'user/ext-repo' in result['rules'][0]
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_multi_level_resolves_at_each_level(self, mock_load):
+        """Each level's paths resolved using its own source in deep inheritance."""
+        gp_url = 'https://raw.githubusercontent.com/org/base/main/grandparent.yaml'
+        parent_url = 'https://raw.githubusercontent.com/org/ext/main/parent.yaml'
+
+        def load_side_effect(src, _auth_param=None):
+            if 'grandparent' in src:
+                return (
+                    {'name': 'GP', 'agents': ['agents/gp-agent.md']},
+                    gp_url,
+                )
+            if 'parent' in src:
+                return (
+                    {
+                        'inherit': 'grandparent.yaml',
+                        'name': 'Parent',
+                        'rules': ['rules/parent-rule.md'],
+                    },
+                    parent_url,
+                )
+            raise FileNotFoundError(f'Not found: {src}')
+
+        mock_load.side_effect = load_side_effect
+        child = {'inherit': 'parent.yaml', 'name': 'Child'}
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+
+        assert 'org/base' in result['agents'][0]
+        assert 'org/ext' in result['rules'][0]
+
+    def test_no_inherit_behavior_unchanged(self):
+        """Config without inherit does not undergo path resolution."""
+        config = {'name': 'Test', 'agents': ['agents/my-agent.md']}
+        result, _chain = setup_environment.resolve_config_inheritance(config, 'test.yaml')
+        assert result['agents'] == ['agents/my-agent.md']
+
+    @patch.object(setup_environment, 'load_config_from_source')
+    def test_absolute_paths_in_parent_unchanged(self, mock_load):
+        """Parent with absolute/URL paths: paths pass through resolution unchanged."""
+        parent_url = 'https://raw.githubusercontent.com/user/repo/main/parent.yaml'
+        mock_load.return_value = (
+            {
+                'name': 'Parent',
+                'agents': ['https://example.com/agents/remote-agent.md'],
+            },
+            parent_url,
+        )
+        child = {'inherit': 'parent.yaml', 'name': 'Child'}
+        result, _chain = setup_environment.resolve_config_inheritance(child, 'child.yaml')
+        assert result['agents'][0] == 'https://example.com/agents/remote-agent.md'
+
+
 class TestValidateMergeKeysHelper:
     """Tests for the extracted _validate_merge_keys() function."""
 
@@ -7303,16 +7671,24 @@ class TestListInherit:
         """inherit: [base, ext] -> base is lowest priority, ext overrides base."""
         def load_side_effect(src, _auth_param=None):
             if 'base' in src:
-                return ({'name': 'Base', 'model': 'sonnet', 'agents': ['a.md']}, 'base.yaml')
+                return (
+                    {'name': 'Base', 'model': 'sonnet', 'agents': ['a.md']},
+                    'https://raw.githubusercontent.com/user/repo/main/base.yaml',
+                )
             if 'ext' in src:
-                return ({'name': 'Ext', 'model': 'opus'}, 'ext.yaml')
+                return (
+                    {'name': 'Ext', 'model': 'opus'},
+                    'https://raw.githubusercontent.com/user/repo/main/ext.yaml',
+                )
             return ({}, src)
         mock_load.side_effect = load_side_effect
         child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
         result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
         assert result['name'] == 'Leaf'
         assert result['model'] == 'opus'
-        assert result['agents'] == ['a.md']
+        # Path resolved to full URL from base's source
+        assert len(result['agents']) == 1
+        assert 'a.md' in result['agents'][0]
 
     def test_list_strips_own_inherit(self, mock_load):
         """Own inherit in list entries is completely ignored (Rule 1)."""
@@ -7336,21 +7712,21 @@ class TestListInherit:
                 return ({
                     'name': 'Base',
                     'agents': ['base-agent.md'],
-                }, 'base.yaml')
+                }, 'https://raw.githubusercontent.com/user/repo/main/base.yaml')
             if 'ext' in src:
                 return ({
                     'name': 'Ext',
                     'merge-keys': ['agents'],
                     'agents': ['ext-agent.md'],
-                }, 'ext.yaml')
+                }, 'https://raw.githubusercontent.com/user/repo/main/ext.yaml')
             return ({}, src)
         mock_load.side_effect = load_side_effect
         # Plain string entries: ext's own merge-keys is STRIPPED, so ext REPLACES base
         child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
         result, chain = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
         # ext replaced base agents (no per-entry merge-keys from leaf)
-        assert 'base-agent.md' not in result['agents']
-        assert 'ext-agent.md' in result['agents']
+        assert not any('base-agent.md' in a for a in result['agents'])
+        assert any('ext-agent.md' in a for a in result['agents'])
 
     def test_list_empty_raises(self):
         """inherit: [] raises ValueError."""
@@ -7438,13 +7814,16 @@ class TestListInherit:
         """Leaf's own merge-keys applies on top of accumulated (Rule 4)."""
         def load_side_effect(src, _auth_param=None):
             if 'base' in src:
-                return ({'name': 'Base', 'agents': ['base-agent.md']}, 'base.yaml')
+                return (
+                    {'name': 'Base', 'agents': ['base-agent.md']},
+                    'https://raw.githubusercontent.com/user/repo/main/base.yaml',
+                )
             if 'ext' in src:
                 return ({
                     'name': 'Ext',
                     'merge-keys': ['agents'],
                     'agents': ['ext-agent.md'],
-                }, 'ext.yaml')
+                }, 'https://raw.githubusercontent.com/user/repo/main/ext.yaml')
             return ({}, src)
         mock_load.side_effect = load_side_effect
         child = {
@@ -7456,8 +7835,8 @@ class TestListInherit:
         result, _ = setup_environment.resolve_config_inheritance(child, 'leaf.yaml')
         # ext's own merge-keys is STRIPPED (Rule 3), so ext REPLACES base agents
         # Leaf merge-keys: [agents] merges leaf agents with accumulated (ext's agents)
-        assert 'base-agent.md' not in result['agents']
-        assert 'ext-agent.md' in result['agents']
+        assert not any('base-agent.md' in a for a in result['agents'])
+        assert any('ext-agent.md' in a for a in result['agents'])
         assert 'leaf-agent.md' in result['agents']
 
     def test_list_file_not_found_raises(self, mock_load):
@@ -11484,6 +11863,24 @@ class TestInstallIdeExtensions:
 
         assert result is True
         assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+
+    def test_marketplace_fallback_warning_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        def mock_fetch_fail(_url: str, **_kw: object) -> bytes:
+            raise Exception('download failed')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_fail)
+        monkeypatch.setattr(setup_environment, 'run_command', lambda _cmd, **_kw: MagicMock(returncode=0))
+
+        setup_environment.install_ide_extensions('2.1.85')
+
+        captured = capsys.readouterr()
+        assert 'right-click' in captured.out
+        assert 'Auto Update' in captured.out
 
     def test_multiple_ides_installed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         def mock_which(name: str) -> str | None:

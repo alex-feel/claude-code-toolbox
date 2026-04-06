@@ -266,7 +266,7 @@ Base URL for resolving relative resource paths (agents, commands, skills, hooks,
 - **Type:** `str | None`
 - **Default:** `None`
 - **Validation:** Must start with `http://` or `https://`
-- **Inheritance:** Standard override (child replaces parent). Each level's `base-url` applies to that level's own resource paths.
+- **Inheritance:** Standard override (child replaces parent). Each level's `base-url` applies to that level's own resource paths during inheritance resolution. A child `base-url` does **not** retroactively affect parent resource paths -- see [Resource Path Resolution in Inheritance](#resource-path-resolution-in-inheritance).
 - **Example:** `base-url: "https://raw.githubusercontent.com/org/repo/main"`
 
 #### `inherit`
@@ -1159,6 +1159,41 @@ The `inherit` key allows a configuration to extend a parent configuration. It ac
 - The `version` key is extracted from the root config **before** inheritance resolution
 - Both `inherit` and `merge-keys` are stripped from the final merged configuration
 
+#### Resource Path Resolution in Inheritance
+
+When configurations are inherited across different sources (e.g., a GitHub-hosted parent and a local child), relative file paths in each config are resolved using that config's own source location and `base-url`. This ensures that files referenced by a parent config are found at the correct location regardless of where the child config is stored.
+
+**How it works:**
+
+- Each parent config's relative resource paths (agents, rules, slash-commands, hooks files, files-to-download sources, skill bases, system prompts, and status-line files) are resolved to absolute URLs or paths **before** merging with child values
+- The resolution uses the parent config's own `config_source` (where it was loaded from) and `base-url`
+- Child (leaf) config paths continue to be resolved at validation time using the leaf's own source
+
+**Example:** A GitHub-hosted parent with a local child:
+
+```yaml
+# Parent (hosted at https://raw.githubusercontent.com/org/repo/main/parent.yaml)
+agents:
+  - "agents/shared-agent.md"       # Resolved to https://raw.githubusercontent.com/org/repo/main/agents/shared-agent.md
+rules:
+  - "rules/coding-standards.md"    # Resolved to https://raw.githubusercontent.com/org/repo/main/rules/coding-standards.md
+```
+
+```yaml
+# Child (local file: ~/my-project/config.yaml)
+inherit: "https://raw.githubusercontent.com/org/repo/main/parent.yaml"
+agents:
+  - "agents/local-agent.md"        # Resolved locally from ~/my-project/ at validation time
+```
+
+After inheritance resolution, the merged config contains both the GitHub-resolved parent paths and the local child paths. Each is resolved from the correct source.
+
+**Key points:**
+
+- A child `base-url` does **not** affect parent resource paths. Each config level's `base-url` governs only its own resources.
+- Skills `base` paths ignore `base-url` by design -- they are resolved directly from the config source.
+- Already-absolute paths and full URLs pass through resolution unchanged.
+
 #### Inheritance Path Resolution
 
 The `inherit` value uses the same routing as config sources:
@@ -1554,6 +1589,26 @@ When a version is pinned, the setup installs the matching Claude Code extension 
 3. **Tier 3 -- Marketplace @version syntax:** Use `anthropic.claude-code@{version}` syntax directly. Emits a warning because VS Code may auto-update the extension despite version pinning.
 
 Installation is **non-fatal**: failures produce warnings but do not abort the setup.
+
+#### VSIX Auto-Update Behavior
+
+The three installation tiers have different auto-update implications for the installed extension:
+
+| Tier   | Method               | Auto-Update Status                             |
+|--------|----------------------|------------------------------------------------|
+| Tier 1 | Bundled VSIX         | **Disabled by default** (VS Code v1.92+)       |
+| Tier 2 | Downloaded VSIX      | **Disabled by default** (VS Code v1.92+)       |
+| Tier 3 | Marketplace @version | **Active** -- VS Code may update the extension |
+
+Since VS Code v1.92, extensions installed via VSIX files (Tiers 1 and 2) have auto-update disabled by default. This is the primary defense mechanism for version pinning -- the installed extension stays at the pinned version without any additional IDE-level configuration.
+
+Tier 3 (marketplace @version syntax) is a last-resort fallback that only triggers when both the bundled VSIX is unavailable and the marketplace CDN download fails. In this case, VS Code may auto-update the extension despite version pinning. When Tier 3 is used, the setup emits a warning with instructions to manually disable auto-update for the extension:
+
+> In VS Code's Extensions view, right-click the Claude Code extension and set "Auto Update" to off.
+
+This per-extension "Auto Update" toggle is the only targeted control available. There is no `settings.json` key for per-extension auto-update exceptions -- the only JSON setting (`extensions.autoUpdate: false`) disables auto-update for ALL extensions, which is too broad.
+
+**JetBrains IDEs:** JetBrains IDEs use their own plugin ecosystem and do not support VSIX extensions. The Claude Code JetBrains plugin is versioned independently from the CLI, and there is no external mechanism to control per-plugin auto-update from outside the IDE. The existing `autoInstallIdeExtension: false` control is the only applicable protection for JetBrains.
 
 #### VS Code Family IDE Detection
 
