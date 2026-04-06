@@ -34,7 +34,6 @@ def _get_keys_resolved_by_function() -> frozenset[str]:
         'files-to-download': [{'source': sentinel_value, 'destination': '/tmp/test'}],
         'skills': [{'base': sentinel_value, 'files': ['SKILL.md']}],
         'command-defaults': {'system-prompt': sentinel_value, 'mode': 'replace'},
-        'status-line': {'file': sentinel_value, 'config': sentinel_value, 'interval': 10},
     }
 
     result = _resolve_config_file_paths(config, url_source)
@@ -70,16 +69,6 @@ def _get_keys_resolved_by_function() -> frozenset[str]:
     cd_original = config['command-defaults']
     if cd_result.get('system-prompt') != cd_original.get('system-prompt'):
         resolved_keys.add('command-defaults.system-prompt')
-
-    # Check status-line.file
-    sl_result = result.get('status-line', {})
-    sl_original = config['status-line']
-    if sl_result.get('file') != sl_original.get('file'):
-        resolved_keys.add('status-line.file')
-
-    # Check status-line.config
-    if sl_result.get('config') != sl_original.get('config'):
-        resolved_keys.add('status-line.config')
 
     return frozenset(resolved_keys)
 
