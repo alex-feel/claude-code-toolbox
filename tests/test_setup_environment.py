@@ -1415,90 +1415,6 @@ class TestLoadConfig:
         assert 'agents/my-agent.md' in resolved
 
 
-class TestInjectStatusLineIntoHooksFiles:
-    """Tests for _inject_status_line_into_hooks_files() function."""
-
-    def test_inject_creates_hooks_files(self):
-        """Auto-inject creates hooks.files when hooks key is missing."""
-        config = {
-            'status-line': {
-                'file': 'hooks/status.py',
-                'config': 'configs/status-config.yaml',
-            },
-        }
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['hooks/status.py', 'configs/status-config.yaml']
-
-    def test_inject_no_duplicates(self):
-        """Auto-inject does not create duplicates when files already present."""
-        config = {
-            'status-line': {
-                'file': 'hooks/status.py',
-                'config': 'configs/status-config.yaml',
-            },
-            'hooks': {
-                'files': ['hooks/status.py', 'hooks/other.py'],
-            },
-        }
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['hooks/status.py', 'hooks/other.py', 'configs/status-config.yaml']
-
-    def test_inject_no_status_line(self):
-        """Auto-inject is a no-op when status-line is not configured."""
-        config = {'hooks': {'files': ['hooks/other.py']}}
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['hooks/other.py']
-
-    def test_inject_file_only(self):
-        """Auto-inject handles status-line with file but no config."""
-        config = {
-            'status-line': {'file': 'hooks/status.py'},
-        }
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['hooks/status.py']
-
-    def test_inject_config_only(self):
-        """Auto-inject handles status-line with config but no file."""
-        config = {
-            'status-line': {'config': 'configs/status-config.yaml'},
-        }
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['configs/status-config.yaml']
-
-    def test_inject_invalid_status_line_type(self):
-        """Auto-inject handles status-line that is not a dict."""
-        config = {'status-line': 'invalid'}
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert 'hooks' not in config
-
-    def test_inject_invalid_hooks_type(self):
-        """Auto-inject handles hooks that is not a dict."""
-        config = {'status-line': {'file': 'x.py'}, 'hooks': 'invalid'}
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks'] == 'invalid'
-
-    def test_inject_invalid_hooks_files_type(self):
-        """Auto-inject handles hooks.files that is not a list."""
-        config = {'status-line': {'file': 'x.py'}, 'hooks': {'files': 'invalid'}}
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == 'invalid'
-
-    def test_inject_empty_strings(self):
-        """Auto-inject skips empty string values."""
-        config = {'status-line': {'file': '', 'config': ''}}
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert 'hooks' not in config
-
-    def test_inject_with_existing_empty_hooks_files(self):
-        """Auto-inject appends to an empty hooks.files list."""
-        config = {
-            'status-line': {'file': 'hooks/status.py'},
-            'hooks': {'files': []},
-        }
-        setup_environment._inject_status_line_into_hooks_files(config)
-        assert config['hooks']['files'] == ['hooks/status.py']
-
-
 class TestGetRealUserHome:
     """Tests for get_real_user_home() function."""
 
@@ -7454,21 +7370,6 @@ class TestResolveConfigFilePaths:
         assert 'raw.githubusercontent.com' in result['command-defaults']['system-prompt']
         assert 'prompts/my-prompt.md' in result['command-defaults']['system-prompt']
         assert result['command-defaults']['mode'] == 'replace'
-
-    def test_resolve_status_line_paths(self):
-        """status-line.file and status-line.config resolved using config_source."""
-        config = {
-            'status-line': {
-                'file': 'hooks/status.py',
-                'config': 'configs/status-config.yaml',
-                'interval': 10,
-            },
-        }
-        source = 'https://raw.githubusercontent.com/user/repo/main/config.yaml'
-        result = setup_environment._resolve_config_file_paths(config, source)
-        assert 'raw.githubusercontent.com' in result['status-line']['file']
-        assert 'raw.githubusercontent.com' in result['status-line']['config']
-        assert result['status-line']['interval'] == 10
 
     def test_resolve_with_base_url(self):
         """Config with base-url uses it for resolution of simple list keys."""

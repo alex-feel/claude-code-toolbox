@@ -91,8 +91,6 @@ FILE_REFERENCE_KEYS: frozenset[str] = frozenset({
     'files-to-download',             # list[dict] -- each dict has 'source' key
     'skills',                        # list[dict] -- each dict has 'base' key
     'command-defaults.system-prompt',  # str -- nested scalar under command-defaults
-    'status-line.file',              # str -- nested scalar under status-line
-    'status-line.config',            # str -- nested scalar under status-line
 })
 
 # Node.js installation constants (standalone -- no imports from install_claude.py)
@@ -3124,53 +3122,6 @@ def _collect_simple_list_files(
     return files
 
 
-def _inject_status_line_into_hooks_files(config: dict[str, Any]) -> None:
-    """Auto-inject status-line file references into hooks.files for validation and download.
-
-    Ensures status-line.file and status-line.config are included in hooks.files
-    so they are validated and downloaded by the existing pipeline.
-
-    Args:
-        config: The configuration dictionary (modified in place).
-    """
-    status_line = config.get('status-line')
-    if not status_line or not isinstance(status_line, dict):
-        return
-
-    # Collect file references from status-line
-    files_to_inject: list[str] = []
-    sl_file = status_line.get('file')
-    if sl_file and isinstance(sl_file, str):
-        files_to_inject.append(sl_file)
-    sl_config = status_line.get('config')
-    if sl_config and isinstance(sl_config, str):
-        files_to_inject.append(sl_config)
-
-    if not files_to_inject:
-        return
-
-    # Ensure hooks dict exists
-    hooks = config.get('hooks')
-    if hooks is None:
-        hooks = {}
-        config['hooks'] = hooks
-    elif not isinstance(hooks, dict):
-        return
-
-    # Ensure hooks.files list exists
-    hook_files = hooks.get('files')
-    if hook_files is None:
-        hook_files = []
-        hooks['files'] = hook_files
-    elif not isinstance(hook_files, list):
-        return
-
-    # Inject each file if not already present
-    for file_ref in files_to_inject:
-        if file_ref not in hook_files:
-            hook_files.append(file_ref)
-
-
 def validate_all_config_files(
     config: dict[str, Any],
     config_source: str,
@@ -3937,20 +3888,6 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
             resolved_path, _ = resolve_resource_path(sys_prompt, config_source, base_url)
             cmd_defaults['system-prompt'] = resolved_path
         result['command-defaults'] = cmd_defaults
-
-    # --- status-line.file and status-line.config ---
-    sl = result.get('status-line')
-    if isinstance(sl, dict):
-        sl = sl.copy()
-        sl_file = sl.get('file')
-        if isinstance(sl_file, str):
-            resolved_path, _ = resolve_resource_path(sl_file, config_source, base_url)
-            sl['file'] = resolved_path
-        sl_config = sl.get('config')
-        if isinstance(sl_config, str):
-            resolved_path, _ = resolve_resource_path(sl_config, config_source, base_url)
-            sl['config'] = resolved_path
-        result['status-line'] = sl
 
     return result
 
@@ -9661,9 +9598,6 @@ def main() -> None:
 
         # Extract status_line configuration
         status_line = config.get('status-line')
-
-        # Auto-inject status-line files into hooks.files for validation and download
-        _inject_status_line_into_hooks_files(config)
 
         # Extract and validate effort_level configuration
         effort_level = config.get('effort-level')
