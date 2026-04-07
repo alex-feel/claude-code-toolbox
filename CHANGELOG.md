@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.11.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.1...v5.11.2) (2026-04-07)
+
+
+### Bug Fixes
+
+* revert status-line file injection into hooks pipeline ([c0e234b](https://github.com/alex-feel/claude-code-toolbox/commit/c0e234b68325dda4cc9e3765589f35e79732b7d3))
+
 ## [5.11.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.0...v5.11.1) (2026-04-06)
 
 
