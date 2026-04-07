@@ -1988,7 +1988,7 @@ def get_claude_version(claude_path: str | None = None) -> str | None:
     result = run_command([claude_path, '--version'])
     if result.returncode == 0:
         # Parse version from output like "claude, version 0.7.7" or "@anthropic-ai/claude-code/0.7.7"
-        output = result.stdout.strip()
+        output = (result.stdout or '').strip()
         # Try to extract version number
         match = re.search(r'(\d+\.\d+\.\d+)', output)
         if match:

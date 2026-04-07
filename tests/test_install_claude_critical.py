@@ -149,14 +149,21 @@ class TestSSLErrorHandling:
 
     @patch('scripts.install_claude.ssl.create_default_context')
     @patch('scripts.install_claude.urlopen')
+    @patch('scripts.install_claude.get_claude_version', return_value='2.1.39')
     @patch('scripts.install_claude.verify_claude_installation')
     @patch('scripts.install_claude.ensure_local_bin_in_path_windows')
     @patch('scripts.install_claude.update_install_method_config')
+    @patch('scripts.install_claude._cleanup_old_claude_files')
+    @patch('scripts.install_claude.time.sleep')
     def test_install_claude_native_ssl_error(
-        self, mock_update_config, mock_ensure_path, mock_verify, mock_urlopen, mock_ssl_context,
+        self, mock_sleep, mock_cleanup, mock_update_config, mock_ensure_path,
+        mock_verify, mock_get_version, mock_urlopen, mock_ssl_context,
     ):
         """Test Claude native installer with SSL certificate error."""
         assert mock_update_config is not None
+        assert mock_get_version is not None
+        assert mock_sleep is not None
+        assert mock_cleanup is not None
         with patch('scripts.install_claude.platform.system', return_value='Windows'):
             # First urlopen raises SSL error
             ssl_error = urllib.error.URLError('CERTIFICATE_VERIFY_FAILED')
