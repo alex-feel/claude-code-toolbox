@@ -928,6 +928,7 @@ class TestClaudeInstallation:
             assert sudo_cmd[0] == '/usr/bin/npm'
 
     @patch('platform.system', return_value='Windows')
+    @patch('install_claude.get_claude_version', return_value='2.1.39')
     @patch('install_claude.urlopen')
     @patch('tempfile.NamedTemporaryFile')
     @patch('install_claude.run_command')
@@ -942,12 +943,14 @@ class TestClaudeInstallation:
         mock_run,
         mock_temp,
         mock_urlopen,
+        mock_get_version,
         mock_system,
     ):
         """Test native Claude installer on Windows."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         assert mock_update_config is not None
+        assert mock_get_version.return_value == '2.1.39'
         # Mock installer script download
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer script'
@@ -1071,6 +1074,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
     """
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.39'))
     @patch('install_claude.install_claude_npm')
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1085,6 +1089,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_compare,
         mock_native,
         mock_npm,
+        mock_verify_upgrade,
     ):
         """When source is native in auto mode, upgrade should use native installer."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
@@ -1098,6 +1103,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         # Native should be used, npm should NOT
         mock_native.assert_called()
         mock_npm.assert_not_called()
+        mock_verify_upgrade.assert_called()
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
@@ -1220,6 +1226,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_native.assert_not_called()
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.39'))
     @patch('install_claude.install_claude_npm')
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
@@ -1234,6 +1241,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_compare,
         mock_native,
         mock_npm,
+        mock_verify_upgrade,
     ):
         """When source is unknown in auto mode, try native first, then npm fallback."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
@@ -1246,8 +1254,9 @@ class TestEnsureClaudeSourceAwareUpgrade:
         assert mock_compare.return_value is False
         # Native should be tried first for unknown source
         mock_native.assert_called()
-        # npm should NOT be called since native succeeded
+        # npm should NOT be called since native succeeded and version verified
         mock_npm.assert_not_called()
+        mock_verify_upgrade.assert_called()
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.install_claude_npm', return_value=True)
@@ -1283,6 +1292,7 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_npm.assert_called()
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.39'))
     @patch('install_claude.install_claude_native_cross_platform', return_value=True)
     @patch('install_claude.compare_versions', return_value=False)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.39')
@@ -1295,8 +1305,9 @@ class TestEnsureClaudeSourceAwareUpgrade:
         mock_get_latest,
         mock_compare,
         mock_native,
+        mock_verify_upgrade,
     ):
-        """After native upgrade, get_claude_version() should be called to report version."""
+        """After native upgrade, _verify_upgrade_version() should be called to verify."""
         mock_get_version.side_effect = ['2.0.76', '2.1.39']
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
 
@@ -1306,9 +1317,8 @@ class TestEnsureClaudeSourceAwareUpgrade:
         assert mock_get_latest.return_value == '2.1.39'
         assert mock_compare.return_value is False
         mock_native.assert_called()
-        # get_claude_version should be called at least twice:
-        # once for initial version check, once after upgrade
-        assert mock_get_version.call_count >= 2
+        # _verify_upgrade_version should be called after successful upgrade
+        mock_verify_upgrade.assert_called_once()
 
 
 class TestMainFunction:
@@ -4849,6 +4859,7 @@ class TestInstallClaudeNativeLinuxGcsFallback:
 class TestEnsureClaudeWingetUpgrade:
     """Tests for winget-source upgrade routing in ensure_claude()."""
 
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.39'))
     @patch('install_claude.run_command')
     @patch('install_claude.update_install_method_config')
     @patch('install_claude.install_claude_npm')
@@ -4858,7 +4869,7 @@ class TestEnsureClaudeWingetUpgrade:
     @patch('install_claude.verify_claude_installation')
     def test_winget_source_tries_winget_upgrade(
         self, mock_verify, mock_get_version, mock_get_latest,
-        mock_compare, mock_npm, mock_config, mock_run,
+        mock_compare, mock_npm, mock_config, mock_run, mock_verify_upgrade,
     ):
         """Winget source tries winget upgrade before npm."""
         assert mock_get_latest.return_value == '2.1.39'
@@ -4881,6 +4892,7 @@ class TestEnsureClaudeWingetUpgrade:
         call_args = mock_run.call_args[0][0]
         assert call_args[0] == 'winget'
         assert call_args[1] == 'upgrade'
+        mock_verify_upgrade.assert_called()
 
     @patch('install_claude.run_command')
     @patch('install_claude.update_install_method_config')
@@ -4940,3 +4952,486 @@ class TestFinalizeNativeInstallMethodParam:
         install_claude._finalize_native_install(method='custom')
         mock_check.assert_called_once()
         mock_config.assert_called_once_with('custom')
+
+
+class TestVerifyUpgradeVersion:
+    """Tests for _verify_upgrade_version() post-upgrade version check."""
+
+    @patch('install_claude.get_claude_version', return_value='2.1.92')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_version_matches(self, mock_compare, mock_get_version):
+        """Returns (True, actual_version) when version >= expected."""
+        assert mock_get_version.return_value  # Ensure mock is active
+        result = install_claude._verify_upgrade_version('2.1.92', 'native installer')
+        assert result == (True, '2.1.92')
+        mock_compare.assert_called_once_with('2.1.92', '2.1.92')
+
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.compare_versions', return_value=False)
+    def test_version_mismatch(self, mock_compare, mock_get_version):
+        """Returns (False, actual_version) when version < expected."""
+        assert mock_get_version.return_value  # Ensure mock is active
+        result = install_claude._verify_upgrade_version('2.1.92', 'native installer')
+        assert result == (False, '2.1.89')
+        mock_compare.assert_called_once_with('2.1.89', '2.1.92')
+
+    @patch('install_claude.get_claude_version', return_value=None)
+    def test_version_undetectable(self, mock_get_version):
+        """Returns (False, None) when version cannot be detected."""
+        mock_get_version.assert_not_called()  # Not called yet
+        result = install_claude._verify_upgrade_version('2.1.92', 'native installer')
+        assert result == (False, None)
+        mock_get_version.assert_called_once()
+
+    @patch('install_claude.get_claude_version', return_value='2.1.93')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_newer_version_accepted(self, mock_compare, mock_get_version):
+        """Accepts a version newer than expected (race condition handling)."""
+        assert mock_get_version.return_value  # Ensure mock is active
+        result = install_claude._verify_upgrade_version('2.1.92', 'native installer')
+        assert result == (True, '2.1.93')
+        mock_compare.assert_called_once_with('2.1.93', '2.1.92')
+
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.compare_versions', return_value=False)
+    def test_method_label_in_warning(self, mock_compare, mock_get_version, capsys):
+        """Method label appears in the warning message."""
+        assert mock_get_version.return_value  # Ensure mock is active
+        install_claude._verify_upgrade_version('2.1.92', 'winget')
+        captured = capsys.readouterr()
+        assert 'winget' in captured.out
+        mock_compare.assert_called_once()
+
+
+class TestRecoverFromVersionsDirectory:
+    """Tests for _recover_from_versions_directory() cache promotion."""
+
+    def test_binary_not_found(self, tmp_path, monkeypatch):
+        """Returns None when versions directory does not exist."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+
+    def test_binary_too_small(self, tmp_path, monkeypatch):
+        """Returns None when cached binary is too small (corrupt)."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 500)
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+
+    @patch('install_claude.get_claude_version', return_value='2.1.92')
+    @patch('install_claude.compare_versions', return_value=True)
+    def test_successful_promotion(self, mock_compare, mock_get_version, tmp_path, monkeypatch):
+        """Promotes cached binary and returns version string."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        (tmp_path / '.local' / 'bin').mkdir(parents=True, exist_ok=True)
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result == '2.1.92'
+        assert (tmp_path / '.local' / 'bin' / binary_name).exists()
+        mock_get_version.assert_called_once()
+        mock_compare.assert_called_once()
+
+    def test_different_version_not_promoted(self, tmp_path, monkeypatch):
+        """Only promotes exact target_version, not other versions in cache."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        # Create version 2.1.91 but request 2.1.92
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.91'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+
+    @patch('install_claude.get_claude_version', return_value='2.1.90')
+    @patch('install_claude.compare_versions', return_value=False)
+    def test_promoted_binary_version_mismatch(
+        self, mock_compare, mock_get_version, tmp_path, monkeypatch,
+    ):
+        """Returns None when promoted binary reports wrong version."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        (tmp_path / '.local' / 'bin').mkdir(parents=True, exist_ok=True)
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+        mock_get_version.assert_called_once()
+        mock_compare.assert_called_once()
+
+    def test_creates_target_directory(self, tmp_path, monkeypatch):
+        """Creates ~/.local/bin/ if it does not exist."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(
+            'install_claude.get_claude_version', lambda *_args: '2.1.92',
+        )
+        monkeypatch.setattr(
+            'install_claude.compare_versions', lambda *_args: True,
+        )
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        # Do NOT create .local/bin -- function should create it
+        assert not (tmp_path / '.local' / 'bin').exists()
+        result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result == '2.1.92'
+        assert (tmp_path / '.local' / 'bin').exists()
+
+    def test_oserror_on_copy(self, tmp_path, monkeypatch):
+        """Returns None on general OSError during copy."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        (tmp_path / '.local' / 'bin').mkdir(parents=True, exist_ok=True)
+        with patch('shutil.copy2', side_effect=OSError('disk full')):
+            result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+    def test_windows_permission_error_delegates_to_file_lock(self, tmp_path, monkeypatch):
+        """On Windows PermissionError, copies to temp then delegates to file lock handler."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        (versions_dir / 'claude.exe').write_bytes(b'x' * 2000)
+        (tmp_path / '.local' / 'bin').mkdir(parents=True, exist_ok=True)
+        # First copy2 call raises PermissionError (to target); second succeeds (to temp)
+        copy_calls = []
+
+        def mock_copy2(src, dst):  # noqa: ARG001
+            copy_calls.append(dst)
+            if len(copy_calls) == 1:
+                raise PermissionError('Access is denied')
+            # Second call (to .tmp) succeeds -- create the file
+            Path(dst).write_bytes(b'x' * 2000)
+
+        with (
+            patch('shutil.copy2', side_effect=mock_copy2),
+            patch(
+                'install_claude._handle_windows_file_lock', return_value=True,
+            ) as mock_file_lock,
+        ):
+            result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result == '2.1.92'
+        mock_file_lock.assert_called_once()
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Unix-only test')
+    def test_unix_permission_error_returns_none(self, tmp_path, monkeypatch):
+        """On Unix PermissionError, returns None without file lock handling."""
+        monkeypatch.setattr('install_claude.get_real_user_home', lambda: tmp_path)
+        versions_dir = tmp_path / '.local' / 'share' / 'claude' / 'versions' / '2.1.92'
+        versions_dir.mkdir(parents=True)
+        binary_name = 'claude'
+        (versions_dir / binary_name).write_bytes(b'x' * 2000)
+        (tmp_path / '.local' / 'bin').mkdir(parents=True, exist_ok=True)
+        with patch('shutil.copy2', side_effect=PermissionError('Permission denied')):
+            result = install_claude._recover_from_versions_directory('2.1.92')
+        assert result is None
+
+
+class TestUpgradeVersionVerification:
+    """Tests for post-upgrade version verification in ensure_claude() upgrade branches."""
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._recover_from_versions_directory', return_value='2.1.92')
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_source_mismatch_recovers_from_versions_dir(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover,
+    ):
+        """When native upgrade has version mismatch, Tier 1 recovery from versions dir."""
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_recover.assert_called_once_with('2.1.92')
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude._recover_from_versions_directory', return_value=None)
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_source_mismatch_gcs_fallback(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover, mock_gcs,
+    ):
+        """When versions dir recovery fails, Tier 2 GCS download."""
+        mock_get_version.return_value = '2.1.89'
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_recover.assert_called_once()
+        mock_gcs.assert_called_once()
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.update_install_method_config')
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude._recover_from_versions_directory', return_value=None)
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_source_mismatch_npm_last_resort(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover, mock_gcs, mock_npm,
+        mock_update_config,
+    ):
+        """When GCS also fails, Tier 3 npm fallback in auto mode."""
+        mock_get_version.return_value = '2.1.89'
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_npm.assert_called_once()
+        mock_update_config.assert_called_with('npm')
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+        mock_recover.assert_called_once()
+        mock_gcs.assert_called_once()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'native'}, clear=False)
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude._recover_from_versions_directory', return_value=None)
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_mode_no_npm_in_recovery(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover, mock_gcs, mock_npm,
+    ):
+        """Native-only mode skips npm in recovery cascade (Tier 3 omitted)."""
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_npm.assert_not_called()
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+        mock_recover.assert_called_once()
+        mock_gcs.assert_called_once()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.92'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_native_source_version_matches_no_recovery(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade,
+    ):
+        """When version matches after upgrade, no recovery cascade triggered."""
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        result = install_claude.ensure_claude()
+        assert result is True
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._recover_from_versions_directory', return_value='2.1.92')
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_unknown_source_mismatch_recovers_from_versions_dir(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover,
+    ):
+        """Unknown source upgrade with mismatch triggers versions dir recovery."""
+        mock_verify.return_value = (True, '/usr/local/bin/claude', 'unknown')
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_recover.assert_called_once_with('2.1.92')
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._recover_from_versions_directory', return_value='2.1.92')
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.run_command')
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_winget_source_mismatch_recovers_from_versions_dir(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_run, mock_verify_upgrade, mock_recover,
+    ):
+        """Winget upgrade with mismatch triggers versions dir recovery."""
+        mock_verify.return_value = (
+            True,
+            r'C:\Users\test\AppData\Local\Programs\claude\claude.exe',
+            'winget',
+        )
+        mock_run.return_value = MagicMock(returncode=0)
+        result = install_claude.ensure_claude()
+        assert result is True
+        mock_recover.assert_called_once_with('2.1.92')
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_npm_source_mismatch_graceful_degradation(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_npm, mock_verify_upgrade,
+    ):
+        """npm upgrade with mismatch degrades gracefully (no recovery cascade)."""
+        # First call: migration check (return non-npm to skip migration)
+        # Second call: upgrade source detection (return npm)
+        mock_verify.side_effect = [
+            (True, '/home/user/.local/bin/claude', 'native'),
+            (True, '/home/user/.npm-global/bin/claude', 'npm'),
+        ]
+        result = install_claude.ensure_claude()
+        assert result is True
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_npm.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude._verify_upgrade_version', return_value=(True, '2.1.92'))
+    @patch('install_claude.install_claude_npm', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_npm_source_version_matches(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_npm, mock_verify_upgrade,
+    ):
+        """npm upgrade with version match succeeds normally."""
+        # First call: migration check (return non-npm to skip migration)
+        # Second call: upgrade source detection (return npm)
+        mock_verify.side_effect = [
+            (True, '/home/user/.local/bin/claude', 'native'),
+            (True, '/home/user/.npm-global/bin/claude', 'npm'),
+        ]
+        result = install_claude.ensure_claude()
+        assert result is True
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_npm.assert_called()
+        mock_verify_upgrade.assert_called()
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_npm')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
+    @patch('install_claude._recover_from_versions_directory', return_value=None)
+    @patch('install_claude._verify_upgrade_version', return_value=(False, '2.1.89'))
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude.compare_versions', return_value=False)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.92')
+    @patch('install_claude.get_claude_version', return_value='2.1.89')
+    @patch('install_claude.verify_claude_installation')
+    def test_all_recovery_tiers_fail_graceful_degradation(
+        self, mock_verify, mock_get_version, mock_get_latest, mock_compare,
+        mock_native, mock_verify_upgrade, mock_recover, mock_gcs, mock_npm,
+    ):
+        """When all recovery tiers fail, graceful degradation with warning."""
+        mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
+        mock_npm.return_value = False
+        result = install_claude.ensure_claude()
+        assert result is True  # Graceful degradation -- never blocks installation
+        assert mock_get_version.return_value == '2.1.89'
+        assert mock_get_latest.return_value == '2.1.92'
+        assert mock_compare.return_value is False
+        mock_native.assert_called()
+        mock_verify_upgrade.assert_called()
+        mock_recover.assert_called_once()
+        mock_gcs.assert_called_once()
+
+
+class TestDiagnosticLogging:
+    """Tests for diagnostic version logging in _install_claude_native_windows_installer."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+    @patch('install_claude._finalize_native_install')
+    @patch('install_claude.get_claude_version', return_value='2.1.92')
+    @patch(
+        'install_claude.verify_claude_installation',
+        return_value=(True, r'C:\Users\test\.local\bin\claude.exe', 'native'),
+    )
+    @patch('install_claude.ensure_local_bin_in_path_windows')
+    @patch('install_claude.run_command')
+    @patch('install_claude.urlopen')
+    def test_logs_post_install_version(
+        self, mock_urlopen, mock_run, mock_path, mock_verify,
+        mock_get_version, mock_finalize, capsys,
+    ):
+        """Diagnostic info line is printed after successful native install."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'echo "test"'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout='Installed 2.1.92', stderr='',
+        )
+
+        install_claude._install_claude_native_windows_installer()
+
+        # Verify all mocks participated correctly
+        mock_get_version.assert_called()
+        mock_verify.assert_called()
+        mock_path.assert_called()
+        mock_finalize.assert_called()
+        captured = capsys.readouterr()
+        assert 'Post-install binary version: 2.1.92' in captured.out

@@ -45,6 +45,10 @@ class TestSourceAwareUpgrade:
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
+            patch.object(
+                install_claude, '_verify_upgrade_version',
+                return_value=(True, '2.1.39'),
+            ),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
@@ -294,6 +298,10 @@ class TestPathClassification:
                 install_claude, 'install_claude_native_cross_platform', return_value=True,
             ) as mock_native,
             patch.object(install_claude, 'install_claude_npm') as mock_npm,
+            patch.object(
+                install_claude, '_verify_upgrade_version',
+                return_value=(True, '2.1.39'),
+            ),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False),
         ):
             result = install_claude.ensure_claude()
