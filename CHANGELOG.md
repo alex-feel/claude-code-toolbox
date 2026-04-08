@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.3...v5.12.0) (2026-04-08)
+
+
+### Features
+
+* add dual hooks routing to settings.json when command-names is absent ([7d95e23](https://github.com/alex-feel/claude-code-toolbox/commit/7d95e23f0602bfe7c731d40f98890ab60f9253ce))
+
 ## [5.11.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.2...v5.11.3) (2026-04-08)
 
 
