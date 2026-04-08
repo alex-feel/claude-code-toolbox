@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.11.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.2...v5.11.3) (2026-04-08)
+
+
+### Bug Fixes
+
+* add post-upgrade version verification and recovery cascade ([5d8f35b](https://github.com/alex-feel/claude-code-toolbox/commit/5d8f35b835c75db6f1c516e5104fdd3119bb1100))
+
 ## [5.11.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.1...v5.11.2) (2026-04-07)
 
 
