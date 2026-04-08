@@ -817,6 +817,7 @@ class TestNativeWindowsInstallerFunction:
     """Test the internal native Windows installer function."""
 
     @patch('platform.system', return_value='Windows')
+    @patch('install_claude.get_claude_version', return_value='2.1.39')
     @patch('install_claude.urlopen')
     @patch('install_claude.run_command')
     @patch('install_claude.verify_claude_installation')
@@ -839,12 +840,14 @@ class TestNativeWindowsInstallerFunction:
         mock_verify,
         mock_run,
         mock_urlopen,
+        mock_get_version,
         mock_system,
     ):
         """Test successful native installer execution."""
         del mock_check_npm
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_get_version.return_value == '2.1.39'
 
         # Mock installer script download
         mock_response = MagicMock()

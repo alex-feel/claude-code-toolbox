@@ -111,6 +111,19 @@ The bootstrap scripts install `uv` (Astral's Python package manager) and Python 
 
 When Claude Code is already installed, the installer checks for updates against the npm registry and upgrades using the same method that was originally used (source-matching). Native installations are upgraded via the native installer, npm installations are upgraded via npm, winget installations try `winget upgrade` first with npm fallback, and unknown-source installations try native first with npm fallback.
 
+### Upgrade Version Verification
+
+After each upgrade attempt, the installer verifies that the binary was actually updated to the expected version. If a version mismatch is detected (the installer reported success but the binary remains at the old version), a recovery cascade activates:
+
+1. **Versions cache recovery** -- The Anthropic native installer downloads binaries to `~/.local/share/claude/versions/` before promotion. If the promotion step fails silently, the installer copies the correct binary from this cache to `~/.local/bin/`.
+2. **GCS direct download** -- Downloads the correct version directly from Google Cloud Storage, bypassing the native installer entirely.
+3. **npm fallback** (`auto` mode only) -- Installs the correct version via npm as a last resort. Skipped in `native` mode.
+4. **Graceful degradation** -- If all recovery methods fail, the installer continues with the current version and displays a warning. The installation is never blocked by an upgrade failure.
+
+The npm upgrade branch does not use the recovery cascade (versions cache and GCS are native-specific mechanisms). Instead, it verifies the version and logs a warning on mismatch.
+
+This verification addresses a known issue where the Anthropic native installer may report a successful upgrade but fail to replace the binary ([#14942](https://github.com/anthropics/claude-code/issues/14942)).
+
 ### Auto-Migration from npm to Native
 
 In `auto` mode, when an npm installation is detected, the installer automatically attempts to migrate to the native installer for better stability. On successful migration, the old npm installation is removed to prevent PATH conflicts. If npm removal fails (due to permission issues in non-interactive mode), the installer displays a prominent warning with manual removal instructions but does not block the native installation.
@@ -220,6 +233,14 @@ sudo rmdir /usr/lib/node_modules/@anthropic-ai 2>/dev/null || true
 The `.claude-code-*` glob pattern removes stale temporary directories that prevent npm from operating. After removal, restart your terminal.
 
 **Note:** The installer automatically attempts this direct removal when `npm uninstall` fails. This manual procedure is only needed if the automatic fallback also fails (e.g., in non-interactive environments without cached sudo credentials).
+
+### Upgrade Reports Wrong Version
+
+If the installer reports upgrading to a new version but `claude --version` still shows the old version, the post-upgrade verification should detect this automatically and attempt recovery. If automatic recovery also fails, the installer logs a warning with the expected and actual versions. To resolve manually:
+
+1. Set `CLAUDE_CODE_TOOLBOX_VERSION=<desired_version>` and re-run the installer to force a specific version
+2. Check if the correct binary exists in `~/.local/share/claude/versions/<version>/` -- if present, copy it manually to `~/.local/bin/claude` (or `claude.exe` on Windows)
+3. As a last resort, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm` to install via npm instead
 
 ### Claude Command Not Found After Install
 
