@@ -175,7 +175,7 @@ TILDE_EXPANSION_KEYS: set[str] = {
 # Keys that are NOT allowed in the user-settings section
 # These keys have path resolution issues or are inherently profile-specific
 USER_SETTINGS_EXCLUDED_KEYS: set[str] = {
-    'hooks',       # Path resolution issues; profile-specific event handlers
+    'hooks',       # Hooks require dedicated write logic with path resolution and type processing
     'statusLine',  # Path resolution issues; profile-specific display config
 }
 
@@ -8135,6 +8135,262 @@ def _apply_common_hook_fields(
         hook_config['timeout'] = hook['timeout']
 
 
+def _build_hooks_json(
+    hooks: dict[str, Any],
+    hooks_dir: Path,
+) -> dict[str, Any]:
+    """Build hooks JSON structure from YAML configuration.
+
+    Converts YAML hook event definitions into Claude Code's JSON hooks format.
+    Generates absolute POSIX paths for hook file references. Supports all four
+    hook types: command, http, prompt, agent.
+
+    Used by both create_profile_config() (per-environment config.json) and
+    write_hooks_to_settings() (global settings.json).
+
+    Args:
+        hooks: Hooks configuration dictionary with optional 'events' key.
+        hooks_dir: Directory containing downloaded hook files.
+
+    Returns:
+        Dictionary with hook event names as keys and matcher/hooks arrays
+        as values. Empty dict if no hook events defined.
+    """
+    result: dict[str, Any] = {}
+
+    hook_events = hooks.get('events', [])
+    if not hook_events:
+        return result
+
+    for hook in hook_events:
+        event = hook.get('event')
+        matcher = hook.get('matcher', '')
+        hook_type = hook.get('type', 'command')
+        command = hook.get('command')
+        config = hook.get('config')  # Optional config file reference
+
+        if not event:
+            warning('Invalid hook configuration: missing event, skipping')
+            continue
+
+        # Validate required fields per hook type
+        if hook_type == 'command' and not command:
+            warning('Invalid command hook: missing command, skipping')
+            continue
+        if hook_type == 'http' and not hook.get('url'):
+            warning('Invalid http hook: missing url, skipping')
+            continue
+        if hook_type in ('prompt', 'agent') and not hook.get('prompt'):
+            warning(f'Invalid {hook_type} hook: missing prompt, skipping')
+            continue
+
+        # Add to result
+        if event not in result:
+            result[event] = []
+
+        # Find or create matcher group
+        matcher_group: dict[str, Any] | None = None
+        hooks_list_raw = result[event]
+        if isinstance(hooks_list_raw, list):
+            hooks_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_list_raw)
+            for group_item in hooks_list:
+                if group_item.get('matcher') == matcher:
+                    matcher_group = group_item
+                    break
+
+        if not matcher_group:
+            matcher_group = {
+                'matcher': matcher,
+                'hooks': [],
+            }
+            hooks_event_list_raw = result[event]
+            if isinstance(hooks_event_list_raw, list):
+                hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
+                hooks_event_list.append(matcher_group)
+
+        # Build hook configuration based on hook type
+        hook_config: dict[str, Any]
+
+        if hook_type == 'command':
+            # Command hooks require file path processing
+            assert command is not None
+
+            # Build the proper command based on file type
+            # Strip query parameters from command if present
+            clean_command = command.split('?')[0] if '?' in command else command
+
+            # Check if this looks like a file reference or a direct command
+            # File references typically don't contain spaces (just the filename)
+            # Direct commands like 'echo "test"' contain spaces
+            is_file_reference = ' ' not in clean_command
+
+            if is_file_reference:
+                # Determine if this is a Python script (case-insensitive check)
+                is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
+
+                # Determine if this is a JavaScript/Node.js script (case-insensitive check)
+                is_javascript_script = clean_command.lower().endswith(('.js', '.mjs', '.cjs'))
+
+                if is_python_script:
+                    # Python script - use uv run for cross-platform execution
+                    hook_path = hooks_dir / Path(clean_command).name
+                    hook_path_str = hook_path.as_posix()
+                    full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
+
+                    # Append config file path if specified
+                    if config:
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = hooks_dir / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
+
+                elif is_javascript_script:
+                    # JavaScript script - use node for cross-platform execution
+                    hook_path = hooks_dir / Path(clean_command).name
+                    hook_path_str = hook_path.as_posix()
+                    full_command = f'node {hook_path_str}'
+
+                    # Append config file path if specified
+                    if config:
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = hooks_dir / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
+
+                else:
+                    # Other file - build absolute path and use as-is
+                    hook_path = hooks_dir / Path(clean_command).name
+                    hook_path_str = hook_path.as_posix()
+                    full_command = hook_path_str
+
+                    # Append config file path if specified
+                    if config:
+                        clean_config = config.split('?')[0] if '?' in config else config
+                        config_path = hooks_dir / Path(clean_config).name
+                        config_path_str = config_path.as_posix()
+                        full_command = f'{full_command} {config_path_str}'
+            else:
+                # Direct command with spaces - use as-is
+                full_command = command
+
+            # Add hook configuration for command hook
+            hook_config = {
+                'type': hook_type,
+                'command': full_command,
+            }
+            # Pass through command-specific optional fields
+            if hook.get('async') is not None:
+                hook_config['async'] = hook['async']
+            if hook.get('shell') is not None:
+                hook_config['shell'] = hook['shell']
+
+        elif hook_type == 'http':
+            # HTTP hooks: pure pass-through, no file-path processing
+            hook_config = {
+                'type': hook_type,
+                'url': hook.get('url', ''),
+            }
+            if hook.get('headers') is not None:
+                hook_config['headers'] = hook['headers']
+            if hook.get('allowed-env-vars') is not None:
+                hook_config['allowedEnvVars'] = hook['allowed-env-vars']
+
+        elif hook_type == 'prompt':
+            # Prompt hooks: pass-through for prompt and model
+            hook_config = {
+                'type': hook_type,
+                'prompt': hook.get('prompt', ''),
+            }
+            if hook.get('model') is not None:
+                hook_config['model'] = hook['model']
+
+        elif hook_type == 'agent':
+            # Agent hooks: same structure as prompt but type is 'agent'
+            hook_config = {
+                'type': hook_type,
+                'prompt': hook.get('prompt', ''),
+            }
+            if hook.get('model') is not None:
+                hook_config['model'] = hook['model']
+
+        else:
+            warning(f'Unknown hook type: {hook_type}, skipping')
+            continue
+
+        # Apply common fields to ALL hook types
+        _apply_common_hook_fields(hook_config, hook)
+
+        if matcher_group and 'hooks' in matcher_group:
+            matcher_hooks_raw = matcher_group['hooks']
+            if isinstance(matcher_hooks_raw, list):
+                matcher_hooks_list = cast(list[object], matcher_hooks_raw)
+                matcher_hooks_list.append(hook_config)
+
+    return result
+
+
+def write_hooks_to_settings(
+    hooks: dict[str, Any],
+    hooks_dir: Path,
+    settings_dir: Path,
+) -> bool:
+    """Write hooks to settings.json with key-replace semantics.
+
+    Reads existing settings.json, replaces the 'hooks' key entirely (not
+    deep-merged), and preserves all other keys. This ensures stale hook
+    events from prior runs are removed.
+
+    Used when command-names is absent from the YAML configuration, routing
+    hooks to the global settings.json instead of a per-environment config.json.
+
+    Args:
+        hooks: Hooks configuration dictionary from YAML.
+        hooks_dir: Directory containing downloaded hook files.
+        settings_dir: Directory containing settings.json (typically ~/.claude/).
+
+    Returns:
+        True if hooks were written successfully, False on failure.
+    """
+    settings_file = settings_dir / 'settings.json'
+    info('Writing hooks to settings.json...')
+
+    # Build hooks JSON using shared helper
+    hooks_json = _build_hooks_json(hooks, hooks_dir)
+
+    # Read existing settings.json (or empty dict)
+    existing: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            file_content = settings_file.read_text(encoding='utf-8')
+            if file_content.strip():
+                parsed = json.loads(file_content)
+                if isinstance(parsed, dict):
+                    existing = parsed
+                else:
+                    warning(f'Existing {settings_file} is not a dict, starting fresh')
+        except json.JSONDecodeError as e:
+            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
+
+    # Replace the 'hooks' key entirely (not deep merge)
+    if hooks_json:
+        existing['hooks'] = hooks_json
+    else:
+        existing.pop('hooks', None)  # Remove hooks if config produces none
+
+    # Write back
+    try:
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
+        success(f'Wrote hooks to {settings_file}')
+        return True
+    except OSError as e:
+        warning(f'Failed to write hooks to {settings_file}: {e}')
+        return False
+
+
 def create_profile_config(
     hooks: dict[str, Any],
     config_base_dir: Path,
@@ -8288,195 +8544,10 @@ def create_profile_config(
             info(f'Setting statusLine: {filename}')
 
     # Handle hooks if present
-    hook_events: list[dict[str, Any]] = []
-
     if hooks:
-        settings['hooks'] = {}
-        # Extract events from the hooks configuration (files are downloaded separately)
-        hook_events = hooks.get('events', [])
-
-    # Process each hook event
-    for hook in hook_events:
-        event = hook.get('event')
-        matcher = hook.get('matcher', '')
-        hook_type = hook.get('type', 'command')
-        command = hook.get('command')
-        config = hook.get('config')  # Optional config file reference
-
-        if not event:
-            warning('Invalid hook configuration: missing event, skipping')
-            continue
-
-        # Validate required fields per hook type
-        if hook_type == 'command' and not command:
-            warning('Invalid command hook: missing command, skipping')
-            continue
-        if hook_type == 'http' and not hook.get('url'):
-            warning('Invalid http hook: missing url, skipping')
-            continue
-        if hook_type in ('prompt', 'agent') and not hook.get('prompt'):
-            warning(f'Invalid {hook_type} hook: missing prompt, skipping')
-            continue
-
-        # Add to settings
-        if event not in settings['hooks']:
-            settings['hooks'][event] = []
-
-        # Find or create matcher group
-        matcher_group: dict[str, Any] | None = None
-        hooks_list_raw = settings['hooks'][event]
-        if isinstance(hooks_list_raw, list):
-            hooks_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_list_raw)
-            for group_item in hooks_list:
-                if group_item.get('matcher') == matcher:
-                    matcher_group = group_item
-                    break
-
-        if not matcher_group:
-            matcher_group = {
-                'matcher': matcher,
-                'hooks': [],
-            }
-            hooks_event_list_raw = settings['hooks'][event]
-            if isinstance(hooks_event_list_raw, list):
-                hooks_event_list: list[dict[str, Any]] = cast(list[dict[str, Any]], hooks_event_list_raw)
-                hooks_event_list.append(matcher_group)
-
-        # Build hook configuration based on hook type
-        hook_config: dict[str, Any]
-
-        if hook_type == 'command':
-            # Command hooks require file path processing
-            # command is guaranteed to be non-None here due to validation above
-            assert command is not None
-
-            # Build the proper command based on file type
-            # Strip query parameters from command if present
-            clean_command = command.split('?')[0] if '?' in command else command
-
-            # Check if this looks like a file reference or a direct command
-            # File references typically don't contain spaces (just the filename)
-            # Direct commands like 'echo "test"' contain spaces
-            is_file_reference = ' ' not in clean_command
-
-            if is_file_reference:
-                # Determine if this is a Python script (case-insensitive check)
-                # Supports both .py and .pyw extensions
-                is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
-
-                # Determine if this is a JavaScript/Node.js script (case-insensitive check)
-                # Supports .js (standard), .mjs (ES modules), .cjs (CommonJS modules)
-                is_javascript_script = clean_command.lower().endswith(('.js', '.mjs', '.cjs'))
-
-                if is_python_script:
-                    # Python script - use uv run for cross-platform execution
-                    # Build absolute path to the hook file in hooks directory
-                    hook_path = hooks_dir / Path(clean_command).name
-                    # Use POSIX-style path (forward slashes) for cross-platform compatibility
-                    # This works on Windows, macOS, and Linux, and avoids JSON escaping issues
-                    hook_path_str = hook_path.as_posix()
-                    # Use uv run with Python 3.12 - works cross-platform without PATH dependency
-                    # uv automatically downloads Python 3.12 if not installed
-                    # For .pyw files on Windows, uv automatically uses pythonw
-                    # Use --no-project flag to prevent uv from detecting and applying project Python requirements
-                    full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
-
-                    # Append config file path if specified
-                    if config:
-                        # Strip query parameters from config filename
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-
-                elif is_javascript_script:
-                    # JavaScript script - use node for cross-platform execution
-                    # node.exe is a binary (not batch script), works directly on all platforms
-                    # Windows: .js files are associated with WSH (JScript), NOT Node.js
-                    # Unix: .js files have no default handler
-                    hook_path = hooks_dir / Path(clean_command).name
-                    hook_path_str = hook_path.as_posix()
-                    full_command = f'node {hook_path_str}'
-
-                    # Append config file path if specified
-                    if config:
-                        # Strip query parameters from config filename
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-
-                else:
-                    # Other file - build absolute path and use as-is
-                    # System will handle execution based on file extension (.sh, .bat, .cmd, .ps1, etc.)
-                    hook_path = hooks_dir / Path(clean_command).name
-                    hook_path_str = hook_path.as_posix()
-                    full_command = hook_path_str
-
-                    # Append config file path if specified
-                    if config:
-                        # Strip query parameters from config filename
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-            else:
-                # Direct command with spaces - use as-is
-                full_command = command
-
-            # Add hook configuration for command hook
-            hook_config = {
-                'type': hook_type,
-                'command': full_command,
-            }
-            # Pass through command-specific optional fields
-            if hook.get('async') is not None:
-                hook_config['async'] = hook['async']
-            if hook.get('shell') is not None:
-                hook_config['shell'] = hook['shell']
-
-        elif hook_type == 'http':
-            # HTTP hooks: pure pass-through, no file-path processing
-            hook_config = {
-                'type': hook_type,
-                'url': hook.get('url', ''),
-            }
-            if hook.get('headers') is not None:
-                hook_config['headers'] = hook['headers']
-            if hook.get('allowed-env-vars') is not None:
-                hook_config['allowedEnvVars'] = hook['allowed-env-vars']
-
-        elif hook_type == 'prompt':
-            # Prompt hooks: pass-through for prompt and model
-            hook_config = {
-                'type': hook_type,
-                'prompt': hook.get('prompt', ''),
-            }
-            if hook.get('model') is not None:
-                hook_config['model'] = hook['model']
-
-        elif hook_type == 'agent':
-            # Agent hooks: same structure as prompt but type is 'agent'
-            hook_config = {
-                'type': hook_type,
-                'prompt': hook.get('prompt', ''),
-            }
-            if hook.get('model') is not None:
-                hook_config['model'] = hook['model']
-
-        else:
-            warning(f'Unknown hook type: {hook_type}, skipping')
-            continue
-
-        # Apply common fields to ALL hook types
-        _apply_common_hook_fields(hook_config, hook)
-
-        if matcher_group and 'hooks' in matcher_group:
-            matcher_hooks_raw = matcher_group['hooks']
-            if isinstance(matcher_hooks_raw, list):
-                # Cast to typed list for type safety
-                matcher_hooks_list = cast(list[object], matcher_hooks_raw)
-                matcher_hooks_list.append(hook_config)
+        hooks_json = _build_hooks_json(hooks, hooks_dir)
+        if hooks_json:
+            settings['hooks'] = hooks_json
 
     # Save settings (always overwrite)
     settings_path = config_base_dir / 'config.json'
@@ -10095,9 +10166,29 @@ def main() -> None:
             else:
                 warning('Launcher script was not created')
         else:
-            # Skip command creation
+            # No command-names: check if hooks need to be written to settings.json
+            hooks = config.get('hooks', {})
+            has_hook_events = bool(hooks and hooks.get('events'))
+
+            if has_hook_events:
+                # Step 17: Download hooks to ~/.claude/hooks/
+                print()
+                print(f'{Colors.CYAN}Step 17: Downloading hooks...{Colors.NC}')
+                if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
+                                           auth_cache=auth_cache):
+                    download_failures.append('hook files')
+
+                # Step 18: Write hooks to settings.json
+                print()
+                print(f'{Colors.CYAN}Step 18: Writing hooks to settings.json...{Colors.NC}')
+                write_hooks_to_settings(hooks, hooks_dir, claude_user_dir)
+            else:
+                print()
+                print(f'{Colors.CYAN}Steps 17-18: Skipping hooks (none configured)...{Colors.NC}')
+
+            # Steps 19-21: Skip command creation
             print()
-            print(f'{Colors.CYAN}Steps 17-21: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Steps 19-21: Skipping command creation (no command-names specified)...{Colors.NC}')
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
@@ -10206,15 +10297,18 @@ def main() -> None:
             print('   * Global config: configured in ~/.claude.json')
         if claude_code_version_normalized is not None:
             print(f'   * IDE extensions: {IDE_EXTENSION_ID} v{claude_code_version_normalized} (auto-install disabled)')
-        # Only show hooks count if command was specified (hooks was defined)
+        # Show hooks count with routing information
+        hooks = config.get('hooks', {})
+        hook_event_count = len(hooks.get('events', [])) if hooks else 0
         if command_names:
-            hooks = config.get('hooks', {})
-            print(f"   * Hooks: {len(hooks.get('events', [])) if hooks else 0} configured")
+            print(f'   * Hooks: {hook_event_count} configured (in config.json)')
             if len(command_names) > 1:
                 print(f'   * Global commands: {", ".join(command_names)} registered')
             else:
                 print(f'   * Global command: {primary_command_name} registered')
         else:
+            if hook_event_count > 0:
+                print(f'   * Hooks: {hook_event_count} configured (in settings.json)')
             print('   * Custom command: Not created (no command-names specified)')
 
         print()

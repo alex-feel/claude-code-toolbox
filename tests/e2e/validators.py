@@ -1656,3 +1656,30 @@ def validate_launcher_env_sourcing(
             )
 
     return errors
+
+
+def validate_hooks_in_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
+    """Validate hooks structure in settings.json (no-command-names flow).
+
+    Reads the settings.json file and validates the hooks structure against
+    the YAML hooks configuration. Delegates structural validation to the
+    existing _validate_hooks_structure helper.
+
+    Args:
+        path: Path to settings.json file
+        config: Hooks configuration dictionary (the 'hooks' section from YAML)
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+    data, file_errors = validate_json_file(path)
+    if file_errors:
+        return file_errors
+    assert data is not None
+    hooks_data = data.get('hooks', {})
+    if not hooks_data:
+        errors.append('settings.json missing hooks key')
+        return errors
+    errors.extend(_validate_hooks_structure(hooks_data, config))
+    return errors

@@ -250,7 +250,7 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Must be alphanumeric, hyphens, and underscores only
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
-- **Note:** If empty or not specified, setup steps for hooks download, settings, manifest, launcher, and command registration are skipped. The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
+- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Manifest, launcher, and command registration steps are skipped. The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
 ```yaml
@@ -798,7 +798,7 @@ Free-form settings merged into `~/.claude/settings.json`. Uses deep merge with a
 
 - **Type:** `UserSettings | None`
 - **Default:** `None`
-- **Excluded keys:** `hooks` and `statusLine` (these are profile-specific and must be configured at the root level of the YAML configuration)
+- **Excluded keys:** `hooks` and `statusLine` (these require dedicated write logic with path resolution and type processing, and must be configured at the root level of the YAML configuration)
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (`permissions.allow`, `permissions.deny`, `permissions.ask` arrays are unioned with deduplication). Child keys override matching parent keys; `null` values delete keys.
 - **Example:**
 
@@ -1143,6 +1143,24 @@ hooks:
       if: "Bash(rm *)"
       once: true
 ```
+
+#### Hooks Routing
+
+Hooks are routed to different target files based on whether `command-names` is specified:
+
+| Scenario                | Target File                    | Write Mechanism                              | Hook Files Directory     |
+|-------------------------|--------------------------------|----------------------------------------------|--------------------------|
+| `command-names` present | `~/.claude/{cmd}/config.json`  | `create_profile_config()` (atomic overwrite) | `~/.claude/{cmd}/hooks/` |
+| `command-names` absent  | `~/.claude/settings.json`      | `write_hooks_to_settings()` (key-replace)    | `~/.claude/hooks/`       |
+
+When `command-names` is absent, the setup writes hooks to the global `~/.claude/settings.json` using read-pop-replace-write semantics: the existing file is read, the `hooks` key is replaced entirely (removing stale events from prior runs), and all other keys are preserved. This avoids deep merge, which would retain stale hook event keys across re-runs.
+
+**Re-run behavior:** The toolbox owns the `hooks` key in `settings.json`. Re-running the setup overwrites any manually-added hooks in `settings.json`. To configure hooks, define them in the YAML configuration rather than editing `settings.json` directly.
+
+The installation summary distinguishes between the two routing targets:
+
+- With `command-names`: `Hooks: N configured (in config.json)`
+- Without `command-names`: `Hooks: N configured (in settings.json)`
 
 ## Advanced Topics
 
@@ -1659,13 +1677,13 @@ Here is a conceptual overview of what the setup script does when you run it with
 14. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
 15. **Write global config** -- Merges `global-config` into `~/.claude.json`.
 16. **Cleanup stale controls** -- Sweeps all filesystem locations for stale auto-update and IDE extension artifacts from prior configurations.
-17. **Download hooks** -- Downloads hook script files. (Only if `command-names` is specified.)
-18. **Configure profile** -- Creates the profile configuration file for the command.
-19. **Write manifest** -- Creates an installation tracking manifest.
-20. **Create launcher** -- Creates the launcher script for the command.
-21. **Register commands** -- Creates global command wrappers.
+17. **Download hooks** -- Downloads hook script files to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without).
+18. **Write hooks** -- With `command-names`: writes hooks to `config.json` via `create_profile_config()`. Without `command-names`: writes hooks to `~/.claude/settings.json` via `write_hooks_to_settings()`.
+19. **Write manifest** -- Creates an installation tracking manifest. (Only if `command-names` is specified.)
+20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
+21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 
-Steps 17 through 21 are skipped if `command-names` is not specified.
+Steps 17-18 are skipped if no hooks are configured. Steps 19-21 are skipped if `command-names` is not specified.
 
 ## Complete Annotated Example
 

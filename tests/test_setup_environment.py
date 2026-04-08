@@ -4415,6 +4415,323 @@ class TestArtifactIsolation:
             assert 'my-env/hooks/my_hook.sh' in hook_cmd
 
 
+class TestBuildHooksJson:
+    """Tests for _build_hooks_json() extracted helper."""
+
+    def test_empty_hooks(self):
+        """Empty hooks dict returns empty dict."""
+        result = setup_environment._build_hooks_json({}, Path('/hooks'))
+        assert result == {}
+
+    def test_no_events(self):
+        """Hooks dict without events key returns empty dict."""
+        result = setup_environment._build_hooks_json({'files': ['a.py']}, Path('/hooks'))
+        assert result == {}
+
+    def test_empty_events_list(self):
+        """Hooks dict with empty events list returns empty dict."""
+        result = setup_environment._build_hooks_json({'events': []}, Path('/hooks'))
+        assert result == {}
+
+    def test_python_hook_uv_run_prefix(self):
+        """Python hook gets uv run prefix with absolute POSIX path."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command', 'command': 'linter.py'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/home/user/.claude/hooks'))
+        assert 'PostToolUse' in result
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert 'uv run' in hook_cmd
+        assert '/home/user/.claude/hooks/linter.py' in hook_cmd
+        assert '~' not in hook_cmd
+
+    def test_javascript_hook_node_prefix(self):
+        """JavaScript hook gets node prefix."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Read', 'type': 'command', 'command': 'check.js'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert hook_cmd.startswith('node ')
+
+    def test_mjs_hook_node_prefix(self):
+        """ES module (.mjs) hook gets node prefix."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'check.mjs'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert hook_cmd.startswith('node ')
+
+    def test_cjs_hook_node_prefix(self):
+        """CommonJS (.cjs) hook gets node prefix."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'check.cjs'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert hook_cmd.startswith('node ')
+
+    def test_http_hook(self):
+        """HTTP hook passes through url, headers, allowedEnvVars."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'http',
+                             'url': 'http://localhost:8080/hooks', 'headers': {'X-Key': 'val'},
+                             'allowed-env-vars': ['TOKEN']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['type'] == 'http'
+        assert hook['url'] == 'http://localhost:8080/hooks'
+        assert hook['headers'] == {'X-Key': 'val'}
+        assert hook['allowedEnvVars'] == ['TOKEN']
+
+    def test_prompt_hook(self):
+        """Prompt hook passes through prompt and model."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'Check safety', 'model': 'sonnet'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['type'] == 'prompt'
+        assert hook['prompt'] == 'Check safety'
+        assert hook['model'] == 'sonnet'
+
+    def test_agent_hook(self):
+        """Agent hook passes through prompt, model, and once."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash(rm *)', 'type': 'agent',
+                             'prompt': 'Verify security', 'once': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['type'] == 'agent'
+        assert hook['prompt'] == 'Verify security'
+        assert hook['once'] is True
+
+    def test_common_fields_pass_through(self):
+        """Common fields (if, statusMessage, once, timeout) pass through."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'test', 'if': 'condition', 'status-message': 'checking',
+                             'once': True, 'timeout': 30}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['if'] == 'condition'
+        assert hook['statusMessage'] == 'checking'
+        assert hook['once'] is True
+        assert hook['timeout'] == 30
+
+    def test_config_file_appended(self):
+        """Config file path appended to command."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                             'command': 'linter.py', 'config': 'linter-config.yaml'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/home/user/.claude/hooks'))
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert '/home/user/.claude/hooks/linter-config.yaml' in hook_cmd
+
+    def test_matcher_grouping(self):
+        """Multiple hooks with same event+matcher are grouped."""
+        hooks = {'events': [
+            {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command', 'command': 'a.py'},
+            {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command', 'command': 'b.py'},
+        ]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert len(result['PostToolUse']) == 1
+        assert len(result['PostToolUse'][0]['hooks']) == 2
+
+    def test_different_matchers_separate_groups(self):
+        """Different matchers create separate groups."""
+        hooks = {'events': [
+            {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command', 'command': 'a.py'},
+            {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'b.py'},
+        ]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert len(result['PostToolUse']) == 2
+
+    def test_direct_command_passthrough(self):
+        """Direct commands with spaces are passed through as-is."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
+                             'command': 'echo "hello world"'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook_cmd = result['PostToolUse'][0]['hooks'][0]['command']
+        assert hook_cmd == 'echo "hello world"'
+
+    def test_command_async_and_shell_fields(self):
+        """Command-specific async and shell fields pass through."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
+                             'command': 'hook.py', 'async': True, 'shell': '/bin/bash'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['async'] is True
+        assert hook['shell'] == '/bin/bash'
+
+    def test_invalid_event_skipped(self):
+        """Hook with missing event is skipped."""
+        hooks = {'events': [{'matcher': 'Write', 'type': 'command', 'command': 'a.py'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+
+    def test_invalid_command_hook_skipped(self):
+        """Command hook without command is skipped."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+
+    def test_parity_with_create_profile_config(self):
+        """Verify _build_hooks_json produces same output as create_profile_config."""
+        hooks = {
+            'events': [
+                {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command', 'command': 'linter.py'},
+                {'event': 'PostToolUse', 'matcher': 'Edit|MultiEdit|Write', 'type': 'command',
+                 'command': 'check.js', 'config': 'check-config.yaml'},
+                {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'http',
+                 'url': 'http://localhost:8080/hooks', 'headers': {'Auth': 'Bearer tok'},
+                 'allowed-env-vars': ['TOK']},
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                 'prompt': 'Is this safe?', 'model': 'sonnet'},
+                {'event': 'PreToolUse', 'matcher': 'Bash(rm *)', 'type': 'agent',
+                 'prompt': 'Verify security', 'once': True},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir) / 'cmd'
+            config_dir.mkdir()
+            hooks_dir = config_dir / 'hooks'
+
+            # Get result from create_profile_config
+            setup_environment.create_profile_config(hooks, config_dir)
+            config_json = json.loads((config_dir / 'config.json').read_text())
+            config_hooks = config_json.get('hooks', {})
+
+            # Get result from _build_hooks_json
+            direct_hooks = setup_environment._build_hooks_json(hooks, hooks_dir)
+
+            assert direct_hooks == config_hooks
+
+
+class TestWriteHooksToSettings:
+    """Tests for write_hooks_to_settings() function."""
+
+    def test_creates_new_file(self, tmp_path):
+        """Creates settings.json when it does not exist."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        settings_file = tmp_path / 'settings.json'
+        assert settings_file.exists()
+        data = json.loads(settings_file.read_text())
+        assert 'hooks' in data
+        assert 'PostToolUse' in data['hooks']
+
+    def test_preserves_existing_keys(self, tmp_path):
+        """Existing keys in settings.json are preserved."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({'language': 'english', 'theme': 'dark'}))
+        hooks = {'events': [{'event': 'SessionStart', 'matcher': '*',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert data['language'] == 'english'
+        assert data['theme'] == 'dark'
+        assert 'hooks' in data
+
+    def test_replaces_stale_hooks(self, tmp_path):
+        """Stale hook events from prior runs are removed."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'hooks': {'OldEvent': [{'matcher': '', 'hooks': [{'type': 'command', 'command': 'old.py'}]}]},
+        }))
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'new.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'OldEvent' not in data['hooks']
+        assert 'PostToolUse' in data['hooks']
+
+    def test_empty_hooks_removes_key(self, tmp_path):
+        """Empty hooks configuration removes 'hooks' key from settings."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'hooks': {'SomeEvent': []},
+            'language': 'english',
+        }))
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings({}, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'hooks' not in data
+        assert data['language'] == 'english'
+
+    def test_invalid_json_starts_fresh(self, tmp_path):
+        """Invalid JSON in existing file starts with fresh dict."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text('not valid json!!!')
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'hooks' in data
+
+    def test_non_dict_json_starts_fresh(self, tmp_path):
+        """Non-dict JSON content starts with fresh dict."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text('"just a string"')
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'hooks' in data
+
+    def test_preserves_user_settings_from_prior_step(self, tmp_path):
+        """Hooks write preserves user settings written by write_user_settings."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'language': 'english',
+            'theme': 'dark',
+            'permissions': {'allow': ['Read']},
+        }))
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert data['language'] == 'english'
+        assert data['theme'] == 'dark'
+        assert data['permissions'] == {'allow': ['Read']}
+        assert 'PostToolUse' in data['hooks']
+
+    def test_idempotent(self, tmp_path):
+        """Running write_hooks_to_settings twice produces same result."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        first_content = (tmp_path / 'settings.json').read_text()
+        setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        second_content = (tmp_path / 'settings.json').read_text()
+        assert first_content == second_content
+
+    def test_creates_directory_if_missing(self, tmp_path):
+        """Creates settings_dir if it does not exist."""
+        new_dir = tmp_path / 'new_dir'
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = new_dir / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, new_dir)
+        assert result is True
+        assert (new_dir / 'settings.json').exists()
+
+    def test_empty_file_starts_fresh(self, tmp_path):
+        """Empty settings.json starts with fresh dict."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text('')
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
+                             'type': 'command', 'command': 'hook.py'}]}
+        hooks_dir = tmp_path / 'hooks'
+        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
+        assert result is True
+        data = json.loads(settings_file.read_text())
+        assert 'hooks' in data
+
+
 class TestCreateLauncherScript:
     """Test launcher script creation."""
 
@@ -9459,9 +9776,10 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows Steps 16-20 skipped
+        # Verify output shows hooks skipped and command creation skipped
         captured = capsys.readouterr()
-        assert 'Steps 17-21: Skipping command creation' in captured.out
+        assert 'Steps 17-18: Skipping hooks (none configured)' in captured.out
+        assert 'Steps 19-21: Skipping command creation (no command-names specified)' in captured.out
         assert 'Step 14: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
