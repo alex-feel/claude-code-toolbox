@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.12.0...v5.13.0) (2026-04-11)
+
+
+### Features
+
+* add profile-settings parity for non-command-names mode ([0096a23](https://github.com/alex-feel/claude-code-toolbox/commit/0096a23f2eb3f0b8da16344a4609edf5871f72e5))
+
 ## [5.12.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.11.3...v5.12.0) (2026-04-08)
 
 
