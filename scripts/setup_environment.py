@@ -198,6 +198,33 @@ ROOT_TO_USER_SETTINGS_KEY_MAP: dict[str, str] = {
     'effort-level': 'effortLevel',              # Adaptive reasoning effort
 }
 
+# Keys that are owned and written by the profile-settings subsystem.
+# These keys are extracted from YAML root level and routed via
+# create_profile_config() (isolated mode -> config.json) or
+# write_profile_settings_to_settings() (non-isolated mode -> settings.json).
+#
+# Both writers are fed by the shared pure builder _build_profile_settings(),
+# which performs kebab-to-camel translation. Values below are the POST-TRANSLATION
+# camelCase keys as they appear in settings.json / config.json on disk.
+#
+# In non-isolated mode, write_profile_settings_to_settings() performs a
+# conditional top-level replace for only the keys present in the builder
+# delta. Keys not declared at YAML root level are PRESERVED in
+# ~/.claude/settings.json (unchanged by this writer), including any
+# prior-run contributions and any keys written by Step 14
+# write_user_settings() under user-settings:.
+PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
+    'model',
+    'permissions',
+    'env',
+    'attribution',
+    'alwaysThinkingEnabled',
+    'effortLevel',
+    'companyAnnouncements',
+    'statusLine',
+    'hooks',
+})
+
 
 # Platform-specific imports with proper type checking support
 if sys.platform == 'win32':
@@ -8391,9 +8418,97 @@ def write_hooks_to_settings(
         return False
 
 
-def create_profile_config(
+def write_profile_settings_to_settings(
+    settings_delta: dict[str, Any],
+    settings_dir: Path,
+) -> bool:
+    """Write profile-owned settings delta to ~/.claude/settings.json.
+
+    Applies a conditional top-level replace to the shared settings.json
+    file used by the non-command-names mode:
+
+    - READS existing settings.json (or starts from empty dict if missing).
+    - For each top-level key in settings_delta:
+        - If value is None: DELETE the key from the existing dict
+          (RFC 7396 null-as-delete semantics).
+        - Otherwise: REPLACE the entire top-level key value with the delta
+          value (no deep-merge, no array-union at this level).
+    - Keys NOT present in settings_delta are PRESERVED unchanged. This is
+      the core preservation guarantee: when YAML omits a profile-owned
+      key, the corresponding key in ~/.claude/settings.json is left
+      alone. The shared settings.json is a user-facing file that may
+      contain manually-edited entries or contributions from other tools;
+      this writer must not delete keys it was not asked to touch.
+
+    The delta is expected to be the output of _build_profile_settings(),
+    which contains only the keys explicitly declared at YAML root level
+    (PROFILE_OWNED_KEYS subset).
+
+    IMPORTANT: This function is called ONLY in non-command-names mode. In
+    command-names mode, profile settings are routed to config.json via
+    create_profile_config() with atomic overwrite semantics.
+
+    Args:
+        settings_delta: Dict of profile-owned keys to write (output of
+            _build_profile_settings()). May be empty, in which case no
+            file I/O occurs and the function returns True.
+        settings_dir: Directory containing settings.json (typically
+            ~/.claude/).
+
+    Returns:
+        True if the file was written successfully or no-op (empty delta),
+        False on read or write failure.
+    """
+    if not settings_delta:
+        info('No profile settings to write to settings.json')
+        return True
+
+    settings_file = settings_dir / 'settings.json'
+    info('Writing profile settings to settings.json...')
+
+    # Read existing settings.json (or empty dict if missing / malformed)
+    existing: dict[str, Any] = {}
+    if settings_file.exists():
+        try:
+            file_content = settings_file.read_text(encoding='utf-8')
+            if file_content.strip():
+                parsed = json.loads(file_content)
+                if isinstance(parsed, dict):
+                    existing = parsed
+                else:
+                    warning(f'Existing {settings_file} is not a dict, starting fresh')
+        except json.JSONDecodeError as e:
+            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
+        except OSError as e:
+            warning(f'Failed to read {settings_file}: {e}, starting fresh')
+
+    # Conditional top-level replace: only keys in the delta are touched.
+    # Keys not in the delta are PRESERVED unchanged (Step 14 contributions,
+    # user-managed settings, and prior-run profile keys not re-declared all
+    # remain intact). None values delete keys (RFC 7396 null-as-delete).
+    for key, value in settings_delta.items():
+        if value is None:
+            existing.pop(key, None)
+        else:
+            existing[key] = value
+
+    # Write back
+    try:
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text(
+            json.dumps(existing, indent=2, ensure_ascii=False) + '\n',
+            encoding='utf-8',
+        )
+        success(f'Wrote profile settings to {settings_file}')
+        return True
+    except OSError as e:
+        warning(f'Failed to write profile settings to {settings_file}: {e}')
+        return False
+
+
+def _build_profile_settings(
     hooks: dict[str, Any],
-    config_base_dir: Path,
+    hooks_dir: Path,
     model: str | None = None,
     permissions: dict[str, Any] | None = None,
     env: dict[str, str] | None = None,
@@ -8402,43 +8517,56 @@ def create_profile_config(
     attribution: dict[str, str] | None = None,
     status_line: dict[str, Any] | None = None,
     effort_level: str | None = None,
-    hooks_base_dir: Path | None = None,
-) -> bool:
-    """Create config.json (profile configuration) for the isolated environment.
+) -> dict[str, Any]:
+    """Build profile settings dict from YAML inputs (pure, zero I/O).
 
-    This file is always overwritten to avoid duplicate hooks when re-running the installer.
-    It's loaded via --settings flag when launching Claude.
+    Produces a dict containing ONLY the keys that were explicitly configured
+    (None inputs are omitted). Values correspond to the 9 PROFILE_OWNED_KEYS
+    in their camelCase form as they appear in settings.json / config.json.
+
+    Performs kebab-to-camel translation for nested permissions keys
+    ('default-mode' -> 'defaultMode', 'additional-directories' ->
+    'additionalDirectories'), builds the statusLine command string with
+    absolute POSIX paths under hooks_dir, and delegates to _build_hooks_json()
+    for the hooks key universe.
 
     Args:
-        hooks: Hooks configuration dictionary with 'files' and 'events' keys
-        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
-        model: Optional model alias or custom model name
-        permissions: Optional permissions configuration dict
-        env: Optional environment variables dict
-        always_thinking_enabled: Optional flag to enable always-on thinking mode
-        company_announcements: Optional list of company announcement strings
-        attribution: Optional dict with 'commit' and 'pr' keys for custom attribution strings.
-            Empty strings hide attribution.
-        status_line: Optional dict with 'file' key for status line script path, optional
-            'padding' key, and optional 'config' key for config file reference.
-            Both the script and config file are downloaded to the hooks directory and
-            the config path is appended as a command line argument.
+        hooks: Hooks configuration dictionary with 'files' and 'events' keys.
+        hooks_dir: Absolute directory path where downloaded hook files reside.
+            For isolated mode: ~/.claude/{cmd}/hooks/.
+            For non-isolated mode: ~/.claude/hooks/.
+        model: Optional model alias or custom model name.
+        permissions: Optional permissions configuration dict (kebab-case nested
+            keys are translated to camelCase).
+        env: Optional environment variables dict (keys as-is, values stringified).
+        always_thinking_enabled: Optional flag to enable always-on thinking mode.
+        company_announcements: Optional list of company announcement strings.
+        attribution: Optional dict with 'commit' and 'pr' keys for custom
+            attribution strings. Empty strings hide attribution.
+        status_line: Optional dict with 'file', optional 'config', and optional
+            'padding' keys. 'file' references a script previously downloaded to
+            hooks_dir; its absolute POSIX path is embedded in the generated
+            command string.
         effort_level: Optional effort level for adaptive reasoning.
-            Valid values: 'low', 'medium', 'high', 'max'. The 'max' level is
-            only available for Opus models.
-        hooks_base_dir: Optional base directory for hook files.
-            When provided, hook file paths are resolved relative to this directory
-            instead of config_base_dir / 'hooks'.
+            Valid values: 'low', 'medium', 'high', 'max'.
 
     Returns:
-        bool: True if successful, False otherwise.
+        Dict containing only explicitly-configured PROFILE_OWNED_KEYS, with
+        camelCase keys and all values ready to be serialized to JSON.
+
+    Examples:
+        >>> _build_profile_settings({}, Path('/tmp/hooks'), model='sonnet')
+        {'model': 'sonnet'}
+
+        >>> _build_profile_settings(
+        ...     {}, Path('/tmp/hooks'),
+        ...     permissions={'default-mode': 'ask', 'allow': ['Read']},
+        ... )
+        {'permissions': {'defaultMode': 'ask', 'allow': ['Read']}}
+
+        >>> _build_profile_settings({}, Path('/tmp/hooks'))
+        {}
     """
-    # Determine hooks directory: use hooks_base_dir if provided, else default
-    hooks_dir = hooks_base_dir if hooks_base_dir is not None else config_base_dir / 'hooks'
-
-    info('Creating config.json...')
-
-    # Create fresh settings structure for this environment
     settings: dict[str, Any] = {}
 
     # Add model if specified
@@ -8446,13 +8574,10 @@ def create_profile_config(
         settings['model'] = model
         info(f'Setting model: {model}')
 
-    # Handle permissions from configuration
-    final_permissions = {}
-
-    # Use permissions from env config if provided
+    # Handle permissions from configuration with kebab-to-camel translation
+    final_permissions: dict[str, Any] = {}
     if permissions:
         final_permissions = permissions.copy()
-        # Translate kebab-case YAML keys to camelCase JSON keys
         if 'default-mode' in final_permissions:
             final_permissions['defaultMode'] = final_permissions.pop('default-mode')
         if 'additional-directories' in final_permissions:
@@ -8549,7 +8674,71 @@ def create_profile_config(
         if hooks_json:
             settings['hooks'] = hooks_json
 
-    # Save settings (always overwrite)
+    return settings
+
+
+def create_profile_config(
+    hooks: dict[str, Any],
+    config_base_dir: Path,
+    model: str | None = None,
+    permissions: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    always_thinking_enabled: bool | None = None,
+    company_announcements: list[str] | None = None,
+    attribution: dict[str, str] | None = None,
+    status_line: dict[str, Any] | None = None,
+    effort_level: str | None = None,
+    hooks_base_dir: Path | None = None,
+) -> bool:
+    """Create config.json (profile configuration) for the isolated environment.
+
+    Delegates to the pure builder _build_profile_settings() and atomically
+    writes the result to ~/.claude/{cmd}/config.json. This file is always
+    overwritten on re-run, so YAML removals of keys cleanly propagate to the
+    isolated profile (isolated-mode atomic rebuild semantics).
+
+    Args:
+        hooks: Hooks configuration dictionary with 'files' and 'events' keys.
+        config_base_dir: Path to the isolated environment directory
+            (e.g., ~/.claude/{cmd}/).
+        model: Optional model alias or custom model name.
+        permissions: Optional permissions configuration dict.
+        env: Optional environment variables dict.
+        always_thinking_enabled: Optional flag to enable always-on thinking mode.
+        company_announcements: Optional list of company announcement strings.
+        attribution: Optional dict with 'commit' and 'pr' keys for custom
+            attribution strings. Empty strings hide attribution.
+        status_line: Optional dict with 'file'/'config'/'padding' keys.
+        effort_level: Optional effort level for adaptive reasoning.
+            Valid values: 'low', 'medium', 'high', 'max'. The 'max' level is
+            only available for Opus models.
+        hooks_base_dir: Optional base directory for hook files.
+            When provided, hook file paths are resolved relative to this directory
+            instead of config_base_dir / 'hooks'.
+
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    # Determine hooks directory: use hooks_base_dir if provided, else default
+    hooks_dir = hooks_base_dir if hooks_base_dir is not None else config_base_dir / 'hooks'
+
+    info('Creating config.json...')
+
+    # Build the profile settings dict via the shared pure builder
+    settings = _build_profile_settings(
+        hooks=hooks,
+        hooks_dir=hooks_dir,
+        model=model,
+        permissions=permissions,
+        env=env,
+        always_thinking_enabled=always_thinking_enabled,
+        company_announcements=company_announcements,
+        attribution=attribution,
+        status_line=status_line,
+        effort_level=effort_level,
+    )
+
+    # Save settings (always overwrite) - atomic rebuild semantics
     settings_path = config_base_dir / 'config.json'
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
@@ -9766,14 +9955,59 @@ def main() -> None:
                     error(err)
                 sys.exit(1)
 
-        # Detect conflicts between user-settings and root-level settings
-        if user_settings and primary_command_name:
+        # Detect conflicts between user-settings and root-level settings.
+        # Warnings fire in BOTH modes (isolated and non-isolated). In non-
+        # isolated mode, write_profile_settings_to_settings() also applies
+        # root-level precedence for profile-owned keys via Step 14 / Step 18
+        # ordering, so the conflict is meaningful in both branches.
+        if user_settings:
             conflicts = detect_settings_conflicts(user_settings, config)
             for user_key, user_value, root_value in conflicts:
                 warning(f"Key '{user_key}' specified in both root level and user-settings.")
                 warning(f'  user-settings value: {user_value}')
                 warning(f'  root-level value: {root_value}')
-                warning('  When using profile command, root-level value takes precedence.')
+                warning('  Root-level value takes precedence (written last in Step 18).')
+
+        # Validate: profile-scoped MCP servers require command-names (launcher)
+        # In non-command-names mode, profile-scoped servers have no launcher
+        # to consume --mcp-config, so they would be silently dropped. This is
+        # a hard error with 4-option actionable fix-up message.
+        if not primary_command_name:
+            mcp_servers_raw_for_validation = config.get('mcp-servers', [])
+            if isinstance(mcp_servers_raw_for_validation, list):
+                profile_mcp_names: list[str] = []
+                for server in mcp_servers_raw_for_validation:
+                    if not isinstance(server, dict):
+                        continue
+                    scope_raw = server.get('scope')
+                    # scope may be str or list[str]; check for 'profile' membership
+                    if isinstance(scope_raw, str):
+                        scopes_set = {scope_raw}
+                    elif isinstance(scope_raw, list):
+                        scopes_set = {s for s in scope_raw if isinstance(s, str)}
+                    else:
+                        scopes_set = set()
+                    if 'profile' in scopes_set:
+                        server_name = server.get('name', '<unnamed>')
+                        profile_mcp_names.append(str(server_name))
+                if profile_mcp_names:
+                    for server_name_out in profile_mcp_names:
+                        error(
+                            f"MCP server '{server_name_out}' declares scope: profile "
+                            f'but command-names is not specified.',
+                        )
+                    error(
+                        'Profile-scoped MCP servers require a launcher script '
+                        'with --mcp-config flag, which is only created when '
+                        'command-names is present in your YAML configuration.',
+                    )
+                    error('')
+                    error('Fix one of:')
+                    error('  1. Add "command-names: [your-name]" to enable isolated environment (preferred)')
+                    error('  2. Change scope to "user" to install globally via ~/.claude.json')
+                    error('  3. Change scope to "local" to install in project-specific .mcp.json')
+                    error('  4. Change scope to "project" to install in shared project .mcp.json')
+                    sys.exit(1)
 
         header(environment_name)
 
@@ -10166,25 +10400,81 @@ def main() -> None:
             else:
                 warning('Launcher script was not created')
         else:
-            # No command-names: check if hooks need to be written to settings.json
+            # No command-names: route all profile-owned YAML keys to the
+            # shared ~/.claude/settings.json via conditional top-level
+            # replace. This achieves full feature parity for model,
+            # permissions, env, attribution, alwaysThinkingEnabled,
+            # effortLevel, companyAnnouncements, statusLine, and hooks
+            # between command-names present/absent modes.
             hooks = config.get('hooks', {})
-            has_hook_events = bool(hooks and hooks.get('events'))
 
-            if has_hook_events:
-                # Step 17: Download hooks to ~/.claude/hooks/
+            # Warn about command-defaults.system-prompt without command-names.
+            # System prompts are applied by the launcher via --system-prompt /
+            # --append-system-prompt CLI flags; without command-names there is
+            # no launcher to consume the prompt file, so it would be silently
+            # unused at runtime.
+            if system_prompt:
+                warning(
+                    f"command-defaults.system-prompt is set to '{system_prompt}' "
+                    f'but command-names is not specified.',
+                )
+                warning(
+                    'System prompts are applied by the launcher; without command-names '
+                    'there is no launcher, so the system prompt will NOT be applied.',
+                )
+                warning(
+                    "Add 'command-names: [your-name]' to enable isolated environment "
+                    'with launcher-based system prompt injection.',
+                )
+
+            # Step 17: Download hooks (and status-line file + config) to
+            # ~/.claude/hooks/. The status-line file and its config must be
+            # listed in hooks.files per the EnvironmentConfig schema Rule 3,
+            # so download_hook_files() handles both automatically.
+            has_hook_events = bool(hooks and hooks.get('events'))
+            has_status_line_file = bool(
+                status_line
+                and isinstance(status_line, dict)
+                and status_line.get('file'),
+            )
+            hook_files_list = hooks.get('files') if isinstance(hooks, dict) else None
+            has_hook_files = bool(hook_files_list)
+
+            if has_hook_events or has_status_line_file or has_hook_files:
                 print()
                 print(f'{Colors.CYAN}Step 17: Downloading hooks...{Colors.NC}')
                 if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
                                            auth_cache=auth_cache):
                     download_failures.append('hook files')
-
-                # Step 18: Write hooks to settings.json
-                print()
-                print(f'{Colors.CYAN}Step 18: Writing hooks to settings.json...{Colors.NC}')
-                write_hooks_to_settings(hooks, hooks_dir, claude_user_dir)
             else:
                 print()
-                print(f'{Colors.CYAN}Steps 17-18: Skipping hooks (none configured)...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 17: Skipping hooks download (none configured)...{Colors.NC}')
+
+            # Step 18: Write profile settings delta to the shared
+            # settings.json via conditional top-level replace.
+            print()
+            print(f'{Colors.CYAN}Step 18: Writing profile settings to settings.json...{Colors.NC}')
+
+            # Cast status_line for type safety (same pattern as isolated branch)
+            status_line_arg_else: dict[str, Any] | None = None
+            if status_line is not None and isinstance(status_line, dict):
+                status_line_arg_else = cast(dict[str, Any], status_line)
+
+            # Build the profile settings delta (pure, no I/O)
+            settings_delta = _build_profile_settings(
+                hooks=hooks,
+                hooks_dir=hooks_dir,
+                model=model,
+                permissions=permissions,
+                env=env_variables,
+                always_thinking_enabled=always_thinking_enabled,
+                company_announcements=company_announcements,
+                attribution=attribution,
+                status_line=status_line_arg_else,
+                effort_level=effort_level,
+            )
+
+            write_profile_settings_to_settings(settings_delta, claude_user_dir)
 
             # Steps 19-21: Skip command creation
             print()
