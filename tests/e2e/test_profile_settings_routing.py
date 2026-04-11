@@ -4,20 +4,24 @@ Verifies that when `command-names` is absent, all profile-owned keys
 (model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
 companyAnnouncements, statusLine, hooks) are correctly routed to
 ~/.claude/settings.json via write_profile_settings_to_settings(), which
-applies a conditional top-level replace: keys present in the delta are
-overwritten (or deleted when set to None), and keys not present in the
-delta are preserved unchanged.
+deep-merges the delta into the existing file: nested dicts are recursively
+merged, permissions.allow/deny/ask arrays are unioned,
+RFC 7396 null (both top-level and nested) deletes keys, and keys not in
+the delta are preserved unchanged.
 
 Test coverage matrix:
-- Happy path: all 9 profile-owned keys routed correctly
-- Partial config: only subset of keys declared, rest omitted
-- Preservation: pre-existing settings.json keys survive
+- Happy path: all 9 profile-owned keys deep-merged correctly
+- Partial config: only subset of keys declared, rest preserved
+- Deep-merge preservation: pre-existing settings.json sub-keys survive
 - Step 14/18 interaction: user-settings contributions preserved
+- permissions array union: user-settings + root-level deny rules accumulate
 - Conflict detection: warnings fire in non-command-names mode
+- Top-level null-as-delete: model/permissions/env/hooks/... all removable via null
+- Nested null-as-delete: permissions.deny=None removes just the deny sub-key
 - Re-invocation across configurations: a second invocation updates values
   written by the first invocation when keys are re-declared
-- Stale-key preservation: when an invocation omits a previously-written
-  key, the existing value is left in place
+- Stale-key preservation: when an invocation omits a key already on disk,
+  the existing value is left in place
 - Profile-scoped MCP validation: exit 1 with 4-option message
 - System-prompt warning: warning emitted, setup continues
 - Empty profile delta: settings.json untouched when no profile keys
@@ -43,16 +47,18 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Test Class 1: Conditional Top-Level Replace Filesystem Semantics
+# Test Class 1: Deep-Merge Writer Filesystem Semantics
 # ---------------------------------------------------------------------------
 
 
-class TestConditionalReplaceWriterFilesystem:
+class TestDeepMergeWriterFilesystem:
     """Filesystem-level tests of write_profile_settings_to_settings().
 
-    Verifies the conditional top-level replace semantics on the real
-    filesystem: only keys present in the delta are written; keys not in
-    the delta are preserved unchanged; None values delete keys.
+    Verifies that the shared settings.json writer applies deep-merge via
+    delegation to _write_merged_json(): nested dicts are recursively
+    merged, permissions.allow/deny/ask arrays are unioned,
+    RFC 7396 null-as-delete works for both top-level keys and nested
+    sub-keys, and keys not present in the delta are preserved unchanged.
     """
 
     def test_happy_path_all_nine_keys(self, tmp_path: Path) -> None:
@@ -61,17 +67,19 @@ class TestConditionalReplaceWriterFilesystem:
         hooks_dir.mkdir()
 
         delta = _build_profile_settings(
-            hooks={'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
-                               'type': 'command', 'command': 'test.sh'}]},
-            hooks_dir=hooks_dir,
-            model='sonnet',
-            permissions={'allow': ['Read'], 'deny': ['Bash(rm -rf)']},
-            env={'FOO': 'bar'},
-            always_thinking_enabled=True,
-            company_announcements=['Welcome'],
-            attribution={'commit': 'cm', 'pr': 'pr'},
-            status_line={'file': 'status.py'},
-            effort_level='high',
+            {
+                'hooks': {'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
+                                      'type': 'command', 'command': 'test.sh'}]},
+                'model': 'sonnet',
+                'permissions': {'allow': ['Read'], 'deny': ['Bash(rm -rf)']},
+                'env': {'FOO': 'bar'},
+                'alwaysThinkingEnabled': True,
+                'companyAnnouncements': ['Welcome'],
+                'attribution': {'commit': 'cm', 'pr': 'pr'},
+                'statusLine': {'file': 'status.py'},
+                'effortLevel': 'high',
+            },
+            hooks_dir,
         )
 
         write_profile_settings_to_settings(delta, tmp_path)
@@ -81,9 +89,8 @@ class TestConditionalReplaceWriterFilesystem:
     def test_partial_delta_only_specified_keys_written(self, tmp_path: Path) -> None:
         """YAML with only model and permissions writes only those two keys."""
         delta = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='sonnet',
-            permissions={'allow': ['Read']},
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
@@ -99,7 +106,7 @@ class TestConditionalReplaceWriterFilesystem:
             'cleanupPeriodDays': 30,
         }), encoding='utf-8')
 
-        delta = _build_profile_settings(hooks={}, hooks_dir=tmp_path / 'hooks', model='sonnet')
+        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
         assert content['language'] == 'english'
@@ -114,7 +121,7 @@ class TestConditionalReplaceWriterFilesystem:
         """A profile key that the new delta does not declare survives unchanged.
 
         The shared settings.json is a user-facing file, so the writer must
-        not silently scrub previously-written profile keys when the current
+        not silently scrub profile keys already on disk when the current
         configuration omits them. To delete a key, the user must declare it
         explicitly as None in the delta or remove it manually.
         """
@@ -126,7 +133,7 @@ class TestConditionalReplaceWriterFilesystem:
         }), encoding='utf-8')
 
         # New invocation declares ONLY model (permissions and effortLevel omitted)
-        delta = _build_profile_settings(hooks={}, hooks_dir=tmp_path / 'hooks', model='opus')
+        delta = _build_profile_settings({'model': 'opus'}, tmp_path / 'hooks')
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
 
@@ -144,22 +151,22 @@ class TestConditionalReplaceWriterFilesystem:
             'permissions': {'allow': ['Read']},
         }), encoding='utf-8')
 
-        # Note: _build_profile_settings() does not currently emit None values
-        # for profile keys (it omits None inputs). For null-as-delete coverage,
-        # construct the delta directly.
         write_profile_settings_to_settings({'model': None}, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
         assert 'model' not in content
         # Unrelated profile key PRESERVED
         assert content['permissions'] == {'allow': ['Read']}
 
-    def test_top_level_replace_not_deep_merge(self, tmp_path: Path) -> None:
-        """The writer fully replaces a delta key value (no deep-merge).
+    def test_deep_merge_preserves_unrelated_permissions_subkeys(self, tmp_path: Path) -> None:
+        """Deep-merge preserves permissions sub-keys not declared in the delta.
 
-        When a profile-owned key already exists in settings.json and the
-        delta provides a new value for it, the writer must overwrite the
-        entire top-level value rather than recursively merging the two
-        dicts. Sub-keys not present in the new value disappear from disk.
+        When the delta carries a partial permissions dict (e.g., only 'allow'),
+        existing sub-keys ('deny', 'ask') declared by other contributors must
+        be preserved. This is the headline security guarantee: a narrower
+        permissions: {allow: [Read]} YAML declaration MUST NOT destroy
+        permissions.deny entries set by prior runs, user manual edits, or the
+        Claude Code CLI itself. The 'allow' sub-key is unioned via
+        DEFAULT_ARRAY_UNION_KEYS, so existing and new allow entries accumulate.
         """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
@@ -170,12 +177,130 @@ class TestConditionalReplaceWriterFilesystem:
             },
         }), encoding='utf-8')
 
-        # YAML declares narrower permissions
-        delta: dict[str, Any] = {'permissions': {'allow': ['Read']}}
+        # YAML declares a narrower permissions dict (only 'allow')
+        delta: dict[str, Any] = {'permissions': {'allow': ['Grep']}}
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
 
-        # Full replacement (not merge): 'deny' and 'ask' are GONE
+        # 'allow' array-unioned (order-preserving, deduped)
+        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Glob', 'Grep'}
+        # 'deny' and 'ask' PRESERVED intact
+        assert content['permissions']['deny'] == ['Bash(rm -rf)']
+        assert content['permissions']['ask'] == ['Edit']
+
+    def test_permissions_deny_preserved_across_yaml_runs(self, tmp_path: Path) -> None:
+        """Security guarantee: permissions.deny entries accumulate across runs.
+
+        Flagship security test. A pre-existing settings.json with enterprise
+        deny rules is updated by a narrower YAML declaration; the deny rules
+        must survive and accumulate rather than being silently destroyed.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'deny': ['Bash(rm -rf *)', 'Bash(sudo *)']},
+        }), encoding='utf-8')
+
+        # First YAML run adds allow entries
+        delta1 = _build_profile_settings(
+            {'permissions': {'allow': ['Read']}}, tmp_path / 'hooks',
+        )
+        write_profile_settings_to_settings(delta1, tmp_path)
+
+        # Second YAML run adds an additional deny rule
+        delta2 = _build_profile_settings(
+            {'permissions': {'deny': ['Bash(curl *)']}}, tmp_path / 'hooks',
+        )
+        write_profile_settings_to_settings(delta2, tmp_path)
+
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # All 3 deny rules present, union preserved
+        assert set(content['permissions']['deny']) == {
+            'Bash(rm -rf *)', 'Bash(sudo *)', 'Bash(curl *)',
+        }
+        # 'allow' from first run still present
+        assert content['permissions']['allow'] == ['Read']
+
+    def test_env_deep_merge_preserves_auto_update_injection(self, tmp_path: Path) -> None:
+        """env dict deep-merges, preserving Target 2 auto-update injection.
+
+        Pre-populate with DISABLE_AUTOUPDATER (the state after Step 14 runs
+        with an auto-update-pinned YAML). Write a delta with a new env key.
+        Both keys must be present in the result.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'DISABLE_AUTOUPDATER': '1'},
+        }), encoding='utf-8')
+
+        delta = _build_profile_settings(
+            {'env': {'MY_VAR': 'x'}}, tmp_path / 'hooks',
+        )
+        write_profile_settings_to_settings(delta, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Both keys present
+        assert content['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert content['env']['MY_VAR'] == 'x'
+
+    def test_top_level_null_permissions_deletes_block(self, tmp_path: Path) -> None:
+        """Top-level None for permissions deletes the entire permissions block."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        write_profile_settings_to_settings({'permissions': None}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_top_level_null_hooks_deletes_block(self, tmp_path: Path) -> None:
+        """Top-level None for hooks deletes the entire hooks block."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'hooks': {'PreToolUse': [{'matcher': '', 'hooks': []}]},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        write_profile_settings_to_settings({'hooks': None}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_top_level_null_all_profile_keys_deletes_all(self, tmp_path: Path) -> None:
+        """All nine profile-owned keys set to None deletes them all."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read']},
+            'env': {'FOO': 'bar'},
+            'attribution': {'commit': 'x'},
+            'alwaysThinkingEnabled': True,
+            'effortLevel': 'high',
+            'companyAnnouncements': ['msg'],
+            'statusLine': {'type': 'command', 'command': 'a'},
+            'hooks': {'PreToolUse': []},
+            'language': 'english',  # Unrelated key, should be preserved
+        }), encoding='utf-8')
+
+        delta: dict[str, Any] = dict.fromkeys(PROFILE_OWNED_KEYS)
+        write_profile_settings_to_settings(delta, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # All nine profile-owned keys deleted; unrelated key preserved
+        assert content == {'language': 'english'}
+
+    def test_nested_null_permissions_deny_only_deletes_sub_key(
+        self, tmp_path: Path,
+    ) -> None:
+        """Nested None (permissions.deny) deletes only the deny sub-key."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
+        }), encoding='utf-8')
+
+        write_profile_settings_to_settings(
+            {'permissions': {'deny': None}}, tmp_path,
+        )
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # 'allow' preserved, 'deny' deleted
         assert content['permissions'] == {'allow': ['Read']}
 
 
@@ -201,10 +326,11 @@ class TestStep14Step18Interaction:
 
         Step 14 write_user_settings() runs first and writes
         user-settings.permissions into settings.json via deep-merge. Step
-        18 write_profile_settings_to_settings() then runs against an
-        empty profile delta (root YAML has no permissions). The Step 14
-        permissions entry must remain in the file because the writer
-        only touches keys present in its own delta.
+        18 write_profile_settings_to_settings() then runs against a
+        profile delta that does not contain 'permissions' (root YAML has
+        no permissions declaration, so the builder omits the key). The
+        Step 14 permissions entry remains intact because the deep-merge
+        writer only touches keys present in its own delta.
         """
         # Simulate Step 14 having written user-settings.permissions
         settings_file = tmp_path / 'settings.json'
@@ -214,7 +340,7 @@ class TestStep14Step18Interaction:
         }), encoding='utf-8')
 
         # Step 18: delta has NO 'permissions' (YAML root lacks it)
-        delta = _build_profile_settings(hooks={}, hooks_dir=tmp_path / 'hooks', model='sonnet')
+        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
         assert 'permissions' not in delta
 
         write_profile_settings_to_settings(delta, tmp_path)
@@ -227,26 +353,45 @@ class TestStep14Step18Interaction:
         # Profile delta model ADDED
         assert content['model'] == 'sonnet'
 
-    def test_root_permissions_wins_over_user_settings_permissions(
+    def test_root_permissions_union_with_user_settings_permissions(
         self, tmp_path: Path,
     ) -> None:
-        """Root-level permissions REPLACES user-settings.permissions via step order."""
+        """Step 14 user-settings.permissions and Step 18 root permissions accumulate via union.
+
+        With deep-merge + DEFAULT_ARRAY_UNION_KEYS, both Step 14
+        (write_user_settings writing user-settings) and Step 18
+        (write_profile_settings_to_settings writing root-level permissions)
+        contribute additively to permissions.allow, permissions.deny,
+        permissions.ask. This is a deliberate security property: a team's
+        shared user-settings 'deny' rules compose with a per-run YAML's
+        additional 'deny' rules rather than one destroying the other.
+        """
         # Step 14 wrote user-settings.permissions
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
-            'permissions': {'allow': ['Read']},
+            'permissions': {
+                'allow': ['Read'],
+                'deny': ['Bash(sudo *)'],
+            },
         }), encoding='utf-8')
 
-        # Step 18 has root-level permissions (takes precedence)
+        # Step 18 has root-level permissions (different but overlapping rules)
         delta = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            permissions={'allow': ['Write', 'Edit']},
+            {
+                'permissions': {
+                    'allow': ['Write', 'Edit'],
+                    'deny': ['Bash(rm -rf)'],
+                },
+            },
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
 
-        # Root-level won (full replace)
-        assert content['permissions'] == {'allow': ['Write', 'Edit']}
+        # Both 'allow' sets are array-unioned (Read + Write + Edit)
+        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Edit'}
+        # Both 'deny' sets are array-unioned (sudo rule + rm -rf rule)
+        assert set(content['permissions']['deny']) == {'Bash(sudo *)', 'Bash(rm -rf)'}
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +475,9 @@ class TestConflictDetectionInNonCommandNamesMode:
         captured = capsys.readouterr()
         # Warning text identifies the conflicting key and both surfaces
         assert "Key 'model' specified in both root level and user-settings" in captured.out
-        # Precedence message indicates Step 18 writes last, so the root-level value wins
-        assert 'Root-level value takes precedence (written last in Step 18)' in captured.out
+        # Composite deep-merge precedence message
+        assert 'Under deep merge semantics' in captured.out
+        assert 'permissions.allow/deny/ask, array union applies' in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +541,7 @@ class TestProfileMcpValidationError:
              pytest.raises(SystemExit) as excinfo:
             setup_environment.main()
 
-        # sys.exit(1) was called
+        # sys.exit(1) invoked
         assert excinfo.value.code == 1
 
         # error() messages go to stderr
@@ -660,18 +806,22 @@ class TestGoldenConfigNoCommandNames:
 
         cfg = golden_config_no_command_names
 
-        delta = _build_profile_settings(
-            hooks=cfg.get('hooks', {}),
-            hooks_dir=hooks_dir,
-            model=cfg.get('model'),
-            permissions=cfg.get('permissions'),
-            env=cfg.get('env-variables'),
-            always_thinking_enabled=cfg.get('always-thinking-enabled'),
-            company_announcements=cfg.get('company-announcements'),
-            attribution=cfg.get('attribution'),
-            status_line=cfg.get('status-line'),
-            effort_level=cfg.get('effort-level'),
-        )
+        profile_config = {
+            camel_key: cfg[yaml_key]
+            for yaml_key, camel_key in {
+                'hooks': 'hooks',
+                'model': 'model',
+                'permissions': 'permissions',
+                'env-variables': 'env',
+                'always-thinking-enabled': 'alwaysThinkingEnabled',
+                'company-announcements': 'companyAnnouncements',
+                'attribution': 'attribution',
+                'status-line': 'statusLine',
+                'effort-level': 'effortLevel',
+            }.items()
+            if yaml_key in cfg
+        }
+        delta = _build_profile_settings(profile_config, hooks_dir)
 
         write_profile_settings_to_settings(delta, claude_dir)
 
@@ -696,9 +846,8 @@ class TestGoldenConfigNoCommandNames:
         cfg = golden_config_no_command_names
 
         delta = _build_profile_settings(
-            hooks=cfg.get('hooks', {}),
-            hooks_dir=hooks_dir,
-            model=cfg.get('model'),
+            {'hooks': cfg.get('hooks', {}), 'model': cfg.get('model')},
+            hooks_dir,
         )
         write_profile_settings_to_settings(delta, claude_dir)
 
@@ -723,9 +872,11 @@ class TestGoldenConfigNoCommandNames:
         cfg = golden_config_no_command_names
 
         delta = _build_profile_settings(
-            hooks=cfg.get('hooks', {}),
-            hooks_dir=hooks_dir,
-            status_line=cfg.get('status-line'),
+            {
+                'hooks': cfg.get('hooks', {}),
+                'statusLine': cfg.get('status-line'),
+            },
+            hooks_dir,
         )
         write_profile_settings_to_settings(delta, claude_dir)
 
@@ -753,8 +904,8 @@ class TestRepeatedInvocationSemantics:
     def test_initial_invocation_populates_declared_keys(self, tmp_path: Path) -> None:
         """First invocation against an empty file writes all declared keys."""
         delta = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='sonnet', permissions={'allow': ['Read']},
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
@@ -764,20 +915,22 @@ class TestRepeatedInvocationSemantics:
         """Re-declaring a key with a new value overwrites the previous value."""
         # First invocation
         delta1 = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='sonnet', permissions={'allow': ['Read']},
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta1, tmp_path)
 
-        # Second invocation (same keys, different values)
+        # Second invocation (same keys, different values; deep-merge unions
+        # permissions.allow)
         delta2 = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='opus', permissions={'allow': ['Write']},
+            {'model': 'opus', 'permissions': {'allow': ['Write']}},
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta2, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
         assert content['model'] == 'opus'
-        assert content['permissions'] == {'allow': ['Write']}
+        # Array-union semantics: both 'Read' and 'Write' accumulate
+        assert set(content['permissions']['allow']) == {'Read', 'Write'}
 
     def test_omitting_key_preserves_previous_value(self, tmp_path: Path) -> None:
         """Omitting a key on a later invocation preserves the previous value.
@@ -789,16 +942,13 @@ class TestRepeatedInvocationSemantics:
         """
         # First invocation: both model and permissions
         delta1 = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='sonnet', permissions={'allow': ['Read']},
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta1, tmp_path)
 
         # Second invocation: only model (permissions omitted)
-        delta2 = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            model='opus',
-        )
+        delta2 = _build_profile_settings({'model': 'opus'}, tmp_path / 'hooks')
         write_profile_settings_to_settings(delta2, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
 
@@ -811,8 +961,8 @@ class TestRepeatedInvocationSemantics:
         # First invocation: model + permissions
         write_profile_settings_to_settings(
             _build_profile_settings(
-                hooks={}, hooks_dir=tmp_path / 'hooks',
-                model='sonnet', permissions={'allow': ['Read']},
+                {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+                tmp_path / 'hooks',
             ),
             tmp_path,
         )
@@ -820,8 +970,8 @@ class TestRepeatedInvocationSemantics:
         # Second invocation: add env (model re-declared, permissions omitted)
         write_profile_settings_to_settings(
             _build_profile_settings(
-                hooks={}, hooks_dir=tmp_path / 'hooks',
-                model='opus', env={'FOO': 'bar'},
+                {'model': 'opus', 'env': {'FOO': 'bar'}},
+                tmp_path / 'hooks',
             ),
             tmp_path,
         )
@@ -829,15 +979,15 @@ class TestRepeatedInvocationSemantics:
         # Third invocation: add effort_level (previous keys all omitted)
         write_profile_settings_to_settings(
             _build_profile_settings(
-                hooks={}, hooks_dir=tmp_path / 'hooks',
-                effort_level='high',
+                {'effortLevel': 'high'},
+                tmp_path / 'hooks',
             ),
             tmp_path,
         )
 
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
         # Accumulated: permissions from the first invocation, env from the
-        # second, effortLevel from the third. Model was re-declared in the
+        # second, effortLevel from the third. Model gets re-declared in the
         # second invocation, so it ends up as 'opus'.
         assert content['model'] == 'opus'
         assert content['permissions'] == {'allow': ['Read']}
@@ -875,7 +1025,7 @@ class TestAutoUpdateTarget2Survival:
         }), encoding='utf-8')
 
         # Step 18: delta has no 'env' key (YAML has no env-variables)
-        delta = _build_profile_settings(hooks={}, hooks_dir=tmp_path / 'hooks', model='sonnet')
+        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
         assert 'env' not in delta
 
         write_profile_settings_to_settings(delta, tmp_path)
@@ -883,22 +1033,40 @@ class TestAutoUpdateTarget2Survival:
         assert content['env']['DISABLE_AUTOUPDATER'] == '1'
         assert content['model'] == 'sonnet'
 
-    def test_root_env_variables_replace_existing_env_value(self, tmp_path: Path) -> None:
-        """When YAML declares env-variables, root-level env replaces the existing 'env' value."""
+    def test_root_env_variables_deep_merge_preserves_existing_env_keys(
+        self, tmp_path: Path,
+    ) -> None:
+        """Deep-merge preserves existing env keys not declared in the delta.
+
+        When the YAML declares env-variables with a narrow set of keys, any
+        existing env entries written by prior steps (e.g., DISABLE_AUTOUPDATER
+        from auto-update Target 2, CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from IDE
+        Target 2) MUST survive. Deep-merge recurses into the 'env' dict so the
+        delta's new keys are added and existing keys are preserved; keys also
+        declared in the delta are overwritten by the delta value.
+        """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
-            'env': {'DISABLE_AUTOUPDATER': '1', 'STALE': 'x'},
+            'env': {
+                'DISABLE_AUTOUPDATER': '1',
+                'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true',
+                'KEEP_ME': 'preserved',
+            },
         }), encoding='utf-8')
 
-        # The delta carries a root-level env value
+        # The delta carries a root-level env value adding a new key
         delta = _build_profile_settings(
-            hooks={}, hooks_dir=tmp_path / 'hooks',
-            env={'FOO': 'bar'},
+            {'env': {'FOO': 'bar'}}, tmp_path / 'hooks',
         )
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # Full replacement
-        assert content['env'] == {'FOO': 'bar'}
+
+        # Existing env keys PRESERVED
+        assert content['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert content['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == 'true'
+        assert content['env']['KEEP_ME'] == 'preserved'
+        # New env key ADDED
+        assert content['env']['FOO'] == 'bar'
 
 
 # ---------------------------------------------------------------------------
@@ -924,3 +1092,72 @@ class TestEmptyDeltaNoOp:
 
         content = json.loads(settings_file.read_text(encoding='utf-8'))
         assert content == original
+
+
+# ---------------------------------------------------------------------------
+# Test Class 10: YAML Null Propagation End-to-End
+# ---------------------------------------------------------------------------
+
+
+class TestBuildProfileSettingsNullPropagation:
+    """Verify YAML null declarations propagate to settings.json deletions end-to-end.
+
+    These tests construct a mock YAML config dict (with explicit None
+    values for profile-owned keys), compute the profile_config dict the
+    same way main() does via _YAML_TO_CAMEL_PROFILE_KEYS, invoke
+    _build_profile_settings() with that dict, and verify
+    write_profile_settings_to_settings() deletes the corresponding keys
+    from a pre-populated settings.json.
+    """
+
+    @pytest.mark.parametrize(
+        ('yaml_key', 'camel_key', 'initial_value'),
+        [
+            ('model', 'model', 'sonnet'),
+            ('permissions', 'permissions', {'allow': ['Read']}),
+            ('env-variables', 'env', {'FOO': 'bar'}),
+            ('attribution', 'attribution', {'commit': 'x', 'pr': 'y'}),
+            ('always-thinking-enabled', 'alwaysThinkingEnabled', True),
+            ('effort-level', 'effortLevel', 'high'),
+            ('company-announcements', 'companyAnnouncements', ['Welcome']),
+            ('status-line', 'statusLine', {'type': 'command', 'command': 'x'}),
+            ('hooks', 'hooks', {'PreToolUse': []}),
+        ],
+    )
+    def test_yaml_null_deletes_key_end_to_end(
+        self,
+        tmp_path: Path,
+        yaml_key: str,
+        camel_key: str,
+        initial_value: object,
+    ) -> None:
+        """A YAML-level `key: null` declaration deletes the on-disk key."""
+        from scripts.setup_environment import _YAML_TO_CAMEL_PROFILE_KEYS
+
+        # Pre-populate settings.json with the key
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(
+            json.dumps({camel_key: initial_value}), encoding='utf-8',
+        )
+
+        # Mock YAML config with an explicit null for the key
+        mock_config = {yaml_key: None}
+
+        # Replicate the main() call site logic: build profile_config dict
+        profile_config = {
+            ck: mock_config[yk]
+            for yk, ck in _YAML_TO_CAMEL_PROFILE_KEYS.items()
+            if yk in mock_config
+        }
+        assert profile_config == {camel_key: None}
+
+        # Invoke the builder
+        delta = _build_profile_settings(profile_config, tmp_path / 'hooks')
+        assert delta == {camel_key: None}
+
+        # Apply the delta via the writer
+        write_profile_settings_to_settings(delta, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+
+        # The key has been deleted
+        assert camel_key not in content

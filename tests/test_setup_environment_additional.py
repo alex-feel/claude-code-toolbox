@@ -947,10 +947,8 @@ class TestCreateSettingsComplex:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'permissions': permissions},
                 claude_dir,
-                'test',
-                permissions=permissions,
             )
 
             assert result is True
@@ -972,10 +970,8 @@ class TestCreateSettingsComplex:
             permissions = {'deny': ['mcp__blocked_server']}
 
             setup_environment.create_profile_config(
-                {},
+                {'permissions': permissions},
                 claude_dir,
-                'test',
-                permissions=permissions,
             )
 
             settings_file = claude_dir / 'config.json'
@@ -995,10 +991,8 @@ class TestCreateSettingsComplex:
             permissions = {'ask': ['mcp__ask_server']}
 
             setup_environment.create_profile_config(
-                {},
+                {'permissions': permissions},
                 claude_dir,
-                'test',
-                permissions=permissions,
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1018,10 +1012,8 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                'test',
-                env=env_vars,
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1043,9 +1035,8 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                env=env_vars,
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1089,9 +1080,8 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1137,9 +1127,8 @@ class TestCreateSettingsComplex:
 
             # Then create settings
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             assert result is True
@@ -1161,9 +1150,8 @@ class TestCreateSettingsComplex:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             # Should still succeed but skip invalid hook
@@ -1186,9 +1174,8 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1211,7 +1198,6 @@ class TestCreateSettingsComplex:
                 result = setup_environment.create_profile_config(
                     {},
                     claude_dir,
-                    'test',
                 )
 
             assert result is False
@@ -2633,9 +2619,8 @@ class TestHookConfigFileSupport:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             assert result is True
@@ -2672,9 +2657,8 @@ class TestHookConfigFileSupport:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             assert result is True
@@ -2716,9 +2700,8 @@ class TestHookConfigFileSupport:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             assert result is True
@@ -2756,9 +2739,8 @@ class TestHookConfigFileSupport:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
-                'test',
             )
 
             assert result is True

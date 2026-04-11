@@ -3127,9 +3127,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'model': 'claude-3-opus'},
                 claude_dir,
-                model='claude-3-opus',
             )
 
             assert result is True
@@ -3170,9 +3169,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'permissions': permissions},
                 claude_dir,
-                permissions=permissions,
             )
 
             assert result is True
@@ -3216,7 +3214,7 @@ class TestCreateSettings:
 
             # Then create settings
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3250,7 +3248,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3289,7 +3287,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3324,7 +3322,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3360,7 +3358,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3402,7 +3400,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3443,7 +3441,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -3460,9 +3458,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'alwaysThinkingEnabled': True},
                 claude_dir,
-                always_thinking_enabled=True,
             )
 
             assert result is True
@@ -3478,9 +3475,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'alwaysThinkingEnabled': False},
                 claude_dir,
-                always_thinking_enabled=False,
             )
 
             assert result is True
@@ -3491,14 +3487,13 @@ class TestCreateSettings:
             assert settings['alwaysThinkingEnabled'] is False
 
     def test_create_profile_config_always_thinking_enabled_none_not_included(self):
-        """Test alwaysThinkingEnabled not included when None."""
+        """Test alwaysThinkingEnabled not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
-                always_thinking_enabled=None,
             )
 
             assert result is True
@@ -3513,9 +3508,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'effortLevel': 'low'},
                 claude_dir,
-                effort_level='low',
             )
 
             assert result is True
@@ -3531,9 +3525,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'effortLevel': 'medium'},
                 claude_dir,
-                effort_level='medium',
             )
 
             assert result is True
@@ -3549,9 +3542,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'effortLevel': 'high'},
                 claude_dir,
-                effort_level='high',
             )
 
             assert result is True
@@ -3567,9 +3559,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'effortLevel': 'max'},
                 claude_dir,
-                effort_level='max',
             )
 
             assert result is True
@@ -3580,14 +3571,13 @@ class TestCreateSettings:
             assert settings['effortLevel'] == 'max'
 
     def test_create_profile_config_effort_level_none_not_included(self):
-        """Test effortLevel not included when None."""
+        """Test effortLevel not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
-                effort_level=None,
             )
 
             assert result is True
@@ -3606,9 +3596,8 @@ class TestCreateSettings:
             ]
 
             result = setup_environment.create_profile_config(
-                {},
+                {'companyAnnouncements': announcements},
                 claude_dir,
-                company_announcements=announcements,
             )
 
             assert result is True
@@ -3626,9 +3615,8 @@ class TestCreateSettings:
             announcements = ['Single announcement']
 
             result = setup_environment.create_profile_config(
-                {},
+                {'companyAnnouncements': announcements},
                 claude_dir,
-                company_announcements=announcements,
             )
 
             assert result is True
@@ -3644,9 +3632,8 @@ class TestCreateSettings:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'companyAnnouncements': []},
                 claude_dir,
-                company_announcements=[],
             )
 
             assert result is True
@@ -3658,14 +3645,13 @@ class TestCreateSettings:
             assert settings['companyAnnouncements'] == []
 
     def test_create_profile_config_company_announcements_none_not_included(self):
-        """Test companyAnnouncements not included when None."""
+        """Test companyAnnouncements not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
-                company_announcements=None,
             )
 
             assert result is True
@@ -3684,9 +3670,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'attribution': attribution},
                 claude_dir,
-                attribution=attribution,
             )
 
             assert result is True
@@ -3704,9 +3689,8 @@ class TestCreateSettings:
             attribution = {'commit': '', 'pr': ''}
 
             result = setup_environment.create_profile_config(
-                {},
+                {'attribution': attribution},
                 claude_dir,
-                attribution=attribution,
             )
 
             assert result is True
@@ -3716,14 +3700,13 @@ class TestCreateSettings:
             assert settings['attribution'] == {'commit': '', 'pr': ''}
 
     def test_create_profile_config_attribution_none_not_included(self):
-        """Test attribution not included when None."""
+        """Test attribution not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
-                attribution=None,
             )
 
             assert result is True
@@ -3746,9 +3729,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3773,9 +3755,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3789,14 +3770,13 @@ class TestCreateSettings:
             assert 'padding' not in settings['statusLine']
 
     def test_create_profile_config_status_line_none_not_included(self):
-        """Test statusLine not included when None."""
+        """Test statusLine not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
             result = setup_environment.create_profile_config(
                 {},
                 claude_dir,
-                status_line=None,
             )
 
             assert result is True
@@ -3817,9 +3797,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3848,9 +3827,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3881,9 +3859,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3911,9 +3888,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3941,9 +3917,8 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': status_line},
                 claude_dir,
-                status_line=status_line,
             )
 
             assert result is True
@@ -3975,7 +3950,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4012,7 +3987,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4046,7 +4021,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4085,7 +4060,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4121,7 +4096,7 @@ class TestCreateSettings:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4187,7 +4162,7 @@ class TestArtifactIsolation:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
                 hooks_base_dir=isolated_hooks,
             )
@@ -4217,7 +4192,7 @@ class TestArtifactIsolation:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
             )
 
@@ -4257,10 +4232,8 @@ class TestArtifactIsolation:
             env_vars['CLAUDE_CONFIG_DIR'] = '~/.claude/my-env'
 
             result = setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                'my-env',
-                env=env_vars,
             )
 
             assert result is True
@@ -4279,10 +4252,8 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': '/custom/path'}
 
             result = setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                'my-env',
-                env=env_vars,
             )
 
             assert result is True
@@ -4302,10 +4273,8 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': '~/.claude/my-env'}
 
             result = setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                'my-env',
-                env=env_vars,
             )
 
             assert result is True
@@ -4323,10 +4292,8 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': r'C:\Users\test\.claude\my-env'}
 
             result = setup_environment.create_profile_config(
-                {},
+                {'env': env_vars},
                 claude_dir,
-                'my-env',
-                env=env_vars,
             )
 
             assert result is True
@@ -4342,9 +4309,8 @@ class TestArtifactIsolation:
             isolated_hooks.mkdir(parents=True)
 
             result = setup_environment.create_profile_config(
-                {},
+                {'statusLine': {'file': 'statusline.py', 'padding': 0}},
                 claude_dir,
-                status_line={'file': 'statusline.py', 'padding': 0},
                 hooks_base_dir=isolated_hooks,
             )
 
@@ -4372,7 +4338,7 @@ class TestArtifactIsolation:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
                 hooks_base_dir=isolated_hooks,
             )
@@ -4402,7 +4368,7 @@ class TestArtifactIsolation:
             }
 
             result = setup_environment.create_profile_config(
-                hooks,
+                {'hooks': hooks},
                 claude_dir,
                 hooks_base_dir=isolated_hooks,
             )
@@ -4586,7 +4552,7 @@ class TestBuildHooksJson:
             hooks_dir = config_dir / 'hooks'
 
             # Get result from create_profile_config
-            setup_environment.create_profile_config(hooks, config_dir)
+            setup_environment.create_profile_config({'hooks': hooks}, config_dir)
             config_json = json.loads((config_dir / 'config.json').read_text())
             config_hooks = config_json.get('hooks', {})
 
@@ -5162,12 +5128,14 @@ class TestMainFunction:
         assert 'Invalid effort-level value' in captured.out
         assert "'extreme'" in captured.out
 
-        # Verify create_profile_config was called with effort_level=None
-        # (the invalid value should have been reset to None)
+        # Verify create_profile_config receives a profile_config without
+        # an effortLevel entry (invalid values are stripped from config
+        # before profile_config construction).
         mock_settings.assert_called_once()
         call_args = mock_settings.call_args
-        # effort_level is the 10th positional argument (0-indexed: position 9)
-        assert call_args[0][9] is None
+        # profile_config is the first positional argument
+        profile_config = call_args[0][0]
+        assert 'effortLevel' not in profile_config
 
 
 class TestDownloadFailureTracking:
@@ -6862,27 +6830,33 @@ class TestProfileOwnedKeys:
 
 
 class TestBuildProfileSettings:
-    """Unit tests for _build_profile_settings() pure builder."""
+    """Unit tests for _build_profile_settings() pure builder.
 
-    def test_all_none_returns_empty_dict(self, tmp_path: Path) -> None:
-        """All None inputs produce an empty dict (no side effects)."""
-        result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-        )
+    The builder accepts a single ``profile_config: dict[str, Any]`` parameter
+    keyed by camelCase on-disk names. Dict membership encodes the YAML
+    declaration state: keys absent from ``profile_config`` are OMITTED from
+    the output; keys present with ``None`` are emitted verbatim for downstream
+    RFC 7396 null-as-delete handling; keys present with non-None values are
+    processed (kebab-to-camel translation, command-string construction, etc.).
+    """
+
+    def test_empty_config_returns_empty_dict(self, tmp_path: Path) -> None:
+        """Empty profile_config produces an empty dict (no side effects)."""
+        result = setup_environment._build_profile_settings({}, tmp_path)
         assert result == {}
 
     def test_model_only(self, tmp_path: Path) -> None:
         """Only model set -> only 'model' key in result."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, model='sonnet',
+            {'model': 'sonnet'}, tmp_path,
         )
         assert result == {'model': 'sonnet'}
 
     def test_permissions_kebab_to_camel(self, tmp_path: Path) -> None:
         """'default-mode' translated to 'defaultMode'."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            permissions={'default-mode': 'ask', 'allow': ['Read']},
+            {'permissions': {'default-mode': 'ask', 'allow': ['Read']}},
+            tmp_path,
         )
         assert 'defaultMode' in result['permissions']
         assert 'default-mode' not in result['permissions']
@@ -6891,8 +6865,8 @@ class TestBuildProfileSettings:
     def test_permissions_additional_directories_translation(self, tmp_path: Path) -> None:
         """'additional-directories' translated to 'additionalDirectories'."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            permissions={'additional-directories': ['/tmp/test']},
+            {'permissions': {'additional-directories': ['/tmp/test']}},
+            tmp_path,
         )
         assert 'additionalDirectories' in result['permissions']
         assert 'additional-directories' not in result['permissions']
@@ -6900,8 +6874,8 @@ class TestBuildProfileSettings:
     def test_env_values_stringified(self, tmp_path: Path) -> None:
         """Env values are preserved as strings in the output env dict."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            env={'FOO': 'bar', 'HELLO': 'world'},
+            {'env': {'FOO': 'bar', 'HELLO': 'world'}},
+            tmp_path,
         )
         assert result['env']['FOO'] == 'bar'
         assert result['env']['HELLO'] == 'world'
@@ -6910,51 +6884,50 @@ class TestBuildProfileSettings:
         """Attribution dict passed through unchanged."""
         attr = {'commit': 'Test commit', 'pr': 'Test PR'}
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, attribution=attr,
+            {'attribution': attr}, tmp_path,
         )
         assert result['attribution'] == attr
 
     def test_attribution_empty_dict_not_omitted(self, tmp_path: Path) -> None:
         """Empty attribution dict is kept (not same as None)."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, attribution={},
+            {'attribution': {}}, tmp_path,
         )
         assert 'attribution' in result
         assert result['attribution'] == {}
 
     def test_always_thinking_enabled_true(self, tmp_path: Path) -> None:
-        """always_thinking_enabled=True stored under alwaysThinkingEnabled."""
+        """alwaysThinkingEnabled=True stored under alwaysThinkingEnabled."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, always_thinking_enabled=True,
+            {'alwaysThinkingEnabled': True}, tmp_path,
         )
         assert result == {'alwaysThinkingEnabled': True}
 
     def test_always_thinking_enabled_false_not_omitted(self, tmp_path: Path) -> None:
-        """always_thinking_enabled=False is explicit and kept."""
+        """alwaysThinkingEnabled=False is explicit and kept."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, always_thinking_enabled=False,
+            {'alwaysThinkingEnabled': False}, tmp_path,
         )
         assert result == {'alwaysThinkingEnabled': False}
 
     def test_effort_level(self, tmp_path: Path) -> None:
-        """effort_level stored under effortLevel."""
+        """effortLevel stored under effortLevel."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, effort_level='high',
+            {'effortLevel': 'high'}, tmp_path,
         )
         assert result == {'effortLevel': 'high'}
 
     def test_company_announcements_list(self, tmp_path: Path) -> None:
-        """company_announcements list stored under companyAnnouncements."""
+        """companyAnnouncements list stored under companyAnnouncements."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path, company_announcements=['msg1', 'msg2'],
+            {'companyAnnouncements': ['msg1', 'msg2']}, tmp_path,
         )
         assert result == {'companyAnnouncements': ['msg1', 'msg2']}
 
     def test_status_line_python_script(self, tmp_path: Path) -> None:
-        """status_line with .py file builds uv run command with absolute path."""
+        """statusLine with .py file builds uv run command with absolute path."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            status_line={'file': 'status.py'},
+            {'statusLine': {'file': 'status.py'}}, tmp_path,
         )
         sl = result['statusLine']
         assert sl['type'] == 'command'
@@ -6966,30 +6939,29 @@ class TestBuildProfileSettings:
         assert expected_path in sl['command']
 
     def test_status_line_with_config(self, tmp_path: Path) -> None:
-        """status_line with config appends config path to command."""
+        """statusLine with config appends config path to command."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            status_line={'file': 'status.py', 'config': 'status.yaml'},
+            {'statusLine': {'file': 'status.py', 'config': 'status.yaml'}},
+            tmp_path,
         )
         sl = result['statusLine']
         config_path = (tmp_path / 'status.yaml').as_posix()
         assert config_path in sl['command']
 
     def test_status_line_non_python_direct_path(self, tmp_path: Path) -> None:
-        """status_line with non-.py file uses direct path (no uv run)."""
+        """statusLine with non-.py file uses direct path (no uv run)."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            status_line={'file': 'status.sh'},
+            {'statusLine': {'file': 'status.sh'}}, tmp_path,
         )
         sl = result['statusLine']
         assert 'uv run' not in sl['command']
         assert 'status.sh' in sl['command']
 
     def test_status_line_padding_included(self, tmp_path: Path) -> None:
-        """status_line padding is included in the result."""
+        """statusLine padding is included in the result."""
         result = setup_environment._build_profile_settings(
-            hooks={}, hooks_dir=tmp_path,
-            status_line={'file': 'status.py', 'padding': 2},
+            {'statusLine': {'file': 'status.py', 'padding': 2}},
+            tmp_path,
         )
         assert result['statusLine']['padding'] == 2
 
@@ -7001,7 +6973,7 @@ class TestBuildProfileSettings:
             ],
         }
         result = setup_environment._build_profile_settings(
-            hooks=hooks_input, hooks_dir=tmp_path,
+            {'hooks': hooks_input}, tmp_path,
         )
         assert 'hooks' in result
         assert 'PreToolUse' in result['hooks']
@@ -7009,34 +6981,184 @@ class TestBuildProfileSettings:
     def test_hooks_empty_events_omitted(self, tmp_path: Path) -> None:
         """hooks with empty events is omitted from result."""
         result = setup_environment._build_profile_settings(
-            hooks={'events': []}, hooks_dir=tmp_path,
+            {'hooks': {'events': []}}, tmp_path,
         )
         assert 'hooks' not in result
 
     def test_all_nine_keys_together(self, tmp_path: Path) -> None:
         """All nine keys provided simultaneously produce full delta."""
         result = setup_environment._build_profile_settings(
-            hooks={'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
-                               'type': 'command', 'command': 'test.sh'}]},
-            hooks_dir=tmp_path,
-            model='sonnet',
-            permissions={'allow': ['Read']},
-            env={'FOO': 'bar'},
-            always_thinking_enabled=True,
-            company_announcements=['Welcome'],
-            attribution={'commit': 'x', 'pr': 'y'},
-            status_line={'file': 'status.py'},
-            effort_level='high',
+            {
+                'model': 'sonnet',
+                'permissions': {'allow': ['Read']},
+                'env': {'FOO': 'bar'},
+                'attribution': {'commit': 'x', 'pr': 'y'},
+                'alwaysThinkingEnabled': True,
+                'effortLevel': 'high',
+                'companyAnnouncements': ['Welcome'],
+                'statusLine': {'file': 'status.py'},
+                'hooks': {'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
+                                      'type': 'command', 'command': 'test.sh'}]},
+            },
+            tmp_path,
         )
         assert set(result.keys()) == setup_environment.PROFILE_OWNED_KEYS
+
+    def test_absent_keys_omitted_from_result(self, tmp_path: Path) -> None:
+        """Keys absent from profile_config are absent from result.
+
+        The builder does NOT backfill the 9-key universe with Nones or empty
+        values. Absent means absent. Present-with-value means included.
+        Present-with-None means included-as-None (for downstream null-as-delete).
+        """
+        result = setup_environment._build_profile_settings(
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            tmp_path,
+        )
+        # Only 'model' and 'permissions' present; none of the other keys
+        assert set(result.keys()) == {'model', 'permissions'}
+
+
+class TestYamlToCamelProfileKeysParity:
+    """Enforce parity between _YAML_TO_CAMEL_PROFILE_KEYS and PROFILE_OWNED_KEYS."""
+
+    def test_mapping_values_cover_all_profile_keys(self) -> None:
+        """Every PROFILE_OWNED_KEYS entry has a corresponding YAML key mapping."""
+        mapped_camel_keys = frozenset(setup_environment._YAML_TO_CAMEL_PROFILE_KEYS.values())
+        assert mapped_camel_keys == setup_environment.PROFILE_OWNED_KEYS
+
+    def test_mapping_yaml_keys_match_known_config_keys(self) -> None:
+        """Every YAML-side key in the mapping is a KNOWN_CONFIG_KEYS entry."""
+        for yaml_key in setup_environment._YAML_TO_CAMEL_PROFILE_KEYS:
+            assert yaml_key in setup_environment.KNOWN_CONFIG_KEYS, (
+                f"YAML key '{yaml_key}' in _YAML_TO_CAMEL_PROFILE_KEYS is not in KNOWN_CONFIG_KEYS"
+            )
+
+
+class TestBuildProfileSettingsExplicitNulls:
+    """Unit tests for propagating explicit YAML-null declarations through the builder.
+
+    When a profile-owned key is present in ``profile_config`` with value
+    ``None``, the builder emits ``settings[camel_key] = None`` verbatim (bypassing
+    the usual truthy/non-None guards). This lets the downstream writer apply
+    RFC 7396 null-as-delete to the shared settings.json when YAML declares
+    ``key: null`` at the root level.
+    """
+
+    def test_explicit_null_model_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'model': None}, tmp_path)
+        assert result == {'model': None}
+
+    def test_explicit_null_permissions_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'permissions': None}, tmp_path)
+        assert result == {'permissions': None}
+
+    def test_explicit_null_env_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'env': None}, tmp_path)
+        assert result == {'env': None}
+
+    def test_explicit_null_attribution_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'attribution': None}, tmp_path)
+        assert result == {'attribution': None}
+
+    def test_explicit_null_always_thinking_enabled_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings(
+            {'alwaysThinkingEnabled': None}, tmp_path,
+        )
+        assert result == {'alwaysThinkingEnabled': None}
+
+    def test_explicit_null_effort_level_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'effortLevel': None}, tmp_path)
+        assert result == {'effortLevel': None}
+
+    def test_explicit_null_company_announcements_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings(
+            {'companyAnnouncements': None}, tmp_path,
+        )
+        assert result == {'companyAnnouncements': None}
+
+    def test_explicit_null_status_line_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'statusLine': None}, tmp_path)
+        assert result == {'statusLine': None}
+
+    def test_explicit_null_hooks_emits_none(self, tmp_path: Path) -> None:
+        result = setup_environment._build_profile_settings({'hooks': None}, tmp_path)
+        assert result == {'hooks': None}
+
+    def test_absent_key_omitted_even_when_other_key_is_null(self, tmp_path: Path) -> None:
+        """Absent keys remain OMITTED even when another key is explicitly null."""
+        result = setup_environment._build_profile_settings(
+            {'permissions': None},
+            tmp_path,
+        )
+        # Only 'permissions' is in result (as None); model is OMITTED
+        assert result == {'permissions': None}
+        assert 'model' not in result
+
+    def test_multiple_explicit_nulls_together(self, tmp_path: Path) -> None:
+        """Multiple keys declared null all emit None simultaneously."""
+        result = setup_environment._build_profile_settings(
+            {
+                'model': None,
+                'permissions': None,
+                'env': None,
+                'attribution': None,
+                'alwaysThinkingEnabled': None,
+                'effortLevel': None,
+                'companyAnnouncements': None,
+                'statusLine': None,
+                'hooks': None,
+            },
+            tmp_path,
+        )
+        assert result == {
+            'model': None,
+            'permissions': None,
+            'env': None,
+            'attribution': None,
+            'alwaysThinkingEnabled': None,
+            'effortLevel': None,
+            'companyAnnouncements': None,
+            'statusLine': None,
+            'hooks': None,
+        }
+
+    def test_explicit_null_statusline_does_not_attempt_file_path_build(
+        self, tmp_path: Path,
+    ) -> None:
+        """Null statusLine short-circuits before command-string building.
+
+        Regression guard: the status-line block walks ``status_line['file']`` to
+        build the command string. If ``statusLine`` in ``profile_config`` is
+        ``None``, the short-circuit must emit ``None`` without crashing on the
+        dict access.
+        """
+        result = setup_environment._build_profile_settings({'statusLine': None}, tmp_path)
+        assert result == {'statusLine': None}
+
+    def test_explicit_null_hooks_does_not_call_build_hooks_json(self, tmp_path: Path) -> None:
+        """Null hooks short-circuits before _build_hooks_json() is invoked."""
+        result = setup_environment._build_profile_settings({'hooks': None}, tmp_path)
+        assert result == {'hooks': None}
+
+    def test_mixed_null_and_value(self, tmp_path: Path) -> None:
+        """Null and non-null keys can coexist in the same profile_config."""
+        result = setup_environment._build_profile_settings(
+            {'model': 'sonnet', 'permissions': None},
+            tmp_path,
+        )
+        assert result == {'model': 'sonnet', 'permissions': None}
 
 
 class TestWriteProfileSettingsToSettings:
     """Unit tests for write_profile_settings_to_settings().
 
-    Verifies the conditional top-level replace semantics applied when
-    writing profile-owned keys to the shared ~/.claude/settings.json
-    file in non-command-names mode.
+    Verifies the deep-merge + RFC 7396 null-as-delete semantics the
+    writer inherits from ``_write_merged_json()`` when writing the nine
+    profile-owned keys to the shared ~/.claude/settings.json file in
+    non-command-names mode. Keys not present in the delta are
+    preserved; nested dicts are deep-merged; ``permissions.allow/deny/ask``
+    arrays are unioned; and top-level ``None`` values delete keys.
     """
 
     def test_empty_delta_no_op(self, tmp_path: Path) -> None:
@@ -7061,7 +7183,7 @@ class TestWriteProfileSettingsToSettings:
         """Existing unrelated keys are preserved across the write.
 
         The writer must only touch keys explicitly present in the delta;
-        keys the writer was not asked to update must survive unchanged.
+        any key outside the delta must survive unchanged.
         """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
@@ -7087,10 +7209,10 @@ class TestWriteProfileSettingsToSettings:
         """Profile-owned keys NOT in the delta are preserved.
 
         If YAML declares only 'model' at root level and settings.json already
-        has 'permissions' from a previous invocation (or from Step 14
+        has 'permissions' from an earlier invocation (or from Step 14
         write_user_settings()), the 'permissions' key MUST survive. The writer
-        preserves any profile-owned key it was not asked to update, so that
-        previously-written values and Step 14 contributions are never silently
+        preserves any profile-owned key outside the current delta, so that
+        prior-run values and Step 14 contributions are never silently
         destroyed.
         """
         settings_file = tmp_path / 'settings.json'
@@ -7111,21 +7233,189 @@ class TestWriteProfileSettingsToSettings:
         assert content['permissions'] == {'allow': ['Read'], 'deny': ['Bash(rm -rf)']}
         assert content['env'] == {'FOO': 'bar'}
 
-    def test_top_level_replace_not_deep_merge(self, tmp_path: Path) -> None:
-        """Delta key value fully replaces existing value (no deep merge)."""
+    def test_deep_merge_preserves_unrelated_permissions_subkeys(self, tmp_path: Path) -> None:
+        """Deep-merge preserves permissions sub-keys not declared in the delta.
+
+        When the delta carries a partial permissions dict (e.g., only 'allow'),
+        existing sub-keys ('deny', 'ask') declared by other contributors
+        (manual user edits, Step 14 user-settings, or prior runs) MUST be
+        preserved. Deep-merge recurses into the 'permissions' dict and only
+        overwrites leaf conflicts, while 'permissions.allow' additionally
+        applies array-union.
+        """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
-            'permissions': {'allow': ['Read', 'Write'], 'deny': ['Bash']},
+            'permissions': {
+                'allow': ['Read', 'Write'],
+                'deny': ['Bash(rm -rf)'],
+                'ask': ['Edit'],
+            },
         }), encoding='utf-8')
 
-        # Delta permissions has only 'allow' (no 'deny')
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': {'allow': ['Glob']}}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Array-union on 'allow': {'Read', 'Write', 'Glob'}
+        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Glob'}
+        # 'deny' and 'ask' PRESERVED
+        assert content['permissions']['deny'] == ['Bash(rm -rf)']
+        assert content['permissions']['ask'] == ['Edit']
+
+    def test_deep_merge_preserves_env_subkeys(self, tmp_path: Path) -> None:
+        """Deep-merge preserves env sub-keys not declared in the delta."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'DISABLE_AUTOUPDATER': '1', 'KEEP_ME': 'yes'},
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'env': {'FOO': 'bar'}}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # All three keys present after merge
+        assert content['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert content['env']['KEEP_ME'] == 'yes'
+        assert content['env']['FOO'] == 'bar'
+
+    def test_deep_merge_null_sub_key_delete_in_permissions(self, tmp_path: Path) -> None:
+        """Nested null in permissions deletes only that sub-key via RFC 7396."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': {'deny': None}}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # 'allow' preserved, 'deny' deleted
+        assert content['permissions'] == {'allow': ['Read']}
+
+    def test_deep_merge_permissions_array_union_idempotent(self, tmp_path: Path) -> None:
+        """Array union with identical values is idempotent (no duplication)."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read']},
+        }), encoding='utf-8')
+
         result = setup_environment.write_profile_settings_to_settings(
             {'permissions': {'allow': ['Read']}}, tmp_path,
         )
         assert result is True
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # Full replacement: 'allow' is [Read] only, 'deny' is GONE
         assert content['permissions'] == {'allow': ['Read']}
+
+    def test_top_level_null_model_deletes_key(self, tmp_path: Path) -> None:
+        """Top-level None model deletes the key from settings.json via RFC 7396."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read']},
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'permissions': {'allow': ['Read']}}
+
+    def test_top_level_null_permissions_deletes_entire_block(self, tmp_path: Path) -> None:
+        """Top-level None permissions deletes the entire permissions block."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_top_level_null_hooks_deletes_entire_block(self, tmp_path: Path) -> None:
+        """Top-level None hooks deletes the entire hooks block."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'hooks': {'PreToolUse': [{'matcher': '', 'hooks': []}]},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'hooks': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_top_level_null_env_deletes_key(self, tmp_path: Path) -> None:
+        """Top-level None env deletes the entire env block."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'FOO': 'bar', 'DISABLE_AUTOUPDATER': '1'},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'env': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_top_level_null_all_nine_keys_deletes_all(self, tmp_path: Path) -> None:
+        """All nine profile-owned keys set to None deletes them all."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read']},
+            'env': {'FOO': 'bar'},
+            'attribution': {'commit': 'x'},
+            'alwaysThinkingEnabled': True,
+            'effortLevel': 'high',
+            'companyAnnouncements': ['msg'],
+            'statusLine': {'type': 'command', 'command': 'a'},
+            'hooks': {'PreToolUse': []},
+        }), encoding='utf-8')
+
+        delta = dict.fromkeys(setup_environment.PROFILE_OWNED_KEYS)
+        result = setup_environment.write_profile_settings_to_settings(delta, tmp_path)
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # All nine keys deleted
+        assert content == {}
+
+    def test_deep_merge_preserves_unrelated_top_level_keys_via_delegate(
+        self, tmp_path: Path,
+    ) -> None:
+        """Writer delegates to _write_merged_json() and preserves unrelated keys.
+
+        Regression guard: verify the delegation behaves identically to
+        write_user_settings() for the unrelated-key preservation case.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'language': 'english',
+            'theme': 'dark',
+            'permissions': {'allow': ['Read']},
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': {'allow': ['Write']}}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Unrelated top-level keys preserved
+        assert content['language'] == 'english'
+        assert content['theme'] == 'dark'
+        # permissions.allow unioned
+        assert set(content['permissions']['allow']) == {'Read', 'Write'}
 
     def test_none_value_deletes_key(self, tmp_path: Path) -> None:
         """None value in delta deletes key from existing settings.json."""
@@ -7202,28 +7492,22 @@ class TestCreateProfileConfigDelegation:
                 {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'test.sh'},
             ],
         }
+        profile_config = {
+            'hooks': hooks,
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read']},
+            'env': {'FOO': 'bar'},
+            'alwaysThinkingEnabled': True,
+            'effortLevel': 'high',
+        }
 
         # Call create_profile_config (writes to config.json)
-        setup_environment.create_profile_config(
-            hooks=hooks,
-            config_base_dir=config_dir,
-            model='sonnet',
-            permissions={'allow': ['Read']},
-            env={'FOO': 'bar'},
-            always_thinking_enabled=True,
-            effort_level='high',
-        )
+        setup_environment.create_profile_config(profile_config, config_dir)
         on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
 
         # Call builder directly (use same hooks dir create_profile_config would use)
         expected = setup_environment._build_profile_settings(
-            hooks=hooks,
-            hooks_dir=config_dir / 'hooks',
-            model='sonnet',
-            permissions={'allow': ['Read']},
-            env={'FOO': 'bar'},
-            always_thinking_enabled=True,
-            effort_level='high',
+            profile_config, config_dir / 'hooks',
         )
 
         # Must match
@@ -10653,10 +10937,11 @@ class TestUserSettingsIntegration:
 
         # Write profile settings (simulating settings file behavior)
         result2 = setup_environment.create_profile_config(
-            hooks={},  # Empty hooks
-            config_base_dir=claude_dir,
-            model=profile_settings['model'],
-            permissions=profile_settings['permissions'],
+            {
+                'model': profile_settings['model'],
+                'permissions': profile_settings['permissions'],
+            },
+            claude_dir,
         )
         assert result2 is True
 

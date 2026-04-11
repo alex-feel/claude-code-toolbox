@@ -206,11 +206,7 @@ class TestPinnedVersionProfileConfig:
 
         # Create profile config with injected env_variables
         assert ev is not None
-        setup_environment.create_profile_config(
-            hooks={},
-            config_base_dir=config_dir,
-            env=ev,
-        )
+        setup_environment.create_profile_config({'env': ev}, config_dir)
 
         config_json = config_dir / 'config.json'
         assert config_json.exists()
