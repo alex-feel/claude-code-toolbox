@@ -498,7 +498,7 @@ class TestSummaryOutputRouting:
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
              patch.object(setup_environment, 'download_hook_files', return_value=True), \
-             patch.object(setup_environment, 'write_hooks_to_settings', return_value=True):
+             patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -627,13 +627,15 @@ class TestHooksSettingsRoutingStepOutput:
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
              patch.object(setup_environment, 'download_hook_files', return_value=True), \
-             patch.object(setup_environment, 'write_hooks_to_settings', return_value=True):
+             patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
             setup_environment.main()
             mock_exit.assert_not_called()
 
         captured = capsys.readouterr()
         assert 'Step 17: Downloading hooks' in captured.out
-        assert 'Step 18: Writing hooks to settings.json' in captured.out
+        # Step 18 writes the full profile-owned delta (not just hooks) to
+        # the shared settings.json in non-command-names mode.
+        assert 'Step 18: Writing profile settings to settings.json' in captured.out
         assert 'Steps 19-21: Skipping command creation' in captured.out
 
     @patch('scripts.setup_environment.load_config_from_source')
@@ -678,12 +680,17 @@ class TestHooksSettingsRoutingStepOutput:
         from scripts import setup_environment
 
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             patch('sys.exit') as mock_exit:
+             patch('sys.exit') as mock_exit, \
+             patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
             setup_environment.main()
             mock_exit.assert_not_called()
 
         captured = capsys.readouterr()
-        assert 'Steps 17-18: Skipping hooks (none configured)' in captured.out
+        # In non-command-names mode, Step 17 skips the download when no
+        # hooks are configured, and Step 18 still runs (the empty profile
+        # delta makes the writer a no-op).
+        assert 'Step 17: Skipping hooks download (none configured)' in captured.out
+        assert 'Step 18: Writing profile settings to settings.json' in captured.out
         assert 'Steps 19-21: Skipping command creation' in captured.out
 
 

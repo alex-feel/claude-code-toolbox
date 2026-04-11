@@ -137,18 +137,22 @@ class TestE2EFullSetup:
 
         assert not errors, 'Expected files not created:\n' + '\n'.join(errors)
 
-    def test_setup_processes_all_config_keys(
+    def test_create_profile_config_processes_all_keys(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify ALL config keys from golden_config are processed.
+        """Verify create_profile_config() writes ALL profile-owned keys to config.json.
 
-        This test validates that:
-        - model, permissions, env-variables are in settings.json
-        - mcp-servers are in {cmd}-mcp.json
-        - hooks events are configured
-        - always-thinking-enabled, company-announcements, attribution, status-line are present
+        This test validates the isolated-mode writer:
+        - model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
+          companyAnnouncements, statusLine, hooks are all present in config.json
+          (the file written by create_profile_config() when command-names is set).
+
+        NOTE: This test covers ONLY the isolated mode writer. For the non-
+        command-names mode, where write_profile_settings_to_settings()
+        writes the same profile-owned keys into the shared settings.json,
+        see tests/e2e/test_profile_settings_routing.py.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']

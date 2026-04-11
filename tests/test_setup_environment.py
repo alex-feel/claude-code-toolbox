@@ -6834,6 +6834,402 @@ class TestValidateUserSettings:
             assert key in result[0]
 
 
+class TestProfileOwnedKeys:
+    """Unit tests for PROFILE_OWNED_KEYS constant."""
+
+    def test_contains_all_nine_profile_keys(self) -> None:
+        """PROFILE_OWNED_KEYS must contain exactly the 9 profile-owned keys."""
+        expected = {
+            'model', 'permissions', 'env', 'attribution',
+            'alwaysThinkingEnabled', 'effortLevel', 'companyAnnouncements',
+            'statusLine', 'hooks',
+        }
+        assert expected == setup_environment.PROFILE_OWNED_KEYS
+
+    def test_is_frozenset(self) -> None:
+        """PROFILE_OWNED_KEYS must be a frozenset (immutable)."""
+        assert isinstance(setup_environment.PROFILE_OWNED_KEYS, frozenset)
+
+    def test_user_settings_excluded_keys_still_only_two(self) -> None:
+        """USER_SETTINGS_EXCLUDED_KEYS must NOT be extended to PROFILE_OWNED_KEYS.
+
+        The user-settings section is a free-form escape hatch that accepts
+        arbitrary Claude Code CLI settings.json keys. Only hooks/statusLine
+        are excluded because they require dedicated path resolution and
+        must live at the YAML root level.
+        """
+        assert {'hooks', 'statusLine'} == setup_environment.USER_SETTINGS_EXCLUDED_KEYS
+
+
+class TestBuildProfileSettings:
+    """Unit tests for _build_profile_settings() pure builder."""
+
+    def test_all_none_returns_empty_dict(self, tmp_path: Path) -> None:
+        """All None inputs produce an empty dict (no side effects)."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+        )
+        assert result == {}
+
+    def test_model_only(self, tmp_path: Path) -> None:
+        """Only model set -> only 'model' key in result."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, model='sonnet',
+        )
+        assert result == {'model': 'sonnet'}
+
+    def test_permissions_kebab_to_camel(self, tmp_path: Path) -> None:
+        """'default-mode' translated to 'defaultMode'."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            permissions={'default-mode': 'ask', 'allow': ['Read']},
+        )
+        assert 'defaultMode' in result['permissions']
+        assert 'default-mode' not in result['permissions']
+        assert result['permissions']['allow'] == ['Read']
+
+    def test_permissions_additional_directories_translation(self, tmp_path: Path) -> None:
+        """'additional-directories' translated to 'additionalDirectories'."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            permissions={'additional-directories': ['/tmp/test']},
+        )
+        assert 'additionalDirectories' in result['permissions']
+        assert 'additional-directories' not in result['permissions']
+
+    def test_env_values_stringified(self, tmp_path: Path) -> None:
+        """Env values are preserved as strings in the output env dict."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            env={'FOO': 'bar', 'HELLO': 'world'},
+        )
+        assert result['env']['FOO'] == 'bar'
+        assert result['env']['HELLO'] == 'world'
+
+    def test_attribution_passthrough(self, tmp_path: Path) -> None:
+        """Attribution dict passed through unchanged."""
+        attr = {'commit': 'Test commit', 'pr': 'Test PR'}
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, attribution=attr,
+        )
+        assert result['attribution'] == attr
+
+    def test_attribution_empty_dict_not_omitted(self, tmp_path: Path) -> None:
+        """Empty attribution dict is kept (not same as None)."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, attribution={},
+        )
+        assert 'attribution' in result
+        assert result['attribution'] == {}
+
+    def test_always_thinking_enabled_true(self, tmp_path: Path) -> None:
+        """always_thinking_enabled=True stored under alwaysThinkingEnabled."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, always_thinking_enabled=True,
+        )
+        assert result == {'alwaysThinkingEnabled': True}
+
+    def test_always_thinking_enabled_false_not_omitted(self, tmp_path: Path) -> None:
+        """always_thinking_enabled=False is explicit and kept."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, always_thinking_enabled=False,
+        )
+        assert result == {'alwaysThinkingEnabled': False}
+
+    def test_effort_level(self, tmp_path: Path) -> None:
+        """effort_level stored under effortLevel."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, effort_level='high',
+        )
+        assert result == {'effortLevel': 'high'}
+
+    def test_company_announcements_list(self, tmp_path: Path) -> None:
+        """company_announcements list stored under companyAnnouncements."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path, company_announcements=['msg1', 'msg2'],
+        )
+        assert result == {'companyAnnouncements': ['msg1', 'msg2']}
+
+    def test_status_line_python_script(self, tmp_path: Path) -> None:
+        """status_line with .py file builds uv run command with absolute path."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            status_line={'file': 'status.py'},
+        )
+        sl = result['statusLine']
+        assert sl['type'] == 'command'
+        assert 'uv run' in sl['command']
+        assert '--python 3.12' in sl['command']
+        assert 'status.py' in sl['command']
+        # Absolute POSIX path
+        expected_path = (tmp_path / 'status.py').as_posix()
+        assert expected_path in sl['command']
+
+    def test_status_line_with_config(self, tmp_path: Path) -> None:
+        """status_line with config appends config path to command."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            status_line={'file': 'status.py', 'config': 'status.yaml'},
+        )
+        sl = result['statusLine']
+        config_path = (tmp_path / 'status.yaml').as_posix()
+        assert config_path in sl['command']
+
+    def test_status_line_non_python_direct_path(self, tmp_path: Path) -> None:
+        """status_line with non-.py file uses direct path (no uv run)."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            status_line={'file': 'status.sh'},
+        )
+        sl = result['statusLine']
+        assert 'uv run' not in sl['command']
+        assert 'status.sh' in sl['command']
+
+    def test_status_line_padding_included(self, tmp_path: Path) -> None:
+        """status_line padding is included in the result."""
+        result = setup_environment._build_profile_settings(
+            hooks={}, hooks_dir=tmp_path,
+            status_line={'file': 'status.py', 'padding': 2},
+        )
+        assert result['statusLine']['padding'] == 2
+
+    def test_hooks_builder_delegation(self, tmp_path: Path) -> None:
+        """hooks key populated via _build_hooks_json() delegation."""
+        hooks_input = {
+            'events': [
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'test.sh'},
+            ],
+        }
+        result = setup_environment._build_profile_settings(
+            hooks=hooks_input, hooks_dir=tmp_path,
+        )
+        assert 'hooks' in result
+        assert 'PreToolUse' in result['hooks']
+
+    def test_hooks_empty_events_omitted(self, tmp_path: Path) -> None:
+        """hooks with empty events is omitted from result."""
+        result = setup_environment._build_profile_settings(
+            hooks={'events': []}, hooks_dir=tmp_path,
+        )
+        assert 'hooks' not in result
+
+    def test_all_nine_keys_together(self, tmp_path: Path) -> None:
+        """All nine keys provided simultaneously produce full delta."""
+        result = setup_environment._build_profile_settings(
+            hooks={'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
+                               'type': 'command', 'command': 'test.sh'}]},
+            hooks_dir=tmp_path,
+            model='sonnet',
+            permissions={'allow': ['Read']},
+            env={'FOO': 'bar'},
+            always_thinking_enabled=True,
+            company_announcements=['Welcome'],
+            attribution={'commit': 'x', 'pr': 'y'},
+            status_line={'file': 'status.py'},
+            effort_level='high',
+        )
+        assert set(result.keys()) == setup_environment.PROFILE_OWNED_KEYS
+
+
+class TestWriteProfileSettingsToSettings:
+    """Unit tests for write_profile_settings_to_settings().
+
+    Verifies the conditional top-level replace semantics applied when
+    writing profile-owned keys to the shared ~/.claude/settings.json
+    file in non-command-names mode.
+    """
+
+    def test_empty_delta_no_op(self, tmp_path: Path) -> None:
+        """Empty delta does not create or modify settings.json."""
+        settings_file = tmp_path / 'settings.json'
+        result = setup_environment.write_profile_settings_to_settings({}, tmp_path)
+        assert result is True
+        assert not settings_file.exists()
+
+    def test_creates_new_settings_json_with_delta(self, tmp_path: Path) -> None:
+        """Writer creates settings.json from scratch when missing."""
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, tmp_path,
+        )
+        assert result is True
+        settings_file = tmp_path / 'settings.json'
+        assert settings_file.exists()
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_preserves_unrelated_keys(self, tmp_path: Path) -> None:
+        """Existing unrelated keys are preserved across the write.
+
+        The writer must only touch keys explicitly present in the delta;
+        keys the writer was not asked to update must survive unchanged.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'language': 'english',
+            'theme': 'dark',
+            'includeGitInstructions': False,
+            'model': 'old-model',
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Delta key replaced
+        assert content['model'] == 'sonnet'
+        # Unrelated keys preserved
+        assert content['language'] == 'english'
+        assert content['theme'] == 'dark'
+        assert content['includeGitInstructions'] is False
+
+    def test_preserves_profile_owned_keys_not_in_delta(self, tmp_path: Path) -> None:
+        """Profile-owned keys NOT in the delta are preserved.
+
+        If YAML declares only 'model' at root level and settings.json already
+        has 'permissions' from a previous invocation (or from Step 14
+        write_user_settings()), the 'permissions' key MUST survive. The writer
+        preserves any profile-owned key it was not asked to update, so that
+        previously-written values and Step 14 contributions are never silently
+        destroyed.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'old-model',
+            'permissions': {'allow': ['Read'], 'deny': ['Bash(rm -rf)']},
+            'env': {'FOO': 'bar'},
+        }), encoding='utf-8')
+
+        # Delta contains ONLY 'model' (not permissions or env)
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['model'] == 'sonnet'
+        # Non-delta profile-owned keys PRESERVED
+        assert content['permissions'] == {'allow': ['Read'], 'deny': ['Bash(rm -rf)']}
+        assert content['env'] == {'FOO': 'bar'}
+
+    def test_top_level_replace_not_deep_merge(self, tmp_path: Path) -> None:
+        """Delta key value fully replaces existing value (no deep merge)."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read', 'Write'], 'deny': ['Bash']},
+        }), encoding='utf-8')
+
+        # Delta permissions has only 'allow' (no 'deny')
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': {'allow': ['Read']}}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # Full replacement: 'allow' is [Read] only, 'deny' is GONE
+        assert content['permissions'] == {'allow': ['Read']}
+
+    def test_none_value_deletes_key(self, tmp_path: Path) -> None:
+        """None value in delta deletes key from existing settings.json."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read']},
+        }), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert 'model' not in content
+        # Unrelated key preserved
+        assert content['permissions'] == {'allow': ['Read']}
+
+    def test_none_value_delete_missing_key_is_noop(self, tmp_path: Path) -> None:
+        """Setting a nonexistent key to None is a silent no-op."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({'permissions': {'allow': ['Read']}}), encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': None}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'permissions': {'allow': ['Read']}}
+
+    def test_malformed_existing_starts_fresh(self, tmp_path: Path) -> None:
+        """Malformed JSON in existing settings.json triggers fresh start."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text('not valid json{{{', encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_non_dict_existing_starts_fresh(self, tmp_path: Path) -> None:
+        """Existing settings.json containing non-dict (e.g., list) starts fresh."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text('[1, 2, 3]', encoding='utf-8')
+
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, tmp_path,
+        )
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet'}
+
+    def test_creates_parent_directory(self, tmp_path: Path) -> None:
+        """Writer creates settings_dir if it does not exist."""
+        target_dir = tmp_path / 'new_dir'
+        result = setup_environment.write_profile_settings_to_settings(
+            {'model': 'sonnet'}, target_dir,
+        )
+        assert result is True
+        assert (target_dir / 'settings.json').exists()
+
+
+class TestCreateProfileConfigDelegation:
+    """Regression tests verifying create_profile_config() delegates to builder."""
+
+    def test_output_matches_builder(self, tmp_path: Path) -> None:
+        """create_profile_config() output matches _build_profile_settings() result."""
+        # Setup
+        config_dir = tmp_path / 'profile'
+        hooks = {
+            'events': [
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'test.sh'},
+            ],
+        }
+
+        # Call create_profile_config (writes to config.json)
+        setup_environment.create_profile_config(
+            hooks=hooks,
+            config_base_dir=config_dir,
+            model='sonnet',
+            permissions={'allow': ['Read']},
+            env={'FOO': 'bar'},
+            always_thinking_enabled=True,
+            effort_level='high',
+        )
+        on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
+
+        # Call builder directly (use same hooks dir create_profile_config would use)
+        expected = setup_environment._build_profile_settings(
+            hooks=hooks,
+            hooks_dir=config_dir / 'hooks',
+            model='sonnet',
+            permissions={'allow': ['Read']},
+            env={'FOO': 'bar'},
+            always_thinking_enabled=True,
+            effort_level='high',
+        )
+
+        # Must match
+        assert on_disk == expected
+
+
 class TestWriteMergedJson:
     """Tests for _write_merged_json helper function."""
 
@@ -9776,9 +10172,13 @@ class TestMainFunctionUserSettings:
         call_args = mock_write_user_settings.call_args
         assert call_args[0][0] == {'language': 'russian', 'model': 'claude-opus-4'}
 
-        # Verify output shows hooks skipped and command creation skipped
+        # Verify output shows hooks skipped and command creation skipped.
+        # In non-command-names mode, Step 17 skips the hooks download when
+        # nothing is configured, and Step 18 still announces the profile
+        # settings write step (the empty delta is a no-op for the writer).
         captured = capsys.readouterr()
-        assert 'Steps 17-18: Skipping hooks (none configured)' in captured.out
+        assert 'Step 17: Skipping hooks download (none configured)' in captured.out
+        assert 'Step 18: Writing profile settings to settings.json' in captured.out
         assert 'Steps 19-21: Skipping command creation (no command-names specified)' in captured.out
         assert 'Step 14: Writing user settings' in captured.out
 

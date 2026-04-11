@@ -1,0 +1,237 @@
+# E2E Test Environment - No Command-Names Variant
+# Mirrors golden_config.yaml but with command-names REMOVED.
+# Used by tests/e2e/test_profile_settings_routing.py to verify the
+# profile-settings routing when command-names is absent (non-isolated
+# mode that writes profile-owned keys to the shared settings.json).
+#
+# Differences from golden_config.yaml:
+# 1. command-names section REMOVED
+# 2. Profile-scoped MCP servers changed to valid non-profile scopes
+#    (profile scope without command-names triggers validation error, so
+#    we use 'user' scope here for the happy-path coverage).
+# 3. All other keys (hooks, permissions, model, env-variables, attribution,
+#    always-thinking-enabled, company-announcements, status-line, effort-level,
+#    user-settings, global-config) are identical.
+
+name: "E2E Test Environment (No Command-Names)"
+
+# Configuration version for update checking
+version: "1.0.0"
+
+# Description shown in installation summary
+description: |
+  A comprehensive test environment for validating profile-settings parity
+  between command-names present and command-names absent modes.
+
+# Notes displayed after successful installation
+post-install-notes: |
+  E2E non-command-names mode post-install notes.
+
+# NO command-names declared (intentional)
+
+# Base URL for resources (uses local mock_repo for testing)
+base-url: "file://./tests/e2e/fixtures/mock_repo"
+
+# Claude Code version
+claude-code-version: "latest"
+
+# Node.js installation flag
+install-nodejs: false
+
+# Platform-specific dependencies
+dependencies:
+  common:
+    - "echo 'common-dependency-installed'"
+  windows:
+    - "echo 'windows-dependency-installed'"
+  linux:
+    - "echo 'linux-dependency-installed'"
+  macos:
+    - "echo 'macos-dependency-installed'"
+
+# Agent markdown files
+agents:
+  - "agents/e2e-test-agent.md"
+
+# Slash command files
+slash-commands:
+  - "commands/e2e-test-command.md"
+
+# Rule markdown files
+rules:
+  - "rules/e2e-test-rule.md"
+
+# Skills configuration
+skills:
+  - name: "e2e-test-skill"
+    base: "skills/"
+    files:
+      - "SKILL.md"
+      - "e2e-test-skill.md"
+
+# Additional files to download
+files-to-download:
+  - source: "configs/e2e-extra-file.txt"
+    dest: "~/.claude/e2e-extra-file.txt"
+
+# Hooks configuration (identical to golden_config.yaml, plus status-line files)
+hooks:
+  files:
+    - "hooks/e2e_test_hook.py"
+    - "configs/e2e-hook-config.yaml"
+    - "hooks/e2e_test_hook.js"
+    - "hooks/e2e_test_hook_esm.mjs"
+    - "hooks/e2e_test_hook_cjs.cjs"
+    - "configs/e2e-js-hook-config.json"
+    # status-line.file and status-line.config must also appear in hooks.files
+    # (per EnvironmentConfig schema Rule 3)
+    - "hooks/e2e_statusline.py"
+    - "configs/e2e-statusline-config.yaml"
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit|MultiEdit|Write"
+      type: "command"
+      command: "e2e_test_hook.py"
+      config: "e2e-hook-config.yaml"
+    - event: "PostToolUse"
+      matcher: "Read"
+      type: "command"
+      command: "e2e_test_hook.js"
+    - event: "PreToolUse"
+      matcher: "Glob"
+      type: "command"
+      command: "e2e_test_hook_esm.mjs"
+      config: "e2e-js-hook-config.json"
+    - event: "PreToolUse"
+      matcher: "Grep"
+      type: "command"
+      command: "e2e_test_hook_cjs.cjs"
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "prompt"
+      prompt: "Consider security implications before executing bash commands"
+      timeout: 30
+    - event: "PostToolUse"
+      matcher: "Write"
+      type: "http"
+      url: "http://localhost:8080/hooks/post-tool-use"
+      headers:
+        Authorization: "Bearer $MY_TOKEN"
+        Content-Type: "application/json"
+      allowed-env-vars:
+        - "MY_TOKEN"
+      timeout: 15
+      status-message: "Sending webhook notification..."
+    - event: "PreToolUse"
+      matcher: "Bash(rm *)"
+      type: "agent"
+      prompt: "Verify security implications of: $ARGUMENTS"
+      model: "sonnet"
+      timeout: 60
+      if: "Bash(rm *)"
+      once: true
+    - event: "Notification"
+      matcher: ""
+      type: "command"
+      command: "e2e_test_hook.py"
+      async: true
+      shell: "bash"
+      status-message: "Running notification handler..."
+
+# MCP Servers - NO profile scopes (those require command-names)
+mcp-servers:
+  - name: "e2e-http-server"
+    scope: "user"
+    transport: "http"
+    url: "http://localhost:3000/api"
+    header: "X-API-Key: test-key"
+    env: "E2E_HTTP_TOKEN"
+  - name: "e2e-sse-server"
+    scope: "project"
+    transport: "sse"
+    url: "http://localhost:3001/events"
+  - name: "e2e-npx-server"
+    scope: "local"
+    command: "npx @modelcontextprotocol/server-memory"
+    env:
+      - "E2E_NPX_DEBUG=1"
+
+# Model configuration
+model: "sonnet"
+
+# Permissions configuration
+permissions:
+  default-mode: "default"
+  additional-directories:
+    - "/tmp/e2e-test-dir"
+  allow:
+    - "mcp__e2e-http-server"
+    - "mcp__e2e-sse-server"
+    - "mcp__e2e-npx-server"
+    - "Read"
+    - "Glob"
+    - "Grep"
+  deny:
+    - "Bash(rm -rf)"
+  ask:
+    - "Edit"
+    - "Write"
+
+# Environment variables for Claude
+env-variables:
+  E2E_TEST_VAR: "test_value"
+  E2E_ANOTHER_VAR: "another_value"
+  E2E_PATH_VAR: "~/.claude/e2e-data"
+  E2E_INT_VAR: 42
+
+# OS-level environment variables
+os-env-variables:
+  E2E_OS_VAR: "os_test_value"
+  E2E_OS_PATH: "/opt/e2e/bin"
+  E2E_OS_DELETE_VAR: null
+  E2E_OS_DELETE_TOKEN: null
+  E2E_OS_INT_VAR: 30000
+  E2E_OS_BOOL_VAR: true
+
+# Command defaults - system-prompt in non-command-names mode emits a WARNING
+command-defaults:
+  system-prompt: "prompts/e2e-test-prompt.md"
+  mode: "replace"
+
+# user-settings retains free-form non-profile keys for forward-compat
+user-settings:
+  language: "english"
+  theme: "dark"
+  apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
+  staleSettingToDelete: null
+
+# Global config (merged into ~/.claude.json)
+global-config:
+  autoConnectIde: true
+  editorMode: "vim"
+  showTurnDuration: true
+  terminalProgressBarEnabled: false
+  oauthAccount: null
+  staleConfigToDelete: null
+
+# Always-thinking mode
+always-thinking-enabled: true
+
+# Effort level for adaptive reasoning
+effort-level: "low"
+
+# Company announcements
+company-announcements:
+  - "Welcome to E2E Testing Environment"
+  - "This is a test announcement for validation"
+
+# Attribution settings
+attribution:
+  commit: "E2E Test Attribution for Commits"
+  pr: "E2E Test Attribution for Pull Requests"
+
+# Status line configuration
+status-line:
+  file: "hooks/e2e_statusline.py"
+  config: "configs/e2e-statusline-config.yaml"
+  padding: 0
