@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.13.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.0...v5.13.1) (2026-04-11)
+
+
+### Bug Fixes
+
+* deep-merge profile-owned keys in shared settings.json ([5447909](https://github.com/alex-feel/claude-code-toolbox/commit/544790971fc3d7af7fdc43d4fc8acc7fae60ff78))
+
 ## [5.13.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.12.0...v5.13.0) (2026-04-11)
 
 
