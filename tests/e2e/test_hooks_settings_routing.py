@@ -277,16 +277,18 @@ class TestHooksToConfigJsonRegression:
 
         hooks = golden_config.get('hooks', {})
         create_profile_config(
-            hooks=hooks,
-            config_base_dir=artifact_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=golden_config.get('env-variables'),
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
+            {
+                'hooks': hooks,
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': golden_config.get('env-variables'),
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
+            artifact_dir,
         )
 
         config_path = artifact_dir / 'config.json'
@@ -715,7 +717,7 @@ class TestBuildHooksJsonParity:
         hooks = golden_config.get('hooks', {})
 
         # Generate via create_profile_config
-        create_profile_config(hooks=hooks, config_base_dir=artifact_dir)
+        create_profile_config({'hooks': hooks}, artifact_dir)
         config_data = json.loads((artifact_dir / 'config.json').read_text())
         config_hooks = config_data.get('hooks', {})
 

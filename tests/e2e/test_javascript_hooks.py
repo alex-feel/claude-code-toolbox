@@ -29,19 +29,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
@@ -75,19 +63,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
@@ -116,19 +92,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
@@ -157,19 +121,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
@@ -210,19 +162,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())
@@ -264,19 +204,7 @@ class TestJavaScriptHooks:
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=None,
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'hooks': golden_config.get('hooks', {})}, claude_dir)
 
         settings_path = claude_dir / 'config.json'
         data = json.loads(settings_path.read_text())

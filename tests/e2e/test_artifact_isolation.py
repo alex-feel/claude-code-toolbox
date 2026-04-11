@@ -87,7 +87,7 @@ class TestArtifactIsolationDirectories:
         artifact_base = paths.artifact_base_dir
         artifact_base.mkdir(parents=True, exist_ok=True)
 
-        # Create settings file as create_profile_config() would
+        # Simulate the config.json that create_profile_config writes in isolated mode
         settings: dict[str, Any] = {'model': 'test'}
         config_path = artifact_base / 'config.json'
         config_path.write_text(json.dumps(settings, indent=2))
@@ -128,9 +128,8 @@ class TestConfigDirIsolation:
         env_variables: dict[str, str] = {'MY_VAR': 'test_value'}
 
         result = setup_environment.create_profile_config(
-            golden_config.get('hooks', {}),
+            {'hooks': golden_config.get('hooks', {}), 'env': env_variables},
             artifact_base,
-            env=env_variables,
             hooks_base_dir=hooks_dir,
         )
 
@@ -170,7 +169,7 @@ class TestConfigDirIsolation:
         }
 
         result = setup_environment.create_profile_config(
-            hooks_config,
+            {'hooks': hooks_config},
             artifact_base,
             hooks_base_dir=hooks_dir,
         )
@@ -206,9 +205,8 @@ class TestConfigDirIsolation:
         }
 
         result = setup_environment.create_profile_config(
-            {},
+            {'env': user_env},
             artifact_base,
-            env=user_env,
         )
 
         assert result is True

@@ -58,9 +58,8 @@ class TestFileReorganization:
 
         # Create profile config (config.json)
         create_profile_config(
-            golden_config.get('hooks', {}),
+            {'hooks': golden_config.get('hooks', {}), 'model': golden_config.get('model')},
             artifact_base_dir,
-            model=golden_config.get('model'),
             hooks_base_dir=hooks_dir,
         )
 
@@ -194,16 +193,18 @@ class TestFileReorganization:
             env_vars[k] = str(v)
 
         create_profile_config(
-            golden_config.get('hooks', {}),
+            {
+                'hooks': golden_config.get('hooks', {}),
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': env_vars,
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
             artifact_base_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=env_vars,
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
             hooks_base_dir=hooks_dir,
         )
 

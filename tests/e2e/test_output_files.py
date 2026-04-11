@@ -41,17 +41,18 @@ class TestOutputFiles:
 
         # Create settings
         create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=golden_config.get('env-variables'),
-
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
+            {
+                'hooks': golden_config.get('hooks', {}),
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': golden_config.get('env-variables'),
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
+            claude_dir,
         )
 
         # File is written to config_base_dir as config.json
@@ -75,17 +76,18 @@ class TestOutputFiles:
 
         # Create settings
         create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=golden_config.get('env-variables'),
-
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
+            {
+                'hooks': golden_config.get('hooks', {}),
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': golden_config.get('env-variables'),
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
+            claude_dir,
         )
 
         # File is written to config_base_dir as config.json
@@ -196,19 +198,7 @@ class TestOutputFiles:
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        create_profile_config(
-            hooks={},
-            config_base_dir=claude_dir,
-            model=None,
-            permissions=golden_config.get('permissions'),
-            env=None,
-
-            always_thinking_enabled=None,
-            company_announcements=None,
-            attribution=None,
-            status_line=None,
-            effort_level=None,
-        )
+        create_profile_config({'permissions': golden_config.get('permissions')}, claude_dir)
 
         # File is written to config_base_dir as config.json
         settings_path = claude_dir / 'config.json'

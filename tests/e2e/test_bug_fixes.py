@@ -80,9 +80,8 @@ class TestBugFixVerification:
         # Create config with custom env vars (but no CLAUDE_CONFIG_DIR)
         env_vars: dict[str, str] = {'MY_VAR': 'val'}
         create_profile_config(
-            golden_config.get('hooks', {}),
+            {'hooks': golden_config.get('hooks', {}), 'env': env_vars},
             artifact_base_dir,
-            env=env_vars,
             hooks_base_dir=hooks_dir,
         )
 
@@ -137,9 +136,8 @@ class TestBugFixVerification:
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         create_profile_config(
-            {},
+            {'env': env_variables},
             isolated_config_dir,
-            env=env_variables,
             hooks_base_dir=hooks_dir,
         )
 

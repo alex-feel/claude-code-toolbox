@@ -82,17 +82,18 @@ class TestE2EFullSetup:
 
         # Create config.json in artifact base dir
         create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=artifact_base_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=golden_config.get('env-variables'),
-
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
+            {
+                'hooks': golden_config.get('hooks', {}),
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': golden_config.get('env-variables'),
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
+            artifact_base_dir,
         )
 
         # Create MCP config file in artifact base dir
@@ -142,12 +143,12 @@ class TestE2EFullSetup:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify create_profile_config() writes ALL profile-owned keys to config.json.
+        """Verify create_profile_config writes ALL profile-owned keys to config.json.
 
         This test validates the isolated-mode writer:
         - model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
           companyAnnouncements, statusLine, hooks are all present in config.json
-          (the file written by create_profile_config() when command-names is set).
+          (the file written by create_profile_config when command-names is set).
 
         NOTE: This test covers ONLY the isolated mode writer. For the non-
         command-names mode, where write_profile_settings_to_settings()
@@ -159,17 +160,18 @@ class TestE2EFullSetup:
 
         # Create settings with ALL config keys
         create_profile_config(
-            hooks=golden_config.get('hooks', {}),
-            config_base_dir=claude_dir,
-            model=golden_config.get('model'),
-            permissions=golden_config.get('permissions'),
-            env=golden_config.get('env-variables'),
-
-            always_thinking_enabled=golden_config.get('always-thinking-enabled'),
-            company_announcements=golden_config.get('company-announcements'),
-            attribution=golden_config.get('attribution'),
-            status_line=golden_config.get('status-line'),
-            effort_level=golden_config.get('effort-level'),
+            {
+                'hooks': golden_config.get('hooks', {}),
+                'model': golden_config.get('model'),
+                'permissions': golden_config.get('permissions'),
+                'env': golden_config.get('env-variables'),
+                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
+                'companyAnnouncements': golden_config.get('company-announcements'),
+                'attribution': golden_config.get('attribution'),
+                'statusLine': golden_config.get('status-line'),
+                'effortLevel': golden_config.get('effort-level'),
+            },
+            claude_dir,
         )
 
         # Verify settings file exists (written to config_base_dir as config.json)
