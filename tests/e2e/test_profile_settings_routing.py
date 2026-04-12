@@ -4,17 +4,22 @@ Verifies that when `command-names` is absent, all profile-owned keys
 (model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
 companyAnnouncements, statusLine, hooks) are correctly routed to
 ~/.claude/settings.json via write_profile_settings_to_settings(), which
-deep-merges the delta into the existing file: nested dicts are recursively
-merged, permissions.allow/deny/ask arrays are unioned,
-RFC 7396 null (both top-level and nested) deletes keys, and keys not in
-the delta are preserved unchanged.
+deep-merges the delta into the existing file: nested dicts are
+recursively merged, EVERY list at every depth is unioned with structural
+dedupe (matching Claude Code CLI's cross-scope merge: "arrays are
+concatenated and deduplicated, not replaced"), RFC 7396 null (both
+top-level and nested) deletes keys, and keys not in the delta are
+preserved unchanged.
 
 Test coverage matrix:
 - Happy path: all 9 profile-owned keys deep-merged correctly
 - Partial config: only subset of keys declared, rest preserved
 - Deep-merge preservation: pre-existing settings.json sub-keys survive
 - Step 14/18 interaction: user-settings contributions preserved
-- permissions array union: user-settings + root-level deny rules accumulate
+- Array union at every depth: permissions.allow/deny/ask,
+  permissions.additionalDirectories, companyAnnouncements,
+  hooks.<EventName>, and every other list-valued key accumulate
+  across runs
 - Conflict detection: warnings fire in non-command-names mode
 - Top-level null-as-delete: model/permissions/env/hooks/... all removable via null
 - Nested null-as-delete: permissions.deny=None removes just the deny sub-key
@@ -55,10 +60,16 @@ class TestDeepMergeWriterFilesystem:
     """Filesystem-level tests of write_profile_settings_to_settings().
 
     Verifies that the shared settings.json writer applies deep-merge via
-    delegation to _write_merged_json(): nested dicts are recursively
-    merged, permissions.allow/deny/ask arrays are unioned,
+    delegation to _write_merged_json() with the universal union-all-arrays
+    default (array_union_keys=None): nested dicts are recursively merged,
+    EVERY array at every depth is unioned with structural dedupe,
     RFC 7396 null-as-delete works for both top-level keys and nested
     sub-keys, and keys not present in the delta are preserved unchanged.
+
+    Matches Claude Code CLI's documented cross-scope merge semantics:
+    "Array settings merge across scopes. When the same array-valued
+    setting appears in multiple scopes, the arrays are concatenated and
+    deduplicated, not replaced."
     """
 
     def test_happy_path_all_nine_keys(self, tmp_path: Path) -> None:
@@ -303,6 +314,108 @@ class TestDeepMergeWriterFilesystem:
         # 'allow' preserved, 'deny' deleted
         assert content['permissions'] == {'allow': ['Read']}
 
+    def test_company_announcements_preserved_across_runs(self, tmp_path: Path) -> None:
+        """companyAnnouncements unions across two Step 18 filesystem writes."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta_a = _build_profile_settings({'companyAnnouncements': ['Welcome']}, hooks_dir)
+        write_profile_settings_to_settings(delta_a, tmp_path)
+        delta_b = _build_profile_settings({'companyAnnouncements': ['Maintenance']}, hooks_dir)
+        write_profile_settings_to_settings(delta_b, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert content['companyAnnouncements'] == ['Welcome', 'Maintenance']
+
+    def test_permissions_additional_directories_preserved(self, tmp_path: Path) -> None:
+        """permissions.additionalDirectories unions across two Step 18 writes."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta_a = _build_profile_settings(
+            {'permissions': {'additionalDirectories': ['/existing']}},
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta_a, tmp_path)
+        delta_b = _build_profile_settings(
+            {'permissions': {'additionalDirectories': ['/new']}},
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta_b, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert content['permissions']['additionalDirectories'] == ['/existing', '/new']
+
+    def test_hooks_event_list_preserved_across_runs(self, tmp_path: Path) -> None:
+        """Two Step 18 writes with different hook events both survive on disk."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta_a = _build_profile_settings(
+            {
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta_a, tmp_path)
+        delta_b = _build_profile_settings(
+            {
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PostToolUse', 'matcher': 'Write',
+                            'type': 'command', 'command': 'b.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta_b, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert 'PreToolUse' in content['hooks']
+        assert 'PostToolUse' in content['hooks']
+
+    def test_user_managed_array_outside_delta_preserved(self, tmp_path: Path) -> None:
+        """A user-managed array outside the toolbox delta survives Step 18."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(
+            json.dumps({'customUserArray': ['a', 'b']}),
+            encoding='utf-8',
+        )
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta = _build_profile_settings({'model': 'sonnet'}, hooks_dir)
+        write_profile_settings_to_settings(delta, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['customUserArray'] == ['a', 'b']
+        assert content['model'] == 'sonnet'
+
+    def test_explicit_null_hooks_removes_stale_block(self, tmp_path: Path) -> None:
+        """Explicit RFC 7396 null at YAML root removes the entire hooks block."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta_a = _build_profile_settings(
+            {
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta_a, tmp_path)
+        # Simulate YAML with hooks: null -> delta has {'hooks': None}
+        write_profile_settings_to_settings({'hooks': None}, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert 'hooks' not in content
+
 
 # ---------------------------------------------------------------------------
 # Test Class 2: Step 14 / Step 18 Interaction (user-settings + profile delta)
@@ -358,13 +471,14 @@ class TestStep14Step18Interaction:
     ) -> None:
         """Step 14 user-settings.permissions and Step 18 root permissions accumulate via union.
 
-        With deep-merge + DEFAULT_ARRAY_UNION_KEYS, both Step 14
-        (write_user_settings writing user-settings) and Step 18
-        (write_profile_settings_to_settings writing root-level permissions)
-        contribute additively to permissions.allow, permissions.deny,
-        permissions.ask. This is a deliberate security property: a team's
-        shared user-settings 'deny' rules compose with a per-run YAML's
-        additional 'deny' rules rather than one destroying the other.
+        Under the universal union-all-arrays default, EVERY list at
+        every depth is unioned across Step 14 (write_user_settings) and
+        Step 18 (write_profile_settings_to_settings). This specific test
+        is one instance of a general behavior that covers
+        permissions.allow, permissions.deny, permissions.ask, and every
+        other array-valued key. A team's shared user-settings 'deny'
+        rules compose with a per-run YAML's additional 'deny' rules
+        rather than one destroying the other.
         """
         # Step 14 wrote user-settings.permissions
         settings_file = tmp_path / 'settings.json'
@@ -477,7 +591,7 @@ class TestConflictDetectionInNonCommandNamesMode:
         assert "Key 'model' specified in both root level and user-settings" in captured.out
         # Composite deep-merge precedence message
         assert 'Under deep merge semantics' in captured.out
-        assert 'permissions.allow/deny/ask, array union applies' in captured.out
+        assert 'array union with structural dedupe applies' in captured.out
 
 
 # ---------------------------------------------------------------------------

@@ -156,8 +156,14 @@ OS_ENV_VARIABLES_KEY = 'os-env-variables'
 ENV_VAR_MARKER_START = '# >>> claude-code-toolbox >>>'
 ENV_VAR_MARKER_END = '# <<< claude-code-toolbox <<<'
 
-# Default keys where arrays should be unioned during deep merge
-# These correspond to permissions arrays in Claude Code settings
+# Per-path union whitelist used ONLY by the YAML inheritance layer
+# (_resolve_single_key at lines 4331 and 4337) for child-overrides-parent
+# composition semantics. On-disk writers (write_user_settings(),
+# write_profile_settings_to_settings(), write_global_config()) use the
+# default universal union-all-arrays semantics via
+# _write_merged_json(array_union_keys=None) -- every array at every depth
+# is unioned with structural dedupe, matching Claude Code CLI's
+# cross-scope merge behavior.
 DEFAULT_ARRAY_UNION_KEYS: set[str] = {
     'permissions.allow',
     'permissions.deny',
@@ -1327,7 +1333,7 @@ def _deep_copy_value(value: JsonValue) -> JsonValue:
 def _merge_recursive(
     target: dict[str, JsonValue],
     source: dict[str, JsonValue],
-    array_union_keys: set[str],
+    array_union_keys: set[str] | None,
     current_path: str,
 ) -> None:
     """Recursively merge source into target in-place.
@@ -1337,10 +1343,26 @@ def _merge_recursive(
     This applies only to object keys -- None values inside arrays
     are not treated as deletion signals.
 
+    Array merge policy:
+    - array_union_keys is None (default): every list is unioned with the
+      existing list, preserving order-of-first-appearance and
+      deduplicating elements via Python structural equality. This matches
+      Claude Code's cross-scope merge semantics: "arrays are concatenated
+      and deduplicated, not replaced".
+    - array_union_keys is a set[str]: per-path whitelist -- only the
+      dot-notation paths in the set are unioned; all other lists are
+      replaced wholesale. This mode is preserved for the YAML inheritance
+      layer (_resolve_single_key -> deep_merge_settings) which has
+      different trust semantics from on-disk writers.
+    - array_union_keys is set() (empty): no paths are unioned; every list
+      is replaced. Used by the YAML inheritance layer for global-config
+      child-replaces-parent composition.
+
     Args:
         target: Target dict to merge into (mutated in-place).
         source: Source dict to merge from.
-        array_union_keys: Set of dot-notation paths for array union behavior.
+        array_union_keys: None to union every list at any depth, or a
+            set of dot-notation paths to restrict union behavior.
         current_path: Current dot-notation path for tracking nested location.
     """
     for key, value in source.items():
@@ -1361,12 +1383,22 @@ def _merge_recursive(
                 array_union_keys,
                 key_path,
             )
-        elif key_path in array_union_keys and isinstance(value, list) and isinstance(target[key], list):
-            # Array union: combine and deduplicate (preserve order, add new items)
-            existing = cast(list[JsonValue], target[key])
-            new_items = value
-            combined = existing + [item for item in new_items if item not in existing]
-            target[key] = combined
+        elif isinstance(value, list) and isinstance(target[key], list):
+            # Lists: union when array_union_keys is None (universal default)
+            # or when key_path is in the explicit whitelist.
+            should_union = (
+                array_union_keys is None
+                or key_path in array_union_keys
+            )
+            if should_union:
+                existing = cast(list[JsonValue], target[key])
+                new_items = value
+                combined = existing + [
+                    item for item in new_items if item not in existing
+                ]
+                target[key] = combined
+            else:
+                target[key] = _deep_copy_value(value)
         else:
             # Scalar or type mismatch - update wins (deep copy)
             target[key] = _deep_copy_value(value)
@@ -1377,48 +1409,50 @@ def deep_merge_settings(
     updates: dict[str, Any],
     array_union_keys: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Deep merge updates into base dict, with array union for specified keys.
+    """Deep merge updates into base dict with universal array-union.
 
-    Performs recursive merging where nested dicts are merged (not replaced),
-    and arrays at specified key paths are unioned (with deduplication).
+    Performs recursive merging where nested dicts are merged (not
+    replaced), arrays are unioned and deduplicated at every depth (by
+    default), scalars are overwritten on conflict, and RFC 7396
+    null-as-delete is honored.
 
     Key behaviors:
-    - Keys NOT in updates: PRESERVED unchanged from base
-    - Keys IN updates: UPDATED or ADDED
-    - Keys with None/null value in updates: DELETED from result (RFC 7396)
-    - Nested dicts: Recursively merged (not replaced entirely)
-    - Arrays at array_union_keys: Additive union with deduplication
+    - Keys NOT in updates: PRESERVED unchanged from base.
+    - Keys IN updates: UPDATED or ADDED.
+    - Keys with None value in updates: DELETED from result (RFC 7396).
+    - Nested dicts: Recursively merged (not replaced entirely).
+    - Arrays: Union with structural dedupe when array_union_keys is None
+      (the default). Matches Claude Code CLI's cross-scope merge
+      semantics: "arrays are concatenated and deduplicated, not replaced".
 
     Args:
         base: Existing settings dict to merge into. Not modified.
         updates: New settings values to merge.
-        array_union_keys: Set of dot-notation keys where arrays should be unioned
-                         (e.g., {"permissions.allow", "permissions.deny"}).
-                         Defaults to DEFAULT_ARRAY_UNION_KEYS if None.
+        array_union_keys: None (default) unions every array at every
+            depth. A set of dot-notation paths restricts union to those
+            paths and replaces all other arrays (per-path whitelist
+            preserved for the YAML inheritance layer). An empty set
+            disables union entirely (all arrays replaced).
 
     Returns:
         New merged dict with base keys preserved and updates applied.
 
     Examples:
-        >>> base = {"a": 1, "b": {"c": 2}}
-        >>> updates = {"b": {"d": 3}, "e": 4}
+        >>> base = {"permissions": {"allow": ["Read"], "deny": ["Bash(rm *)"]}}
+        >>> updates = {"permissions": {"allow": ["Write"]}}
         >>> deep_merge_settings(base, updates)
-        {"a": 1, "b": {"c": 2, "d": 3}, "e": 4}
+        {'permissions': {'allow': ['Read', 'Write'], 'deny': ['Bash(rm *)']}}
 
-        >>> base = {"permissions": {"allow": ["Read", "Glob"]}}
-        >>> updates = {"permissions": {"allow": ["Write", "Read"]}}
+        >>> base = {"companyAnnouncements": ["Welcome"]}
+        >>> updates = {"companyAnnouncements": ["Welcome", "Maintenance Sunday"]}
         >>> deep_merge_settings(base, updates)
-        {"permissions": {"allow": ["Read", "Glob", "Write"]}}
+        {'companyAnnouncements': ['Welcome', 'Maintenance Sunday']}
 
         >>> base = {"a": 1, "b": 2}
         >>> updates = {"b": None}
         >>> deep_merge_settings(base, updates)
-        {"a": 1}
+        {'a': 1}
     """
-    # Use default union keys if not specified
-    if array_union_keys is None:
-        array_union_keys = DEFAULT_ARRAY_UNION_KEYS
-
     # Create a fresh result dict (do not mutate base)
     result: dict[str, JsonValue] = {}
 
@@ -1426,7 +1460,9 @@ def deep_merge_settings(
     for key, value in base.items():
         result[key] = _deep_copy_value(cast(JsonValue, value))
 
-    # Merge in updates
+    # Merge in updates. None means "union every array at every depth";
+    # explicit set[str] restricts union to those paths (whitelist);
+    # set() disables union entirely.
     _merge_recursive(result, cast(dict[str, JsonValue], updates), array_union_keys, '')
 
     return cast(dict[str, Any], result)
@@ -1473,19 +1509,30 @@ def _write_merged_json(
     *,
     ensure_parent: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
-    """Read-merge-write JSON file with deep merge.
+    """Read-merge-write JSON file with universal deep merge.
 
     Implements the three-step merge process:
     1. READ existing JSON file (or empty dict if not exists/invalid)
-    2. DEEP MERGE new settings into existing
+    2. DEEP MERGE new settings into existing via deep_merge_settings()
     3. WRITE merged result back to file
+
+    Merge semantics (default, array_union_keys=None):
+    - Nested dicts: recursive deep merge.
+    - Lists: union with structural dedupe at every depth (matches Claude
+      Code CLI's cross-scope merge: "arrays are concatenated and
+      deduplicated, not replaced").
+    - Scalars: update wins.
+    - None values: RFC 7396 null-as-delete (top-level and nested).
+    - Keys absent from new_settings: preserved unchanged in target.
 
     Args:
         target_file: Path to the JSON file to update.
         new_settings: New settings to deep-merge into existing content.
-        array_union_keys: Key paths where arrays should be unioned.
-            Defaults to DEFAULT_ARRAY_UNION_KEYS if None.
-            Pass set() to disable array union behavior.
+        array_union_keys: None (default) unions every array at every
+            depth. Pass an explicit set[str] only when the caller needs
+            the per-path whitelist behavior (currently only the YAML
+            inheritance layer at lines 4331 and 4337). Pass set() to
+            disable union entirely (every array replaced).
         ensure_parent: If True, create parent directories if needed.
 
     Returns:
@@ -1552,8 +1599,15 @@ def write_user_settings(
     # Step 0: Platform-conditional tilde handling in command keys
     expanded_settings = _expand_tilde_keys_in_settings(settings)
 
-    # Delegate to shared READ-MERGE-WRITE helper
-    # Uses default array_union_keys (permissions.allow/deny/ask)
+    # Delegate to shared READ-MERGE-WRITE helper.
+    # Uses default array_union_keys=None: every list is unioned with
+    # structural dedupe at every depth. This preserves contributions
+    # from the Claude Code CLI, prior toolbox runs with other YAML
+    # configs, manual user edits, and other writers. permissions.allow,
+    # permissions.deny, permissions.ask, permissions.additionalDirectories,
+    # companyAnnouncements, hooks.<EventName>, sandbox.filesystem.*,
+    # disabledMcpjsonServers, and every other list-valued key compose
+    # additively across runs.
     ok, merged = _write_merged_json(settings_file, expanded_settings)
 
     if ok:
@@ -1633,29 +1687,36 @@ def write_global_config(
     global_config: dict[str, Any],
     artifact_base_dir: Path | None = None,
 ) -> bool:
-    """Write global configuration to ~/.claude.json with deep merge.
+    """Write global configuration to ~/.claude.json with universal deep merge.
 
     Implements asymmetric dual-write: always writes to ~/.claude.json
     (machine baseline for bare claude sessions), and additionally writes
     to artifact_base_dir/.claude.json when command-names creates an
-    isolated environment (since Claude Code CLI resolves getGlobalClaudeFile()
-    via CLAUDE_CONFIG_DIR with no fallback to the home directory).
+    isolated environment (since Claude Code CLI resolves
+    getGlobalClaudeFile() via CLAUDE_CONFIG_DIR with no fallback to the
+    home directory).
+
+    ~/.claude.json is a collaborative surface managed by the Claude Code
+    CLI at runtime (OAuth tokens, per-project trust decisions,
+    user-scoped MCP server approvals via /mcp approve, enabledPlugins,
+    enabledMcpjsonServers, disabledMcpjsonServers, etc.). The writer
+    MUST NOT destroy these contributions, so it delegates to
+    _write_merged_json() with the default universal union-all-arrays
+    merge policy -- exactly the same semantics as write_user_settings()
+    and write_profile_settings_to_settings().
 
     Args:
         global_config: Global config dict from YAML global-config section.
         artifact_base_dir: Isolated config directory path, or None.
 
     Returns:
-        True if config was written successfully to all targets, False on any failure.
+        True if config was written successfully to all targets, False on
+        any failure.
     """
     home_dir = get_real_user_home()
     config_file = home_dir / '.claude.json'
 
-    ok, _ = _write_merged_json(
-        config_file,
-        global_config,
-        array_union_keys=set(),
-    )
+    ok, _ = _write_merged_json(config_file, global_config)
 
     if ok:
         success(f'Wrote global config to {config_file}')
@@ -1665,11 +1726,7 @@ def write_global_config(
     # Dual-write to isolated environment when command-names is present
     if artifact_base_dir is not None and artifact_base_dir != home_dir:
         isolated_config_file = artifact_base_dir / '.claude.json'
-        iso_ok, _ = _write_merged_json(
-            isolated_config_file,
-            global_config,
-            array_union_keys=set(),
-        )
+        iso_ok, _ = _write_merged_json(isolated_config_file, global_config)
         if iso_ok:
             success(f'Wrote global config to {isolated_config_file}')
         else:
@@ -1984,9 +2041,7 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
         if content.get(AUTO_UPDATE_KEY) is False:
             # Use _write_merged_json with null-as-delete
             cleanup_dict: dict[str, Any] = {AUTO_UPDATE_KEY: None}
-            ok, _ = _write_merged_json(
-                claude_json_path, cleanup_dict, array_union_keys=set(),
-            )
+            ok, _ = _write_merged_json(claude_json_path, cleanup_dict)
             if ok:
                 info(f'Cleaned stale {AUTO_UPDATE_KEY}: false from {claude_json_path}')
     except (OSError, json.JSONDecodeError, ValueError):
@@ -2231,9 +2286,7 @@ def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
         if content.get(IDE_AUTO_INSTALL_KEY) is False:
             # Use _write_merged_json with null-as-delete
             cleanup_dict: dict[str, Any] = {IDE_AUTO_INSTALL_KEY: None}
-            ok, _ = _write_merged_json(
-                claude_json_path, cleanup_dict, array_union_keys=set(),
-            )
+            ok, _ = _write_merged_json(claude_json_path, cleanup_dict)
             if ok:
                 info(f'Cleaned stale {IDE_AUTO_INSTALL_KEY}: false from {claude_json_path}')
     except (OSError, json.JSONDecodeError, ValueError):
@@ -8202,8 +8255,11 @@ def _build_hooks_json(
     Generates absolute POSIX paths for hook file references. Supports all four
     hook types: command, http, prompt, agent.
 
-    Used by both create_profile_config() (per-environment config.json) and
-    write_hooks_to_settings() (global settings.json).
+    Used by create_profile_config() (per-environment config.json, atomic
+    overwrite in isolated mode) and indirectly by
+    write_profile_settings_to_settings() via _build_profile_settings()
+    (shared ~/.claude/settings.json in non-isolated mode, deep-merged via
+    _write_merged_json()).
 
     Args:
         hooks: Hooks configuration dictionary with optional 'events' key.
@@ -8386,104 +8442,52 @@ def _build_hooks_json(
     return result
 
 
-def write_hooks_to_settings(
-    hooks: dict[str, Any],
-    hooks_dir: Path,
-    settings_dir: Path,
-) -> bool:
-    """Write hooks to settings.json with key-replace semantics.
-
-    Reads existing settings.json, replaces the 'hooks' key entirely (not
-    deep-merged), and preserves all other keys. This ensures stale hook
-    events from prior runs are removed.
-
-    Used when command-names is absent from the YAML configuration, routing
-    hooks to the global settings.json instead of a per-environment config.json.
-
-    Args:
-        hooks: Hooks configuration dictionary from YAML.
-        hooks_dir: Directory containing downloaded hook files.
-        settings_dir: Directory containing settings.json (typically ~/.claude/).
-
-    Returns:
-        True if hooks were written successfully, False on failure.
-    """
-    settings_file = settings_dir / 'settings.json'
-    info('Writing hooks to settings.json...')
-
-    # Build hooks JSON using shared helper
-    hooks_json = _build_hooks_json(hooks, hooks_dir)
-
-    # Read existing settings.json (or empty dict)
-    existing: dict[str, Any] = {}
-    if settings_file.exists():
-        try:
-            file_content = settings_file.read_text(encoding='utf-8')
-            if file_content.strip():
-                parsed = json.loads(file_content)
-                if isinstance(parsed, dict):
-                    existing = parsed
-                else:
-                    warning(f'Existing {settings_file} is not a dict, starting fresh')
-        except json.JSONDecodeError as e:
-            warning(f'Invalid JSON in {settings_file}: {e}, starting fresh')
-
-    # Replace the 'hooks' key entirely (not deep merge)
-    if hooks_json:
-        existing['hooks'] = hooks_json
-    else:
-        existing.pop('hooks', None)  # Remove hooks if config produces none
-
-    # Write back
-    try:
-        settings_dir.mkdir(parents=True, exist_ok=True)
-        settings_file.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False) + '\n',
-            encoding='utf-8',
-        )
-        success(f'Wrote hooks to {settings_file}')
-        return True
-    except OSError as e:
-        warning(f'Failed to write hooks to {settings_file}: {e}')
-        return False
-
-
 def write_profile_settings_to_settings(
     settings_delta: dict[str, Any],
     settings_dir: Path,
 ) -> bool:
     """Deep-merge profile-owned settings delta into ~/.claude/settings.json.
 
-    The shared ~/.claude/settings.json is a user-facing file written to by
-    the toolbox, the Claude Code CLI, prior toolbox runs with other YAMLs,
-    and (optionally) direct user edits. The writer MUST preserve any key
-    outside the current delta. It MUST NOT destroy nested sub-keys that
-    other contributors supplied. And it MUST honor RFC 7396 null-as-delete
-    so that users can explicitly remove keys via YAML-level null.
+    The shared ~/.claude/settings.json is a user-facing file written to
+    by the toolbox, the Claude Code CLI, prior toolbox runs with other
+    YAMLs, and (optionally) direct user edits. The writer MUST preserve
+    any key outside the current delta. It MUST NOT destroy nested
+    sub-keys or list elements that other contributors supplied. And it
+    MUST honor RFC 7396 null-as-delete so that users can explicitly
+    remove keys via YAML-level null.
 
-    Delegates to ``_write_merged_json()`` to inherit all three semantics
-    from the same helper that powers ``write_user_settings()`` and
+    Delegates to ``_write_merged_json()`` to inherit all semantics from
+    the same helper that powers ``write_user_settings()`` and
     ``write_global_config()``:
 
-    - Deep-merge for nested dicts (dispatched per-key to ``_merge_recursive()``).
-    - Array-union for ``permissions.allow/deny/ask`` (default ``DEFAULT_ARRAY_UNION_KEYS``).
-    - RFC 7396 null-as-delete for any key whose value is ``None`` (top-level or nested).
+    - Deep-merge for nested dicts (dispatched per-key to
+      ``_merge_recursive()``).
+    - **Array-union with structural dedupe for EVERY list at every depth**
+      (matches Claude Code CLI's cross-scope merge: "arrays are
+      concatenated and deduplicated, not replaced"). Two hook matcher
+      groups with the same ``matcher`` string from different
+      contributions coexist as separate entries -- matches Claude Code's
+      native concatenation; the runtime then dedupes by command string
+      (for command hooks) and URL (for HTTP hooks) per the Claude Code
+      hooks documentation.
+    - RFC 7396 null-as-delete for any key whose value is ``None``
+      (top-level or nested).
     - Preservation for keys omitted from ``settings_delta``.
 
-    The delta is expected to be the output of ``_build_profile_settings()``,
-    which contains one entry per YAML-declared profile-owned key (value
-    for present-with-value keys, ``None`` for present-with-null keys, no
-    entry for absent keys).
+    The delta is expected to be the output of
+    ``_build_profile_settings()``, which contains one entry per
+    YAML-declared profile-owned key (value for present-with-value keys,
+    ``None`` for present-with-null keys, no entry for absent keys).
 
-    IMPORTANT: This function is called ONLY in non-command-names mode. In
-    command-names mode, profile settings are routed to the isolated
+    IMPORTANT: This function is called ONLY in non-command-names mode.
+    In command-names mode, profile settings are routed to the isolated
     ~/.claude/{cmd}/config.json via ``create_profile_config()`` with
     atomic overwrite semantics (isolated config is fully toolbox-owned).
 
     Args:
         settings_delta: Dict of profile-owned keys to write (output of
-            ``_build_profile_settings()``). May be empty, in which case no
-            file I/O occurs and the function returns ``True``.
+            ``_build_profile_settings()``). May be empty, in which case
+            no file I/O occurs and the function returns ``True``.
         settings_dir: Directory containing settings.json (typically
             ~/.claude/).
 
@@ -8498,9 +8502,10 @@ def write_profile_settings_to_settings(
     settings_file = settings_dir / 'settings.json'
     info('Writing profile settings to settings.json...')
 
-    # Delegate to the shared READ-MERGE-WRITE helper. Uses default
-    # array_union_keys (permissions.allow/deny/ask) and the default
-    # ensure_parent=True (creates settings_dir if missing).
+    # Delegate to the shared READ-MERGE-WRITE helper. Uses the default
+    # array_union_keys=None (every array at every depth is unioned with
+    # structural dedupe) and ensure_parent=True (creates settings_dir
+    # if missing).
     ok, _ = _write_merged_json(settings_file, settings_delta)
 
     if ok:
@@ -10010,8 +10015,11 @@ def main() -> None:
                 warning(
                     '  Under deep merge semantics, root-level values overwrite '
                     'user-settings values for scalar keys. For dict keys, '
-                    'user-settings and root-level values are deep-merged; for '
-                    'permissions.allow/deny/ask, array union applies.',
+                    'user-settings and root-level values are deep-merged. '
+                    'For ALL array-valued keys at any depth, array union with '
+                    "structural dedupe applies (matching Claude Code CLI's "
+                    'cross-scope merge: "arrays are concatenated and '
+                    'deduplicated, not replaced").',
                 )
 
         # Validate: profile-scoped MCP servers require command-names (launcher)
