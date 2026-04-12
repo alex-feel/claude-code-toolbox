@@ -99,7 +99,7 @@ export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/rep
 | `--yes` / `-y` | Auto-confirm installation (skip interactive prompt) |
 | `--dry-run`    | Show installation plan and exit without installing  |
 
-> **Important:** CLI flags like `--yes` and `--dry-run` cannot be passed through piped invocations (`iex (irm ...)` on Windows, `curl ... | bash` on Linux/macOS). The piped execution pattern creates no parameter binding context, so flags are silently ignored. Use environment variables instead (see [Non-interactive mode](#non-interactive-mode) and [Dry-run mode](#dry-run-mode) below).
+> **Important:** CLI flags like `--yes`, `--dry-run`, `--skip-install`, and `--no-admin` cannot be passed through piped invocations (`iex (irm ...)` on Windows, `curl ... | bash` on Linux/macOS). The piped execution pattern creates no parameter binding context, so flags are silently ignored. Use environment variables instead (see [Non-interactive mode](#non-interactive-mode), [Dry-run mode](#dry-run-mode), [Skip Claude Code installation](#skip-claude-code-installation), and [Skip admin elevation (Windows)](#skip-admin-elevation-windows) below).
 
 ## Ready-Made Configurations
 
@@ -2108,17 +2108,19 @@ hooks:
 |----------------------------------|-------------------------------------------|--------------------------------------|
 | `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` | Configuration source (URL, path, or name) | `python`, `./my.yaml`, `https://...` |
 
-### Debugging and Behavior
+### Workflow Control and Behavior
 
-| Variable                               | Purpose                                     | Accepted Values       |
-|----------------------------------------|---------------------------------------------|-----------------------|
-| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers        | Integer (default: 2)  |
-| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                  | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS        | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation                   | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan without changes   | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows) | Path to `bash.exe`    |
+| Variable                               | Purpose                                          | Accepted Values       |
+|----------------------------------------|--------------------------------------------------|-----------------------|
+| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)              | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)          | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`) | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)      | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS             | Exact value `1` only  |
+| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                     | `1`, `true`, or `yes` |
+| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers             | Integer (default: 2)  |
+| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                       | `1`, `true`, or `yes` |
+| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)      | Path to `bash.exe`    |
 
 ### Authentication
 
@@ -2129,15 +2131,17 @@ hooks:
 | `REPO_TOKEN`                   | Shell-level (passed as `--auth`)      | Generic token, auto-detects repo type    |
 | `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`)      | Custom header: `Header-Name:token-value` |
 
-### CLI Flags
+### CLI Flags and Environment Variable Equivalents
 
-| Flag             | Purpose                                                 |
-|------------------|---------------------------------------------------------|
-| `--yes` / `-y`   | Auto-confirm installation (skip interactive prompt)     |
-| `--dry-run`      | Show installation plan and exit without installing      |
-| `--auth`         | Authentication parameter: `"token"` or `"header:value"` |
-| `--skip-install` | Skip Claude Code installation                           |
-| `--no-admin`     | Do not request admin elevation on Windows               |
+| Flag             | Environment Variable                   | Purpose                                                 |
+|------------------|----------------------------------------|---------------------------------------------------------|
+| `--yes` / `-y`   | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (skip interactive prompt)     |
+| `--dry-run`      | `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Show installation plan and exit without installing      |
+| `--skip-install` | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation                           |
+| `--no-admin`     | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Do not request admin elevation on Windows               |
+| `--auth`         | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`         | Authentication parameter: `"token"` or `"header:value"` |
+
+CLI flags take precedence over environment variables. For piped invocations (`curl | bash`, `iex(irm ...)`), use environment variables since CLI flags cannot be passed.
 
 ## Troubleshooting
 
@@ -2265,6 +2269,38 @@ export CLAUDE_CODE_TOOLBOX_DRY_RUN=1
 
 ```powershell
 $env:CLAUDE_CODE_TOOLBOX_DRY_RUN='1'; $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
+### Skip Claude Code installation
+
+To skip the Claude Code installation step (useful when Claude Code is already installed):
+
+**Environment variable (all platforms, works in piped mode):**
+
+```bash
+export CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1
+```
+
+**CLI flag (direct invocation only, not piped):**
+
+```bash
+./setup-environment.sh python --skip-install
+```
+
+### Skip admin elevation (Windows)
+
+To prevent the setup from requesting Windows admin elevation:
+
+**Environment variable (all platforms, works in piped mode):**
+
+```bash
+export CLAUDE_CODE_TOOLBOX_NO_ADMIN=1
+```
+
+**CLI flag (direct invocation only, not piped):**
+
+```bash
+./setup-environment.sh python --no-admin
 ```
 
 ## Security Considerations

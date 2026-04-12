@@ -59,7 +59,9 @@ All Linux/macOS scripts refuse to run as root/sudo by default (`id -u == 0` in s
 
 ### Installation Confirmation
 
-The setup script requires explicit user confirmation before installing. CLI flags: `--yes`/`-y` (auto-confirm), `--dry-run` (preview and exit). Env vars: `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1` (auto-confirm), `CLAUDE_CODE_TOOLBOX_DRY_RUN=1` (preview). Both accept only exact value `'1'`.
+The setup script requires explicit user confirmation before installing. CLI flags: `--yes`/`-y` (auto-confirm), `--dry-run` (preview and exit), `--skip-install` (skip Claude Code installation), `--no-admin` (skip Windows admin elevation). Env vars: `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1` (auto-confirm), `CLAUDE_CODE_TOOLBOX_DRY_RUN=1` (preview), `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1` (skip installation), `CLAUDE_CODE_TOOLBOX_NO_ADMIN=1` (skip elevation). All accept only exact value `'1'`. Auth: `CLAUDE_CODE_TOOLBOX_ENV_AUTH` (string, `header:value` format).
+
+**Environment Variable Resolution:** All CLI flags and their env var equivalents are merged in `resolve_args()`, called immediately after `parse_args()`. CLI flags take precedence over env vars. The going-forward naming convention is: `--flag-name` becomes `CLAUDE_CODE_TOOLBOX_FLAG_NAME` (direct mechanical mapping). `CONFIRM_INSTALL` is a preserved historical exception.
 
 **Default:** Interactive → `[y/N]` prompt (deny default). Piped with `/dev/tty` → prompts via tty. Non-interactive → refuses (exit 1). Exit `0` for success/dry-run/cancellation, `1` for errors. Bootstrap scripts forward `--yes`, `--dry-run`, `--skip-install`, `--no-admin` to Python.
 
@@ -212,15 +214,18 @@ MCP servers are automatically pre-allowed via `permissions.allow: ["mcp__servern
 
 **Target 2 null-as-delete:** `_remove_auto_update_controls()` Target 2 (`user_settings.env`) uses `env_section[key] = None` (not `del`) because `_write_merged_json()` -> `_merge_recursive()` requires `None` to trigger key deletion from the target file. Target 3 (`env_variables`) correctly uses `del` because `create_profile_config()` uses atomic overwrite, not merge.
 
-### Environment Variables for Debugging
+### Environment Variables
 
+- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: `1` only -- auto-confirm installation (env var for `--yes`)
+- `CLAUDE_CODE_TOOLBOX_DRY_RUN`: `1` only -- preview installation plan without changes (env var for `--dry-run`)
+- `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`: `1` only -- skip Claude Code installation (env var for `--skip-install`)
+- `CLAUDE_CODE_TOOLBOX_NO_ADMIN`: `1` only -- skip Windows admin elevation (env var for `--no-admin`)
+- `CLAUDE_CODE_TOOLBOX_ENV_AUTH`: string -- authentication for private repos, `header:value` format (env var for `--auth`)
+- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: `1` only -- allow root on Linux/macOS (see Root Detection Guard)
 - `CLAUDE_CODE_TOOLBOX_DEBUG`: `1`/`true`/`yes` -- verbose debug logging
 - `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`: Override Git Bash executable path
 - `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS`: Override concurrent download workers (default: 2)
 - `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`: `1`/`true`/`yes` -- disable parallel downloads
-- `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: `1` only -- allow root on Linux/macOS (see Root Detection Guard)
-- `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`: `1` only -- auto-confirm installation
-- `CLAUDE_CODE_TOOLBOX_DRY_RUN`: `1` only -- preview installation plan without changes
 
 ### npm Sudo Handling (Three-Tier Fallback)
 

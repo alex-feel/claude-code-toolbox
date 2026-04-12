@@ -489,6 +489,11 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
             'GITLAB_TOKEN',
             'REPO_TOKEN',
             'CLAUDE_CODE_TOOLBOX_VERSION',
+            'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL',
+            'CLAUDE_CODE_TOOLBOX_DRY_RUN',
+            'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL',
+            'CLAUDE_CODE_TOOLBOX_NO_ADMIN',
+            'CLAUDE_CODE_TOOLBOX_ENV_AUTH',
         ]
 
         for var_name in critical_env_vars:
@@ -5253,6 +5258,11 @@ def confirm_installation(
         info('  2. Set environment variable: CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1')
         info('  3. Preview only: setup_environment.py <config> --dry-run')
         info('  4. Set environment variable: CLAUDE_CODE_TOOLBOX_DRY_RUN=1')
+        info('')
+        info('Additional environment variables for piped invocations:')
+        info('  CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1  Skip Claude Code installation')
+        info('  CLAUDE_CODE_TOOLBOX_NO_ADMIN=1      Do not request admin elevation')
+        info('  CLAUDE_CODE_TOOLBOX_ENV_AUTH=<val>   Authentication (header:value)')
         return False
 
     # Interactive confirmation
@@ -9668,6 +9678,32 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
     return remaining_args, was_elevated_via_uac
 
 
+def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Merge CLI flags with environment variable equivalents.
+
+    CLI flags take precedence over environment variables. For boolean
+    flags (store_true), argparse defaults to False when the flag is
+    absent, so the env var acts as a fallback for piped invocations
+    where CLI flags cannot be passed.
+
+    Called immediately after parse_args() and before any flag-dependent
+    logic (admin checks, confirmation gates, installation flow).
+
+    Args:
+        args: Parsed command-line arguments from argparse.
+
+    Returns:
+        Modified args namespace with environment variables merged.
+    """
+    args.yes = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
+    args.dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
+    args.skip_install = args.skip_install or os.environ.get('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL') == '1'
+    args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
+    if not args.auth:
+        args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH')
+    return args
+
+
 def main() -> None:
     """Main setup flow."""
     # Track if we were elevated via UAC (new window opened) for better UX
@@ -9728,6 +9764,7 @@ def main() -> None:
         help='Show installation plan and exit without installing',
     )
     args = parser.parse_args()
+    resolve_args(args)
 
     # Get configuration from args or environment
     config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')
@@ -10101,9 +10138,8 @@ def main() -> None:
         )
         plan.auto_injected_items = auto_injected_items
 
-        # Determine auto-confirm from --yes flag or environment variable
-        auto_confirm = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
-        dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
+        auto_confirm = args.yes
+        dry_run = args.dry_run
 
         # Confirmation gate
         confirmed = confirm_installation(
