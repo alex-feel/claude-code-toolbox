@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.14.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.2...v5.14.0) (2026-04-12)
+
+
+### Features
+
+* add CLI flag and environment variable parity for setup script ([6d0a671](https://github.com/alex-feel/claude-code-toolbox/commit/6d0a671665e6849f53c8bf197731ed91425b66d5))
+
 ## [5.13.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.1...v5.13.2) (2026-04-12)
 
 

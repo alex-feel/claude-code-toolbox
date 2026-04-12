@@ -8,7 +8,7 @@ authors:
     given-names: Aleksandr
     email: alexfeel@protonmail.com
     orcid: "https://orcid.org/0009-0001-1120-6114"
-version: 5.13.2 # x-release-please-version
+version: 5.14.0 # x-release-please-version
 license: MIT
 url: "https://github.com/alex-feel/claude-code-toolbox"
 repository-code: "https://github.com/alex-feel/claude-code-toolbox"
