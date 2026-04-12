@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.13.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.1...v5.13.2) (2026-04-12)
+
+
+### Bug Fixes
+
+* union every array in shared Claude Code settings files ([b1fea5d](https://github.com/alex-feel/claude-code-toolbox/commit/b1fea5d03df1d9a8620d3ef0df2533322d6b3f50))
+
 ## [5.13.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.0...v5.13.1) (2026-04-11)
 
 
