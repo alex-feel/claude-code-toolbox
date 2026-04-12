@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-toolbox"
-version = "5.13.1"
+version = "5.13.2"
 description = "Claude Code Toolbox — automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
