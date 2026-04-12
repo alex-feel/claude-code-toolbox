@@ -2,6 +2,7 @@
 Comprehensive tests for setup_environment.py - the main environment setup script.
 """
 
+import argparse
 import contextlib
 import json
 import os
@@ -13586,3 +13587,164 @@ class TestSetOsEnvVariableWindowsBroadcast:
         assert called_with[1] == ['setx', 'CLAUDE_CODE_TOOLBOX_TEMP', 'temp']
         assert called_with[2][0] == 'reg'
         assert 'CLAUDE_CODE_TOOLBOX_TEMP' in called_with[2]
+
+
+class TestResolveArgs:
+    """Test resolve_args() env var merging with CLI flags."""
+
+    @staticmethod
+    def _make_args(
+        yes: bool = False,
+        dry_run: bool = False,
+        skip_install: bool = False,
+        no_admin: bool = False,
+        auth: str | None = None,
+    ) -> argparse.Namespace:
+        return argparse.Namespace(
+            yes=yes,
+            dry_run=dry_run,
+            skip_install=skip_install,
+            no_admin=no_admin,
+            auth=auth,
+        )
+
+    def test_cli_flags_unchanged_when_no_env_vars(self) -> None:
+        """CLI flags pass through without env vars."""
+        args = self._make_args(yes=True, skip_install=True)
+        result = setup_environment.resolve_args(args)
+        assert result.yes is True
+        assert result.skip_install is True
+        assert result.dry_run is False
+        assert result.no_admin is False
+        assert result.auth is None
+
+    def test_skip_install_from_env_var(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1 sets args.skip_install."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL': '1'}):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.skip_install is True
+
+    def test_skip_install_env_var_requires_exact_one(self) -> None:
+        """Only exact '1' activates SKIP_INSTALL."""
+        for value in ['true', 'yes', 'TRUE', '0', '', 'on']:
+            with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL': value}):
+                args = self._make_args()
+                setup_environment.resolve_args(args)
+                assert args.skip_install is False, f'Value {value!r} should not activate skip_install'
+
+    def test_no_admin_from_env_var(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_NO_ADMIN=1 sets args.no_admin."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_NO_ADMIN': '1'}):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.no_admin is True
+
+    def test_no_admin_env_var_requires_exact_one(self) -> None:
+        """Only exact '1' activates NO_ADMIN."""
+        for value in ['true', 'yes', 'TRUE', '0', '', 'on']:
+            with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_NO_ADMIN': value}):
+                args = self._make_args()
+                setup_environment.resolve_args(args)
+                assert args.no_admin is False, f'Value {value!r} should not activate no_admin'
+
+    def test_confirm_install_from_env_var(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1 sets args.yes."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL': '1'}):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.yes is True
+
+    def test_dry_run_from_env_var(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_DRY_RUN=1 sets args.dry_run."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_DRY_RUN': '1'}):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.dry_run is True
+
+    def test_auth_from_env_var_when_cli_absent(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_ENV_AUTH provides fallback for args.auth."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'Authorization:Bearer token123'}):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.auth == 'Authorization:Bearer token123'
+
+    def test_auth_cli_takes_precedence_over_env(self) -> None:
+        """CLI --auth wins over CLAUDE_CODE_TOOLBOX_ENV_AUTH."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'env-value'}):
+            args = self._make_args(auth='cli-value')
+            setup_environment.resolve_args(args)
+            assert args.auth == 'cli-value'
+
+    def test_cli_flag_takes_precedence_over_env_var(self) -> None:
+        """CLI --skip-install wins over env var (both True is fine)."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL': '1'}):
+            args = self._make_args(skip_install=True)
+            setup_environment.resolve_args(args)
+            assert args.skip_install is True
+
+    def test_all_env_vars_simultaneously(self) -> None:
+        """All env vars activate when set to '1' at the same time."""
+        env = {
+            'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL': '1',
+            'CLAUDE_CODE_TOOLBOX_DRY_RUN': '1',
+            'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL': '1',
+            'CLAUDE_CODE_TOOLBOX_NO_ADMIN': '1',
+            'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'X-Custom:secret',
+        }
+        with patch.dict(os.environ, env):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.yes is True
+            assert args.dry_run is True
+            assert args.skip_install is True
+            assert args.no_admin is True
+            assert args.auth == 'X-Custom:secret'
+
+    def test_returns_same_namespace(self) -> None:
+        """resolve_args returns the same namespace object it received."""
+        args = self._make_args()
+        result = setup_environment.resolve_args(args)
+        assert result is args
+
+
+class TestRequestAdminElevationEnvVars:
+    """Test that critical_env_vars in request_admin_elevation covers all workflow env vars."""
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only UAC logic')
+    def test_critical_env_vars_include_workflow_control_vars(self) -> None:
+        """Verify critical_env_vars includes all workflow-control environment variables."""
+        import ast
+        import inspect
+
+        source = inspect.getsource(setup_environment.request_admin_elevation)
+        tree = ast.parse(source)
+
+        critical_vars: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and target.id == 'critical_env_vars'
+                        and isinstance(node.value, ast.List)
+                    ):
+                        critical_vars.extend(
+                            elt.value
+                            for elt in node.value.elts
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                        )
+
+        expected_vars = {
+            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
+            'GITHUB_TOKEN',
+            'GITLAB_TOKEN',
+            'REPO_TOKEN',
+            'CLAUDE_CODE_TOOLBOX_VERSION',
+            'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL',
+            'CLAUDE_CODE_TOOLBOX_DRY_RUN',
+            'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL',
+            'CLAUDE_CODE_TOOLBOX_NO_ADMIN',
+            'CLAUDE_CODE_TOOLBOX_ENV_AUTH',
+        }
+        assert set(critical_vars) == expected_vars
