@@ -4562,142 +4562,6 @@ class TestBuildHooksJson:
             assert direct_hooks == config_hooks
 
 
-class TestWriteHooksToSettings:
-    """Tests for write_hooks_to_settings() function."""
-
-    def test_creates_new_file(self, tmp_path):
-        """Creates settings.json when it does not exist."""
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        settings_file = tmp_path / 'settings.json'
-        assert settings_file.exists()
-        data = json.loads(settings_file.read_text())
-        assert 'hooks' in data
-        assert 'PostToolUse' in data['hooks']
-
-    def test_preserves_existing_keys(self, tmp_path):
-        """Existing keys in settings.json are preserved."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({'language': 'english', 'theme': 'dark'}))
-        hooks = {'events': [{'event': 'SessionStart', 'matcher': '*',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert data['language'] == 'english'
-        assert data['theme'] == 'dark'
-        assert 'hooks' in data
-
-    def test_replaces_stale_hooks(self, tmp_path):
-        """Stale hook events from prior runs are removed."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'hooks': {'OldEvent': [{'matcher': '', 'hooks': [{'type': 'command', 'command': 'old.py'}]}]},
-        }))
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'new.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert 'OldEvent' not in data['hooks']
-        assert 'PostToolUse' in data['hooks']
-
-    def test_empty_hooks_removes_key(self, tmp_path):
-        """Empty hooks configuration removes 'hooks' key from settings."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'hooks': {'SomeEvent': []},
-            'language': 'english',
-        }))
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings({}, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert 'hooks' not in data
-        assert data['language'] == 'english'
-
-    def test_invalid_json_starts_fresh(self, tmp_path):
-        """Invalid JSON in existing file starts with fresh dict."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text('not valid json!!!')
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert 'hooks' in data
-
-    def test_non_dict_json_starts_fresh(self, tmp_path):
-        """Non-dict JSON content starts with fresh dict."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text('"just a string"')
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert 'hooks' in data
-
-    def test_preserves_user_settings_from_prior_step(self, tmp_path):
-        """Hooks write preserves user settings written by write_user_settings."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'language': 'english',
-            'theme': 'dark',
-            'permissions': {'allow': ['Read']},
-        }))
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert data['language'] == 'english'
-        assert data['theme'] == 'dark'
-        assert data['permissions'] == {'allow': ['Read']}
-        assert 'PostToolUse' in data['hooks']
-
-    def test_idempotent(self, tmp_path):
-        """Running write_hooks_to_settings twice produces same result."""
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        first_content = (tmp_path / 'settings.json').read_text()
-        setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        second_content = (tmp_path / 'settings.json').read_text()
-        assert first_content == second_content
-
-    def test_creates_directory_if_missing(self, tmp_path):
-        """Creates settings_dir if it does not exist."""
-        new_dir = tmp_path / 'new_dir'
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = new_dir / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, new_dir)
-        assert result is True
-        assert (new_dir / 'settings.json').exists()
-
-    def test_empty_file_starts_fresh(self, tmp_path):
-        """Empty settings.json starts with fresh dict."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text('')
-        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write',
-                             'type': 'command', 'command': 'hook.py'}]}
-        hooks_dir = tmp_path / 'hooks'
-        result = setup_environment.write_hooks_to_settings(hooks, hooks_dir, tmp_path)
-        assert result is True
-        data = json.loads(settings_file.read_text())
-        assert 'hooks' in data
-
-
 class TestCreateLauncherScript:
     """Test launcher script creation."""
 
@@ -6033,19 +5897,19 @@ class TestDeepMergeSettings:
         result = setup_environment.deep_merge_settings(base, updates)
         assert result == {'permissions': {'allow': ['Read']}}
 
-    # === Array Non-Union Tests ===
+    # === Universal Array Union Tests ===
 
-    def test_non_union_key_replaces(self):
-        """Arrays at non-union keys are replaced entirely."""
-        base = {'items': [1, 2]}
+    def test_default_unions_arbitrary_array_path(self):
+        """Arrays at any path are unioned under the default (array_union_keys=None)."""
+        base: dict[str, object] = {'items': [1, 2]}
         updates = {'items': [3, 4]}
         result = setup_environment.deep_merge_settings(base, updates)
-        assert result == {'items': [3, 4]}
+        assert result == {'items': [1, 2, 3, 4]}
 
-    # === Custom Array Union Keys Tests ===
+    # === Per-Path Whitelist Tests ===
 
-    def test_custom_array_union_keys(self):
-        """Custom array union keys override defaults."""
+    def test_explicit_set_whitelist_still_works(self):
+        """Explicit per-path whitelist (array_union_keys=set[str]) is preserved for the inheritance layer."""
         base = {
             'custom': {'list': [1, 2]},
             'permissions': {'allow': ['a']},
@@ -6057,16 +5921,20 @@ class TestDeepMergeSettings:
         result = setup_environment.deep_merge_settings(
             base, updates, array_union_keys={'custom.list'},
         )
-        # custom.list is unioned, permissions.allow is replaced (not in custom keys)
+        # Explicit whitelist: custom.list unioned, permissions.allow replaced
         assert result['custom']['list'] == [1, 2, 3]
         assert result['permissions']['allow'] == ['b']
 
-    def test_empty_custom_keys_disables_union(self):
-        """Empty custom keys set disables all array union."""
+    def test_empty_set_replaces_all_arrays(self):
+        """Explicit empty set[str] disables union entirely.
+
+        The YAML inheritance layer at the global-config call site uses this
+        form for child-replaces-parent semantics.
+        """
         base = {'permissions': {'allow': ['Read']}}
         updates = {'permissions': {'allow': ['Write']}}
         result = setup_environment.deep_merge_settings(base, updates, array_union_keys=set())
-        # With no union keys, array is replaced
+        # With empty set, array is replaced
         assert result == {'permissions': {'allow': ['Write']}}
 
     # === Immutability Tests ===
@@ -6129,7 +5997,12 @@ class TestDeepMergeSettings:
         assert result == {'name': 'updated'}
 
     def test_default_array_union_keys_constant(self):
-        """DEFAULT_ARRAY_UNION_KEYS contains expected permission keys."""
+        """DEFAULT_ARRAY_UNION_KEYS contains permission keys for inheritance layer.
+
+        The constant is preserved only for the YAML inheritance layer
+        (_resolve_single_key for user-settings). On-disk writers use
+        universal union-all-arrays via array_union_keys=None default.
+        """
         expected = {'permissions.allow', 'permissions.deny', 'permissions.ask'}
         assert expected == setup_environment.DEFAULT_ARRAY_UNION_KEYS
 
@@ -6197,11 +6070,17 @@ class TestDeepMergeSettings:
         assert 'allow' not in result['permissions']
 
     def test_null_inside_array_not_deleted(self):
-        """Null values inside arrays are NOT treated as deletion signals."""
+        """Null values inside arrays are NOT treated as deletion signals.
+
+        Under universal union semantics, the union combines existing
+        elements with new ones and preserves None values verbatim --
+        None inside an array is an ordinary element, not a deletion
+        signal (which only applies to object keys).
+        """
         base = {'items': [1, 2, 3]}
         updates = {'items': [None, 4, 5]}
         result = setup_environment.deep_merge_settings(base, updates)
-        assert result == {'items': [None, 4, 5]}
+        assert result == {'items': [1, 2, 3, None, 4, 5]}
 
     def test_none_in_base_preserved_without_update(self):
         """None values in base are preserved when no update for that key."""
@@ -6224,6 +6103,181 @@ class TestDeepMergeSettings:
         updates = {'b': None, 'd': None}
         result = setup_environment.deep_merge_settings(base, updates)
         assert result == {'a': 1, 'c': 3}
+
+
+class TestUnionAllArraysDefault:
+    """Tests for the universal union-all-arrays default in deep_merge_settings.
+
+    Under the default (array_union_keys=None), every list at every depth
+    is unioned with structural dedupe. These tests serve as regression
+    guards for the shared-settings writer contract: no on-disk list is
+    ever silently replaced.
+    """
+
+    def test_default_unions_permissions_allow(self):
+        """permissions.allow still unions under universal default."""
+        base = {'permissions': {'allow': ['Read']}}
+        updates = {'permissions': {'allow': ['Write']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'allow': ['Read', 'Write']}}
+
+    def test_default_unions_permissions_additional_directories(self):
+        """permissions.additionalDirectories is unioned under the default."""
+        base = {'permissions': {'additionalDirectories': ['/existing']}}
+        updates = {'permissions': {'additionalDirectories': ['/new']}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {
+            'permissions': {'additionalDirectories': ['/existing', '/new']},
+        }
+
+    def test_default_unions_company_announcements(self):
+        """companyAnnouncements is unioned under the default."""
+        base = {'companyAnnouncements': ['Welcome']}
+        updates = {'companyAnnouncements': ['Maintenance Sunday']}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'companyAnnouncements': ['Welcome', 'Maintenance Sunday']}
+
+    def test_default_unions_hooks_event_list_disjoint_matchers(self):
+        """Two hook matcher groups with disjoint matcher strings compose additively."""
+        base = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]},
+                ],
+            },
+        }
+        updates = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': 'b.sh'}]},
+                ],
+            },
+        }
+        result = setup_environment.deep_merge_settings(base, updates)
+        matchers = [g['matcher'] for g in result['hooks']['PreToolUse']]
+        assert matchers == ['Bash', 'Write']
+
+    def test_default_hooks_same_matcher_different_command_both_kept(self):
+        """Matcher groups with the SAME matcher string but different inner hooks coexist.
+
+        Naive structural dedupe: the two groups are not structurally
+        equal (inner 'hooks' arrays differ), so both are kept as
+        separate entries. This matches Claude Code's cross-scope merge
+        (concat+dedupe) and its runtime dedupe by command string.
+        """
+        base = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]},
+                ],
+            },
+        }
+        updates = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'b.sh'}]},
+                ],
+            },
+        }
+        result = setup_environment.deep_merge_settings(base, updates)
+        groups = result['hooks']['PreToolUse']
+        assert len(groups) == 2
+        commands = [g['hooks'][0]['command'] for g in groups]
+        assert commands == ['a.sh', 'b.sh']
+
+    def test_default_dedupes_identical_matcher_groups(self):
+        """Structurally identical matcher groups are deduplicated (idempotent re-run)."""
+        shared = {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]}
+        base = {'hooks': {'PreToolUse': [shared]}}
+        updates = {'hooks': {'PreToolUse': [shared]}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result['hooks']['PreToolUse'] == [shared]
+
+    def test_default_unions_sandbox_filesystem_allow_write(self):
+        """sandbox.filesystem.allowWrite nested list is unioned."""
+        base = {'sandbox': {'filesystem': {'allowWrite': ['/existing']}}}
+        updates = {'sandbox': {'filesystem': {'allowWrite': ['/new']}}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'sandbox': {'filesystem': {'allowWrite': ['/existing', '/new']}}}
+
+    def test_default_unions_disabled_mcpjson_servers(self):
+        """disabledMcpjsonServers is unioned under the default."""
+        base = {'disabledMcpjsonServers': ['srv1']}
+        updates = {'disabledMcpjsonServers': ['srv2']}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'disabledMcpjsonServers': ['srv1', 'srv2']}
+
+    def test_default_unions_enabled_mcpjson_servers(self):
+        """enabledMcpjsonServers is unioned under the default."""
+        base = {'enabledMcpjsonServers': ['srv1']}
+        updates = {'enabledMcpjsonServers': ['srv2']}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'enabledMcpjsonServers': ['srv1', 'srv2']}
+
+    def test_default_unions_at_arbitrary_nested_depth(self):
+        """Union applies at any nesting depth, not just top-level."""
+        base = {'a': {'b': {'c': {'items': [1, 2]}}}}
+        updates = {'a': {'b': {'c': {'items': [2, 3]}}}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': {'b': {'c': {'items': [1, 2, 3]}}}}
+
+    def test_default_preserves_rfc7396_null_delete_top_level(self):
+        """RFC 7396 null-as-delete still works at top level under the default."""
+        base = {'a': 1, 'b': 2}
+        updates = {'b': None}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'a': 1}
+        assert 'b' not in result
+
+    def test_default_preserves_rfc7396_null_delete_nested(self):
+        """RFC 7396 null-as-delete still works at nested levels under the default."""
+        base = {'permissions': {'allow': ['Read'], 'deny': ['Bash']}}
+        updates = {'permissions': {'deny': None}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert 'deny' not in result['permissions']
+        assert result['permissions']['allow'] == ['Read']
+
+    def test_default_preserves_scalar_overwrite(self):
+        """Scalar values still overwrite under the default."""
+        base = {'model': 'sonnet'}
+        updates = {'model': 'opus'}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'model': 'opus'}
+
+    def test_default_preserves_dict_deep_merge(self):
+        """Dict deep merge still works under the default."""
+        base = {'attribution': {'commit': 'c1'}}
+        updates = {'attribution': {'pr': 'p1'}}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'attribution': {'commit': 'c1', 'pr': 'p1'}}
+
+    def test_default_dedupe_preserves_order_existing_first(self):
+        """Dedupe preserves order: existing elements first, then new elements."""
+        base = {'items': [1, 2, 3]}
+        updates = {'items': [3, 2, 4, 1]}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'items': [1, 2, 3, 4]}
+
+    def test_default_empty_delta_preserves_base_arrays(self):
+        """Empty delta preserves base arrays unchanged."""
+        base = {'permissions': {'allow': ['Read'], 'deny': ['Bash']}}
+        updates: dict[str, object] = {}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'permissions': {'allow': ['Read'], 'deny': ['Bash']}}
+
+    def test_default_empty_list_in_updates_is_noop(self):
+        """Empty list in updates adds nothing and does not wipe existing."""
+        base = {'items': [1, 2, 3]}
+        updates: dict[str, object] = {'items': []}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'items': [1, 2, 3]}
+
+    def test_default_type_mismatch_list_vs_scalar_replaces(self):
+        """Type mismatch falls through to the scalar-replace branch."""
+        base = {'x': [1, 2]}
+        updates = {'x': 'not a list'}
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'x': 'not a list'}
 
 
 class TestWriteUserSettings:
@@ -7479,6 +7533,136 @@ class TestWriteProfileSettingsToSettings:
         assert result is True
         assert (target_dir / 'settings.json').exists()
 
+    def test_permissions_additional_directories_unioned_across_runs(self, tmp_path: Path) -> None:
+        """permissions.additionalDirectories unions across two writer calls."""
+        first_delta = {'permissions': {'additionalDirectories': ['/existing']}}
+        setup_environment.write_profile_settings_to_settings(first_delta, tmp_path)
+        second_delta = {'permissions': {'additionalDirectories': ['/new']}}
+        setup_environment.write_profile_settings_to_settings(second_delta, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert content['permissions']['additionalDirectories'] == ['/existing', '/new']
+
+    def test_company_announcements_unioned_across_runs(self, tmp_path: Path) -> None:
+        """companyAnnouncements unions across two writer calls."""
+        setup_environment.write_profile_settings_to_settings(
+            {'companyAnnouncements': ['Welcome']}, tmp_path,
+        )
+        setup_environment.write_profile_settings_to_settings(
+            {'companyAnnouncements': ['Maintenance']}, tmp_path,
+        )
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert content['companyAnnouncements'] == ['Welcome', 'Maintenance']
+
+    def test_hooks_event_list_concatenated_across_runs(self, tmp_path: Path) -> None:
+        """hooks.<EventName> matcher groups concatenate across two writer calls."""
+        delta_a = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]},
+                ],
+            },
+        }
+        delta_b = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': 'b.sh'}]},
+                ],
+            },
+        }
+        setup_environment.write_profile_settings_to_settings(delta_a, tmp_path)
+        setup_environment.write_profile_settings_to_settings(delta_b, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        matchers = [g['matcher'] for g in content['hooks']['PreToolUse']]
+        assert matchers == ['Bash', 'Write']
+
+    def test_hooks_event_list_dedupes_identical_matcher_groups(self, tmp_path: Path) -> None:
+        """Idempotent re-run with identical hooks produces identical result."""
+        delta = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]},
+                ],
+            },
+        }
+        setup_environment.write_profile_settings_to_settings(delta, tmp_path)
+        setup_environment.write_profile_settings_to_settings(delta, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert len(content['hooks']['PreToolUse']) == 1
+
+    def test_hooks_disjoint_events_coexist_across_runs(self, tmp_path: Path) -> None:
+        """Disjoint hook event names (PreToolUse, PostToolUse) coexist across runs."""
+        setup_environment.write_profile_settings_to_settings(
+            {
+                'hooks': {
+                    'PreToolUse': [
+                        {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'a.sh'}]},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        setup_environment.write_profile_settings_to_settings(
+            {
+                'hooks': {
+                    'PostToolUse': [
+                        {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': 'b.sh'}]},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert 'PreToolUse' in content['hooks']
+        assert 'PostToolUse' in content['hooks']
+
+    def test_user_managed_unrelated_arrays_preserved_across_runs(self, tmp_path: Path) -> None:
+        """A user-managed array outside the toolbox delta survives writer calls."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(
+            json.dumps({'customUserArray': ['a', 'b', 'c']}),
+            encoding='utf-8',
+        )
+        setup_environment.write_profile_settings_to_settings({'model': 'sonnet'}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['customUserArray'] == ['a', 'b', 'c']
+        assert content['model'] == 'sonnet'
+
+    def test_stale_hooks_preserved_on_rerun(self, tmp_path: Path) -> None:
+        """Hooks from a prior run are preserved under union semantics (NOT removed)."""
+        first = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'old.sh'}]},
+                ],
+            },
+        }
+        setup_environment.write_profile_settings_to_settings(first, tmp_path)
+        second = {
+            'hooks': {
+                'PostToolUse': [
+                    {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': 'new.sh'}]},
+                ],
+            },
+        }
+        setup_environment.write_profile_settings_to_settings(second, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert 'PreToolUse' in content['hooks']
+        assert 'PostToolUse' in content['hooks']
+
+    def test_explicit_null_hooks_removes_stale_events(self, tmp_path: Path) -> None:
+        """Explicit RFC 7396 null removes stale hook events (the canonical deletion pattern)."""
+        first = {
+            'hooks': {
+                'PreToolUse': [
+                    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': 'old.sh'}]},
+                ],
+            },
+        }
+        setup_environment.write_profile_settings_to_settings(first, tmp_path)
+        setup_environment.write_profile_settings_to_settings({'hooks': None}, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert 'hooks' not in content
+
 
 class TestCreateProfileConfigDelegation:
     """Regression tests verifying create_profile_config() delegates to builder."""
@@ -7574,8 +7758,8 @@ class TestWriteMergedJson:
         assert ok is True
         assert merged == {'key': 'value'}
 
-    def test_custom_array_union_keys(self, tmp_path: Path) -> None:
-        """Custom array_union_keys are used."""
+    def test_set_whitelist_via_writer(self, tmp_path: Path) -> None:
+        """Explicit set[str] whitelist routes through the writer correctly."""
         target = tmp_path / 'output.json'
         target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
 
@@ -7586,8 +7770,8 @@ class TestWriteMergedJson:
         assert ok is True
         assert set(merged['list']) == {1, 2, 3}
 
-    def test_empty_array_union_keys(self, tmp_path: Path) -> None:
-        """Empty set() disables array union."""
+    def test_empty_set_replaces_all_arrays_via_writer(self, tmp_path: Path) -> None:
+        """Explicit empty set() disables array union via the writer."""
         target = tmp_path / 'output.json'
         target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
 
@@ -7769,9 +7953,10 @@ class TestWriteGlobalConfig:
         written = json.loads(config_file.read_text(encoding='utf-8'))
         assert written['editorMode'] == 'vim'
 
-    def test_no_array_union(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Arrays are NOT unioned (replaced instead)."""
+    def test_global_config_arrays_unioned(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Arrays in ~/.claude.json are unioned under the universal deep-merge contract."""
         monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         config_file = tmp_path / '.claude.json'
         config_file.write_text(json.dumps({'items': [1, 2]}), encoding='utf-8')
 
@@ -7779,7 +7964,7 @@ class TestWriteGlobalConfig:
 
         assert result is True
         written = json.loads(config_file.read_text(encoding='utf-8'))
-        assert written['items'] == [3, 4]
+        assert written['items'] == [1, 2, 3, 4]
 
     def test_returns_false_on_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Returns False on write failure."""
@@ -7824,6 +8009,56 @@ class TestWriteGlobalConfig:
         data = json.loads(config_file.read_text())
         assert 'oauthAccount' not in data
         assert data['other'] == 1
+
+    def test_global_config_disabled_mcpjson_servers_unioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """disabledMcpjsonServers unions across two write_global_config calls."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        setup_environment.write_global_config({'disabledMcpjsonServers': ['srv1']})
+        setup_environment.write_global_config({'disabledMcpjsonServers': ['srv2']})
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert data['disabledMcpjsonServers'] == ['srv1', 'srv2']
+
+    def test_global_config_enabled_mcpjson_servers_unioned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """enabledMcpjsonServers unions across two write_global_config calls."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        setup_environment.write_global_config({'enabledMcpjsonServers': ['srv1']})
+        setup_environment.write_global_config({'enabledMcpjsonServers': ['srv2']})
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert data['enabledMcpjsonServers'] == ['srv1', 'srv2']
+
+    def test_global_config_scalar_still_overwrites(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Scalar overwrite still works in ~/.claude.json (regression guard)."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        (tmp_path / '.claude.json').write_text(
+            json.dumps({'editorMode': 'emacs'}), encoding='utf-8',
+        )
+        setup_environment.write_global_config({'editorMode': 'vim'})
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert data['editorMode'] == 'vim'
+
+    def test_global_config_nested_dict_still_deep_merges(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Nested dict deep-merge still works in ~/.claude.json (regression guard)."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        (tmp_path / '.claude.json').write_text(
+            json.dumps({'mcpServers': {'srv1': {'url': 'http://old'}}}),
+            encoding='utf-8',
+        )
+        setup_environment.write_global_config({'mcpServers': {'srv2': {'url': 'http://new'}}})
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert 'srv1' in data['mcpServers']
+        assert 'srv2' in data['mcpServers']
 
 
 class TestDetectSettingsConflicts:

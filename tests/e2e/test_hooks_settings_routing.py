@@ -19,58 +19,14 @@ if TYPE_CHECKING:
 import pytest
 
 from scripts.setup_environment import _build_hooks_json
+from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import create_profile_config
-from scripts.setup_environment import write_hooks_to_settings
+from scripts.setup_environment import write_profile_settings_to_settings
 from tests.e2e.validators import _validate_hooks_structure
-from tests.e2e.validators import validate_hooks_in_settings_json
 
 # ---------------------------------------------------------------------------
 # Inline YAML-like configs (dicts) for tests WITHOUT command-names
 # ---------------------------------------------------------------------------
-
-
-def _hooks_only_config() -> dict[str, Any]:
-    """Minimal config with hooks but NO command-names."""
-    return {
-        'name': 'Hooks Only',
-        'hooks': {
-            'files': ['hooks/e2e_test_hook.py'],
-            'events': [
-                {
-                    'event': 'PostToolUse',
-                    'matcher': 'Write',
-                    'type': 'command',
-                    'command': 'e2e_test_hook.py',
-                },
-                {
-                    'event': 'PostToolUse',
-                    'matcher': 'Read',
-                    'type': 'http',
-                    'url': 'http://localhost:8080/hooks',
-                    'headers': {'Authorization': 'Bearer $TOKEN'},
-                    'allowed-env-vars': ['TOKEN'],
-                    'timeout': 15,
-                    'status-message': 'Sending webhook...',
-                },
-                {
-                    'event': 'PreToolUse',
-                    'matcher': 'Bash',
-                    'type': 'prompt',
-                    'prompt': 'Check safety before bash execution',
-                    'timeout': 30,
-                },
-                {
-                    'event': 'PreToolUse',
-                    'matcher': 'Bash(rm *)',
-                    'type': 'agent',
-                    'prompt': 'Verify security of: $ARGUMENTS',
-                    'model': 'sonnet',
-                    'once': True,
-                },
-            ],
-        },
-        # NO command-names
-    }
 
 
 def _hooks_with_user_settings_config() -> dict[str, Any]:
@@ -110,154 +66,6 @@ def _no_hooks_no_commands_config() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # E2E Test Class: Hooks routing to settings.json (no command-names)
 # ---------------------------------------------------------------------------
-
-
-class TestHooksToSettingsJson:
-    """Tests for hooks routing to settings.json when command-names is absent."""
-
-    def test_hooks_written_to_settings_json(
-        self,
-        e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        """Verify hooks are written to settings.json when command-names is absent.
-
-        Uses write_hooks_to_settings directly with a hooks-only config.
-        Validates hook structure, all four hook types, and path expansion.
-        """
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-
-        config = _hooks_only_config()
-        hooks = config['hooks']
-
-        result = write_hooks_to_settings(hooks, hooks_dir, claude_dir)
-        assert result is True
-
-        settings_path = claude_dir / 'settings.json'
-        assert settings_path.exists(), 'settings.json not created'
-
-        errors = validate_hooks_in_settings_json(settings_path, hooks)
-        assert not errors, 'Hooks in settings.json validation failed:\n' + '\n'.join(errors)
-
-    def test_all_four_hook_types_in_settings_json(
-        self,
-        e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        """Verify all four hook types (command, http, prompt, agent) in settings.json."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-
-        config = _hooks_only_config()
-        hooks = config['hooks']
-
-        write_hooks_to_settings(hooks, hooks_dir, claude_dir)
-
-        data = json.loads((claude_dir / 'settings.json').read_text())
-        hooks_data = data['hooks']
-
-        # Verify PostToolUse has command and http hooks
-        post_tool_groups = hooks_data['PostToolUse']
-        hook_types_found: set[str] = set()
-        for group in post_tool_groups:
-            hook_types_found.update(hook['type'] for hook in group.get('hooks', []))
-        assert 'command' in hook_types_found, 'command hook type missing'
-        assert 'http' in hook_types_found, 'http hook type missing'
-
-        # Verify PreToolUse has prompt and agent hooks
-        pre_tool_groups = hooks_data['PreToolUse']
-        pre_types: set[str] = set()
-        for group in pre_tool_groups:
-            pre_types.update(hook['type'] for hook in group.get('hooks', []))
-        assert 'prompt' in pre_types, 'prompt hook type missing'
-        assert 'agent' in pre_types, 'agent hook type missing'
-
-    def test_hook_paths_expanded_in_settings_json(
-        self,
-        e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        """Verify hook command paths are absolute POSIX with no unexpanded tildes."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-
-        hooks = {
-            'events': [
-                {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
-                 'command': 'e2e_test_hook.py'},
-                {'event': 'PostToolUse', 'matcher': 'Read', 'type': 'command',
-                 'command': 'e2e_test_hook.js'},
-            ],
-        }
-
-        write_hooks_to_settings(hooks, hooks_dir, claude_dir)
-
-        data = json.loads((claude_dir / 'settings.json').read_text())
-        hooks_data = data['hooks']
-
-        for event_groups in hooks_data.values():
-            for group in event_groups:
-                for hook in group.get('hooks', []):
-                    if hook.get('type') == 'command':
-                        cmd = hook.get('command', '')
-                        assert '~' not in cmd, f'Unexpanded tilde in command: {cmd}'
-                        # Python hooks should have uv run prefix
-                        if 'e2e_test_hook.py' in cmd:
-                            assert 'uv run' in cmd, f'Missing uv run prefix: {cmd}'
-                        # JS hooks should have node prefix
-                        if 'e2e_test_hook.js' in cmd:
-                            assert cmd.startswith('node '), f'Missing node prefix: {cmd}'
-
-    def test_stale_hooks_removed_on_rerun(
-        self,
-        e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        """Verify stale hook events from prior runs are removed on re-run."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-
-        # First run: create hooks with event A
-        hooks_v1 = {
-            'events': [
-                {'event': 'OldEvent', 'matcher': 'Write', 'type': 'command',
-                 'command': 'old.py'},
-            ],
-        }
-        write_hooks_to_settings(hooks_v1, hooks_dir, claude_dir)
-
-        data_v1 = json.loads((claude_dir / 'settings.json').read_text())
-        assert 'OldEvent' in data_v1['hooks'], 'First run: OldEvent should be present'
-
-        # Second run: create hooks with different event
-        hooks_v2 = {
-            'events': [
-                {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
-                 'command': 'new.py'},
-            ],
-        }
-        write_hooks_to_settings(hooks_v2, hooks_dir, claude_dir)
-
-        data_v2 = json.loads((claude_dir / 'settings.json').read_text())
-        assert 'OldEvent' not in data_v2['hooks'], 'Second run: OldEvent should be removed'
-        assert 'PostToolUse' in data_v2['hooks'], 'Second run: PostToolUse should be present'
-
-    def test_config_json_not_created_without_command_names(
-        self,
-        e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        """Verify config.json is NOT created when command-names is absent."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-
-        config = _hooks_only_config()
-        write_hooks_to_settings(config['hooks'], hooks_dir, claude_dir)
-
-        # config.json should NOT exist (no command-names means no isolated environment)
-        config_json = claude_dir / 'config.json'
-        assert not config_json.exists(), 'config.json should not be created without command-names'
 
 
 class TestHooksToConfigJsonRegression:
@@ -337,6 +145,7 @@ class TestHooksAndUserSettingsCoexistence:
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
         hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
 
         config = _hooks_with_user_settings_config()
 
@@ -344,8 +153,9 @@ class TestHooksAndUserSettingsCoexistence:
         from scripts.setup_environment import write_user_settings
         write_user_settings(config['user-settings'], claude_dir)
 
-        # Simulate Step 18: write hooks to settings.json
-        write_hooks_to_settings(config['hooks'], hooks_dir, claude_dir)
+        # Simulate Step 18: write profile settings (including hooks) to settings.json
+        delta = _build_profile_settings({'hooks': config['hooks']}, hooks_dir)
+        write_profile_settings_to_settings(delta, claude_dir)
 
         settings_path = claude_dir / 'settings.json'
         assert settings_path.exists()
@@ -368,6 +178,7 @@ class TestHooksAndUserSettingsCoexistence:
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
         hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Pre-populate with rich user settings
         settings_file = claude_dir / 'settings.json'
@@ -385,18 +196,60 @@ class TestHooksAndUserSettingsCoexistence:
                  'command': 'hook.py'},
             ],
         }
-        write_hooks_to_settings(hooks, hooks_dir, claude_dir)
+        delta = _build_profile_settings({'hooks': hooks}, hooks_dir)
+        write_profile_settings_to_settings(delta, claude_dir)
 
         data = json.loads(settings_file.read_text())
 
         # All original keys preserved exactly
         assert data['language'] == 'english'
+        # Under universal union, permissions.allow with no new entries
+        # is a no-op (the hooks-only delta contributes no permissions)
         assert data['permissions'] == {'allow': ['Read', 'Write']}
         assert data['theme'] == 'dark'
         assert data['nested'] == {'key1': 'val1', 'key2': [1, 2, 3]}
 
         # Hooks added
         assert 'hooks' in data
+
+    def test_two_matcher_groups_with_same_matcher_coexist(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Two runs with the same matcher string + different commands produce TWO matcher groups.
+
+        Naive structural dedupe keeps both groups because the inner
+        'hooks' arrays differ. This matches Claude Code's native
+        cross-scope merge behavior and its runtime dedupe by command
+        string (documented at https://code.claude.com/docs/en/hooks).
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        hooks_a = {
+            'events': [
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'a.sh'},
+            ],
+        }
+        delta_a = _build_profile_settings({'hooks': hooks_a}, hooks_dir)
+        write_profile_settings_to_settings(delta_a, claude_dir)
+
+        hooks_b = {
+            'events': [
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'b.sh'},
+            ],
+        }
+        delta_b = _build_profile_settings({'hooks': hooks_b}, hooks_dir)
+        write_profile_settings_to_settings(delta_b, claude_dir)
+
+        settings = json.loads((claude_dir / 'settings.json').read_text())
+        pre_tool = settings['hooks']['PreToolUse']
+        assert len(pre_tool) == 2
+        commands = sorted(g['hooks'][0]['command'] for g in pre_tool)
+        # Both scripts are absolute POSIX paths, so sort alphabetically
+        assert len(commands) == 2
 
 
 class TestNoHooksNoCommandNames:
@@ -422,14 +275,22 @@ class TestNoHooksNoCommandNames:
             data = json.loads(settings_path.read_text())
             assert 'hooks' not in data, 'hooks key should not be present when none configured'
 
-    def test_empty_hooks_cleans_up(
+    def test_explicit_null_hooks_removes_stale_events(
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Verify write_hooks_to_settings with empty hooks removes stale hooks key."""
+        """Verify explicit RFC 7396 null removes stale hooks from settings.json.
+
+        Under the universal deep-merge + union-all-arrays contract, the
+        only way to delete stale hooks from ~/.claude/settings.json is
+        to declare ``hooks: null`` in YAML (or ``{'hooks': None}`` in
+        the profile delta). Under union semantics, omitting the hooks
+        key leaves existing hooks in place.
+        """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
         hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
 
         # Pre-populate with stale hooks
         settings_file = claude_dir / 'settings.json'
@@ -438,11 +299,12 @@ class TestNoHooksNoCommandNames:
             'language': 'russian',
         }))
 
-        # Write empty hooks (simulates config with no hook events)
-        write_hooks_to_settings({}, hooks_dir, claude_dir)
+        # Explicit null removes hooks block (simulates YAML: hooks: null)
+        delta = _build_profile_settings({'hooks': None}, hooks_dir)
+        write_profile_settings_to_settings(delta, claude_dir)
 
         data = json.loads(settings_file.read_text())
-        assert 'hooks' not in data, 'Stale hooks key should be removed'
+        assert 'hooks' not in data, 'Stale hooks key should be removed by explicit null'
         assert data['language'] == 'russian', 'Other settings should be preserved'
 
 
