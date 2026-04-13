@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.15.0...v6.0.0) (2026-04-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* generate_env_loader_files() no longer creates toolbox-env.sh, toolbox-env.fish, toolbox-env.ps1, or toolbox-env.cmd in ~/.claude/. Users who manually sourced these files should open a new terminal instead, which loads variables from shell profiles. Per-command env.* files in ~/.claude/{cmd}/ are unaffected.
+
+### Chores
+
+* remove toolbox-env.* global file generation ([718f53e](https://github.com/alex-feel/claude-code-toolbox/commit/718f53e261f98cd37ebb016491f5111514adaeb6))
+
 ## [5.15.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.14.1...v5.15.0) (2026-04-13)
 
 
