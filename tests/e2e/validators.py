@@ -1376,7 +1376,6 @@ def validate_env_loader_files(
     loader files containing ONLY non-None os-env-variables with proper syntax.
 
     Validates:
-    - Global toolbox-env.sh exists in ~/.claude/
     - Per-command env.sh exists in ~/.claude/{cmd}/ (when command_name provided)
     - File content contains correct export syntax for each shell type
     - None-valued (deletion) variables are excluded from loader files
@@ -1397,43 +1396,7 @@ def validate_env_loader_files(
     deletion_vars = [k for k, v in os_env_vars.items() if v is None]
 
     if not active_vars:
-        # No active vars means no files should be generated
-        global_sh = claude_dir / 'toolbox-env.sh'
-        if global_sh.exists():
-            errors.append(
-                f'toolbox-env.sh exists but no active os-env-variables: {global_sh}',
-            )
         return errors
-
-    # --- Global convenience files ---
-    global_sh = claude_dir / 'toolbox-env.sh'
-    if not global_sh.exists():
-        errors.append(f'Global env loader not found: {global_sh}')
-    else:
-        sh_content = global_sh.read_text(encoding='utf-8')
-        errors.extend(_validate_sh_loader_content(sh_content, active_vars, deletion_vars, 'toolbox-env.sh'))
-
-    # Global PS1 on Windows
-    if sys.platform == 'win32':
-        global_ps1 = claude_dir / 'toolbox-env.ps1'
-        if not global_ps1.exists():
-            errors.append(f'Global PS1 env loader not found on Windows: {global_ps1}')
-        else:
-            ps1_content = global_ps1.read_text(encoding='utf-8')
-            errors.extend(
-                _validate_ps1_loader_content(ps1_content, active_vars, deletion_vars, 'toolbox-env.ps1'),
-            )
-
-    # Global CMD on Windows
-    if sys.platform == 'win32':
-        global_cmd = claude_dir / 'toolbox-env.cmd'
-        if not global_cmd.exists():
-            errors.append(f'Global CMD env loader not found on Windows: {global_cmd}')
-        else:
-            cmd_content = global_cmd.read_text(encoding='utf-8')
-            errors.extend(
-                _validate_cmd_loader_content(cmd_content, active_vars, deletion_vars, 'toolbox-env.cmd'),
-            )
 
     # --- Per-command files ---
     if command_name:

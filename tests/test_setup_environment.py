@@ -13160,8 +13160,9 @@ class TestGenerateEnvLoaderFiles:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)  # No fish
 
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
         result = setup_environment.generate_env_loader_files(
-            {'KEEP': 'val', 'DELETE': None}, None, None,
+            {'KEEP': 'val', 'DELETE': None}, ['my-cmd'], cmd_dir,
         )
         assert len(result) > 0
         # Check that the sh file only has KEEP, not DELETE
@@ -13171,21 +13172,18 @@ class TestGenerateEnvLoaderFiles:
         assert 'KEEP' in content
         assert 'DELETE' not in content
 
-    def test_global_files_generated_without_commands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without command_names, only global convenience files are generated."""
+    def test_no_files_generated_without_commands(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without command_names, no env loader files are generated."""
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
 
         result = setup_environment.generate_env_loader_files(
             {'MY_VAR': 'value'}, None, None,
         )
-        # Should generate toolbox-env.sh
-        sh_files = [p for k, p in result.items() if k.startswith('sh:')]
-        assert len(sh_files) == 1
-        assert sh_files[0].name == 'toolbox-env.sh'
+        assert result == {}
 
-    def test_per_command_and_global_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """With command_names, generates per-command + global files."""
+    def test_per_command_files_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With command_names, generates only per-command files."""
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
 
@@ -13196,15 +13194,16 @@ class TestGenerateEnvLoaderFiles:
         sh_files = [p for k, p in result.items() if k.startswith('sh:')]
         names = {p.name for p in sh_files}
         assert 'env.sh' in names  # per-command
-        assert 'toolbox-env.sh' in names  # global
+        assert 'toolbox-env.sh' not in names  # no global
 
     def test_sh_format_correctness(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify bash/zsh export syntax."""
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
 
-        setup_environment.generate_env_loader_files({'FOO': 'bar', 'BAZ': 'qux'}, None, None)
-        sh_path = tmp_path / '.claude' / 'toolbox-env.sh'
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files({'FOO': 'bar', 'BAZ': 'qux'}, ['my-cmd'], cmd_dir)
+        sh_path = cmd_dir / 'env.sh'
         content = sh_path.read_text()
         assert 'export FOO="bar"' in content
         assert 'export BAZ="qux"' in content
@@ -13217,8 +13216,9 @@ class TestGenerateEnvLoaderFiles:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda cmd: '/usr/bin/fish' if cmd == 'fish' else None)
 
-        setup_environment.generate_env_loader_files({'FOO': 'bar'}, None, None)
-        fish_path = tmp_path / '.claude' / 'toolbox-env.fish'
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, ['my-cmd'], cmd_dir)
+        fish_path = cmd_dir / 'env.fish'
         assert fish_path.exists()
         content = fish_path.read_text()
         assert 'set -gx FOO "bar"' in content
@@ -13230,8 +13230,9 @@ class TestGenerateEnvLoaderFiles:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
 
-        setup_environment.generate_env_loader_files({'FOO': 'bar'}, None, None)
-        fish_path = tmp_path / '.claude' / 'toolbox-env.fish'
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        setup_environment.generate_env_loader_files({'FOO': 'bar'}, ['my-cmd'], cmd_dir)
+        fish_path = cmd_dir / 'env.fish'
         assert not fish_path.exists()
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
@@ -13252,10 +13253,11 @@ class TestGenerateEnvLoaderFiles:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
 
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
         setup_environment.generate_env_loader_files(
-            {'TRICKY': 'has "quotes" and $dollar and `backtick`'}, None, None,
+            {'TRICKY': 'has "quotes" and $dollar and `backtick`'}, ['my-cmd'], cmd_dir,
         )
-        sh_path = tmp_path / '.claude' / 'toolbox-env.sh'
+        sh_path = cmd_dir / 'env.sh'
         content = sh_path.read_text()
         assert r'\"quotes\"' in content
         assert r'\$dollar' in content
@@ -13306,20 +13308,6 @@ class TestGenerateEnvLoaderFiles:
         content = cmd_path.read_text()
         assert 'SET "TRICKY=has 50%% discount"' in content
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
-    def test_global_cmd_file_on_windows(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Global toolbox-env.cmd generated on Windows."""
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
-        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)
-
-        setup_environment.generate_env_loader_files({'MY_VAR': 'value'}, None, None)
-        cmd_path = tmp_path / '.claude' / 'toolbox-env.cmd'
-        assert cmd_path.exists()
-        content = cmd_path.read_text()
-        assert 'SET "MY_VAR=value"' in content
-
     def test_non_string_values_converted_to_strings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -13336,7 +13324,8 @@ class TestGenerateEnvLoaderFiles:
             'DELETE_VAR': None,
         }
 
-        result = setup_environment.generate_env_loader_files(mixed_type_vars, None, None)
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        result = setup_environment.generate_env_loader_files(mixed_type_vars, ['my-cmd'], cmd_dir)
         assert len(result) > 0
 
         # Check that the sh file contains string representations
