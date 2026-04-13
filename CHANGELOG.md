@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.14.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.14.0...v5.14.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* improve Windows installer fallback chain and recovery cascade ([f288f18](https://github.com/alex-feel/claude-code-toolbox/commit/f288f186aa57c49d6e19f3bafbcf339ce6b09f49))
+
 ## [5.14.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.13.2...v5.14.0) (2026-04-12)
 
 
