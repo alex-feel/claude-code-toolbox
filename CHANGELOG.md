@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.15.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.14.1...v5.15.0) (2026-04-13)
+
+
+### Features
+
+* add cross-field validators and improve EnvironmentConfig model validation ([09b4643](https://github.com/alex-feel/claude-code-toolbox/commit/09b464373198f8afa66add9c0f547243d7b51b21))
+
 ## [5.14.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.14.0...v5.14.1) (2026-04-13)
 
 
