@@ -232,6 +232,7 @@ class MCPServerStdio(BaseModel):
     name: str = Field(..., description='Server name')
     scope: str | list[str] = Field('user', description='Scope of the server (user, local, project, profile, or combined)')
     command: str = Field(..., description='Command to execute')
+    args: list[str] | None = Field(None, description='Optional argument list for the command')
     env: str | list[str] | None = Field(None, description='Optional environment variables (string or list)')
 
     @field_validator('scope')
@@ -929,12 +930,20 @@ class EnvironmentConfig(BaseModel):
     @field_validator('model')
     @classmethod
     def validate_model(cls, v: str | None) -> str | None:
-        """Validate model configuration."""
-        valid_aliases = ['default', 'sonnet', 'opus', 'haiku', 'opus[1m]', 'sonnet[1m]', 'opusplan']
-        if v and not (v in valid_aliases or v.startswith('claude-')):
-            raise ValueError(
-                f"model must be one of {valid_aliases} or a custom model name starting with 'claude-'",
-            )
+        """Validate model configuration.
+
+        Accepts any non-empty model identifier string to support
+        Anthropic models, third-party models, and provider-prefixed
+        model names (e.g., OpenRouter, AWS Bedrock).
+
+        Returns:
+            The validated model string.
+
+        Raises:
+            ValueError: If model is empty or whitespace-only.
+        """
+        if v is not None and not v.strip():
+            raise ValueError('model cannot be empty or whitespace-only')
         return v
 
     @field_validator('claude_code_version')
@@ -1067,6 +1076,41 @@ class EnvironmentConfig(BaseModel):
             )
         return v
 
+    @field_validator('env_variables')
+    @classmethod
+    def validate_env_variables(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+        """Validate environment variables configuration.
+
+        Checks that variable names follow the standard pattern
+        (letters, digits, underscores; must start with letter or underscore)
+        and that values do not contain null bytes.
+
+        Args:
+            v: Dictionary of environment variable names to string values.
+
+        Returns:
+            The validated dictionary.
+
+        Raises:
+            ValueError: If variable names are invalid or values contain null bytes.
+        """
+        if v is None:
+            return v
+
+        env_var_pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+        for name, value in v.items():
+            if not env_var_pattern.match(name):
+                raise ValueError(
+                    f'Invalid environment variable name: {name}. '
+                    'Must start with letter or underscore, followed by letters, digits, or underscores.',
+                )
+
+            if '\x00' in str(value):
+                raise ValueError(f'Environment variable {name} value cannot contain null bytes')
+
+        return v
+
     @field_validator('os_env_variables')
     @classmethod
     def validate_os_env_variables(cls, v: dict[str, str | None] | None) -> dict[str, str | None] | None:
@@ -1136,6 +1180,94 @@ class EnvironmentConfig(BaseModel):
                 "Use 'low', 'medium', or 'high' for non-Opus models.",
             )
 
+        return self
+
+    @model_validator(mode='after')
+    def validate_version_requires_command_names(self) -> 'EnvironmentConfig':
+        """Validate that version requires command-names to be present.
+
+        The version field controls update checking via manifest.json and
+        launcher scripts, which are only created when command-names is
+        specified. Without command-names, version has no functional effect.
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If version is set without command-names.
+        """
+        if self.version is not None and not self.command_names:
+            raise ValueError(
+                'version requires command-names to be specified. '
+                'The version field controls update checking via manifest.json '
+                'and launcher scripts, which are only created when command-names '
+                'is present. Either add command-names or remove version.',
+            )
+        return self
+
+    @model_validator(mode='after')
+    def validate_merge_keys_requires_inherit(self) -> 'EnvironmentConfig':
+        """Validate that merge-keys requires inherit to be present.
+
+        The merge-keys directive controls which keys use merge (extend)
+        semantics during inheritance resolution. Without inherit, there is
+        no parent configuration to merge from, making merge-keys meaningless.
+
+        An empty merge-keys list is treated as a no-op and does not require
+        inherit.
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If non-empty merge-keys is set without inherit.
+        """
+        if self.merge_keys and self.inherit is None:
+            raise ValueError(
+                'merge-keys requires inherit to be specified. '
+                'The merge-keys directive controls merge semantics during inheritance. '
+                'Without inherit, merge-keys has no effect. '
+                'Either add inherit or remove merge-keys.',
+            )
+        return self
+
+    @model_validator(mode='after')
+    def validate_profile_mcp_requires_command_names(self) -> 'EnvironmentConfig':
+        """Validate that profile-scoped MCP servers require command-names.
+
+        Profile-scoped MCP servers need a launcher script with --mcp-config
+        flag, which is only created when command-names is present. Without
+        command-names, profile-scoped servers would be silently dropped.
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If profile-scoped servers exist without command-names.
+        """
+        if self.command_names or not self.mcp_servers:
+            return self
+
+        profile_server_names: list[str] = []
+        for server in self.mcp_servers:
+            scope_raw = server.get('scope', 'user')
+            if isinstance(scope_raw, str):
+                scopes = [scope_raw]
+            elif isinstance(scope_raw, list):
+                scopes = [s for s in scope_raw if isinstance(s, str)]
+            else:
+                scopes = []
+            if 'profile' in scopes:
+                profile_server_names.append(str(server.get('name', '<unnamed>')))
+
+        if profile_server_names:
+            names_str = ', '.join(f"'{n}'" for n in profile_server_names)
+            raise ValueError(
+                f'Profile-scoped MCP server(s) {names_str} require command-names. '
+                'Profile-scoped servers need a launcher script with --mcp-config flag, '
+                'which is only created when command-names is present. '
+                'Either add command-names or change the server scope to user/local/project.',
+            )
         return self
 
     @model_validator(mode='after')

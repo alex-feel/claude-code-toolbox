@@ -234,7 +234,7 @@ Configuration version for update checking. Extracted from the root config before
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata)
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -314,7 +314,7 @@ List of top-level keys that should be merged (extended from parent) rather than 
 - **Type:** `list[str] | None`
 - **Default:** `None`
 - **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `env-variables`, `os-env-variables`
-- **Validation:** Non-eligible keys produce an error. Presence without `inherit` produces a warning.
+- **Validation:** Non-eligible keys produce an error. Non-empty `merge-keys` without `inherit` produces a validation error because `merge-keys` controls merge semantics during inheritance resolution and has no effect without a parent configuration to merge from. An empty `merge-keys` list without `inherit` is permitted (treated as a no-op).
 - **Stripped from output:** Yes (like `inherit`)
 - **Inheritance:** Not applicable. Evaluated at each inheritance level independently; not inherited or accumulated across levels.
 - **Example:**
@@ -515,12 +515,20 @@ mcp-servers:
 - **Optional fields:** `scope`, `env`, `args`
 - **Note:** On Windows, commands starting with `npx` get automatic `cmd /c` wrapping
 
+The `args` field provides an optional argument list for the command. When `args` is specified, the `command` field is treated as just the executable and `args` provides the arguments separately. This maps directly to the `args` array in the generated MCP configuration JSON, matching the Claude Code MCP server configuration format. When `args` is absent, the `command` string is parsed into command and arguments automatically.
+
 ```yaml
 mcp-servers:
+  # Without args (command string is parsed automatically)
   - name: "memory-server"
     command: "npx @modelcontextprotocol/server-memory"
     env:
       - "DEBUG=1"
+
+  # With explicit args (command + args kept separate)
+  - name: "python-server"
+    command: "python"
+    args: ["-m", "my_mcp_server"]
 ```
 
 #### Scope Options
@@ -579,10 +587,9 @@ Model alias or custom model name for Claude Code.
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Valid aliases:** `default`, `sonnet`, `opus`, `haiku`, `opus[1m]`, `sonnet[1m]`, `opusplan`
-- **Custom names:** Any model name starting with `claude-` (for example, `claude-3-5-sonnet-20241022`)
+- **Validation:** Any non-empty string. Supports Anthropic model names (for example, `claude-sonnet-4-20250514`), built-in aliases (`default`, `sonnet`, `opus`, `haiku`, `opus[1m]`, `sonnet[1m]`, `opusplan`), and third-party or provider-prefixed model identifiers (for example, `gpt-4o`, `openrouter/anthropic/claude-3.5-sonnet`). Empty or whitespace-only strings produce a validation error.
 - **Inheritance:** Standard override (child replaces parent)
-- **Example:** `model: "opus"` or `model: "claude-3-5-sonnet-20241022"`
+- **Example:** `model: "opus"` or `model: "claude-sonnet-4-20250514"` or `model: "openrouter/anthropic/claude-3.5-sonnet"`
 
 #### `always-thinking-enabled`
 
@@ -658,6 +665,7 @@ Claude-level environment variables set in the settings file. These are available
 
 - **Type:** `dict[str, str] | None`
 - **Default:** `None`
+- **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$` (must start with a letter or underscore, followed by letters, digits, or underscores). Values cannot contain null bytes.
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
 - **Example:**
 
@@ -1900,7 +1908,7 @@ Any rule or entry preserved on disk is the combined contribution of all writers;
 
 Profile-scoped MCP servers (`scope: profile` or `scope: [user, profile]`) CANNOT work without `command-names` because the launcher script that consumes `--mcp-config` is only created in isolated mode. In non-isolated mode, profile-scoped servers would have no launcher target and would be silently dropped at runtime -- a correctness risk.
 
-The setup script enforces this with a hard validation error (exit 1) at the validation phase, BEFORE any side effects (downloads, writes) occur:
+This constraint is enforced at two levels: the `EnvironmentConfig` Pydantic model raises a `ValueError` during YAML validation (catching the issue at parse time), and the setup script enforces a hard validation error (exit 1) at the runtime validation phase as defense-in-depth, BEFORE any side effects (downloads, writes) occur:
 
 ```text
 [ERROR] MCP server 'my-server' declares scope: profile but command-names is not specified.
@@ -2152,6 +2160,14 @@ If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOL
 ### Configuration not found in repository
 
 If the named configuration is not found, verify the name matches a YAML file in the [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository. Browse the repository to see available configurations.
+
+### version requires command-names
+
+The `version` field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
+
+### merge-keys requires inherit
+
+The `merge-keys` directive controls merge semantics during inheritance resolution. Without `inherit`, there is no parent configuration to merge from. Either add `inherit` or remove `merge-keys`. Note: an empty `merge-keys: []` without `inherit` is permitted.
 
 ### command-defaults requires command-names
 

@@ -127,6 +127,12 @@ Global commands (e.g., `claude-python`) work across all Windows shells: shared P
 
 Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` defines the complete structure for environment YAML configurations. This repository is the canonical source; changes are synced to downstream repos.
 
+**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_effort_level_max` (effort-level `max` requires Opus model), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
+
+**Field validators**: `validate_model` accepts any non-empty string (supports Anthropic models, third-party models, and provider-prefixed identifiers). `validate_env_variables` and `validate_os_env_variables` both enforce key format `^[A-Za-z_][A-Za-z0-9_]*$` and reject null bytes in values.
+
+**MCPServerStdio fields**: `name`, `scope`, `command`, `args` (`list[str] | None`), `env`. The `args` field provides an optional argument list; when present, the runtime combines `command + args` (via `shlex.quote` in `configure_mcp_server()`) or passes them separately to the MCP config JSON (in `create_mcp_config_file()`).
+
 **KNOWN_CONFIG_KEYS parity rule:** When adding new config keys to `setup_environment.py` (extending `KNOWN_CONFIG_KEYS`), the `EnvironmentConfig` model MUST be updated simultaneously (and vice versa). `tests/scripts/models/test_known_config_keys_parity.py` enforces STRICT BIDIRECTIONAL match with ZERO exceptions. Deprecated keys must be DELETED from both, not kept with backward compatibility shims.
 
 **Tests:** `tests/scripts/models/` -- `test_environment_config.py`, `test_mcp_server_scope.py`, `test_known_config_keys_parity.py`, `test_mergeable_config_keys_parity.py`.
