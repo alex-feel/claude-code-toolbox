@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from scripts.models.environment_config import EnvironmentConfig
 from scripts.models.environment_config import InheritEntry
+from scripts.models.environment_config import MCPServerStdio
 
 
 class TestInheritEntryModel:
@@ -1348,6 +1349,8 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '1.0.0',
+            'command-names': ['test-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '1.0.0'
 
@@ -1356,6 +1359,8 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '2.1.0-beta.1',
+            'command-names': ['test-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '2.1.0-beta.1'
 
@@ -1364,6 +1369,8 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '1.0.0+build.123',
+            'command-names': ['test-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '1.0.0+build.123'
 
@@ -1492,6 +1499,7 @@ class TestMergeKeysField:
         """Field accepts a list of valid mergeable key names."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
+            'inherit': 'parent.yaml',
             'merge-keys': ['agents', 'mcp-servers', 'dependencies'],
         })
         assert config.merge_keys == ['agents', 'mcp-servers', 'dependencies']
@@ -1531,6 +1539,7 @@ class TestMergeKeysField:
         ]
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
+            'inherit': 'parent.yaml',
             'merge-keys': all_keys,
         })
         assert config.merge_keys == all_keys
@@ -1658,3 +1667,305 @@ class TestInheritValidation:
             'inherit': [{'config': 'x.yaml', 'merge-keys': ['agents']}],
         })
         assert len(config.inherit) == 1
+
+
+class TestModelValidation:
+    """Tests for relaxed model field validation."""
+
+    def test_claude_model_valid(self) -> None:
+        """Claude model name passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-sonnet-4-20250514',
+        })
+        assert config.model == 'claude-sonnet-4-20250514'
+
+    def test_model_alias_valid(self) -> None:
+        """Known alias passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'opus',
+        })
+        assert config.model == 'opus'
+
+    def test_third_party_model_valid(self) -> None:
+        """Third-party model name passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'gpt-4o',
+        })
+        assert config.model == 'gpt-4o'
+
+    def test_openrouter_model_valid(self) -> None:
+        """OpenRouter-prefixed model passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'openrouter/anthropic/claude-3.5-sonnet',
+        })
+        assert config.model == 'openrouter/anthropic/claude-3.5-sonnet'
+
+    def test_empty_model_raises(self) -> None:
+        """Empty string model raises."""
+        with pytest.raises(ValidationError, match='empty or whitespace'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': '',
+            })
+
+    def test_whitespace_model_raises(self) -> None:
+        """Whitespace-only model raises."""
+        with pytest.raises(ValidationError, match='empty or whitespace'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': '   ',
+            })
+
+    def test_none_model_valid(self) -> None:
+        """None (omitted) model is valid."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.model is None
+
+
+class TestEnvVariablesValidation:
+    """Tests for env-variables field validation."""
+
+    def test_valid_env_variables(self) -> None:
+        """Valid environment variable names pass."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'env-variables': {'MY_VAR': 'value', '_PRIVATE': 'secret', 'PATH_EXT': '/usr/bin'},
+        })
+        assert config.env_variables == {'MY_VAR': 'value', '_PRIVATE': 'secret', 'PATH_EXT': '/usr/bin'}
+
+    def test_invalid_env_variable_name_starts_with_digit(self) -> None:
+        """Variable name starting with digit raises."""
+        with pytest.raises(ValidationError, match='Invalid environment variable name'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'env-variables': {'1BAD': 'value'},
+            })
+
+    def test_invalid_env_variable_name_has_dash(self) -> None:
+        """Variable name with dash raises."""
+        with pytest.raises(ValidationError, match='Invalid environment variable name'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'env-variables': {'MY-VAR': 'value'},
+            })
+
+    def test_env_variable_value_with_null_byte_raises(self) -> None:
+        """Value containing null byte raises."""
+        with pytest.raises(ValidationError, match='null bytes'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'env-variables': {'MY_VAR': 'val\x00ue'},
+            })
+
+    def test_none_env_variables_valid(self) -> None:
+        """None (omitted) env-variables is valid."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.env_variables is None
+
+    def test_empty_env_variables_valid(self) -> None:
+        """Empty dict for env-variables is valid."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'env-variables': {},
+        })
+        assert config.env_variables == {}
+
+
+class TestMCPServerStdioArgs:
+    """Tests for MCPServerStdio args field."""
+
+    def test_stdio_with_args_valid(self) -> None:
+        """MCPServerStdio with args field passes validation."""
+        server = MCPServerStdio.model_validate({
+            'name': 'test-server',
+            'command': 'python',
+            'args': ['-m', 'my_server'],
+        })
+        assert server.args == ['-m', 'my_server']
+
+    def test_stdio_without_args_valid(self) -> None:
+        """MCPServerStdio without args field passes validation."""
+        server = MCPServerStdio.model_validate({
+            'name': 'test-server',
+            'command': 'python -m my_server',
+        })
+        assert server.args is None
+
+    def test_stdio_with_empty_args_valid(self) -> None:
+        """MCPServerStdio with empty args list passes validation."""
+        server = MCPServerStdio.model_validate({
+            'name': 'test-server',
+            'command': 'python',
+            'args': [],
+        })
+        assert server.args == []
+
+    def test_mcp_server_with_args_in_environment_config(self) -> None:
+        """MCP server with args field in EnvironmentConfig context."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'mcp-servers': [
+                {'name': 'srv', 'command': 'python', 'args': ['-m', 'server']},
+            ],
+        })
+        assert len(config.mcp_servers) == 1
+
+
+class TestVersionRequiresCommandNames:
+    """Tests for version + command-names cross-field validation."""
+
+    def test_version_without_command_names_raises(self) -> None:
+        """version without command-names raises ValueError."""
+        with pytest.raises(ValidationError, match='version requires command-names'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'version': '1.0.0',
+            })
+
+    def test_version_with_empty_command_names_raises(self) -> None:
+        """version with empty command-names list raises ValueError."""
+        with pytest.raises(ValidationError, match='version requires command-names'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'version': '1.0.0',
+                'command-names': [],
+            })
+
+    def test_version_with_command_names_valid(self) -> None:
+        """version with command-names passes validation."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'version': '1.0.0',
+            'command-names': ['my-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
+        })
+        assert config.version == '1.0.0'
+
+    def test_no_version_without_command_names_valid(self) -> None:
+        """Omitting version without command-names is valid."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.version is None
+
+    def test_no_version_with_command_names_valid(self) -> None:
+        """command-names without version is valid (version is optional)."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'command-names': ['my-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
+        })
+        assert config.version is None
+
+
+class TestMergeKeysRequiresInherit:
+    """Tests for merge-keys + inherit cross-field validation."""
+
+    def test_merge_keys_without_inherit_raises(self) -> None:
+        """merge-keys without inherit raises ValueError."""
+        with pytest.raises(ValidationError, match='merge-keys requires inherit'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'merge-keys': ['agents'],
+            })
+
+    def test_merge_keys_with_inherit_valid(self) -> None:
+        """merge-keys with inherit passes validation."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': 'parent.yaml',
+            'merge-keys': ['agents'],
+        })
+        assert config.merge_keys == ['agents']
+
+    def test_no_merge_keys_without_inherit_valid(self) -> None:
+        """Omitting both merge-keys and inherit is valid."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.merge_keys is None
+        assert config.inherit is None
+
+    def test_inherit_without_merge_keys_valid(self) -> None:
+        """inherit without merge-keys is valid (all keys use replace semantics)."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'inherit': 'parent.yaml',
+        })
+        assert config.inherit == 'parent.yaml'
+        assert config.merge_keys is None
+
+    def test_empty_merge_keys_without_inherit_valid(self) -> None:
+        """Empty merge-keys list without inherit is valid (no-op)."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'merge-keys': [],
+        })
+        assert config.merge_keys == []
+
+
+class TestProfileMCPRequiresCommandNames:
+    """Tests for profile-scoped MCP servers + command-names cross-field validation."""
+
+    def test_profile_mcp_without_command_names_raises(self) -> None:
+        """Profile-scoped MCP server without command-names raises."""
+        with pytest.raises(ValidationError, match='Profile-scoped MCP server'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'mcp-servers': [
+                    {'name': 'my-server', 'scope': 'profile', 'command': 'python -m server'},
+                ],
+            })
+
+    def test_profile_in_combined_scope_without_command_names_raises(self) -> None:
+        """Combined scope containing profile without command-names raises."""
+        with pytest.raises(ValidationError, match='Profile-scoped MCP server'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'mcp-servers': [
+                    {'name': 'my-server', 'scope': ['user', 'profile'], 'command': 'python -m server'},
+                ],
+            })
+
+    def test_profile_mcp_with_command_names_valid(self) -> None:
+        """Profile-scoped MCP server with command-names passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'command-names': ['my-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
+            'mcp-servers': [
+                {'name': 'my-server', 'scope': 'profile', 'command': 'python -m server'},
+            ],
+        })
+        assert len(config.mcp_servers) == 1
+
+    def test_user_scope_mcp_without_command_names_valid(self) -> None:
+        """Non-profile-scoped MCP server without command-names is valid."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'mcp-servers': [
+                {'name': 'my-server', 'scope': 'user', 'command': 'python -m server'},
+            ],
+        })
+        assert len(config.mcp_servers) == 1
+
+    def test_multiple_profile_servers_all_reported(self) -> None:
+        """All profile-scoped server names appear in error message."""
+        with pytest.raises(ValidationError, match="'srv1'.*'srv2'|'srv2'.*'srv1'"):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'mcp-servers': [
+                    {'name': 'srv1', 'scope': 'profile', 'command': 'python -m s1'},
+                    {'name': 'srv2', 'scope': 'profile', 'command': 'python -m s2'},
+                ],
+            })
+
+    def test_http_profile_mcp_without_command_names_raises(self) -> None:
+        """Profile-scoped HTTP MCP server without command-names raises."""
+        with pytest.raises(ValidationError, match='Profile-scoped MCP server'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'mcp-servers': [
+                    {'name': 'my-http', 'scope': 'profile', 'transport': 'http', 'url': 'http://localhost:3000'},
+                ],
+            })

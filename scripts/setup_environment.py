@@ -7880,6 +7880,11 @@ def configure_mcp_server(
         elif command:
             # Stdio transport (command)
 
+            # When args is provided separately, combine command + args into full command string
+            args_list = server.get('args')
+            if args_list and isinstance(args_list, list):
+                command = command + ' ' + ' '.join(shlex.quote(str(a)) for a in args_list)
+
             # Build the command properly
             base_cmd.append(name)  # Add name FIRST, before post-name options
             # Add all environment variables
@@ -8128,10 +8133,18 @@ def create_mcp_config_file(
         command = server.get('command')
         if command:
             server_config['type'] = 'stdio'
-            parsed = parse_mcp_command(command)
-            server_config['command'] = parsed['command']
-            if parsed['args']:
-                server_config['args'] = parsed['args']
+            args_from_yaml = server.get('args')
+            if args_from_yaml and isinstance(args_from_yaml, list):
+                # Explicit command + args format from YAML (no parsing needed)
+                expanded_cmd = expand_tildes_in_command(command).replace('\\', '/')
+                server_config['command'] = expanded_cmd
+                server_config['args'] = [str(a) for a in args_from_yaml]
+            else:
+                # Parse command string into command + args
+                parsed = parse_mcp_command(command)
+                server_config['command'] = parsed['command']
+                if parsed['args']:
+                    server_config['args'] = parsed['args']
             server_config['env'] = {}  # Format consistency with claude mcp add
 
         # Environment variables (override default empty env)
