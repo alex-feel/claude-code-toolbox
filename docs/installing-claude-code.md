@@ -28,7 +28,7 @@ The installer automatically handles all dependencies (uv, Python, Node.js if nee
 
 ### Native Installation (Default)
 
-The native method uses official Anthropic installers (`https://claude.ai/install.ps1` on Windows, `https://claude.ai/install.sh` on macOS and Linux) with platform-specific fallback chains. On Windows, if the native installer fails, the installer tries winget (`Anthropic.ClaudeCode`) before falling back to npm. On macOS and Linux, the fallback is GCS direct binary download. This is the default and recommended approach because it does not require Node.js, provides more reliable auto-updates via the official update mechanism, and supports specific version installation via direct binary download from Google Cloud Storage and winget's `--version` flag (Windows).
+The native method uses official Anthropic installers (`https://claude.ai/install.ps1` on Windows, `https://claude.ai/install.sh` on macOS and Linux) with platform-specific fallback chains. On Windows, if the native installer fails (including HTTP retry for transient 403/429/5xx errors), the installer tries GCS direct binary download before falling back to npm. On macOS and Linux, the fallback is GCS direct binary download. This is the default and recommended approach because it does not require Node.js, provides more reliable auto-updates via the official update mechanism, and supports specific version installation via direct binary download from Google Cloud Storage. On Windows, winget is used for specific version requests (CASE 2) and the winget upgrade branch.
 
 ### npm Installation (Fallback)
 
@@ -36,7 +36,7 @@ The npm method installs via the `@anthropic-ai/claude-code` npm package. It requ
 
 ### Auto Mode (Default Behavior)
 
-In `auto` mode (the default), the installer tries the full native fallback chain first: native installer, then platform-specific alternatives (winget on Windows, GCS direct download on macOS/Linux). If all native methods fail, it automatically falls back to npm. This is the recommended approach for most users and requires no additional configuration.
+In `auto` mode (the default), the installer tries the full native fallback chain first: native installer (with HTTP retry for transient errors), then GCS direct binary download on all platforms. If all native methods fail, it automatically falls back to npm. This is the recommended approach for most users and requires no additional configuration.
 
 ## Environment Variables
 
@@ -46,8 +46,8 @@ Controls which installation method the installer uses.
 
 | Value            | Behavior                                                                                            |
 |------------------|-----------------------------------------------------------------------------------------------------|
-| `auto` (default) | Try native installation first (including GCS and winget on Windows), fall back to npm if needed     |
-| `native`         | Use only native methods (native installer, GCS direct download, winget on Windows), no npm fallback |
+| `auto` (default) | Try native installation first (including GCS direct download), fall back to npm if needed           |
+| `native`         | Use only native methods (native installer, GCS direct download), no npm fallback                    |
 | `npm`            | Use only npm installer, requires Node.js 18+                                                        |
 
 Invalid values default to `auto` with a warning.
@@ -66,7 +66,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$env:CLAUDE_CODE_TOOLBOX
 
 ### `CLAUDE_CODE_TOOLBOX_VERSION`
 
-Specify a particular version to install (e.g., `2.0.76`). All installation methods support version pinning: native via direct binary download from Google Cloud Storage, winget via `--version` flag (Windows), and npm. Auto-update management is handled by `setup_environment.py` when used; see the [Environment Configuration Guide](environment-configuration-guide.md) for details. If the requested version is not available via one method, the installer cascades through the fallback chain (e.g., GCS → winget → native installer "latest" → npm on Windows).
+Specify a particular version to install (e.g., `2.0.76`). All installation methods support version pinning: native via direct binary download from Google Cloud Storage and npm. On Windows, winget is used for specific version requests (CASE 2) and the winget upgrade branch. Auto-update management is handled by `setup_environment.py` when used; see the [Environment Configuration Guide](environment-configuration-guide.md) for details. If the requested version is not available via one method, the installer cascades through the fallback chain (e.g., GCS → winget with --version → native installer "latest" → npm on Windows for specific version requests).
 
 **Linux/macOS example:**
 
@@ -132,14 +132,15 @@ In `auto` mode, when an npm installation is detected, the installer automaticall
 
 The installer classifies the existing installation by examining the binary path.
 
-| Path Pattern                           | Detected Source | Upgrade Method                    |
-|----------------------------------------|-----------------|-----------------------------------|
-| Contains `npm` or `.npm-global`        | npm             | npm directly                      |
-| Contains `.local/bin` or `.claude/bin` | native          | Native installer                  |
-| Contains `/usr/local/bin`              | unknown         | Native-first, npm fallback        |
-| Windows: contains `Programs\claude`    | winget          | winget upgrade, then npm fallback |
-| Any other path                         | unknown         | Native-first, npm fallback        |
-| Not found                              | none            | Fresh install                     |
+| Path Pattern                                      | Detected Source      | Upgrade Method                        |
+|---------------------------------------------------|----------------------|---------------------------------------|
+| Contains `npm` or `.npm-global`                   | npm                  | npm directly                          |
+| Contains `.local/bin` or `.claude/bin`            | native               | Native installer                      |
+| Contains `/usr/local/bin`                         | unknown              | Native-first, npm fallback            |
+| Windows: `Programs\claude` (legacy winget/native) | winget or native     | Via `_classify_localappdata_claude()` |
+| Windows: `WinGet\Links` or `WinGet\Packages`      | winget               | winget upgrade, then npm fallback     |
+| Any other path                                    | unknown              | Native-first, npm fallback            |
+| Not found                                         | none                 | Fresh install                         |
 
 ### Switching from npm to Native
 
@@ -163,7 +164,7 @@ The Claude Code auto-updater may ignore disable settings in some versions:
 
 ### Native Installation Fails
 
-The installer automatically tries platform-specific alternatives before falling back to npm in `auto` mode (winget on Windows, GCS direct download on macOS/Linux), so most users do not need to take any action. To isolate the issue, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native` to see only native method output without the npm fallback. You can also try the native installer directly:
+The installer automatically tries GCS direct download before falling back to npm in `auto` mode, so most users do not need to take any action. To isolate the issue, use `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native` to see only native method output without the npm fallback. You can also try the native installer directly:
 
 - **Windows:** `irm https://claude.ai/install.ps1 | iex`
 - **macOS/Linux:** `curl -fsSL https://claude.ai/install.sh | bash`

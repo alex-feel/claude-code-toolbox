@@ -362,12 +362,12 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
 
 
 def _classify_localappdata_claude() -> str:
-    """Classify a Claude installation at %LOCALAPPDATA%\\Programs\\claude\\.
+    """Classify a Claude installation that may be from the native installer or winget.
 
     Distinguishes between native installer and winget by checking for
-    winget package metadata. The native installer and winget both use
-    the %LOCALAPPDATA%\\Programs\\claude\\ path, so binary inspection
-    alone cannot distinguish them.
+    winget package metadata in the WinGet Packages directory. Both the
+    legacy path (%LOCALAPPDATA%\\Programs\\claude) and current portable
+    installers can result in a binary that needs classification.
 
     Returns:
         'winget' if winget package metadata is found, 'native' otherwise.
@@ -425,20 +425,27 @@ def verify_claude_installation() -> tuple[bool, str | None, str]:
                         source = _classify_localappdata_claude()
                         result = (True, str(programs_path), source)
                     else:
-                        # Fallback to PATH search (with source detection)
-                        claude_path = find_command('claude')
-                        if claude_path:
-                            source = 'unknown'
-                            claude_lower = claude_path.lower()
-                            if 'npm' in claude_lower or 'roaming' in claude_lower:
-                                source = 'npm'
-                            elif '.local\\bin' in claude_lower:
-                                source = 'native'
-                            elif 'programs\\claude' in claude_lower:
-                                source = _classify_localappdata_claude()
-                            result = (True, claude_path, source)
+                        # Check winget portable installation (InstallerType: portable)
+                        winget_links = Path(os.path.expandvars(r'%LOCALAPPDATA%\Microsoft\WinGet\Links\claude.exe'))
+                        if winget_links.exists():
+                            result = (True, str(winget_links), 'winget')
                         else:
-                            result = (False, None, 'none')
+                            # Fallback to PATH search (with source detection)
+                            claude_path = find_command('claude')
+                            if claude_path:
+                                source = 'unknown'
+                                claude_lower = claude_path.lower()
+                                if 'npm' in claude_lower or 'roaming' in claude_lower:
+                                    source = 'npm'
+                                elif '.local\\bin' in claude_lower:
+                                    source = 'native'
+                                elif 'programs\\claude' in claude_lower:
+                                    source = _classify_localappdata_claude()
+                                elif 'winget\\links' in claude_lower or 'winget\\packages' in claude_lower:
+                                    source = 'winget'
+                                result = (True, claude_path, source)
+                            else:
+                                result = (False, None, 'none')
     else:
         # Non-Windows platforms: check native path explicitly first (mirrors Windows branch)
         native_path = get_real_user_home() / '.local' / 'bin' / 'claude'
@@ -650,7 +657,8 @@ def _install_claude_winget(version: str | None = None) -> bool:
         # Verify installation
         is_installed, claude_path, source = verify_claude_installation()
         if is_installed:
-            update_install_method_config('winget')
+            if source == 'winget':
+                update_install_method_config('winget')
             return True
         warning('winget installation reported success but Claude executable not found')
         return False
@@ -2647,8 +2655,11 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     """Install Claude Code using native installer on Windows.
 
     Uses a hybrid approach with multiple fallback methods:
-    - If version is None or "latest": Native installer -> winget
+    - If version is None or "latest": Native installer (with HTTP retry) -> GCS direct download
     - If specific version: GCS direct download -> winget --version -> native installer "latest"
+
+    Note: ensure_claude() upgrade paths pass the resolved latest_version, routing
+    through the specific-version path for version-precise GCS download.
 
     See: https://github.com/anthropics/claude-code/issues/14942
 
@@ -2676,9 +2687,29 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     if not version or version.lower() == 'latest':
         if _install_claude_native_windows_installer(version='latest'):
             return True
-        # Native installer failed -- try winget
-        info('Native installer failed, trying winget...')
-        return _install_claude_winget()
+        # Native installer failed -- try GCS direct download
+        info('Native installer failed, trying GCS direct download...')
+        latest_version = get_latest_claude_version()
+        if not latest_version:
+            warning('Could not determine latest version for GCS download')
+            return False
+        if _download_claude_direct_from_gcs(latest_version, native_target):
+            info('Updating PATH for native installation...')
+            ensure_local_bin_in_path_windows()
+            time.sleep(1)
+            is_installed, claude_path, source = verify_claude_installation()
+            if is_installed and source == 'native':
+                success(f'GCS download installation verified at: {claude_path}')
+                _finalize_native_install()
+                return True
+            if is_installed:
+                warning(f'Claude found but from {source} source at: {claude_path}')
+                if _check_npm_claude_installed():
+                    warning('npm Claude Code package detected alongside non-native installation')
+                    _warn_npm_removal_failed()
+                return True
+            warning('GCS download succeeded but verification failed')
+        return False
 
     # CASE 2: Specific version requested
     info(f'Specific version {version} requested.')
@@ -2745,17 +2776,33 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
     try:
         info('Trying official native installer...')
 
-        # Download installer script (with SSL fallback)
+        # Download installer script (with retry for transient HTTP errors and SSL fallback)
         installer_script: str | None = None
         ssl_retry_needed = False
+        max_attempts = 3
+        backoff_delays = [1, 2, 4]
 
-        try:
-            with urlopen(CLAUDE_INSTALLER_URL) as response:
-                installer_script = response.read().decode('utf-8')
-        except urllib.error.URLError as e:
-            if 'SSL' in str(e) or 'certificate' in str(e).lower():
-                ssl_retry_needed = True
-            else:
+        for attempt in range(max_attempts):
+            try:
+                with urlopen(CLAUDE_INSTALLER_URL) as response:
+                    installer_script = response.read().decode('utf-8')
+                break  # Success
+            except urllib.error.HTTPError as e:
+                # Transient HTTP errors: 403 (Cloudflare challenge), 429, 5xx
+                if e.code in {403, 429, 500, 502, 503, 504} and attempt < max_attempts - 1:
+                    delay = backoff_delays[attempt]
+                    warning(
+                        f'HTTP {e.code} downloading installer '
+                        f'(attempt {attempt + 1}/{max_attempts}), retrying in {delay}s...',
+                    )
+                    time.sleep(delay)
+                    continue
+                error(f'HTTP error downloading installer: {e.code} {e.reason}')
+                return False
+            except urllib.error.URLError as e:
+                if 'SSL' in str(e) or 'certificate' in str(e).lower():
+                    ssl_retry_needed = True
+                    break
                 error(f'Network error downloading installer: {e}')
                 return False
 
@@ -3403,6 +3450,44 @@ def _recover_from_versions_directory(target_version: str) -> str | None:
     return None
 
 
+def _recovery_cascade(target_version: str) -> bool:
+    """Attempt multi-tier recovery when upgrade verification fails.
+
+    Tries recovery methods in priority order:
+    1. Promote from Anthropic versions cache directory
+    2. Direct GCS binary download to ~/.local/bin/
+
+    Both tiers produce a native binary at ~/.local/bin/, so on success
+    the installation method is recorded as 'native'.
+
+    Args:
+        target_version: The version to recover (e.g., "2.1.92").
+
+    Returns:
+        True if any recovery tier succeeded, False if all failed.
+    """
+    info('Attempting version recovery...')
+
+    # Tier 1: Promote from versions cache
+    recovered = _recover_from_versions_directory(target_version)
+    if recovered:
+        success(f'Claude Code upgraded to version {recovered} via versions cache recovery')
+        update_install_method_config('native')
+        return True
+
+    # Tier 2: Direct GCS binary download
+    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+    native_target = get_real_user_home() / '.local' / 'bin' / binary_name
+    if _download_claude_direct_from_gcs(target_version, native_target):
+        gcs_version = get_claude_version()
+        if gcs_version:
+            success(f'Claude Code upgraded to version {gcs_version} via GCS recovery')
+        update_install_method_config('native')
+        return True
+
+    return False
+
+
 def ensure_claude() -> bool:
     """Ensure Claude Code is installed (native-first, npm fallback).
 
@@ -3582,25 +3667,13 @@ def ensure_claude() -> bool:
             if install_method == 'native':
                 # Native-only mode - use native installer
                 info('Upgrading via native installer (method: native)...')
-                if install_claude_native_cross_platform(version=None):
+                if install_claude_native_cross_platform(version=latest_version):
                     version_ok, actual_version = _verify_upgrade_version(latest_version, 'native installer')
                     if version_ok:
                         success(f'Claude Code upgraded to version {actual_version} via native installer')
                         return True
-                    # Recovery cascade (no npm in native-only mode)
-                    info('Attempting version recovery...')
-                    recovered = _recover_from_versions_directory(latest_version)
-                    if recovered:
-                        success(f'Claude Code upgraded to version {recovered} via versions cache recovery')
+                    if _recovery_cascade(latest_version):
                         return True
-                    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
-                    native_target = get_real_user_home() / '.local' / 'bin' / binary_name
-                    if _download_claude_direct_from_gcs(latest_version, native_target):
-                        gcs_version = get_claude_version()
-                        if gcs_version:
-                            success(f'Claude Code upgraded to version {gcs_version} via GCS recovery')
-                        return True
-                    # No npm fallback in native-only mode (Tier 3 skipped)
                     warning(
                         f'Upgrade verification failed: expected >= {latest_version}, '
                         f'got {actual_version}. Continuing with current version.',
@@ -3613,7 +3686,7 @@ def ensure_claude() -> bool:
             if upgrade_source == 'native':
                 info(f'Detected native installation at: {upgrade_claude_path}')
                 info(f'Upgrading to {latest_version} via native installer...')
-                if install_claude_native_cross_platform(version=None):
+                if install_claude_native_cross_platform(version=latest_version):
                     version_ok, actual_version = _verify_upgrade_version(
                         latest_version, 'native installer',
                     )
@@ -3622,23 +3695,7 @@ def ensure_claude() -> bool:
                             f'Claude Code upgraded to version {actual_version} via native installer',
                         )
                         return True
-                    # Recovery cascade (full 4-tier in auto mode)
-                    info('Attempting version recovery...')
-                    recovered = _recover_from_versions_directory(latest_version)
-                    if recovered:
-                        success(
-                            f'Claude Code upgraded to version {recovered} '
-                            f'via versions cache recovery',
-                        )
-                        return True
-                    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
-                    native_target = get_real_user_home() / '.local' / 'bin' / binary_name
-                    if _download_claude_direct_from_gcs(latest_version, native_target):
-                        gcs_version = get_claude_version()
-                        if gcs_version:
-                            success(
-                                f'Claude Code upgraded to version {gcs_version} via GCS recovery',
-                            )
+                    if _recovery_cascade(latest_version):
                         return True
                     if install_claude_npm(upgrade=True, version=latest_version):
                         npm_version = get_claude_version()
@@ -3669,7 +3726,7 @@ def ensure_claude() -> bool:
                 # unrecognized path. Try native upgrade first, fall back to npm.
                 info(f'Detected unknown installation source at: {upgrade_claude_path}')
                 info(f'Trying native upgrade to {latest_version} first...')
-                if install_claude_native_cross_platform(version=None):
+                if install_claude_native_cross_platform(version=latest_version):
                     version_ok, actual_version = _verify_upgrade_version(
                         latest_version, 'native installer',
                     )
@@ -3679,23 +3736,7 @@ def ensure_claude() -> bool:
                             f'via native installer',
                         )
                         return True
-                    # Recovery cascade (full 4-tier in auto mode)
-                    info('Attempting version recovery...')
-                    recovered = _recover_from_versions_directory(latest_version)
-                    if recovered:
-                        success(
-                            f'Claude Code upgraded to version {recovered} '
-                            f'via versions cache recovery',
-                        )
-                        return True
-                    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
-                    native_target = get_real_user_home() / '.local' / 'bin' / binary_name
-                    if _download_claude_direct_from_gcs(latest_version, native_target):
-                        gcs_version = get_claude_version()
-                        if gcs_version:
-                            success(
-                                f'Claude Code upgraded to version {gcs_version} via GCS recovery',
-                            )
+                    if _recovery_cascade(latest_version):
                         return True
                     if install_claude_npm(upgrade=True, version=latest_version):
                         npm_version = get_claude_version()
@@ -3747,23 +3788,7 @@ def ensure_claude() -> bool:
                             f'Claude Code upgraded to version {actual_version} via winget',
                         )
                         return True
-                    # Recovery cascade (full 4-tier in auto mode)
-                    info('Attempting version recovery...')
-                    recovered = _recover_from_versions_directory(latest_version)
-                    if recovered:
-                        success(
-                            f'Claude Code upgraded to version {recovered} '
-                            f'via versions cache recovery',
-                        )
-                        return True
-                    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
-                    native_target = get_real_user_home() / '.local' / 'bin' / binary_name
-                    if _download_claude_direct_from_gcs(latest_version, native_target):
-                        gcs_version = get_claude_version()
-                        if gcs_version:
-                            success(
-                                f'Claude Code upgraded to version {gcs_version} via GCS recovery',
-                            )
+                    if _recovery_cascade(latest_version):
                         return True
                     if install_claude_npm(upgrade=True, version=latest_version):
                         npm_version = get_claude_version()
