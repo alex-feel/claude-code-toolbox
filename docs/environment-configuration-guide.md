@@ -719,15 +719,6 @@ When `os-env-variables` are configured, the setup generates Rustup-style env loa
 | `~/.claude/{cmd}/env.ps1`    | PowerShell | Windows only   |
 | `~/.claude/{cmd}/env.cmd`    | CMD batch  | Windows only   |
 
-**Global convenience files** (always generated when `os-env-variables` are non-empty):
-
-| File                          | Shell      | Generated When |
-|-------------------------------|------------|----------------|
-| `~/.claude/toolbox-env.sh`    | Bash/Zsh   | Always         |
-| `~/.claude/toolbox-env.fish`  | Fish       | Fish installed |
-| `~/.claude/toolbox-env.ps1`   | PowerShell | Windows only   |
-| `~/.claude/toolbox-env.cmd`   | CMD batch  | Windows only   |
-
 Variables set to `null` (deletions) are excluded from loader files.
 
 ##### Automatic Loading via Launchers
@@ -736,35 +727,9 @@ When `command-names` is specified, the generated launcher scripts automatically 
 
 The source line is guarded by a file-existence check, so launchers work normally even when no `os-env-variables` are configured.
 
-##### Manual Sourcing for Bare `claude`
+##### Applying OS Environment Variables
 
-Users who run bare `claude` (without a command-name launcher) can manually source the global loader to apply OS environment variables to their current shell session:
-
-**Bash/Zsh:**
-
-```bash
-source ~/.claude/toolbox-env.sh
-```
-
-**Fish:**
-
-```fish
-source ~/.claude/toolbox-env.fish
-```
-
-**PowerShell (Windows):**
-
-```powershell
-. ~/.claude/toolbox-env.ps1
-```
-
-**CMD (Windows):**
-
-```batch
-%USERPROFILE%\.claude\toolbox-env.cmd
-```
-
-Alternatively, open a new terminal -- shell profiles are updated during setup and will load the variables automatically.
+When `os-env-variables` are configured, the setup writes them to shell profile files (`.bashrc`, `.zshrc`, `.profile`, `config.fish` on Unix; Windows Registry on Windows). Open a new terminal to load the updated variables automatically.
 
 ##### Fish Dual-Mechanism
 

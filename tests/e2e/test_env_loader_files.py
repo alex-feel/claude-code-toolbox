@@ -22,42 +22,37 @@ from tests.e2e.validators import validate_launcher_env_sourcing
 class TestEnvLoaderFileGeneration:
     """E2E tests for generate_env_loader_files() output."""
 
-    def test_global_env_loader_files_exist(
+    def test_no_global_env_loader_files_generated(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify global convenience files are generated for os-env-variables.
+        """Verify no global convenience files are generated for os-env-variables.
 
-        Checks:
-        - toolbox-env.sh exists in ~/.claude/
-        - toolbox-env.ps1 exists in ~/.claude/ (Windows only)
-        - Content contains correct export syntax
-        - Deletion variables (None values) are excluded
+        Without command-names, no env loader files should be generated.
+        Shell profiles are the authoritative persistence layer.
         """
         paths = e2e_isolated_home
         os_env_vars = golden_config.get('os-env-variables', {})
         if not os_env_vars:
             pytest.skip('No os-env-variables in golden config')
 
-        generate_env_loader_files(os_env_vars, None, None)
+        result = generate_env_loader_files(os_env_vars, None, None)
 
-        errors = validate_env_loader_files(
-            paths['claude_dir'], os_env_vars, command_name=None,
-        )
-        assert not errors, 'Global env loader validation failed:\n' + '\n'.join(errors)
+        assert result == {}, 'Expected no files without command_names'
+        global_sh = paths['claude_dir'] / 'toolbox-env.sh'
+        assert not global_sh.exists(), 'toolbox-env.sh should not be generated'
 
     def test_per_command_env_loader_files_exist(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify per-command env loader files are generated alongside global files.
+        """Verify per-command env loader files are generated.
 
         Checks:
         - env.sh exists in ~/.claude/{cmd}/
         - env.ps1 exists in ~/.claude/{cmd}/ (Windows only)
-        - Global files are also generated
         """
         paths = e2e_isolated_home
         os_env_vars = golden_config.get('os-env-variables', {})
@@ -84,11 +79,11 @@ class TestEnvLoaderFileGeneration:
         paths = e2e_isolated_home
         all_deletions: dict[str, str | None] = {'DEL_A': None, 'DEL_B': None}
 
-        result = generate_env_loader_files(all_deletions, None, None)
+        cmd_dir = paths['claude_dir'] / 'test-cmd'
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        result = generate_env_loader_files(all_deletions, ['test-cmd'], cmd_dir)
 
         assert result == {}, 'Expected empty result for all-deletion vars'
-        global_sh = paths['claude_dir'] / 'toolbox-env.sh'
-        assert not global_sh.exists(), 'toolbox-env.sh should not exist for all-deletion vars'
 
     def test_deletion_vars_excluded_from_content(
         self,
@@ -101,10 +96,12 @@ class TestEnvLoaderFileGeneration:
             'DELETE_VAR': None,
         }
 
-        generate_env_loader_files(mixed_vars, None, None)
+        cmd_dir = paths['claude_dir'] / 'test-cmd'
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        generate_env_loader_files(mixed_vars, ['test-cmd'], cmd_dir)
 
         errors = validate_env_loader_files(
-            paths['claude_dir'], mixed_vars, command_name=None,
+            paths['claude_dir'], mixed_vars, command_name='test-cmd',
         )
         assert not errors, 'Mixed vars validation failed:\n' + '\n'.join(errors)
 
@@ -114,7 +111,7 @@ class TestEnvLoaderFileGeneration:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify env.cmd and toolbox-env.cmd generated on Windows."""
+        """Verify env.cmd generated on Windows for per-command config."""
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
         cmd_names = golden_config.get('command-names', [])
