@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.15.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.15.0...v5.15.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* escalate auth only on 401/403/404 during remote URL validation ([7f7e6f0](https://github.com/alex-feel/claude-code-toolbox/commit/7f7e6f06fccd08afa764a15ee8a20e89764c527e))
+
 ## [5.15.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.14.1...v5.15.0) (2026-04-13)
 
 
