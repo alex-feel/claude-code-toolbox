@@ -260,13 +260,26 @@ class TestValidationPopulatesAuthCache:
     def test_validation_populates_cache_for_downloads(
         self, mock_get_auth: MagicMock, mock_urlopen: MagicMock,
     ) -> None:
-        """FileValidator with auth_cache populates it during validation."""
+        """FileValidator with auth_cache populates it during validation.
+
+        Drives the auth-escalation path: unauth probe returns 404, triggering
+        get_auth_headers via resolve_and_cache. The retry probe with auth
+        succeeds, and the cache is populated with the resolved auth headers.
+        """
+        import urllib.error as _url_err
+
         test_headers = {'Authorization': 'Bearer test-token'}
         mock_get_auth.return_value = test_headers
 
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_urlopen.return_value = mock_response
+        # First probe (HEAD unauth): 404; second probe (Range unauth): 404;
+        # third probe (HEAD auth): 200.
+        success_response = MagicMock()
+        success_response.status = 200
+        mock_urlopen.side_effect = [
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            success_response,
+        ]
 
         cache = AuthHeaderCache()
         validator = FileValidator(auth_param='test-token', auth_cache=cache)
@@ -274,17 +287,27 @@ class TestValidationPopulatesAuthCache:
         url = 'https://github.com/org/repo/blob/main/agent.md'
         validator.validate_remote_url(url)
 
-        # Cache should now contain the headers for this origin
+        # Cache should now contain the resolved auth headers for this origin.
         is_cached, cached_headers = cache.get_cached_headers(url)
         assert is_cached is True
         assert cached_headers == test_headers
 
+    @patch('setup_environment._github_repo_is_public', return_value=False)
     @patch('setup_environment.urlopen')
     @patch('setup_environment.get_auth_headers')
     def test_mixed_origins_cached_independently(
-        self, mock_get_auth: MagicMock, mock_urlopen: MagicMock,
+        self, mock_get_auth: MagicMock, mock_urlopen: MagicMock, mock_repo_public: MagicMock,
     ) -> None:
-        """Two URLs from different origins have independent cache entries."""
+        """Two URLs from different origins have independent cache entries.
+
+        Each origin drives the auth-escalation path: unauth probes return 404,
+        and the retry with auth succeeds. Both origins end up cached with
+        their respective auth headers. The GitHub visibility probe is mocked
+        to return False (ambiguous) so the auth-escalation path is exercised
+        rather than short-circuited by the 404 disambiguation.
+        """
+        import urllib.error as _url_err
+
         github_headers = {'Authorization': 'Bearer github-token'}
         gitlab_headers = {'PRIVATE-TOKEN': 'gitlab-token'}
 
@@ -295,9 +318,17 @@ class TestValidationPopulatesAuthCache:
 
         mock_get_auth.side_effect = mock_auth
 
-        mock_response = MagicMock()
-        mock_response.status = 200
-        mock_urlopen.return_value = mock_response
+        # For each URL: HEAD 404, Range 404, HEAD 200 (with auth).
+        success_response = MagicMock()
+        success_response.status = 200
+        mock_urlopen.side_effect = [
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            success_response,
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            _url_err.HTTPError('https://x', 404, 'Not Found', {}, None),
+            success_response,
+        ]
 
         cache = AuthHeaderCache()
         validator = FileValidator(auth_param='token', auth_cache=cache)
@@ -309,7 +340,7 @@ class TestValidationPopulatesAuthCache:
         validator.validate_remote_url(github_url)
         validator.validate_remote_url(gitlab_url)
 
-        # Both origins should be cached independently
+        # Both origins should be cached independently with their auth headers.
         is_cached_gh, gh_headers = cache.get_cached_headers(github_url)
         assert is_cached_gh is True
         assert gh_headers == github_headers
@@ -317,6 +348,38 @@ class TestValidationPopulatesAuthCache:
         is_cached_gl, gl_headers = cache.get_cached_headers(gitlab_url)
         assert is_cached_gl is True
         assert gl_headers == gitlab_headers
+
+        # Visibility probe was invoked exactly once (for the GitHub URL only).
+        assert mock_repo_public.call_count == 1
+
+    @patch('setup_environment.urlopen')
+    @patch('setup_environment.get_auth_headers')
+    def test_validation_caches_none_on_public_success(
+        self, mock_get_auth: MagicMock, mock_urlopen: MagicMock,
+    ) -> None:
+        """Public URL (unauth 200) caches the None sentinel, bypassing auth.
+
+        Verifies the lazy-auth contract: a successful unauthenticated probe
+        (HTTP 200) populates the cache with None (public-origin marker).
+        get_auth_headers MUST NOT be invoked for public URLs.
+        """
+        success_response = MagicMock()
+        success_response.status = 200
+        mock_urlopen.return_value = success_response
+
+        cache = AuthHeaderCache()
+        validator = FileValidator(auth_param='unused-token', auth_cache=cache)
+
+        url = 'https://github.com/org/public-repo/blob/main/agent.md'
+        validator.validate_remote_url(url)
+
+        # get_auth_headers MUST NOT be called -- public URL validated unauth.
+        mock_get_auth.assert_not_called()
+
+        # Cache MUST contain the None sentinel for this public origin.
+        is_cached, cached_headers = cache.get_cached_headers(url)
+        assert is_cached is True
+        assert cached_headers is None
 
 
 class TestGitHubApiHeaders:

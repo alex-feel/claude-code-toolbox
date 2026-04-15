@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import threading
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 import setup_environment
+from setup_environment import AuthHeaderCache
 from setup_environment import FileValidator
 
 
@@ -30,7 +32,7 @@ class TestFileValidator:
 
     @patch('setup_environment.urlopen')
     def test_check_with_head_success(self, mock_urlopen: MagicMock) -> None:
-        """Test HEAD request success."""
+        """Test HEAD request success returns (True, 200)."""
         mock_response = MagicMock()
         mock_response.status = 200
         mock_urlopen.return_value = mock_response
@@ -38,7 +40,7 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_head('https://example.com/file.md', None)
 
-        assert result is True
+        assert result == (True, 200)
         mock_urlopen.assert_called_once()
         request = mock_urlopen.call_args[0][0]
         assert request.get_method() == 'HEAD'
@@ -46,7 +48,7 @@ class TestFileValidator:
 
     @patch('setup_environment.urlopen')
     def test_check_with_head_with_auth(self, mock_urlopen: MagicMock) -> None:
-        """Test HEAD request with authentication headers."""
+        """Test HEAD request with authentication headers returns (True, 200)."""
         mock_response = MagicMock()
         mock_response.status = 200
         mock_urlopen.return_value = mock_response
@@ -55,13 +57,13 @@ class TestFileValidator:
         auth_headers = {'Authorization': 'Bearer token'}
         result = validator._check_with_head('https://example.com/file.md', auth_headers)
 
-        assert result is True
+        assert result == (True, 200)
         request = mock_urlopen.call_args[0][0]
         assert request.headers.get('Authorization') == 'Bearer token'
 
     @patch('setup_environment.urlopen')
     def test_check_with_head_not_found(self, mock_urlopen: MagicMock) -> None:
-        """Test HEAD request with 404."""
+        """Test HEAD request with 404 returns (False, 404)."""
         mock_urlopen.side_effect = urllib.error.HTTPError(
             'https://example.com/file.md',
             404,
@@ -73,11 +75,11 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_head('https://example.com/file.md', None)
 
-        assert result is False
+        assert result == (False, 404)
 
     @patch('setup_environment.urlopen')
     def test_check_with_head_ssl_error_retry(self, mock_urlopen: MagicMock) -> None:
-        """Test HEAD request with SSL error and successful retry."""
+        """Test HEAD request with SSL error and successful retry returns (True, 200)."""
         mock_urlopen.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
             MagicMock(status=200),
@@ -86,25 +88,25 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_head('https://example.com/file.md', None)
 
-        assert result is True
+        assert result == (True, 200)
         assert mock_urlopen.call_count == 2
         second_call_context = mock_urlopen.call_args_list[1][1].get('context')
         assert second_call_context is not None
 
     @patch('setup_environment.urlopen')
     def test_check_with_head_non_ssl_error(self, mock_urlopen: MagicMock) -> None:
-        """Test HEAD request with non-SSL URLError."""
+        """Test HEAD request with non-SSL URLError returns (False, None)."""
         mock_urlopen.side_effect = urllib.error.URLError('Connection refused')
 
         validator = FileValidator()
         result = validator._check_with_head('https://example.com/file.md', None)
 
-        assert result is False
+        assert result == (False, None)
         assert mock_urlopen.call_count == 1
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_success_200(self, mock_urlopen: MagicMock) -> None:
-        """Test successful Range request with 200 response."""
+        """Test successful Range request with 200 response returns (True, 200)."""
         mock_response = MagicMock()
         mock_response.status = 200
         mock_urlopen.return_value = mock_response
@@ -112,13 +114,13 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_range('https://example.com/file.md', None)
 
-        assert result is True
+        assert result == (True, 200)
         request = mock_urlopen.call_args[0][0]
         assert request.headers.get('Range') == 'bytes=0-0'
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_success_206(self, mock_urlopen: MagicMock) -> None:
-        """Test successful Range request with 206 partial content response."""
+        """Test successful Range request with 206 partial content returns (True, 206)."""
         mock_response = MagicMock()
         mock_response.status = 206
         mock_urlopen.return_value = mock_response
@@ -126,11 +128,11 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_range('https://example.com/file.md', None)
 
-        assert result is True
+        assert result == (True, 206)
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_with_auth(self, mock_urlopen: MagicMock) -> None:
-        """Test Range request with authentication headers."""
+        """Test Range request with authentication headers returns (True, 206)."""
         mock_response = MagicMock()
         mock_response.status = 206
         mock_urlopen.return_value = mock_response
@@ -139,7 +141,7 @@ class TestFileValidator:
         auth_headers = {'Authorization': 'Token abc123', 'X-Custom': 'value'}
         result = validator._check_with_range('https://example.com/file.md', auth_headers)
 
-        assert result is True
+        assert result == (True, 206)
         request = mock_urlopen.call_args[0][0]
         assert request.headers.get('Authorization') == 'Token abc123'
         assert request.headers.get('X-custom') == 'value'
@@ -147,7 +149,7 @@ class TestFileValidator:
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_ssl_error_retry(self, mock_urlopen: MagicMock) -> None:
-        """Test Range request with SSL error and successful retry."""
+        """Test Range request with SSL error and successful retry returns (True, 206)."""
         mock_urlopen.side_effect = [
             urllib.error.URLError('certificate verify failed'),
             MagicMock(status=206),
@@ -156,12 +158,12 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_range('https://example.com/file.md', None)
 
-        assert result is True
+        assert result == (True, 206)
         assert mock_urlopen.call_count == 2
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_http_error(self, mock_urlopen: MagicMock) -> None:
-        """Test Range request with HTTP error."""
+        """Test Range request with HTTP error returns (False, 416)."""
         mock_urlopen.side_effect = urllib.error.HTTPError(
             'https://example.com/file.md',
             416,
@@ -173,38 +175,46 @@ class TestFileValidator:
         validator = FileValidator()
         result = validator._check_with_range('https://example.com/file.md', None)
 
-        assert result is False
+        assert result == (False, 416)
 
     @patch('setup_environment.urlopen')
     def test_check_with_range_generic_exception(self, mock_urlopen: MagicMock) -> None:
-        """Test Range request with generic exception."""
+        """Test Range request with generic exception returns (False, None)."""
         mock_urlopen.side_effect = Exception('Network error')
 
         validator = FileValidator()
         result = validator._check_with_range('https://example.com/file.md', None)
 
-        assert result is False
+        assert result == (False, None)
 
     @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
     @patch.object(FileValidator, '_check_with_head')
     def test_validate_remote_url_generates_auth_per_url(
         self,
         mock_head: MagicMock,
+        mock_range: MagicMock,
         mock_auth: MagicMock,
     ) -> None:
-        """Test that validate_remote_url generates auth for the specific URL.
+        """Test that validate_remote_url generates auth for the specific URL on escalation.
 
-        CRITICAL: This is the core bug fix test - verify auth is generated for the
-        FILE URL, not the config source.
+        Verifies the lazy-auth contract: auth is invoked only after the initial
+        unauthenticated probe returns a 401/403/404 status. Mirrors the contract
+        honored by _fetch_url_core._do_fetch (lazy-auth gate on HTTP 401/403/404).
+
+        CRITICAL: auth is generated for the FILE URL, not the config source.
         """
         mock_auth.return_value = {'Authorization': 'Bearer token'}
-        mock_head.return_value = True
+        # Force escalation: initial unauth HEAD returns 404, Range returns 404;
+        # retry HEAD with auth succeeds.
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
 
         validator = FileValidator(auth_param='my_token')
         result = validator.validate_remote_url('https://github.com/user/repo/file.md')
 
         assert result == (True, 'HEAD')
-        # CRITICAL: verify auth was generated for the FILE URL, not config source
+        # CRITICAL: auth must be generated for the FILE URL, not config source.
         mock_auth.assert_called_once_with(
             'https://github.com/user/repo/file.md',
             'my_token',
@@ -218,8 +228,8 @@ class TestFileValidator:
         mock_head: MagicMock,
     ) -> None:
         """Test validation succeeds with HEAD request."""
-        mock_head.return_value = True
-        mock_range.return_value = False
+        mock_head.return_value = (True, 200)
+        mock_range.return_value = (False, 500)
 
         validator = FileValidator()
         with patch('setup_environment.get_auth_headers', return_value=None):
@@ -237,9 +247,9 @@ class TestFileValidator:
         mock_range: MagicMock,
         mock_head: MagicMock,
     ) -> None:
-        """Test validation falls back to Range when HEAD fails."""
-        mock_head.return_value = False
-        mock_range.return_value = True
+        """Test validation falls back to Range when HEAD fails with non-auth code."""
+        mock_head.return_value = (False, 500)
+        mock_range.return_value = (True, 206)
 
         validator = FileValidator()
         with patch('setup_environment.get_auth_headers', return_value=None):
@@ -250,25 +260,28 @@ class TestFileValidator:
         mock_head.assert_called_once()
         mock_range.assert_called_once()
 
+    @patch('setup_environment.get_auth_headers')
     @patch.object(FileValidator, '_check_with_head')
     @patch.object(FileValidator, '_check_with_range')
     def test_validate_remote_url_both_fail(
         self,
         mock_range: MagicMock,
         mock_head: MagicMock,
+        mock_auth: MagicMock,
     ) -> None:
-        """Test validation fails when both methods fail."""
-        mock_head.return_value = False
-        mock_range.return_value = False
+        """Test validation fails when both methods fail with non-auth codes."""
+        mock_head.return_value = (False, 500)
+        mock_range.return_value = (False, 500)
 
         validator = FileValidator()
-        with patch('setup_environment.get_auth_headers', return_value=None):
-            is_valid, method = validator.validate_remote_url('https://example.com/file.md')
+        is_valid, method = validator.validate_remote_url('https://example.com/file.md')
 
         assert is_valid is False
         assert method == 'None'
         mock_head.assert_called_once()
         mock_range.assert_called_once()
+        # Non-auth failure codes MUST NOT trigger auth resolution.
+        mock_auth.assert_not_called()
 
     @patch('setup_environment.info')
     @patch('setup_environment.convert_gitlab_url_to_api')
@@ -287,7 +300,7 @@ class TestFileValidator:
 
         mock_detect.return_value = 'gitlab'
         mock_convert.return_value = gitlab_api_url
-        mock_head.return_value = True
+        mock_head.return_value = (True, 200)
 
         validator = FileValidator()
         with patch('setup_environment.get_auth_headers', return_value=None):
@@ -361,6 +374,324 @@ class TestFileValidator:
 
         assert len(validator.results) == 0
 
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_public_url_succeeds_without_calling_get_auth_headers(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """Public URL returning 200 unauth must NOT trigger auth resolution.
+
+        Verifies the lazy-auth contract: successful unauthenticated probes
+        bypass get_auth_headers entirely. The auth_cache receives a None
+        sentinel (public-origin marker) for downstream consumers.
+        """
+
+        mock_head.return_value = (True, 200)
+        mock_range.return_value = (True, 200)  # Would also succeed, but HEAD returns first.
+
+        cache = AuthHeaderCache()
+        validator = FileValidator(auth_cache=cache)
+        result = validator.validate_remote_url('https://example.com/public/file.md')
+
+        assert result == (True, 'HEAD')
+        # Auth MUST NOT be called for a public URL.
+        mock_auth.assert_not_called()
+        # Cache MUST contain the None sentinel for the public origin.
+        is_cached, cached_headers = cache.get_cached_headers('https://example.com/public/file.md')
+        assert is_cached is True
+        assert cached_headers is None
+        mock_range.assert_not_called()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_404_triggers_auth_escalation(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """Unauth probe returning 404 must trigger auth resolution exactly once."""
+
+        resolved = {'Authorization': 'Bearer resolved-token'}
+        mock_auth.return_value = resolved
+        # Initial unauth: HEAD=404, Range=404. After resolution: HEAD=200.
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
+
+        cache = AuthHeaderCache(auth_param='test-token')
+        validator = FileValidator(auth_param='test-token', auth_cache=cache)
+        result = validator.validate_remote_url('https://github.com/org/repo/file.md')
+
+        assert result == (True, 'HEAD')
+        # get_auth_headers called exactly once via resolve_and_cache.
+        mock_auth.assert_called_once_with('https://github.com/org/repo/file.md', 'test-token')
+        # Cache now contains the resolved headers for the origin.
+        is_cached, cached_headers = cache.get_cached_headers(
+            'https://github.com/org/repo/file.md',
+        )
+        assert is_cached is True
+        assert cached_headers == resolved
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_401_triggers_auth_escalation(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """Unauth probe returning 401 must trigger auth resolution."""
+        mock_auth.return_value = {'Authorization': 'Bearer token'}
+        mock_head.side_effect = [(False, 401), (True, 200)]
+        mock_range.return_value = (False, 401)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url('https://github.com/org/repo/file.md')
+
+        assert result == (True, 'HEAD')
+        mock_auth.assert_called_once()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_403_triggers_auth_escalation(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """Unauth probe returning 403 must trigger auth resolution."""
+        mock_auth.return_value = {'Authorization': 'Bearer token'}
+        mock_head.side_effect = [(False, 403), (True, 200)]
+        mock_range.return_value = (False, 403)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url('https://github.com/org/repo/file.md')
+
+        assert result == (True, 'HEAD')
+        mock_auth.assert_called_once()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_500_does_not_prompt(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """HTTP 5xx failures must NOT trigger auth resolution (no spurious prompts).
+
+        Non-authentication failures such as 500 Internal Server Error are
+        transient network conditions, not authentication problems. The lazy-auth
+        contract escalates to authentication ONLY on 401/403/404.
+        """
+        mock_head.return_value = (False, 500)
+        mock_range.return_value = (False, 500)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url('https://github.com/org/repo/file.md')
+
+        assert result == (False, 'None')
+        mock_auth.assert_not_called()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_ssl_failure_does_not_prompt(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """SSL/DNS/URL errors (http_code=None) must NOT trigger auth resolution."""
+        mock_head.return_value = (False, None)
+        mock_range.return_value = (False, None)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url('https://nonexistent.example.com/file.md')
+
+        assert result == (False, 'None')
+        mock_auth.assert_not_called()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_parallel_validation_does_not_double_prompt(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """Two threads validating URLs from same origin must resolve auth only once.
+
+        Verifies that AuthHeaderCache.resolve_and_cache double-checked locking
+        serializes authentication resolution across parallel validation threads,
+        preventing duplicate prompts observed in the regression.
+        """
+        mock_auth.return_value = {'Authorization': 'Bearer shared-token'}
+        # Both threads see HEAD=404 first, then 200 after auth.
+        mock_head.side_effect = lambda _url, headers: (
+            (True, 200) if headers else (False, 404)
+        )
+        mock_range.side_effect = lambda _url, headers: (
+            (True, 206) if headers else (False, 404)
+        )
+
+        cache = AuthHeaderCache(auth_param='shared-token')
+        validator = FileValidator(auth_param='shared-token', auth_cache=cache)
+
+        results: list[tuple[bool, str]] = []
+        results_lock = threading.Lock()
+
+        def worker(url: str) -> None:
+            result = validator.validate_remote_url(url)
+            with results_lock:
+                results.append(result)
+
+        urls = [
+            'https://github.com/org/repo/file1.md',
+            'https://github.com/org/repo/file2.md',
+        ]
+        threads = [threading.Thread(target=worker, args=(u,)) for u in urls]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(results) == 2
+        for r in results:
+            assert r[0] is True
+        # Auth MUST be resolved exactly ONCE via double-checked locking.
+        mock_auth.assert_called_once()
+
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_auth_cache_empty_result_does_not_retry(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        """When resolve_and_cache returns {}, validation must terminate without retry.
+
+        AuthHeaderCache.resolve_and_cache returns {} (empty dict, not None) when
+        no credentials are available from any source. Treat this as terminal --
+        the retry probe must NOT be attempted.
+        """
+
+        mock_auth.return_value = {}  # No credentials available from any source.
+        mock_head.return_value = (False, 404)
+        mock_range.return_value = (False, 404)
+
+        cache = AuthHeaderCache(auth_param=None)
+        validator = FileValidator(auth_cache=cache)
+        result = validator.validate_remote_url('https://github.com/org/repo/file.md')
+
+        assert result == (False, 'None')
+        # Initial unauth probes: HEAD + Range (2 probes total, no retry).
+        assert mock_head.call_count == 1
+        assert mock_range.call_count == 1
+        mock_auth.assert_called_once()
+
+    @patch('setup_environment._github_repo_is_public', return_value=True)
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_404_on_public_github_repo_does_not_prompt(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+        mock_repo_public: MagicMock,
+    ) -> None:
+        """404 on a confirmed-public GitHub repo must skip the auth prompt.
+
+        When the repo is verified public via api.github.com/repos/{owner}/{repo},
+        the original 404 indicates a genuine missing file and validation must
+        return (False, 'None') without invoking get_auth_headers.
+        """
+        mock_head.return_value = (False, 404)
+        mock_range.return_value = (False, 404)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url(
+            'https://raw.githubusercontent.com/owner/repo/main/missing.md',
+        )
+
+        assert result == (False, 'None')
+        mock_repo_public.assert_called_once_with('owner', 'repo')
+        mock_auth.assert_not_called()
+
+    @patch('setup_environment._github_repo_is_public', return_value=False)
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_404_on_private_github_repo_prompts_as_normal(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+        mock_repo_public: MagicMock,
+    ) -> None:
+        """404 on a private/nonexistent GitHub repo must escalate to auth prompt.
+
+        When _github_repo_is_public returns False (ambiguous: private or
+        nonexistent), the validator must fall through to the normal auth
+        escalation path (legitimate for the private case).
+        """
+        resolved = {'Authorization': 'Bearer t'}
+        mock_auth.return_value = resolved
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url(
+            'https://github.com/owner/repo/blob/main/private.md',
+        )
+
+        assert result == (True, 'HEAD')
+        mock_repo_public.assert_called_once_with('owner', 'repo')
+        mock_auth.assert_called_once()
+
+    @patch('setup_environment._github_repo_is_public', return_value=None)
+    @patch('setup_environment.get_auth_headers')
+    @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
+    def test_404_on_unknown_repo_visibility_prompts_conservative(
+        self,
+        mock_head: MagicMock,
+        mock_range: MagicMock,
+        mock_auth: MagicMock,
+        mock_repo_public: MagicMock,
+    ) -> None:
+        """404 with rate-limited / network-failed visibility probe escalates.
+
+        When _github_repo_is_public returns None (rate-limit, timeout, network
+        error), the validator must conservatively escalate to the auth prompt
+        (fail-safe behavior: auth prompt is legitimate when uncertain).
+        """
+        resolved = {'Authorization': 'Bearer t'}
+        mock_auth.return_value = resolved
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
+
+        validator = FileValidator(auth_param='token')
+        result = validator.validate_remote_url(
+            'https://raw.githubusercontent.com/owner/repo/main/file.md',
+        )
+
+        assert result == (True, 'HEAD')
+        mock_repo_public.assert_called_once_with('owner', 'repo')
+        mock_auth.assert_called_once()
+
 
 class TestLocalConfigWithRemoteFiles:
     """Tests for the specific bug: local config with remote files requiring auth.
@@ -370,10 +701,12 @@ class TestLocalConfigWithRemoteFiles:
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
+    @patch.object(FileValidator, '_check_with_range')
     @patch.object(FileValidator, '_check_with_head')
     def test_local_config_with_github_files_uses_file_url_for_auth(
         self,
         mock_head: MagicMock,
+        mock_range: MagicMock,
         mock_resolve: MagicMock,
         mock_auth: MagicMock,
     ) -> None:
@@ -384,13 +717,19 @@ class TestLocalConfigWithRemoteFiles:
         - File to validate: https://raw.githubusercontent.com/user/repo/main/agent.md
         - Expected: get_auth_headers called with GitHub URL
         - Bug behavior: get_auth_headers not called (config_source is local)
+
+        Auth escalation is triggered by the lazy-auth contract: unauth probe
+        returns 404, which causes resolve_and_cache -> get_auth_headers to be
+        invoked for the FILE URL.
         """
         mock_auth.return_value = {'Authorization': 'Bearer github_token'}
         mock_resolve.return_value = (
             'https://raw.githubusercontent.com/user/repo/main/agent.md',
             True,  # is_remote
         )
-        mock_head.return_value = True
+        # Force escalation: initial HEAD=404, then HEAD=200 after auth.
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
 
         config = {'agents': ['agent.md']}
 
@@ -409,10 +748,12 @@ class TestLocalConfigWithRemoteFiles:
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
+    @patch.object(FileValidator, '_check_with_range')
     @patch.object(FileValidator, '_check_with_head')
     def test_local_config_with_gitlab_files_uses_file_url_for_auth(
         self,
         mock_head: MagicMock,
+        mock_range: MagicMock,
         mock_resolve: MagicMock,
         mock_auth: MagicMock,
     ) -> None:
@@ -422,7 +763,9 @@ class TestLocalConfigWithRemoteFiles:
             'https://gitlab.com/user/repo/-/raw/main/agent.md',
             True,
         )
-        mock_head.return_value = True
+        # Force escalation: initial HEAD=404, then HEAD=200 after auth.
+        mock_head.side_effect = [(False, 404), (True, 200)]
+        mock_range.return_value = (False, 404)
 
         config = {'agents': ['agent.md']}
 
@@ -445,15 +788,22 @@ class TestMixedAuthScenarios:
     @patch('setup_environment.detect_repo_type')
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
+    @patch.object(FileValidator, '_check_with_range')
     @patch.object(FileValidator, '_check_with_head')
     def test_mixed_github_and_gitlab_files(
         self,
         mock_head: MagicMock,
+        mock_range: MagicMock,
         mock_resolve: MagicMock,
         mock_auth: MagicMock,
         mock_detect: MagicMock,
     ) -> None:
-        """Test that different files get appropriate auth headers."""
+        """Test that different files get appropriate auth headers.
+
+        Two URLs from different origins both return 404 unauth, triggering
+        escalation to get_auth_headers for each origin. The lazy-auth
+        contract ensures per-URL auth resolution.
+        """
 
         # Simulate different repo types
         def detect_side_effect(url: str) -> str | None:
@@ -474,7 +824,16 @@ class TestMixedAuthScenarios:
             return {}
 
         mock_auth.side_effect = auth_side_effect
-        mock_head.return_value = True
+
+        # Force escalation per URL: unauth 404, retry with auth succeeds.
+        def head_side_effect(_url: str, headers: dict[str, str] | None) -> tuple[bool, int | None]:
+            return (True, 200) if headers else (False, 404)
+
+        def range_side_effect(_url: str, headers: dict[str, str] | None) -> tuple[bool, int | None]:
+            return (True, 206) if headers else (False, 404)
+
+        mock_head.side_effect = head_side_effect
+        mock_range.side_effect = range_side_effect
 
         mock_resolve.side_effect = [
             ('https://raw.githubusercontent.com/user/repo/main/agent1.md', True),
@@ -491,7 +850,7 @@ class TestMixedAuthScenarios:
 
         assert all_valid is True
         assert len(results) == 2
-        # Verify get_auth_headers was called twice with different URLs
+        # Verify get_auth_headers was called for each distinct origin.
         assert mock_auth.call_count == 2
 
 
@@ -507,10 +866,15 @@ class TestAuthEdgeCases:
         mock_resolve: MagicMock,
         mock_auth: MagicMock,
     ) -> None:
-        """Test that public files work even when auth token is provided."""
+        """Test that public files work even when auth token is provided.
+
+        With the lazy-auth contract, public URLs return 200 from the initial
+        unauthenticated probe and never escalate to get_auth_headers, even
+        when a token is provided by the user.
+        """
         mock_auth.return_value = {'Authorization': 'Bearer token'}
         mock_resolve.return_value = ('https://example.com/public.md', True)
-        mock_head.return_value = True
+        mock_head.return_value = (True, 200)
 
         config = {'agents': ['public.md']}
 
@@ -524,20 +888,25 @@ class TestAuthEdgeCases:
 
     @patch('setup_environment.get_auth_headers')
     @patch('setup_environment.resolve_resource_path')
-    @patch.object(FileValidator, '_check_with_head')
     @patch.object(FileValidator, '_check_with_range')
+    @patch.object(FileValidator, '_check_with_head')
     def test_private_file_without_auth_token(
         self,
-        mock_range: MagicMock,
         mock_head: MagicMock,
+        mock_range: MagicMock,
         mock_resolve: MagicMock,
         mock_auth: MagicMock,
     ) -> None:
-        """Test that private files fail gracefully without auth."""
-        mock_auth.return_value = {}  # No auth headers
+        """Test that private files fail gracefully without auth.
+
+        Unauth probe returns 404; escalation attempts get_auth_headers which
+        returns {} (no credentials available). Validation terminates with
+        (False, 'None').
+        """
+        mock_auth.return_value = {}  # No auth headers available
         mock_resolve.return_value = ('https://example.com/private.md', True)
-        mock_head.return_value = False
-        mock_range.return_value = False
+        mock_head.return_value = (False, 404)
+        mock_range.return_value = (False, 404)
 
         config = {'agents': ['private.md']}
 
@@ -1071,3 +1440,78 @@ class TestLocalPathValidation:
                     )
                     assert resolved == str((tmpdir_path / 'file.md').resolve())
                     assert is_remote is False
+
+
+class TestExtractGithubOwnerRepo:
+    """Tests for the _extract_github_owner_repo URL parsing helper."""
+
+    def test_extract_from_raw_url(self) -> None:
+        """raw.githubusercontent.com URL: extract from path[0:2]."""
+        result = setup_environment._extract_github_owner_repo(
+            'https://raw.githubusercontent.com/owner/repo/main/file.md',
+        )
+        assert result == ('owner', 'repo')
+
+    def test_extract_from_api_url(self) -> None:
+        """api.github.com Contents API URL: extract path[1:3] after 'repos'."""
+        result = setup_environment._extract_github_owner_repo(
+            'https://api.github.com/repos/owner/repo/contents/file.md?ref=main',
+        )
+        assert result == ('owner', 'repo')
+
+    def test_extract_from_web_url(self) -> None:
+        """github.com web URL (with tree/blob subpath): extract path[0:2]."""
+        result = setup_environment._extract_github_owner_repo(
+            'https://github.com/owner/repo/tree/main',
+        )
+        assert result == ('owner', 'repo')
+
+
+class TestGithubRepoIsPublic:
+    """Tests for the _github_repo_is_public visibility probe."""
+
+    @patch('setup_environment.urlopen')
+    def test_returns_true_on_200(self, mock_urlopen: MagicMock) -> None:
+        """HTTP 200 means repo is confirmed public."""
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        assert setup_environment._github_repo_is_public('owner', 'repo') is True
+        request = mock_urlopen.call_args[0][0]
+        assert request.full_url == 'https://api.github.com/repos/owner/repo'
+
+    @patch('setup_environment.urlopen')
+    def test_returns_false_on_404(self, mock_urlopen: MagicMock) -> None:
+        """HTTP 404 means repo is private or does not exist (ambiguous)."""
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            'https://api.github.com/repos/owner/repo',
+            404,
+            'Not Found',
+            {},
+            None,
+        )
+
+        assert setup_environment._github_repo_is_public('owner', 'repo') is False
+
+    @patch('setup_environment.urlopen')
+    def test_returns_none_on_rate_limit(self, mock_urlopen: MagicMock) -> None:
+        """HTTP 403 (rate-limit) returns None for conservative escalation."""
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            'https://api.github.com/repos/owner/repo',
+            403,
+            'rate limit exceeded',
+            {},
+            None,
+        )
+
+        assert setup_environment._github_repo_is_public('owner', 'repo') is None
+
+    @patch('setup_environment.urlopen')
+    def test_returns_none_on_network_error(self, mock_urlopen: MagicMock) -> None:
+        """URLError / TimeoutError / OSError return None for conservative escalation."""
+        mock_urlopen.side_effect = urllib.error.URLError('connection refused')
+
+        assert setup_environment._github_repo_is_public('owner', 'repo') is None
