@@ -3036,19 +3036,45 @@ class FileValidator:
         self._validation_results: list[tuple[str, str, bool, str]] = []
 
     def validate_remote_url(self, url: str) -> tuple[bool, str]:
-        """Validate a remote URL with per-URL authentication.
+        """Validate a remote URL, escalating to authentication only on 401/403/404.
 
-        Generates authentication headers specific to this URL (GitHub vs GitLab)
-        and attempts validation using HEAD request, then Range request as fallback.
-        When an auth_cache is provided, uses cached headers to avoid redundant
-        resolution and populates the cache for downstream consumers.
+        Implements the "try unauthenticated first; escalate only on HTTP
+        401/403/404" contract, mirroring the download path in _fetch_url_core.
+        Non-authentication failures (SSL, DNS, 5xx, 416 Range Not Satisfiable,
+        timeouts) do NOT trigger authentication prompts.
+
+        Flow:
+            Phase 1: GitLab URL conversion (web -> API) for raw URLs.
+            Phase 2: Cache lookup -- reuse cached headers if the origin has
+                     been probed before (None sentinel = known public origin,
+                     dict = resolved authentication).
+            Phase 3: Initial probe using unauthenticated headers (or cached
+                     headers when available). HEAD first, Range as fallback.
+                     On success, populate the cache with the headers that
+                     worked (None on a fresh unauthenticated success).
+            Phase 4: Auth escalation -- triggered ONLY when the last probe's
+                     HTTP code is in (401, 403, 404). For 404 on GitHub URLs,
+                     first probe api.github.com/repos/{owner}/{repo}: if the
+                     repo is confirmed public, the 404 is a genuine missing
+                     file and no auth prompt is needed. Otherwise (private,
+                     nonexistent, or rate-limited), fall through to normal
+                     escalation. Uses AuthHeaderCache.resolve_and_cache(url)
+                     when a cache is available (double-checked locking
+                     serializes prompts across parallel validation threads);
+                     otherwise calls get_auth_headers(url, self.auth_param)
+                     directly. resolve_and_cache returns {} (not None) when
+                     no credentials are available -- treat this as terminal
+                     and do not retry. Executes at most once per call.
+            Phase 5: Non-auth failure -- return (False, 'None') without
+                     invoking get_auth_headers on 5xx, SSL, DNS, 416, or
+                     None codes.
 
         Args:
-            url: Remote URL to validate
+            url: Remote URL to validate.
 
         Returns:
-            Tuple of (is_valid, method_used)
-            method_used is 'HEAD', 'Range', or 'None'
+            Tuple of (is_valid, method_used).
+            method_used is 'HEAD' or 'Range' on success, 'None' on failure.
         """
         # ARCHITECTURAL NOTE: URL domain asymmetry between validation and download
         #
@@ -3062,33 +3088,107 @@ class FileValidator:
         #   cache key (github.com/owner/repo), so auth cached during validation
         #   is correctly reused during download.
         #
-        # Convert GitLab web URLs to API format
+        # Phase 1: Convert GitLab web URLs to API format
         original_url = url
         if detect_repo_type(url) == 'gitlab' and '/-/raw/' in url:
             url = convert_gitlab_url_to_api(url)
             if url != original_url:
                 info(f'Using API URL for validation: {url}')
 
-        # Generate auth headers for THIS specific URL, using cache when available
+        # Phase 2: Cache lookup. is_cached=True means the origin has already
+        # been probed; cached_headers may be None (public sentinel) or a dict
+        # (resolved authentication headers).
+        initial_headers: dict[str, str] | None = None
+        origin_cached = False
         if self.auth_cache is not None:
             is_cached, cached_headers = self.auth_cache.get_cached_headers(url)
             if is_cached:
-                auth_headers = cached_headers
-            else:
-                auth_headers = get_auth_headers(url, self.auth_param)
-                # Cache the result for the download phase
-                self.auth_cache.cache_headers(url, auth_headers or None)
-        else:
-            auth_headers = get_auth_headers(url, self.auth_param)
+                initial_headers = cached_headers
+                origin_cached = True
 
-        # Try HEAD request first
-        if self._check_with_head(url, auth_headers):
+        # Phase 3: Initial probe -- unauthenticated (or with cached headers).
+        head_valid, head_code = self._check_with_head(url, initial_headers)
+        if head_valid:
+            if self.auth_cache is not None and not origin_cached:
+                self.auth_cache.cache_headers(url, initial_headers)
             return (True, 'HEAD')
 
-        # Fallback to Range request
-        if self._check_with_range(url, auth_headers):
+        range_valid, range_code = self._check_with_range(url, initial_headers)
+        if range_valid:
+            if self.auth_cache is not None and not origin_cached:
+                self.auth_cache.cache_headers(url, initial_headers)
             return (True, 'Range')
 
+        # Phase 4: Auth escalation -- ONLY on 401/403/404 from the last probe.
+        # Prefer the Range code (last attempt); fall back to HEAD's code when
+        # Range returned None (e.g., a non-HTTP error).
+        last_http_code = range_code if range_code is not None else head_code
+
+        if last_http_code in (401, 403, 404):
+            # If we already used cached auth headers (non-empty dict) and still
+            # got 401/403/404, the authentication failed -- re-prompting would
+            # loop.
+            if initial_headers:
+                return (False, 'None')
+
+            # 404 disambiguation for GitHub URLs: probe api.github.com/repos/
+            # {owner}/{repo} unauthenticated. If the repo is confirmed public,
+            # the original 404 is a genuine missing file (typo) and no auth
+            # prompt is needed. Other outcomes (private, nonexistent,
+            # rate-limited, network failure) fall through to normal escalation
+            # (conservative: prompt for auth).
+            if last_http_code == 404 and detect_repo_type(url) == 'github':
+                owner_repo = _extract_github_owner_repo(url)
+                if owner_repo is not None:
+                    owner, repo = owner_repo
+                    repo_public = _github_repo_is_public(owner, repo)
+                    if repo_public is True:
+                        info(
+                            f'GitHub repo {owner}/{repo} is public; '
+                            f'404 indicates missing file (not auth issue): {url}',
+                        )
+                        return (False, 'None')
+                    if repo_public is None:
+                        warning(
+                            f'Could not verify public status of {owner}/{repo}; '
+                            f'proceeding with auth prompt',
+                        )
+
+            # Resolve authentication. When a cache is available, route through
+            # resolve_and_cache for thread-safe double-checked locking across
+            # parallel validation threads. Note: resolve_and_cache returns {}
+            # (empty dict), not None, when no credentials are available from
+            # any source -- treat this as terminal.
+            if self.auth_cache is not None:
+                resolved_headers = self.auth_cache.resolve_and_cache(url)
+                if not resolved_headers:
+                    return (False, 'None')
+                auth_headers: dict[str, str] | None = resolved_headers
+            else:
+                auth_headers = get_auth_headers(url, self.auth_param)
+                if not auth_headers:
+                    return (False, 'None')
+
+            # Retry probe with resolved auth headers (at most once).
+            head_valid, _head_code = self._check_with_head(url, auth_headers)
+            if head_valid:
+                if self.auth_cache is not None:
+                    # resolve_and_cache already populated the cache; this
+                    # defensive re-cache is a no-op in that case but keeps
+                    # the non-cache path correct.
+                    self.auth_cache.cache_headers(url, auth_headers)
+                return (True, 'HEAD')
+
+            range_valid, _range_code = self._check_with_range(url, auth_headers)
+            if range_valid:
+                if self.auth_cache is not None:
+                    self.auth_cache.cache_headers(url, auth_headers)
+                return (True, 'Range')
+
+            # Authenticated retry also failed.
+            return (False, 'None')
+
+        # Phase 5: Non-auth failure (5xx, SSL, DNS, 416, None). Do NOT prompt.
         return (False, 'None')
 
     def validate_local_path(self, path: str) -> tuple[bool, str]:
@@ -3119,7 +3219,7 @@ class FileValidator:
             return self.validate_remote_url(url_or_path)
         return self.validate_local_path(url_or_path)
 
-    def _check_with_head(self, url: str, auth_headers: dict[str, str] | None) -> bool:
+    def _check_with_head(self, url: str, auth_headers: dict[str, str] | None) -> tuple[bool, int | None]:
         """Check URL availability using HEAD request.
 
         Args:
@@ -3127,7 +3227,15 @@ class FileValidator:
             auth_headers: Optional authentication headers
 
         Returns:
-            True if file is accessible, False otherwise
+            Tuple of (is_valid, http_code).
+            is_valid=True with http_code=200 on success (including after SSL fallback).
+            is_valid=False with http_code=<code> on HTTP errors (401/403/404/416/5xx).
+            is_valid=False with http_code=None on non-HTTP errors (SSL without fallback,
+            DNS, URL errors, or other exceptions).
+
+            The http_code is used by callers to decide whether to escalate to
+            authentication (401/403/404) versus treating the failure as non-auth
+            (5xx, None, etc.).
         """
         try:
             request = Request(url, method='HEAD')
@@ -3137,20 +3245,29 @@ class FileValidator:
 
             try:
                 response = urlopen(request)
-                return bool(response.status == 200)
+                status = response.status
+                return (bool(status == 200), status)
+            except urllib.error.HTTPError as http_err:
+                return (False, http_err.code)
             except urllib.error.URLError as e:
                 if 'SSL' in str(e) or 'certificate' in str(e).lower():
                     # Try with unverified SSL context
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
-                    response = urlopen(request, context=ctx)
-                    return bool(response.status == 200)
-                return False
-        except (urllib.error.HTTPError, Exception):
-            return False
+                    try:
+                        response = urlopen(request, context=ctx)
+                        status = response.status
+                        return (bool(status == 200), status)
+                    except urllib.error.HTTPError as http_err:
+                        return (False, http_err.code)
+                    except Exception:
+                        return (False, None)
+                return (False, None)
+        except Exception:
+            return (False, None)
 
-    def _check_with_range(self, url: str, auth_headers: dict[str, str] | None) -> bool:
+    def _check_with_range(self, url: str, auth_headers: dict[str, str] | None) -> tuple[bool, int | None]:
         """Check URL availability using Range request.
 
         Args:
@@ -3158,7 +3275,16 @@ class FileValidator:
             auth_headers: Optional authentication headers
 
         Returns:
-            True if file is accessible, False otherwise
+            Tuple of (is_valid, http_code).
+            is_valid=True with http_code=200 (full content) or 206 (partial content)
+            on success (including after SSL fallback).
+            is_valid=False with http_code=<code> on HTTP errors (including 416
+            Range Not Satisfiable, which is a non-auth-related failure).
+            is_valid=False with http_code=None on non-HTTP errors.
+
+            The http_code is used by callers to decide whether to escalate to
+            authentication (401/403/404) versus treating the failure as non-auth
+            (5xx, 416, None, etc.).
         """
         try:
             request = Request(url)
@@ -3169,19 +3295,29 @@ class FileValidator:
 
             try:
                 response = urlopen(request)
-                # Accept both 200 (full content) and 206 (partial content)
-                return response.status in (200, 206)
+                status = response.status
+                is_valid = status in (200, 206)
+                return (is_valid, status)
+            except urllib.error.HTTPError as http_err:
+                return (False, http_err.code)
             except urllib.error.URLError as e:
                 if 'SSL' in str(e) or 'certificate' in str(e).lower():
                     # Try with unverified SSL context
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode = ssl.CERT_NONE
-                    response = urlopen(request, context=ctx)
-                    return response.status in (200, 206)
-                return False
-        except (urllib.error.HTTPError, Exception):
-            return False
+                    try:
+                        response = urlopen(request, context=ctx)
+                        status = response.status
+                        is_valid = status in (200, 206)
+                        return (is_valid, status)
+                    except urllib.error.HTTPError as http_err:
+                        return (False, http_err.code)
+                    except Exception:
+                        return (False, None)
+                return (False, None)
+        except Exception:
+            return (False, None)
 
     @property
     def results(self) -> list[tuple[str, str, bool, str]]:
@@ -3450,25 +3586,51 @@ def is_binary_file(file_path: str | Path) -> bool:
 
 
 def detect_repo_type(url: str) -> str | None:
-    """Detect the repository type from URL.
+    """Detect the repository type from URL using hostname-based classification.
+
+    Uses urllib.parse.urlparse to extract the hostname and classify the URL by
+    exact host match, host suffix, or URL path marker. GitHub Pages URLs
+    (hostname ending in .github.io) are explicitly excluded from the 'github'
+    classification because Pages are static HTTP hosts with no repository
+    auth model.
+
+    Args:
+        url: URL to classify.
 
     Returns:
-        'gitlab' for GitLab URLs
-        'github' for GitHub URLs
-        None for other URLs
+        'gitlab' for gitlab.com, self-hosted *.gitlab.* hosts, or URLs using
+            the /api/v4/projects/ path marker.
+        'github' for github.com, *.github.com (including api.github.com), and
+            raw.githubusercontent.com. Does NOT include *.github.io (Pages).
+        'bitbucket' for hosts containing 'bitbucket'.
+        None for all other URLs, including GitHub Pages URLs, gist.githubusercontent.com,
+            and unparseable URLs.
     """
-    url_lower = url.lower()
+    from urllib.parse import urlparse
 
-    # GitLab detection (including self-hosted)
-    if 'gitlab' in url_lower or '/api/v4/projects/' in url:
-        return 'gitlab'
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return None
 
-    # GitHub detection - includes raw.githubusercontent.com
-    if 'github.com' in url_lower or 'api.github.com' in url_lower or 'raw.githubusercontent.com' in url_lower:
+    host = (parsed.hostname or '').lower()
+
+    # GitHub Pages: <owner>.github.io or bare github.io.
+    # Excluded from 'github' because Pages sites use no repository auth model.
+    if host == 'github.io' or host.endswith('.github.io'):
+        return None
+
+    # GitHub source hosts: github.com, api.github.com, raw.githubusercontent.com.
+    if host == 'github.com' or host.endswith('.github.com') or host == 'raw.githubusercontent.com':
         return 'github'
 
-    # Bitbucket detection (future expansion)
-    if 'bitbucket' in url_lower:
+    # GitLab: hostname substring match (covers gitlab.com and self-hosted) OR
+    # API path marker (covers any host exposing the GitLab REST API).
+    if 'gitlab' in host or '/api/v4/projects/' in url:
+        return 'gitlab'
+
+    # Bitbucket: hostname substring match (future expansion; preserves prior behavior).
+    if 'bitbucket' in host:
         return 'bitbucket'
 
     return None
@@ -3684,79 +3846,233 @@ def convert_github_raw_to_api(url: str) -> str:
         return url
 
 
-def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
-    """Get authentication headers using multiple fallback methods.
+def _extract_github_owner_repo(url: str) -> tuple[str, str] | None:
+    """Extract (owner, repo) from any GitHub URL variant.
 
-    Precedence order:
-    1. Command-line --auth parameter
-    2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
-    3. Auth config file (~/.claude/auth.yaml) - future expansion
-    4. Interactive prompt (if terminal is interactive)
+    Supports github.com web URLs, raw.githubusercontent.com URLs, and
+    api.github.com Contents API URLs. Returns None for unparseable URLs,
+    non-GitHub hosts, GitHub Pages URLs, or URLs lacking owner/repo path
+    components.
 
     Args:
-        url: The URL to authenticate for
-        auth_param: Optional auth parameter in format "header:value" or "header=value"
+        url: Candidate GitHub URL.
 
     Returns:
-        Dictionary of headers to use for authentication
+        Tuple (owner, repo) for recognized GitHub URLs with at least
+        owner/repo path segments; None otherwise.
+
+    Examples:
+        >>> _extract_github_owner_repo('https://github.com/owner/repo')
+        ('owner', 'repo')
+        >>> _extract_github_owner_repo('https://raw.githubusercontent.com/owner/repo/main/file.md')
+        ('owner', 'repo')
+        >>> _extract_github_owner_repo('https://api.github.com/repos/owner/repo/contents/x.md?ref=main')
+        ('owner', 'repo')
+        >>> _extract_github_owner_repo('https://github.io/x') is None
+        True
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except ValueError:
+        return None
+
+    host = (parsed.hostname or '').lower()
+    parts = [p for p in parsed.path.split('/') if p]
+
+    # api.github.com/repos/{owner}/{repo}/...
+    if host == 'api.github.com':
+        if len(parts) >= 3 and parts[0] == 'repos':
+            return (parts[1], parts[2])
+        return None
+
+    # raw.githubusercontent.com/{owner}/{repo}/{ref}/...
+    if host == 'raw.githubusercontent.com':
+        if len(parts) >= 2:
+            return (parts[0], parts[1])
+        return None
+
+    # github.com/{owner}/{repo}/... (web URL, supports tree/blob/etc subpaths)
+    if host == 'github.com' or host.endswith('.github.com'):
+        if len(parts) >= 2:
+            return (parts[0], parts[1])
+        return None
+
+    # GitHub Pages and all other hosts: not a source repo URL.
+    return None
+
+
+def _github_repo_is_public(owner: str, repo: str, *, timeout: float = 5.0) -> bool | None:
+    """Probe api.github.com/repos/{owner}/{repo} unauthenticated to check repo visibility.
+
+    Used to disambiguate a 404 response on a GitHub file URL: when the bare-repo
+    endpoint returns 200, the original 404 is a genuine missing file (typo) and
+    no auth prompt is needed. When the bare-repo endpoint returns 404, the
+    repo is either private (privacy-hidden by GitHub) or genuinely missing --
+    in either case the caller should conservatively escalate to the auth
+    prompt (legitimate for the private case, an unavoidable papercut otherwise).
+
+    Endpoint choice (api.github.com/repos/{owner}/{repo}):
+        GitHub intentionally returns 404 for both "private repo hidden" and
+        "missing file" on the /contents/{path} endpoint, making them
+        indistinguishable. The bare repo endpoint distinguishes:
+            200 -> public repo exists -> a 404 on a file path is a genuine
+                   typo/missing file
+            404 -> ambiguous (private or nonexistent); the caller should
+                   escalate to auth (legitimate for the private case)
+
+    Args:
+        owner: GitHub repository owner (user or org).
+        repo: GitHub repository name.
+        timeout: Maximum seconds to wait for the probe HTTP call.
+
+    Returns:
+        True  if the repo is confirmed public-existing (HTTP 200).
+        False if the repo is private or does not exist (HTTP 404).
+        None  on any other condition (rate-limit 403/429, network failure,
+              timeout, malformed response). Caller should treat None as
+              "unable to determine -- conservatively escalate".
+
+    Note:
+        This helper deliberately bypasses _fetch_url_core and AuthHeaderCache
+        to avoid recursion (the validator may call this DURING auth resolution
+        for a different URL on the same origin). It uses a raw urllib Request
+        + urlopen with the documented GitHub REST API headers.
+    """
+    api_url = f'https://api.github.com/repos/{owner}/{repo}'
+    request = Request(api_url)
+    request.add_header('Accept', 'application/vnd.github+json')
+    request.add_header('X-GitHub-Api-Version', '2022-11-28')
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return getattr(response, 'status', None) == 200
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
+def _env_tokens_checked_for_repo_type(repo_type: str | None) -> list[str]:
+    """Return the ordered list of environment variable names to check for a repo type.
+
+    Used by resolve_credentials (to determine env var lookup order) and by
+    prompt_for_credentials (to inform the user which env vars were checked).
+
+    Args:
+        repo_type: Value returned by detect_repo_type (e.g., 'github', 'gitlab', 'bitbucket', None).
+
+    Returns:
+        Ordered list of env var names to check, repo-specific name first then REPO_TOKEN fallback.
+        Unknown or None repo types return just ['REPO_TOKEN'].
+    """
+    if repo_type == 'gitlab':
+        return ['GITLAB_TOKEN', 'REPO_TOKEN']
+    if repo_type == 'github':
+        return ['GITHUB_TOKEN', 'REPO_TOKEN']
+    return ['REPO_TOKEN']
+
+
+def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, str]:
+    """Resolve authentication headers for a URL from non-interactive sources.
+
+    Checks two sources in order:
+        1. Command-line auth_param (format "header:value", "header=value", or bare token)
+        2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
+
+    This function is pure and non-interactive: it never prompts the user, never
+    emits 'Authentication required' warnings, and never waits for terminal input.
+    Callers that want interactive fallback should invoke prompt_for_credentials() afterward.
+
+    Args:
+        url: URL being authenticated (used only for repo type detection).
+        auth_param: Optional auth parameter from command-line (format "header:value",
+            "header=value", or a bare token).
+
+    Returns:
+        Dictionary of HTTP headers for authentication. Empty dict {} if no credentials
+        are resolvable from the non-interactive sources.
     """
     repo_type = detect_repo_type(url)
 
-    # Helper function to build GitHub headers with Accept and API version
+    # Helper: build GitHub Authorization header with Bearer prefix.
     def build_github_headers(token: str) -> dict[str, str]:
         # Handle Bearer prefix - avoid duplication if already present
         auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
         return {'Authorization': auth_value}
 
-    # Method 1: Command-line parameter (highest priority)
+    # Method 1: Command-line parameter (highest priority).
     if auth_param:
         # Support both : and = as separators
         if ':' in auth_param:
             header_name, token = auth_param.split(':', 1)
-        elif '=' in auth_param:
+            info('Using authentication from command-line parameter')
+            return {header_name: token}
+        if '=' in auth_param:
             header_name, token = auth_param.split('=', 1)
-        else:
-            # Assume it's just a token, use default header based on repo type
-            token = auth_param
-            if repo_type == 'gitlab':
-                header_name = 'PRIVATE-TOKEN'
-            elif repo_type == 'github':
-                info('Using authentication from command-line parameter')
-                return build_github_headers(token)
-            else:
-                error('Cannot determine auth header type. Use format: --auth "header:value"')
-                return {}
+            info('Using authentication from command-line parameter')
+            return {header_name: token}
+        # Bare token: use default header based on repo type.
+        token = auth_param
+        if repo_type == 'gitlab':
+            info('Using authentication from command-line parameter')
+            return {'PRIVATE-TOKEN': token}
+        if repo_type == 'github':
+            info('Using authentication from command-line parameter')
+            return build_github_headers(token)
+        error('Cannot determine auth header type. Use format: --auth "header:value"')
+        return {}
 
-        info('Using authentication from command-line parameter')
-        return {header_name: token}
-
-    # Method 2: Environment variables
-    tokens_checked: list[str] = []
-
-    # Check repo-specific tokens first
+    # Method 2: Environment variables.
     if repo_type == 'gitlab':
         env_token = os.environ.get('GITLAB_TOKEN')
-        tokens_checked.append('GITLAB_TOKEN')
         if env_token:
             return {'PRIVATE-TOKEN': env_token}
     elif repo_type == 'github':
         env_token = os.environ.get('GITHUB_TOKEN')
-        tokens_checked.append('GITHUB_TOKEN')
         if env_token:
             return build_github_headers(env_token)
 
-    # Check generic REPO_TOKEN as fallback
+    # REPO_TOKEN fallback (only applied for known repo types).
     env_token = os.environ.get('REPO_TOKEN')
-    tokens_checked.append('REPO_TOKEN')
     if env_token:
         if repo_type == 'gitlab':
             return {'PRIVATE-TOKEN': env_token}
         if repo_type == 'github':
             return build_github_headers(env_token)
 
-    # Method 3: Interactive prompt (only if repo type detected and terminal is interactive)
+    return {}
+
+
+def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, str]:
+    """Prompt the user interactively for authentication credentials.
+
+    Guarded by sys.stdin.isatty(). In non-interactive terminals, emits an
+    informational message (if a repo type is detected) and returns {} without
+    prompting. In interactive terminals with a detected repo type, warns the
+    user that authentication was not resolved, asks whether the user wants to
+    enter a token, and collects the token via getpass.
+
+    Args:
+        url: URL being authenticated (used for repo type detection + header shape).
+        tokens_checked: Ordered list of env var names already checked by
+            resolve_credentials, used to inform the user of the fallback chain.
+
+    Returns:
+        Dictionary of HTTP headers for authentication. Empty dict {} if the
+        terminal is non-interactive, the repo type is unknown, the user
+        declines, or the user cancels with Ctrl+C / EOF.
+    """
+    repo_type = detect_repo_type(url)
+
+    # Helper: build GitHub Authorization header with Bearer prefix.
+    def build_github_headers(token: str) -> dict[str, str]:
+        # Handle Bearer prefix - avoid duplication if already present
+        auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
+        return {'Authorization': auth_value}
+
     if repo_type and sys.stdin.isatty():
-        warning(f'Private {repo_type.title()} repository detected but no authentication found')
+        warning(f'Authentication required for {url}')
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
         info('You can provide authentication by:')
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
@@ -3778,10 +4094,41 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
             print()  # New line after Ctrl+C
     elif repo_type:
         # Non-interactive terminal but auth might be needed
-        info(f'Private {repo_type.title()} repository detected')
+        info(f'Authentication required for {url}')
         info(f"If authentication is required, set one of: {', '.join(tokens_checked)}")
 
     return {}
+
+
+def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
+    """Resolve authentication headers for a URL, with interactive fallback.
+
+    Orchestrates two-stage credential resolution:
+        1. resolve_credentials() -- pure, non-interactive (CLI param, env vars)
+        2. prompt_for_credentials() -- interactive, guarded by sys.stdin.isatty()
+
+    Preserves the public-API signature used by callers and test mocks. Callers
+    that want non-interactive-only resolution can call resolve_credentials()
+    directly without risking user prompts.
+
+    Args:
+        url: The URL to authenticate for.
+        auth_param: Optional auth parameter in format "header:value" or
+            "header=value" or a bare token.
+
+    Returns:
+        Dictionary of HTTP headers for authentication, or {} if no credentials
+        could be resolved from any source (non-interactive and interactive).
+    """
+    headers = resolve_credentials(url, auth_param)
+    if headers:
+        return headers
+
+    # No creds resolved via non-interactive sources; attempt interactive prompt.
+    # The prompt is itself guarded by sys.stdin.isatty() and detects repo_type internally.
+    repo_type = detect_repo_type(url)
+    tokens_checked = _env_tokens_checked_for_repo_type(repo_type)
+    return prompt_for_credentials(url, tokens_checked=tokens_checked)
 
 
 def derive_base_url(config_source: str) -> str:

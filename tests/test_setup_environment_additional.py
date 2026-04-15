@@ -214,6 +214,254 @@ class TestAuthenticationWithPrompts:
         assert headers == {'Authorization': 'Bearer ghp_token'}
 
 
+class TestCredentialsSRPSplit:
+    """Single-responsibility split of get_auth_headers into resolve_credentials + prompt_for_credentials.
+
+    Verifies that resolve_credentials never prompts and prompt_for_credentials only
+    prompts when the terminal is interactive, and that the two together produce the
+    same results as the former monolithic get_auth_headers.
+    """
+
+    # --- resolve_credentials (6 tests) ---
+
+    def test_resolve_credentials_auth_param_colon_gitlab(self):
+        """Colon-separated auth_param explicitly sets header and value for GitLab."""
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(
+                'https://gitlab.com/owner/repo',
+                'PRIVATE-TOKEN:tok',
+            )
+        assert headers == {'PRIVATE-TOKEN': 'tok'}
+
+    def test_resolve_credentials_auth_param_equals_github(self):
+        """Equals-separated auth_param explicitly sets header and value for GitHub."""
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(
+                'https://github.com/owner/repo',
+                'Authorization=Bearer tok',
+            )
+        assert headers == {'Authorization': 'Bearer tok'}
+
+    def test_resolve_credentials_bare_token_github(self):
+        """Bare token for GitHub URL is wrapped as Authorization: Bearer <tok>."""
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(
+                'https://github.com/owner/repo',
+                'ghp_tok',
+            )
+        assert headers == {'Authorization': 'Bearer ghp_tok'}
+
+    @patch.dict('os.environ', {'GITHUB_TOKEN': 'env_tok'}, clear=True)
+    def test_resolve_credentials_env_github_token(self):
+        """GITHUB_TOKEN env var resolves to GitHub Authorization: Bearer header."""
+        headers = setup_environment.resolve_credentials('https://github.com/owner/repo', None)
+        assert headers == {'Authorization': 'Bearer env_tok'}
+
+    @patch.dict('os.environ', {'REPO_TOKEN': 'generic_tok'}, clear=True)
+    def test_resolve_credentials_env_repo_token_fallback_gitlab(self):
+        """REPO_TOKEN is used as a fallback when no repo-specific env var is set."""
+        headers = setup_environment.resolve_credentials('https://gitlab.com/owner/repo', None)
+        assert headers == {'PRIVATE-TOKEN': 'generic_tok'}
+
+    def test_resolve_credentials_never_prompts(self, monkeypatch):
+        """resolve_credentials NEVER calls input(), getpass.getpass(), or emits warnings."""
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError('resolve_credentials triggered interactive I/O')
+
+        monkeypatch.setattr('builtins.input', fail_if_called)
+        monkeypatch.setattr('getpass.getpass', fail_if_called)
+        monkeypatch.setattr('sys.stdin.isatty', lambda: True)
+
+        with patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.resolve_credentials(
+                'https://github.com/owner/repo',
+                None,
+            )
+        assert headers == {}
+
+    # --- prompt_for_credentials (5 tests) ---
+
+    @patch('sys.stdin.isatty', return_value=False)
+    def test_prompt_for_credentials_non_interactive_returns_empty(self, mock_isatty):
+        """In non-interactive terminals, returns {} without calling input()."""
+        with patch('builtins.input') as mock_input:
+            headers = setup_environment.prompt_for_credentials(
+                'https://github.com/owner/repo',
+                tokens_checked=['GITHUB_TOKEN', 'REPO_TOKEN'],
+            )
+        assert headers == {}
+        mock_input.assert_not_called()
+        mock_isatty.assert_called()
+
+    @patch('sys.stdin.isatty', return_value=True)
+    @patch('builtins.input', return_value='n')
+    def test_prompt_for_credentials_interactive_user_declines(self, mock_input, mock_isatty):
+        """When user answers 'n' to prompt, returns {}."""
+        headers = setup_environment.prompt_for_credentials(
+            'https://github.com/owner/repo',
+            tokens_checked=['GITHUB_TOKEN', 'REPO_TOKEN'],
+        )
+        assert headers == {}
+        mock_input.assert_called_once()
+        assert mock_isatty.return_value is True
+
+    @patch('sys.stdin.isatty', return_value=True)
+    @patch('builtins.input', return_value='y')
+    @patch('getpass.getpass', return_value='ghp_entered')
+    def test_prompt_for_credentials_interactive_accepts_github(
+        self,
+        mock_getpass,
+        mock_input,
+        mock_isatty,
+    ):
+        """Accepting the prompt and entering a GitHub token returns the Authorization header."""
+        headers = setup_environment.prompt_for_credentials(
+            'https://github.com/owner/repo',
+            tokens_checked=['GITHUB_TOKEN', 'REPO_TOKEN'],
+        )
+        assert headers == {'Authorization': 'Bearer ghp_entered'}
+        mock_input.assert_called_once()
+        mock_getpass.assert_called_once()
+        assert mock_isatty.return_value is True
+
+    @patch('sys.stdin.isatty', return_value=True)
+    @patch('builtins.input', return_value='y')
+    @patch('getpass.getpass', return_value='gl_entered')
+    def test_prompt_for_credentials_interactive_accepts_gitlab(
+        self,
+        mock_getpass,
+        mock_input,
+        mock_isatty,
+    ):
+        """Accepting the prompt and entering a GitLab token returns the PRIVATE-TOKEN header."""
+        headers = setup_environment.prompt_for_credentials(
+            'https://gitlab.com/owner/repo',
+            tokens_checked=['GITLAB_TOKEN', 'REPO_TOKEN'],
+        )
+        assert headers == {'PRIVATE-TOKEN': 'gl_entered'}
+        mock_input.assert_called_once()
+        mock_getpass.assert_called_once()
+        assert mock_isatty.return_value is True
+
+    @patch('sys.stdin.isatty', return_value=True)
+    @patch('builtins.input', side_effect=KeyboardInterrupt)
+    def test_prompt_for_credentials_ctrl_c_graceful(self, mock_input, mock_isatty):
+        """Ctrl+C during prompt returns {} without propagating KeyboardInterrupt."""
+        headers = setup_environment.prompt_for_credentials(
+            'https://github.com/owner/repo',
+            tokens_checked=['GITHUB_TOKEN', 'REPO_TOKEN'],
+        )
+        assert headers == {}
+        mock_input.assert_called_once()
+        assert mock_isatty.return_value is True
+
+    @patch('sys.stdin.isatty', return_value=True)
+    @patch('builtins.input', return_value='n')
+    def test_prompt_for_credentials_interactive_emits_url_bearing_warning(
+        self,
+        mock_input,
+        mock_isatty,
+    ):
+        """Interactive prompt emits 'Authentication required for {url}' warning with the URL."""
+        with patch('setup_environment.warning') as mock_warning:
+            setup_environment.prompt_for_credentials(
+                'https://github.com/owner/repo',
+                tokens_checked=['GITHUB_TOKEN', 'REPO_TOKEN'],
+            )
+
+        # Verify the new URL-bearing warning was emitted at least once with the full URL.
+        emitted_messages = [call.args[0] for call in mock_warning.call_args_list if call.args]
+        assert any(msg == 'Authentication required for https://github.com/owner/repo' for msg in emitted_messages), (
+            f'Expected new URL-bearing wording; got: {emitted_messages}'
+        )
+        # Verify the old wording is NOT emitted.
+        assert not any('Private' in msg and 'repository detected' in msg for msg in emitted_messages), (
+            f'Old wording leaked into output: {emitted_messages}'
+        )
+        mock_input.assert_called_once()
+        assert mock_isatty.return_value is True
+
+    @patch('sys.stdin.isatty', return_value=False)
+    def test_prompt_for_credentials_non_interactive_emits_url_bearing_info(self, mock_isatty):
+        """Non-interactive prompt emits 'Authentication required for {url}' info with the URL."""
+        with patch('setup_environment.info') as mock_info:
+            setup_environment.prompt_for_credentials(
+                'https://gitlab.com/ns/proj',
+                tokens_checked=['GITLAB_TOKEN', 'REPO_TOKEN'],
+            )
+
+        emitted_messages = [call.args[0] for call in mock_info.call_args_list if call.args]
+        assert any(msg == 'Authentication required for https://gitlab.com/ns/proj' for msg in emitted_messages), (
+            f'Expected new URL-bearing wording; got: {emitted_messages}'
+        )
+        # Verify the old wording is NOT emitted.
+        assert not any('Private' in msg and 'repository detected' in msg for msg in emitted_messages), (
+            f'Old wording leaked into output: {emitted_messages}'
+        )
+        mock_isatty.assert_called()
+
+    def test_prompt_for_credentials_no_repo_type_emits_nothing(self):
+        """Unknown repo type (detect_repo_type returns None): no warning, no info, no prompt."""
+        with (
+            patch('sys.stdin.isatty', return_value=True),
+            patch('builtins.input') as mock_input,
+            patch('setup_environment.warning') as mock_warning,
+            patch('setup_environment.info') as mock_info,
+        ):
+            headers = setup_environment.prompt_for_credentials(
+                'https://example.com/some/path',
+                tokens_checked=['REPO_TOKEN'],
+            )
+
+        assert headers == {}
+        mock_input.assert_not_called()
+        mock_warning.assert_not_called()
+        mock_info.assert_not_called()
+
+    # --- _env_tokens_checked_for_repo_type (2 tests) ---
+
+    def test_env_tokens_checked_github(self):
+        """GitHub repo type lists GITHUB_TOKEN then REPO_TOKEN."""
+        assert setup_environment._env_tokens_checked_for_repo_type('github') == [
+            'GITHUB_TOKEN',
+            'REPO_TOKEN',
+        ]
+
+    def test_env_tokens_checked_unknown(self):
+        """Unknown or None repo type lists only REPO_TOKEN."""
+        assert setup_environment._env_tokens_checked_for_repo_type('bitbucket') == ['REPO_TOKEN']
+        assert setup_environment._env_tokens_checked_for_repo_type(None) == ['REPO_TOKEN']
+
+    # --- Orchestrator delegation (2 tests) ---
+
+    def test_get_auth_headers_delegates_resolve_first(self):
+        """When resolve_credentials returns non-empty, prompt_for_credentials is NOT called."""
+        with (
+            patch.object(setup_environment, 'resolve_credentials', return_value={'X': 'y'}) as mock_resolve,
+            patch.object(setup_environment, 'prompt_for_credentials') as mock_prompt,
+        ):
+            result = setup_environment.get_auth_headers('https://github.com/owner/repo', None)
+        assert result == {'X': 'y'}
+        mock_resolve.assert_called_once_with('https://github.com/owner/repo', None)
+        mock_prompt.assert_not_called()
+
+    def test_get_auth_headers_escalates_to_prompt_when_resolve_empty(self):
+        """When resolve_credentials returns {}, prompt_for_credentials is invoked."""
+        with (
+            patch.object(setup_environment, 'resolve_credentials', return_value={}) as mock_resolve,
+            patch.object(
+                setup_environment,
+                'prompt_for_credentials',
+                return_value={'X': 'y'},
+            ) as mock_prompt,
+        ):
+            result = setup_environment.get_auth_headers('https://github.com/owner/repo', None)
+        assert result == {'X': 'y'}
+        mock_resolve.assert_called_once_with('https://github.com/owner/repo', None)
+        mock_prompt.assert_called_once()
+
+
 class TestBitbucketDetection:
     """Test Bitbucket repository detection."""
 
@@ -221,6 +469,67 @@ class TestBitbucketDetection:
         """Test Bitbucket URL detection."""
         assert setup_environment.detect_repo_type('https://bitbucket.org/user/repo') == 'bitbucket'
         assert setup_environment.detect_repo_type('https://api.bitbucket.org/2.0/repositories/') == 'bitbucket'
+
+
+class TestDetectRepoTypeHostname:
+    """Hostname-based classification edge cases for detect_repo_type().
+
+    Verifies that detect_repo_type() uses hostname parsing (urllib.parse.urlparse)
+    rather than raw substring matching, with explicit exclusion of GitHub Pages
+    (*.github.io) hosts from 'github' classification.
+    """
+
+    def test_detect_repo_type_github_pages_excluded(self):
+        """GitHub Pages project URL with subpath should return None."""
+        assert setup_environment.detect_repo_type(
+            'https://microsoft.github.io/playwright-cli/skills/x.md',
+        ) is None
+
+    def test_detect_repo_type_github_pages_root(self):
+        """GitHub Pages root URL should return None."""
+        assert setup_environment.detect_repo_type('https://microsoft.github.io/') is None
+
+    def test_detect_repo_type_apex_github_io(self):
+        """Apex github.io hostname (edge case) should return None."""
+        assert setup_environment.detect_repo_type('https://github.io/x') is None
+
+    def test_detect_repo_type_github_com_still_github(self):
+        """github.com URLs are still classified as 'github' after hardening."""
+        assert setup_environment.detect_repo_type('https://github.com/owner/repo') == 'github'
+
+    def test_detect_repo_type_raw_github_still_github(self):
+        """raw.githubusercontent.com URLs are still classified as 'github' after hardening."""
+        assert setup_environment.detect_repo_type(
+            'https://raw.githubusercontent.com/owner/repo/main/x.md',
+        ) == 'github'
+
+    def test_detect_repo_type_api_github_still_github(self):
+        """api.github.com URLs are still classified as 'github' after hardening."""
+        assert setup_environment.detect_repo_type(
+            'https://api.github.com/repos/owner/repo/contents/x.md',
+        ) == 'github'
+
+    def test_detect_repo_type_gitlab_still_gitlab(self):
+        """gitlab.com URLs are still classified as 'gitlab' after hardening."""
+        assert setup_environment.detect_repo_type(
+            'https://gitlab.com/ns/proj/-/raw/main/x.yaml',
+        ) == 'gitlab'
+
+    def test_detect_repo_type_self_hosted_gitlab(self):
+        """Self-hosted GitLab hostname (gitlab.example.com) is classified as 'gitlab'."""
+        assert setup_environment.detect_repo_type('https://gitlab.example.com/ns/p') == 'gitlab'
+
+    def test_detect_repo_type_bitbucket(self):
+        """Bitbucket URLs are classified as 'bitbucket' after hardening."""
+        assert setup_environment.detect_repo_type('https://bitbucket.org/owner/repo') == 'bitbucket'
+
+    def test_detect_repo_type_other(self):
+        """Unknown hosts return None."""
+        assert setup_environment.detect_repo_type('https://example.com/x') is None
+
+    def test_detect_repo_type_malformed_url(self):
+        """Malformed input (non-URL string) returns None gracefully."""
+        assert setup_environment.detect_repo_type('not a url') is None
 
 
 class TestConfigLoadingErrorPaths:

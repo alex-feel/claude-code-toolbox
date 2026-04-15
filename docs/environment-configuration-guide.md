@@ -1533,6 +1533,8 @@ Authentication is resolved in this order (highest priority first):
 - GitLab web URLs (`/-/raw/`) are automatically converted to API format
 - GitHub raw URLs are automatically converted to API URLs
 - Public access is attempted first; authentication is applied only on 401/403/404 responses
+- GitHub Pages URLs (`*.github.io`) are never treated as repository URLs -- no auth prompt is issued for them even on 404 responses
+- For GitHub 404 responses, the setup script probes `api.github.com/repos/{owner}/{repo}` unauthenticated to distinguish missing files in public repositories (no auth prompt) from private or nonexistent repositories (auth prompt)
 
 ### Automatic Auto-Update Management
 
