@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.16.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.15.1...v5.16.0) (2026-06-04)
+
+
+### Features
+
+* add xhigh effort level for Opus models ([57d331b](https://github.com/alex-feel/claude-code-toolbox/commit/57d331bdafcebcdbb3ea3ae60bbc58963fe2ab04))
+
 ## [5.15.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.15.0...v5.15.1) (2026-04-15)
 
 
