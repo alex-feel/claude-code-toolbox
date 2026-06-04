@@ -10293,7 +10293,7 @@ def main() -> None:
         # from both the isolated config.json and the shared settings.json.
         effort_level = config.get('effort-level')
         if effort_level is not None:
-            valid_effort_levels = ('low', 'medium', 'high', 'max')
+            valid_effort_levels = ('low', 'medium', 'high', 'xhigh', 'max')
             if effort_level not in valid_effort_levels:
                 warning(
                     f'Invalid effort-level value: {effort_level!r}. '

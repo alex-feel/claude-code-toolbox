@@ -604,15 +604,22 @@ Enable always-on extended thinking mode.
 
 Controls adaptive reasoning effort.
 
-- **Type:** `str | None` (one of `low`, `medium`, `high`, `max`)
+- **Type:** `str | None` (one of `low`, `medium`, `high`, `xhigh`, `max`)
 - **Default:** `None`
 - **Inheritance:** Standard override (child replaces parent)
 - **Values:**
   - `low` -- Minimal reasoning, fastest responses
   - `medium` -- Balanced reasoning and speed
   - `high` -- Thorough reasoning for complex tasks
-  - `max` -- Maximum reasoning effort. **Requires the model to be set to an Opus variant** (the model name must contain `opus`, case-insensitive)
+  - `xhigh` -- Extended reasoning for long-horizon coding and agentic work. **Requires the model to be set to an Opus variant** (the model name must contain `opus`, case-insensitive). Supported on Opus 4.7/4.8; on Opus models that do not support it, Claude Code runs it as `high`
+  - `max` -- Maximum reasoning effort. **Requires the model to be set to an Opus variant** (the model name must contain `opus`, case-insensitive). Supported on Opus 4.6 and later
 - **Example:**
+
+```yaml
+# xhigh requires Opus
+model: "opus"
+effort-level: "xhigh"
+```
 
 ```yaml
 # max requires Opus
@@ -621,9 +628,11 @@ effort-level: "max"
 ```
 
 ```yaml
-# high works with any model
+# low, medium, and high work with any model
 effort-level: "high"
 ```
+
+> **Note:** `ultracode` is **not** an `effort-level` value. It is a session-only Claude Code mode (set with `/effort ultracode` or the `ultracode` session flag) and is intentionally not accepted here, because this key writes the `effortLevel` setting, which accepts only `low`, `medium`, `high`, `xhigh`, and `max`.
 
 ### Permissions
 
@@ -2140,13 +2149,13 @@ The `merge-keys` directive controls merge semantics during inheritance resolutio
 
 Both `command-names` and `command-defaults` must be specified together. Provide both or neither.
 
-### effort-level 'max' requires model to be specified
+### effort-level 'xhigh'/'max' requires an Opus model
 
-The `max` effort level requires the `model` key to be set to an Opus variant:
+The `xhigh` and `max` effort levels require the `model` key to be set to an Opus variant (the model name must contain `opus`, case-insensitive):
 
 ```yaml
 model: "opus"
-effort-level: "max"
+effort-level: "max"   # or "xhigh"
 ```
 
 ### Invalid platform keys in dependencies

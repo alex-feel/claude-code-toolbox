@@ -773,11 +773,11 @@ class EnvironmentConfig(BaseModel):
         alias='always-thinking-enabled',
         description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
     )
-    effort_level: Literal['low', 'medium', 'high', 'max'] | None = Field(
+    effort_level: Literal['low', 'medium', 'high', 'xhigh', 'max'] | None = Field(
         None,
         alias='effort-level',
         description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity. '
-        'The "max" level is only available for Opus models.',
+        'The "xhigh" and "max" levels are only available for Opus models.',
     )
     install_nodejs: bool | None = Field(
         None,
@@ -1162,20 +1162,33 @@ class EnvironmentConfig(BaseModel):
         return self
 
     @model_validator(mode='after')
-    def validate_effort_level_max(self) -> 'EnvironmentConfig':
-        """Validate that effort_level 'max' is only used with Opus models."""
-        if self.effort_level != 'max':
+    def validate_effort_level_opus_only(self) -> 'EnvironmentConfig':
+        """Validate that effort_level 'xhigh' and 'max' are only used with Opus models.
+
+        Both 'xhigh' and 'max' are Opus-only effort levels ('xhigh' on Opus 4.7/4.8,
+        'max' on Opus 4.6+). The free-form model field cannot resolve which Opus
+        version an alias points to, so the gate checks for the 'opus' substring;
+        Claude Code gracefully downgrades an unsupported level to the highest
+        supported level at runtime (for example, 'xhigh' runs as 'high' on Opus 4.6).
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If 'xhigh'/'max' is set without a model or with a non-Opus model.
+        """
+        if self.effort_level not in ('xhigh', 'max'):
             return self
 
         if self.model is None:
             raise ValueError(
-                "effort-level 'max' requires model to be specified. "
-                "The 'max' effort level is only available for Opus models.",
+                f"effort-level '{self.effort_level}' requires model to be specified. "
+                f"The '{self.effort_level}' effort level is only available for Opus models.",
             )
 
         if 'opus' not in self.model.lower():
             raise ValueError(
-                f"effort-level 'max' is only available for Opus models, "
+                f"effort-level '{self.effort_level}' is only available for Opus models, "
                 f"but model is set to '{self.model}'. "
                 "Use 'low', 'medium', or 'high' for non-Opus models.",
             )
