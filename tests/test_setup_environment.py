@@ -3571,6 +3571,23 @@ class TestCreateSettings:
             assert 'effortLevel' in settings
             assert settings['effortLevel'] == 'max'
 
+    def test_create_profile_config_effort_level_xhigh(self):
+        """Test effortLevel set to xhigh."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            result = setup_environment.create_profile_config(
+                {'effortLevel': 'xhigh'},
+                claude_dir,
+            )
+
+            assert result is True
+            settings_file = claude_dir / 'config.json'
+            settings = json.loads(settings_file.read_text())
+
+            assert 'effortLevel' in settings
+            assert settings['effortLevel'] == 'xhigh'
+
     def test_create_profile_config_effort_level_none_not_included(self):
         """Test effortLevel not included when absent from profile_config."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5001,6 +5018,74 @@ class TestMainFunction:
         # profile_config is the first positional argument
         profile_config = call_args[0][0]
         assert 'effortLevel' not in profile_config
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.process_skills')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_profile_config')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('pathlib.Path.mkdir')
+    def test_main_xhigh_effort_level_not_stripped(
+        self,
+        mock_mkdir: MagicMock,
+        mock_cleanup_stale_marker: MagicMock,
+        mock_write_manifest: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """main() keeps 'xhigh' effort-level (valid value is not stripped)."""
+        # Mocks required by @patch decorators but not directly asserted
+        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
+        del mock_cleanup_stale_marker, mock_write_manifest
+        mock_load.return_value = (
+            {
+                'name': 'Effort Level Test',
+                'command-names': ['test-cmd'],
+                'model': 'opus',
+                'effort-level': 'xhigh',  # Valid value (Opus-only)
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
+        mock_register.return_value = True
+
+        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        captured = capsys.readouterr()
+        assert 'Invalid effort-level value' not in captured.out
+
+        # Verify create_profile_config receives a profile_config that retains
+        # the effortLevel entry set to 'xhigh' (valid values pass through the
+        # runtime allowlist without being stripped).
+        mock_settings.assert_called_once()
+        call_args = mock_settings.call_args
+        # profile_config is the first positional argument
+        profile_config = call_args[0][0]
+        assert profile_config.get('effortLevel') == 'xhigh'
 
 
 class TestDownloadFailureTracking:

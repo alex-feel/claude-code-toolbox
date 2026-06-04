@@ -127,7 +127,7 @@ Global commands (e.g., `claude-python`) work across all Windows shells: shared P
 
 Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` defines the complete structure for environment YAML configurations. This repository is the canonical source; changes are synced to downstream repos.
 
-**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_effort_level_max` (effort-level `max` requires Opus model), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
+**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_effort_level_opus_only` (effort-level `xhigh`/`max` require an Opus model), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
 
 **Field validators**: `validate_model` accepts any non-empty string (supports Anthropic models, third-party models, and provider-prefixed identifiers). `validate_env_variables` and `validate_os_env_variables` both enforce key format `^[A-Za-z_][A-Za-z0-9_]*$` and reject null bytes in values.
 

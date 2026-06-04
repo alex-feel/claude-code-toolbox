@@ -20,7 +20,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **System prompts** -- replace or append to the default Claude Code prompt
 - **Hooks** -- four hook types: command (shell scripts), HTTP (webhooks), prompt (LLM evaluation), and agent (subagent with tools)
 - **Permissions** -- fine-grained allow, deny, and ask rules for Claude Code tools and actions
-- **Model and reasoning control** -- model selection, effort levels (low, medium, high, max), thinking mode
+- **Model and reasoning control** -- model selection, effort levels (low, medium, high, xhigh, max), thinking mode
 - **User and global settings** -- direct control over `settings.json` and `~/.claude.json`
 - **Status line** -- custom status bar scripts for real-time session information
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge

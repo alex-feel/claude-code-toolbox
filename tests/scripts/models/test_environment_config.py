@@ -1340,6 +1340,109 @@ class TestEffortLevel:
         })
         assert config.effort_level == 'high'
 
+    def test_effort_level_xhigh_with_opus_alias(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'opus'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'opus',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_opus_1m_alias(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'opus[1m]'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'opus[1m]',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_opusplan_alias(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'opusplan'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'opusplan',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_claude_opus_4_7_model(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'claude-opus-4-7'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-opus-4-7',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_claude_opus_4_8_model(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'claude-opus-4-8'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-opus-4-8',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_rejected_with_sonnet_model(self) -> None:
+        """effort-level 'xhigh' rejected when model is 'sonnet'."""
+        with pytest.raises(ValidationError, match='only available for Opus models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'sonnet',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_xhigh_rejected_with_haiku_model(self) -> None:
+        """effort-level 'xhigh' rejected when model is 'haiku'."""
+        with pytest.raises(ValidationError, match='only available for Opus models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'haiku',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_xhigh_rejected_with_claude_sonnet_model(self) -> None:
+        """effort-level 'xhigh' rejected when model is 'claude-sonnet-4-6'."""
+        with pytest.raises(ValidationError, match='only available for Opus models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'claude-sonnet-4-6',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_xhigh_rejected_without_model(self) -> None:
+        """effort-level 'xhigh' rejected when model is not specified."""
+        with pytest.raises(ValidationError, match='requires model to be specified'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_xhigh_rejected_with_default_model(self) -> None:
+        """effort-level 'xhigh' rejected when model is 'default'."""
+        with pytest.raises(ValidationError, match='only available for Opus models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'default',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_ultracode_rejected(self) -> None:
+        """effort-level 'ultracode' rejected: it is not an effortLevel value.
+
+        'ultracode' is a session-only Claude Code mode (set via /effort ultracode
+        or the 'ultracode' session flag), not a value accepted in the effortLevel
+        setting that this toolbox writes. It must never be an accepted effort-level.
+        """
+        with pytest.raises(ValidationError):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'opus',
+                'effort-level': 'ultracode',
+            })
+
 
 class TestVersionValidation:
     """Test version field validation (semantic versioning)."""
