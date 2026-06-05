@@ -11,11 +11,33 @@ repos:
 
 - repo: local
   hooks:
-    - id: ty
-      name: ty (uv)
+    - id: ty-windows
+      name: ty windows (uv)
       language: system
       entry: uv
-      args: ['run', '--frozen', '--group', 'dev', '--', 'ty', 'check']
+      args: ['run', '--frozen', '--group', 'dev', '--', 'ty', 'check', '--python-platform', 'windows']
+      pass_filenames: false
+      always_run: true
+      types_or: [python, pyi]
+
+- repo: local
+  hooks:
+    - id: ty-darwin
+      name: ty darwin (uv)
+      language: system
+      entry: uv
+      args: ['run', '--frozen', '--group', 'dev', '--', 'ty', 'check', '--python-platform', 'darwin']
+      pass_filenames: false
+      always_run: true
+      types_or: [python, pyi]
+
+- repo: local
+  hooks:
+    - id: ty-linux
+      name: ty linux (uv)
+      language: system
+      entry: uv
+      args: ['run', '--frozen', '--group', 'dev', '--', 'ty', 'check', '--python-platform', 'linux']
       pass_filenames: false
       always_run: true
       types_or: [python, pyi]

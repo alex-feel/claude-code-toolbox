@@ -9983,8 +9983,11 @@ def _is_windows_reparse_point(link_path: Path) -> bool:
     import stat as stat_module
 
     try:
-        attrs = os.lstat(link_path).st_file_attributes
-    except (OSError, AttributeError):
+        # Access the Windows-only st_file_attributes via getattr so type
+        # checkers do not fail on non-Windows platforms, where the attribute is
+        # absent (defaulting to 0, i.e. no reparse-point bit).
+        attrs = getattr(os.lstat(link_path), 'st_file_attributes', 0)
+    except OSError:
         return False
     return bool(attrs & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
 
@@ -10066,12 +10069,22 @@ def link_projects_directory(artifact_base_dir: Path) -> bool:
         # this purpose. dst (link_path) must not pre-exist, which the state
         # resolution above guarantees.
         if is_windows:
-            try:
-                import _winapi
+            import _winapi
 
-                _winapi.CreateJunction(str(base_projects), str(link_path))
-            except (OSError, AttributeError) as junction_error:
-                warning(f'CreateJunction failed ({junction_error}); falling back to mklink /J')
+            # Access the Windows-only CreateJunction via getattr so type
+            # checkers do not fail on non-Windows platforms. When it is present,
+            # attempt it first; if it is unavailable or raises, fall back to
+            # mklink /J.
+            create_junction = getattr(_winapi, 'CreateJunction', None)
+            junction_error: OSError | None = None
+            if create_junction is not None:
+                try:
+                    create_junction(str(base_projects), str(link_path))
+                except OSError as error:
+                    junction_error = error
+            if create_junction is None or junction_error is not None:
+                reason = junction_error if junction_error is not None else 'CreateJunction is unavailable'
+                warning(f'CreateJunction failed ({reason}); falling back to mklink /J')
                 subprocess.run(
                     ['cmd', '/c', 'mklink', '/J', str(link_path), str(base_projects)],
                     check=True,
