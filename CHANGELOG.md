@@ -1,5 +1,17 @@
 # Changelog
 
+## [5.17.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.16.0...v5.17.0) (2026-06-05)
+
+
+### Features
+
+* export setup-time CLAUDE_CONFIG_DIR and add link-projects-dir for isolated profiles ([3d61280](https://github.com/alex-feel/claude-code-toolbox/commit/3d6128034f90ff45748d1a180bf49dda396fe2ff))
+
+
+### Bug Fixes
+
+* resolve ty unresolved-attribute errors for Windows-only stdlib on Linux CI ([86ae211](https://github.com/alex-feel/claude-code-toolbox/commit/86ae211f5ebda751ad40bede16f3250f50e29c3d))
+
 ## [5.16.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.15.1...v5.16.0) (2026-06-04)
 
 
