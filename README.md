@@ -24,6 +24,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **User and global settings** -- direct control over `settings.json` and `~/.claude.json`
 - **Status line** -- custom status bar scripts for real-time session information
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
+- **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
 - **File downloads** -- arbitrary files downloaded to specified destinations during setup
 - **Private repository support** -- GitHub and GitLab authentication with token-based access

@@ -110,6 +110,10 @@ Scope-based routing: `command-names` presence in the final resolved config deter
 
 The launcher (`launch.sh`) passes `config.json` via `--settings` flag and sets `export CLAUDE_CONFIG_DIR` to the isolated directory.
 
+**Setup-time `CLAUDE_CONFIG_DIR` export (two orthogonal channels):** `main()` exports `os.environ['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)` (guarded by `if primary_command_name:`) immediately after the `artifact_base_dir` if/else block, before deriving artifact directories. This is process-scoped and transient -- never written to `config.json` -- so setup-time child processes (dependency installers, `npx` tooling, `claude mcp ...`, IDE-extension installer) target the isolated profile. This is distinct from the runtime launcher export above (the authoritative runtime source) and from the six per-call MCP `CLAUDE_CONFIG_DIR` injections in `configure_mcp_server()` (load-bearing on the Windows curated-`extra_env` path, which does not inherit `os.environ`; all six are KEPT).
+
+**`link-projects-dir` (optional, isolated-only):** When `config.get('link-projects-dir')` is truthy, Step 22 (end of the `if primary_command_name:` branch in `main()`) calls `link_projects_directory(artifact_base_dir)`, which links `~/.claude/{cmd}/projects/` to the base `~/.claude/projects/` (Unix `symlink_to(..., target_is_directory=True)`; Windows `_winapi.CreateJunction` primary with `mklink /J` fallback). Reparse-aware detection (`os.lstat().st_file_attributes & FILE_ATTRIBUTE_REPARSE_POINT`, NOT `Path.is_symlink()` on Windows), idempotent, non-clobbering (a real non-empty `projects/` is preserved with a warning), non-fatal (returns `False` on failure). Helpers: `_is_windows_reparse_point`, `_link_targets_base`. The `link_projects_dir` model field requires `command-names` (validator above).
+
 ### Platform-Conditional Tilde Expansion in Settings
 
 `_expand_tilde_keys_in_settings()` handles tilde (`~`) paths in settings keys defined in `TILDE_EXPANSION_KEYS` (`apiKeyHelper`, `awsCredentialExport`):
@@ -127,7 +131,7 @@ Global commands (e.g., `claude-python`) work across all Windows shells: shared P
 
 Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` defines the complete structure for environment YAML configurations. This repository is the canonical source; changes are synced to downstream repos.
 
-**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_effort_level_opus_only` (effort-level `xhigh`/`max` require an Opus model), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
+**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_effort_level_opus_only` (effort-level `xhigh`/`max` require an Opus model), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_link_projects_dir_requires_command_names` (link-projects-dir requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
 
 **Field validators**: `validate_model` accepts any non-empty string (supports Anthropic models, third-party models, and provider-prefixed identifiers). `validate_env_variables` and `validate_os_env_variables` both enforce key format `^[A-Za-z_][A-Za-z0-9_]*$` and reject null bytes in values.
 

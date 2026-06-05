@@ -95,6 +95,8 @@ exec claude --append-system-prompt "$PROMPT_CONTENT" --settings "$SETTINGS_WIN" 
 
 This script is saved as `~/.claude/{command_name}/launch.sh` and called by all launchers.
 
+> **Two `CLAUDE_CONFIG_DIR` channels:** The `export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"` line in the launcher is the **runtime** channel -- it isolates the Claude Code session (and any tools it spawns) when you run the command. It is the sole authoritative runtime source. There is a separate, orthogonal **setup-time** channel: `setup_environment.py` exports `CLAUDE_CONFIG_DIR` into its own process environment during installation so that child processes it spawns (dependency installers, `npx`-based tooling, `claude mcp ...`, the IDE-extension installer) target the isolated profile directory. The setup-time export is transient, process-scoped, and never written to disk; it governs only installation-time processes, while the launcher export governs runtime. See [Setup-Time `CLAUDE_CONFIG_DIR` Export](environment-configuration-guide.md#setup-time-claude_config_dir-export) in the Environment Configuration Guide for the full picture.
+
 ### Implementation for Each Shell
 
 #### PowerShell Wrapper (`~/.claude/claude-python/start.ps1`)

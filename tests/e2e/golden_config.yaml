@@ -36,6 +36,10 @@ claude-code-version: "latest"
 # Node.js installation flag
 install-nodejs: false
 
+# Link the isolated profile's projects/ dir to the base ~/.claude/projects/
+# (isolated profiles only; requires command-names)
+link-projects-dir: true
+
 # Platform-specific dependencies
 dependencies:
   common:
