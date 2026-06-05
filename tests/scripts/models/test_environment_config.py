@@ -1963,6 +1963,50 @@ class TestVersionRequiresCommandNames:
         assert config.version is None
 
 
+class TestLinkProjectsDirRequiresCommandNames:
+    """Tests for link-projects-dir + command-names cross-field validation."""
+
+    def test_link_projects_dir_without_command_names_raises(self) -> None:
+        """link-projects-dir true without command-names raises ValueError."""
+        with pytest.raises(ValidationError, match='link-projects-dir requires command-names'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'link-projects-dir': True,
+            })
+
+    def test_link_projects_dir_with_empty_command_names_raises(self) -> None:
+        """link-projects-dir true with empty command-names list raises ValueError."""
+        with pytest.raises(ValidationError, match='link-projects-dir requires command-names'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'link-projects-dir': True,
+                'command-names': [],
+            })
+
+    def test_link_projects_dir_with_command_names_valid(self) -> None:
+        """link-projects-dir true with command-names passes validation."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'link-projects-dir': True,
+            'command-names': ['my-cmd'],
+            'command-defaults': {'system-prompt': 'test.md'},
+        })
+        assert config.link_projects_dir is True
+
+    def test_link_projects_dir_false_without_command_names_valid(self) -> None:
+        """link-projects-dir false without command-names is valid (falsy is off)."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'link-projects-dir': False,
+        })
+        assert config.link_projects_dir is False
+
+    def test_no_link_projects_dir_without_command_names_valid(self) -> None:
+        """Omitting link-projects-dir without command-names is valid (defaults to None)."""
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
+        assert config.link_projects_dir is None
+
+
 class TestMergeKeysRequiresInherit:
     """Tests for merge-keys + inherit cross-field validation."""
 

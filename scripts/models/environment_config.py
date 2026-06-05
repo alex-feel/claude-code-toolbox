@@ -784,6 +784,13 @@ class EnvironmentConfig(BaseModel):
         alias='install-nodejs',
         description='Whether to install Node.js LTS before processing dependencies (default: False)',
     )
+    link_projects_dir: bool | None = Field(
+        None,
+        alias='link-projects-dir',
+        description="When true (isolated profiles only), link the isolated profile's "
+        'projects/ directory to the base ~/.claude/projects/ so the isolated and base '
+        'Claude share session history. Default False keeps them separate. Requires command-names.',
+    )
     claude_code_version: str | None = Field(
         None,
         alias='claude-code-version',
@@ -1215,6 +1222,30 @@ class EnvironmentConfig(BaseModel):
                 'The version field controls update checking via manifest.json '
                 'and launcher scripts, which are only created when command-names '
                 'is present. Either add command-names or remove version.',
+            )
+        return self
+
+    @model_validator(mode='after')
+    def validate_link_projects_dir_requires_command_names(self) -> 'EnvironmentConfig':
+        """Validate that link-projects-dir requires command-names to be present.
+
+        The base ~/.claude/projects/ is already what the non-isolated Claude uses,
+        so linking only makes sense for an isolated profile (created only when
+        command-names is specified).
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If link-projects-dir is truthy without command-names.
+        """
+        if self.link_projects_dir and not self.command_names:
+            raise ValueError(
+                'link-projects-dir requires command-names to be specified. '
+                'The projects/ link binds an isolated profile to the base '
+                '~/.claude/projects/, and isolated profiles exist only when '
+                'command-names is present. Either add command-names or remove '
+                'link-projects-dir.',
             )
         return self
 

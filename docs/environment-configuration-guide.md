@@ -143,6 +143,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths                       |
 | [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"`                 |
 | [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies                    |
+| [`link-projects-dir`](#link-projects-dir)             | `bool`                 | No*      | `None`  | Link isolated `projects/` to base `~/.claude/projects/`    |
 | [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands                      |
 | [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                                  |
 | [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                                   |
@@ -165,6 +166,8 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration                           |
 
 > `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
+>
+> `link-projects-dir` requires `command-names`: setting `link-projects-dir: true` without `command-names` produces a validation error, because the projects link only applies to an isolated profile (created only when `command-names` is present).
 
 ### Configuration key naming
 
@@ -355,6 +358,31 @@ Install Node.js LTS before processing dependencies. Used when MCP servers or too
 - **Note:** When `true`, only checks the minimum Node.js version (>= 18.0.0), not Claude Code npm compatibility
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `install-nodejs: true`
+
+#### `link-projects-dir`
+
+Link the isolated profile's `projects/` directory to the base `~/.claude/projects/` so that the isolated profile (for example, `aegis`) and the default Claude share the same session history. By default (`None`/`false`), the two are kept separate -- the isolated profile uses its own `~/.claude/{cmd}/projects/` and sees a different set of conversations than the default Claude.
+
+- **Type:** `bool | None`
+- **Default:** `None` (no link; isolated and default Claude keep separate `projects/` directories)
+- **Requires:** `command-names`. Setting `link-projects-dir: true` without `command-names` produces a validation error, because the link only makes sense for an isolated profile.
+- **Mechanism:** Creates the base `~/.claude/projects/` first if absent, then links `~/.claude/{cmd}/projects/` to it -- a symbolic link on Linux/macOS, a directory junction on Windows (created elevation-free via `_winapi.CreateJunction`, with `mklink /J` as a fallback).
+- **Idempotent and non-clobbering:** An existing correct link is left as-is (no-op). A real, non-empty `projects/` directory in the isolated profile is preserved and the link is skipped (with a warning) to avoid losing any session history already written there. A stale or incorrect link, or an empty real directory, is replaced.
+- **Disabling the link:** Setting `link-projects-dir: false` (or removing the key) on a later run does NOT automatically tear down an existing link. To revert to separate directories, remove the link manually: delete `~/.claude/{cmd}/projects/` (on Windows, removing the junction with `rmdir` deletes only the link, not the shared target's contents).
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:**
+
+```yaml
+command-names:
+  - "aegis"
+
+command-defaults:
+  system-prompt: "prompts/aegis.md"
+  mode: "append"
+
+# Share session history with the default Claude
+link-projects-dir: true
+```
 
 #### `dependencies`
 
@@ -549,7 +577,7 @@ mcp-servers:
     url: "http://localhost:3000/api"
 ```
 
-> **Isolated environments:** When `command-names` creates an isolated environment, `scope: user` MCP servers are configured with `CLAUDE_CONFIG_DIR` pointing to the isolated directory. This ensures `claude mcp add --scope user` writes to the isolated `.claude.json` instead of the home-directory one.
+> **Isolated environments:** When `command-names` creates an isolated environment, `scope: user` MCP servers are configured with `CLAUDE_CONFIG_DIR` pointing to the isolated directory. This ensures `claude mcp add --scope user` writes to the isolated `.claude.json` instead of the home-directory one. This per-call injection is one of the two `CLAUDE_CONFIG_DIR` channels described in [Setup-Time `CLAUDE_CONFIG_DIR` Export](#setup-time-claude_config_dir-export).
 
 #### The `env` Field
 
@@ -1685,6 +1713,21 @@ The setup script determines the configuration source by checking in this order:
 2. **Local file:** Contains path separators (`/`, `\`), starts with `./` or `../`, is an absolute path, or the file exists on disk -- loaded from the local filesystem
 3. **Repository config:** Everything else -- `.yaml` is added if missing, then fetched from `https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/{name}.yaml`
 
+### Setup-Time `CLAUDE_CONFIG_DIR` Export
+
+When `command-names` creates an isolated profile, the setup script exports `CLAUDE_CONFIG_DIR` into its own process environment (set to the isolated profile directory, for example `~/.claude/{cmd}`) early in `main()`, before any resources are processed. Child processes spawned during setup -- dependency installers, `npx`-based tooling, `claude mcp ...` calls, and the IDE-extension installer -- inherit this value and therefore resolve against the isolated profile directory instead of the default `~/.claude/`. For example, `npx <skill-installer>` launched during setup installs into the isolated profile rather than the home-directory Claude.
+
+This setup-time export is transient and process-scoped: it lives only for the duration of the setup process and is deliberately never written to `config.json` or any other on-disk settings file. It exists purely so setup-time child processes target the correct directory.
+
+The two `CLAUDE_CONFIG_DIR` channels are orthogonal and serve different lifetimes:
+
+| Channel                          | When it applies            | Scope                                          | Source                                                |
+|----------------------------------|----------------------------|------------------------------------------------|-------------------------------------------------------|
+| Setup-time process export        | During `setup_environment` | Child processes spawned by the setup script    | `os.environ['CLAUDE_CONFIG_DIR']` set in `main()`     |
+| Runtime launcher export          | When you run the command   | The launched Claude Code session and its tools | `export CLAUDE_CONFIG_DIR` in the generated launcher  |
+
+The runtime launcher export (documented in [Cross-Shell Launcher Architecture](cross-shell-launcher-architecture.md)) remains the sole authoritative runtime source. The setup-time export only governs processes started during installation. The per-call MCP `CLAUDE_CONFIG_DIR` injection (see the [Isolated environments](#scope-options) note under MCP Servers) is retained independently, because the Windows MCP code path builds a curated environment for child processes rather than inheriting the full `os.environ`.
+
 ### Cross-Shell Command Registration (Windows)
 
 On Windows, the setup creates global commands that work across all shells (PowerShell, CMD, Git Bash) through a set of launcher and wrapper scripts:
@@ -1721,8 +1764,9 @@ Here is a conceptual overview of what the setup script does when you run it with
 19. **Write manifest** -- Creates an installation tracking manifest. (Only if `command-names` is specified.)
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
+22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
 
-Step 17 is skipped if no hooks, hook files, or status-line file are configured. Step 18 is a no-op if the profile delta is empty (no profile-owned keys declared at YAML root level). Steps 19-21 are skipped if `command-names` is not specified.
+Step 17 is skipped if no hooks, hook files, or status-line file are configured. Step 18 is a no-op if the profile delta is empty (no profile-owned keys declared at YAML root level). Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
 
 ## Profile-Level Settings Routing
 
@@ -1975,6 +2019,9 @@ base-url: "https://raw.githubusercontent.com/myorg/my-configs/main"
 # Install Node.js for MCP servers that need npx
 install-nodejs: true
 
+# Share session history between this isolated profile and the default Claude
+link-projects-dir: true
+
 # Platform-specific dependencies
 dependencies:
   common:
@@ -2148,6 +2195,10 @@ The `merge-keys` directive controls merge semantics during inheritance resolutio
 ### command-defaults requires command-names
 
 Both `command-names` and `command-defaults` must be specified together. Provide both or neither.
+
+### link-projects-dir requires command-names
+
+The `link-projects-dir` flag links an isolated profile's `projects/` directory to the base `~/.claude/projects/`, and isolated profiles exist only when `command-names` is present. Either add `command-names` or remove `link-projects-dir`.
 
 ### effort-level 'xhigh'/'max' requires an Opus model
 

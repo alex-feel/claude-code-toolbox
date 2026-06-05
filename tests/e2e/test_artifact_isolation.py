@@ -7,9 +7,12 @@ launcher scripts) remain in the standard ~/.claude/ directory.
 """
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from scripts import setup_environment
 
@@ -217,3 +220,70 @@ class TestConfigDirIsolation:
         env_block = settings.get('env', {})
         # OTHER_VAR should be present
         assert env_block.get('OTHER_VAR') == 'keep_this'
+
+    def test_setup_exports_claude_config_dir_for_children(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify isolated setup exports CLAUDE_CONFIG_DIR into the process env.
+
+        Child processes spawned during setup (dependency installers, npx-based
+        tooling, ``claude mcp ...``) inherit os.environ, so the setup-time export
+        of CLAUDE_CONFIG_DIR makes them resolve against the isolated profile
+        directory. The value must equal ``str(artifact_base_dir)`` -- the same
+        form the runtime launcher exports.
+
+        Drives the production ``export_setup_time_config_dir`` (the same function
+        ``main()`` invokes), so a regression in the production export value or
+        guard is caught here.
+        """
+        paths = _run_isolated_setup(e2e_isolated_home, golden_config)
+        artifact_base = paths.artifact_base_dir
+
+        # Start from a clean slate; monkeypatch auto-restores after the test.
+        monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+
+        # Drive the real production export path (isolated profile -> exported).
+        exported = setup_environment.export_setup_time_config_dir(
+            paths.primary_command_name,
+            artifact_base,
+        )
+
+        assert exported == str(artifact_base), (
+            'Isolated setup must return the exported CLAUDE_CONFIG_DIR value'
+        )
+        assert os.environ.get('CLAUDE_CONFIG_DIR') == str(artifact_base), (
+            'Isolated setup must export CLAUDE_CONFIG_DIR equal to artifact_base_dir'
+        )
+
+    def test_setup_does_not_export_claude_config_dir_without_command_names(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Verify non-isolated setup does NOT export CLAUDE_CONFIG_DIR.
+
+        Without command-names there is no isolated profile, so the setup-time
+        export guard (primary_command_name falsy) is skipped and the process env
+        gains no CLAUDE_CONFIG_DIR from setup.
+
+        Drives the production ``export_setup_time_config_dir`` so a regression
+        weakening the guard is caught here.
+        """
+        claude_dir = e2e_isolated_home['claude_dir']
+
+        # Clean slate; monkeypatch auto-restores after the test.
+        monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+
+        # Drive the real production export path with no isolated profile
+        # (primary_command_name is None); the guard must skip the export.
+        exported = setup_environment.export_setup_time_config_dir(None, claude_dir)
+
+        assert exported is None, (
+            'Non-isolated setup must not return an exported value'
+        )
+        assert 'CLAUDE_CONFIG_DIR' not in os.environ, (
+            'Non-isolated setup must NOT export CLAUDE_CONFIG_DIR'
+        )

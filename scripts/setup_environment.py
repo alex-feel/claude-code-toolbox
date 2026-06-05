@@ -107,6 +107,7 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'base-url',
     'claude-code-version',
     'install-nodejs',
+    'link-projects-dir',
     'dependencies',
     'description',
     'agents',
@@ -9965,6 +9966,177 @@ exec "{bash_script_path}" "$@"
         return False
 
 
+def _is_windows_reparse_point(link_path: Path) -> bool:
+    """Return True if link_path is a Windows reparse point (junction or symlink).
+
+    Windows directory junctions report ``Path.is_symlink() == False`` while
+    ``Path.is_dir() == True``, so junctions cannot be detected with
+    ``Path.is_symlink()``. The reparse-point bit in the file attributes is the
+    reliable signal for both junctions and symlinks.
+
+    Args:
+        link_path: The path to inspect.
+
+    Returns:
+        True if the path exists and carries the reparse-point attribute.
+    """
+    import stat as stat_module
+
+    try:
+        # Access the Windows-only st_file_attributes via getattr so type
+        # checkers do not fail on non-Windows platforms, where the attribute is
+        # absent (defaulting to 0, i.e. no reparse-point bit).
+        attrs = getattr(os.lstat(link_path), 'st_file_attributes', 0)
+    except OSError:
+        return False
+    return bool(attrs & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _link_targets_base(link_path: Path, base_projects: Path) -> bool:
+    """Return True if the existing link at link_path resolves to base_projects.
+
+    Args:
+        link_path: The link (symlink or junction) to inspect.
+        base_projects: The expected target directory.
+
+    Returns:
+        True if the link resolves to base_projects, False otherwise.
+    """
+    try:
+        return Path(os.readlink(link_path)).resolve() == base_projects.resolve()
+    except OSError:
+        # Some junctions are not readable via os.readlink on all configurations;
+        # fall back to resolving the path itself.
+        try:
+            return link_path.resolve() == base_projects.resolve()
+        except OSError:
+            return False
+
+
+def link_projects_directory(artifact_base_dir: Path) -> bool:
+    """Link an isolated profile's projects/ dir to the base ~/.claude/projects/.
+
+    Creates the base ~/.claude/projects/ first if absent, then creates a link at
+    artifact_base_dir/projects pointing to it: a symlink on Unix, a directory
+    junction on Windows (elevation-free). Idempotent and non-clobbering: an
+    existing correct link is a no-op; a real non-empty directory is preserved
+    (warn + skip) to protect any session history already written there.
+
+    Args:
+        artifact_base_dir: The isolated profile's base directory
+            (e.g. ~/.claude/{command_name}).
+
+    Returns:
+        True on success or benign skip; False on failure (non-fatal to setup).
+    """
+    is_windows = platform.system() == 'Windows'
+
+    try:
+        base_projects = get_real_user_home() / '.claude' / 'projects'
+        link_path = artifact_base_dir / 'projects'
+        base_projects.mkdir(parents=True, exist_ok=True)
+
+        # Resolve the current state of link_path: existing correct link (no-op),
+        # stale/incorrect link (replace), real non-empty dir (preserve), real
+        # empty dir (replace), or absent (create).
+        is_link = _is_windows_reparse_point(link_path) if is_windows else link_path.is_symlink()
+        if is_link:
+            if _link_targets_base(link_path, base_projects):
+                info(f'projects/ already linked to {base_projects} (no-op)')
+                return True
+            # Stale or incorrect link: remove only the link, never its target.
+            if is_windows:
+                os.rmdir(link_path)
+            else:
+                link_path.unlink()
+        elif link_path.exists():
+            # A real (non-link) path exists. Preserve real non-empty directories
+            # to protect any session history; replace only empty directories.
+            if link_path.is_dir() and any(link_path.iterdir()):
+                warning(
+                    f'A real projects directory already exists at {link_path}; '
+                    'preserving it and skipping the link to avoid data loss.',
+                )
+                return True
+            if link_path.is_dir():
+                link_path.rmdir()
+            else:
+                link_path.unlink()
+
+        # Create the link. On Windows, a directory junction is elevation-free;
+        # _winapi.CreateJunction is the primary mechanism, with mklink /J as a
+        # last-resort fallback. _winapi is a private CPython module retained for
+        # this purpose. dst (link_path) must not pre-exist, which the state
+        # resolution above guarantees.
+        if is_windows:
+            import _winapi
+
+            # Access the Windows-only CreateJunction via getattr so type
+            # checkers do not fail on non-Windows platforms. When it is present,
+            # attempt it first; if it is unavailable or raises, fall back to
+            # mklink /J.
+            create_junction = getattr(_winapi, 'CreateJunction', None)
+            junction_error: OSError | None = None
+            if create_junction is not None:
+                try:
+                    create_junction(str(base_projects), str(link_path))
+                except OSError as error:
+                    junction_error = error
+            if create_junction is None or junction_error is not None:
+                reason = junction_error if junction_error is not None else 'CreateJunction is unavailable'
+                warning(f'CreateJunction failed ({reason}); falling back to mklink /J')
+                subprocess.run(
+                    ['cmd', '/c', 'mklink', '/J', str(link_path), str(base_projects)],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+        else:
+            link_path.symlink_to(base_projects, target_is_directory=True)
+
+        success(f'Linked projects directory {link_path} -> {base_projects}')
+        return True
+
+    except (OSError, subprocess.CalledProcessError) as e:
+        warning(f'Failed to link projects directory: {e}')
+        return False
+
+
+def export_setup_time_config_dir(
+    primary_command_name: str | None,
+    artifact_base_dir: Path,
+) -> str | None:
+    """Export CLAUDE_CONFIG_DIR into the process env for setup-time child processes.
+
+    Child processes spawned during setup (dependency installers, npx-based
+    tooling, ``claude mcp ...``, IDE-extension install) inherit ``os.environ``,
+    so exporting CLAUDE_CONFIG_DIR makes them resolve against the isolated
+    profile directory rather than the default ~/.claude. The export is applied
+    only for an isolated profile (``primary_command_name`` truthy); a
+    non-isolated run leaves the process env untouched.
+
+    The exported value is transient and process-scoped only. The runtime
+    launcher export remains the sole authoritative runtime source, and this
+    value is deliberately never written to config.json.
+
+    Args:
+        primary_command_name: The primary command name when an isolated profile
+            is configured, otherwise None.
+        artifact_base_dir: The directory CLAUDE_CONFIG_DIR should point to for an
+            isolated profile (the isolated profile's base directory).
+
+    Returns:
+        The exported value (``str(artifact_base_dir)``) when an isolated profile
+        triggers the export, otherwise None.
+    """
+    if not primary_command_name:
+        return None
+    config_dir_value = str(artifact_base_dir)
+    os.environ['CLAUDE_CONFIG_DIR'] = config_dir_value
+    info(f'Exported CLAUDE_CONFIG_DIR={artifact_base_dir} for setup-time child processes')
+    return config_dir_value
+
+
 def restore_env_vars_from_args() -> tuple[list[str], bool]:
     """Restore environment variables from command-line arguments.
 
@@ -10539,6 +10711,13 @@ def main() -> None:
         else:
             artifact_base_dir = claude_user_dir
 
+        # Export CLAUDE_CONFIG_DIR (isolated profiles only) so setup-time child
+        # processes resolve against the isolated profile directory rather than
+        # the default ~/.claude. Transient and process-scoped; never written to
+        # config.json (the runtime launcher export is the authoritative runtime
+        # source).
+        export_setup_time_config_dir(primary_command_name, artifact_base_dir)
+
         # Derive all artifact directories from artifact_base_dir
         agents_dir = artifact_base_dir / 'agents'
         commands_dir = artifact_base_dir / 'commands'
@@ -10838,6 +11017,13 @@ def main() -> None:
                 )
             else:
                 warning('Launcher script was not created')
+
+            # Step 22: Optionally link the isolated profile's projects/ dir to the
+            # base ~/.claude/projects/ (shares session history when enabled).
+            if config.get('link-projects-dir'):
+                print()
+                print(f'{Colors.CYAN}Step 22: Linking projects directory to base...{Colors.NC}')
+                link_projects_directory(artifact_base_dir)
         else:
             # No command-names: route all profile-owned YAML keys to the
             # shared ~/.claude/settings.json via deep-merge with RFC 7396
