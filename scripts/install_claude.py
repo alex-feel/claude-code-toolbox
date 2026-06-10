@@ -4,7 +4,9 @@ Handles Git Bash (Windows), Node.js, and Claude Code CLI installation.
 """
 
 import contextlib
+import errno
 import glob as glob_module
+import hashlib
 import json
 import os
 import platform
@@ -975,12 +977,12 @@ def update_install_method_config(method: str = 'native') -> bool:
     write_global_config function).
 
     Args:
-        method: Installation method to set. Valid values:
-            - 'native': For native (non-npm) installations
-            - 'winget': For winget package manager installations (Windows)
-            - 'npm-global': For npm global installations
-            - 'system': For system-level installations
-            - 'local': For local installations
+        method: Installation method to set. Values written by this script:
+            - 'native': Native installer or GCS direct download to ~/.local/bin
+            - 'global': npm global (-g) installations
+            - 'winget': winget package manager installations (Windows)
+            Claude Code itself recognizes 'native', 'global', and 'local';
+            it reports a missing value as 'unknown'.
 
     Returns:
         True if configuration was successfully updated, False otherwise.
@@ -1978,12 +1980,83 @@ def ensure_nodejs(check_claude_compat: bool = True) -> bool:
 
 
 # Claude Code installation
-def get_claude_version(claude_path: str | None = None) -> str | None:
+def _is_exec_format_error(exc: OSError) -> bool:
+    """Check whether an OSError means the binary cannot execute on this machine.
+
+    Windows raises winerror 193 (ERROR_BAD_EXE_FORMAT) or 216
+    (ERROR_EXE_MACHINE_TYPE_MISMATCH) when launching a corrupt or
+    architecture-mismatched executable; POSIX raises errno ENOEXEC.
+
+    Args:
+        exc: The OSError raised when launching the binary.
+
+    Returns:
+        True if the error indicates a corrupt or incompatible binary.
+    """
+    return getattr(exc, 'winerror', None) in (193, 216) or getattr(exc, 'errno', None) == errno.ENOEXEC
+
+
+def _probe_claude_version(claude_path: str) -> tuple[str | None, bool]:
+    """Run 'claude --version' and classify why the probe failed, if it did.
+
+    Unlike run_command(), this probe distinguishes a binary that exists but
+    cannot execute on this machine (corrupt file or architecture mismatch)
+    from a binary that is missing or merely exits with a failure code.
+    A missing binary (FileNotFoundError) is never classified as corrupt.
+
+    Args:
+        claude_path: Path to the Claude executable to probe.
+
+    Returns:
+        Tuple of (version, is_corrupt) where version is the parsed version
+        string (None when the probe fails) and is_corrupt is True only when
+        launching the binary failed with an exec-format error.
+    """
+    try:
+        result = subprocess.run(
+            [claude_path, '--version'],
+            capture_output=True,
+            encoding='utf-8',
+            errors='replace',
+        )
+    except FileNotFoundError as e:
+        error(f'Command not found: {claude_path} - {e}')
+        return (None, False)
+    except OSError as e:
+        if _is_exec_format_error(e):
+            warning(
+                f'Claude Code binary at {claude_path} cannot execute on this machine '
+                f'(corrupt or architecture mismatch): {e}',
+            )
+            return (None, True)
+        error(f'Error running command {claude_path}: {e}')
+        return (None, False)
+    except Exception as e:
+        error(f'Error running command {claude_path}: {e}')
+        return (None, False)
+
+    if result.returncode != 0:
+        return (None, False)
+
+    # Parse version from output like "claude, version 0.7.7" or "@anthropic-ai/claude-code/0.7.7"
+    output = (result.stdout or '').strip()
+    # Try to extract version number
+    match = re.search(r'(\d+\.\d+\.\d+)', output)
+    if match:
+        return (match.group(1), False)
+    return (output, False)  # Return full string if can't parse
+
+
+def get_claude_version(claude_path: str | None = None, quarantine_corrupt: bool = False) -> str | None:
     """Get installed Claude Code version.
 
     Args:
         claude_path: Explicit path to Claude executable. If None,
                      uses find_command() to locate it.
+        quarantine_corrupt: When True and the probe classifies the binary as
+                            unable to execute on this machine, move the
+                            native binary aside so it cannot shadow a
+                            subsequent reinstallation.
 
     Returns:
         Version string (e.g., "2.0.14") if detected, None if not found.
@@ -1993,16 +2066,10 @@ def get_claude_version(claude_path: str | None = None) -> str | None:
     if not claude_path:
         return None
 
-    result = run_command([claude_path, '--version'])
-    if result.returncode == 0:
-        # Parse version from output like "claude, version 0.7.7" or "@anthropic-ai/claude-code/0.7.7"
-        output = (result.stdout or '').strip()
-        # Try to extract version number
-        match = re.search(r'(\d+\.\d+\.\d+)', output)
-        if match:
-            return match.group(1)
-        return output  # Return full string if can't parse
-    return None
+    version, is_corrupt = _probe_claude_version(claude_path)
+    if is_corrupt and quarantine_corrupt:
+        _quarantine_corrupt_native_binary(claude_path)
+    return version
 
 
 def _get_latest_claude_version_github() -> str | None:
@@ -2411,28 +2478,225 @@ def _cleanup_old_claude_files() -> None:
                 pass
 
 
-def _get_gcs_platform_path() -> tuple[str, str]:
+def _quarantine_corrupt_native_binary(claude_path: str) -> bool:
+    """Move a native Claude binary that cannot execute out of the way.
+
+    find_command() and verify_claude_installation() prefer the native target
+    ~/.local/bin/claude[.exe] based on existence and size alone, so a binary
+    that cannot execute would keep shadowing any subsequent installation
+    (including npm installs). On Windows the file is renamed to a .old backup
+    (reusing the rename machinery that tolerates locked files; the backup is
+    swept by _cleanup_old_claude_files() on the next run). On Unix the file
+    is removed directly.
+
+    Args:
+        claude_path: Path to the binary that failed the executability probe.
+            Only the native install target is quarantined; other locations
+            are left for their owning installer to manage.
+
+    Returns:
+        True if the binary was moved aside or removed, False otherwise.
+    """
+    binary_name = 'claude.exe' if sys.platform == 'win32' else 'claude'
+    native_path = get_real_user_home() / '.local' / 'bin' / binary_name
+    if Path(claude_path) != native_path:
+        return False
+
+    if sys.platform == 'win32':
+        old_path = native_path.with_suffix('.exe.old')
+        if not _cleanup_old_file_before_rename(old_path):
+            old_path = _get_unique_old_path(native_path)
+        try:
+            native_path.rename(old_path)
+        except OSError as e:
+            warning(f'Could not move corrupt Claude Code binary aside: {e}')
+            return False
+        info(f'Moved corrupt Claude Code binary to {old_path.name}')
+        return True
+
+    try:
+        native_path.unlink()
+    except OSError as e:
+        warning(f'Could not remove corrupt Claude Code binary: {e}')
+        return False
+    info(f'Removed corrupt Claude Code binary at {native_path}')
+    return True
+
+
+def _verify_installed_binary_executes(claude_path: str | None) -> bool:
+    """Confirm an installed Claude binary actually executes.
+
+    Existence and size checks cannot detect a corrupt or architecture-
+    mismatched binary, so this runs the version probe on the installed
+    file. A binary classified as unable to execute is quarantined so it
+    cannot shadow recovery installs.
+
+    Args:
+        claude_path: Path to the installed binary. None means there is
+            nothing to probe and verification passes.
+
+    Returns:
+        True when the probe does not classify the binary as unable to
+        execute on this machine, False otherwise.
+    """
+    if not claude_path:
+        return True
+    post_version, is_corrupt = _probe_claude_version(claude_path)
+    if is_corrupt:
+        _quarantine_corrupt_native_binary(claude_path)
+        return False
+    info(f'Post-install binary version: {post_version}')
+    return True
+
+
+def _get_gcs_platform_path() -> tuple[str, str] | None:
     """Get the GCS platform path and binary name for the current platform.
 
     Returns:
-        Tuple of (platform_path, binary_name) for GCS URL construction.
-        Examples: ('win32-x64', 'claude.exe'), ('darwin-arm64', 'claude')
+        Tuple of (platform_path, binary_name) for GCS URL construction,
+        or None when the machine architecture has no binary in the GCS
+        release manifest. Examples: ('win32-x64', 'claude.exe'),
+        ('darwin-arm64', 'claude'), ('linux-x64-musl', 'claude') on
+        Alpine/musl systems.
 
     Note:
-        Maps current platform to GCS bucket directory structure.
+        Maps current platform to GCS bucket directory structure. Refusing
+        unrecognized architectures prevents downloading a binary that cannot
+        execute on this machine.
     """
     system = platform.system()
     machine = platform.machine().lower()
 
     if system == 'Windows':
-        return ('win32-x64', 'claude.exe')
+        if machine in ('arm64', 'aarch64'):
+            return ('win32-arm64', 'claude.exe')
+        if machine in ('amd64', 'x86_64'):
+            return ('win32-x64', 'claude.exe')
+        error(f'Unsupported Windows architecture for GCS download: {platform.machine()}')
+        return None
     if system == 'Darwin':
         # macOS: arm64 for Apple Silicon, x64 for Intel
-        arch = 'arm64' if machine == 'arm64' else 'x64'
-        return (f'darwin-{arch}', 'claude')
-    # Linux: x64 for most systems
-    arch = 'x64' if machine in ['amd64', 'x86_64'] else 'arm64'
-    return (f'linux-{arch}', 'claude')
+        if machine in ('arm64', 'aarch64'):
+            return ('darwin-arm64', 'claude')
+        if machine in ('amd64', 'x86_64'):
+            return ('darwin-x64', 'claude')
+        error(f'Unsupported macOS architecture for GCS download: {platform.machine()}')
+        return None
+    # Linux: select architecture explicitly and use the musl variant on Alpine
+    if machine in ('amd64', 'x86_64'):
+        arch = 'x64'
+    elif machine in ('arm64', 'aarch64'):
+        arch = 'arm64'
+    else:
+        error(f'Unsupported Linux architecture for GCS download: {platform.machine()}')
+        return None
+    musl_suffix = '-musl' if Path('/etc/alpine-release').exists() else ''
+    return (f'linux-{arch}{musl_suffix}', 'claude')
+
+
+def _sha256_file(path: Path) -> str:
+    """Compute the sha256 hex digest of a file using streamed reads."""
+    sha256 = hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b''):
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _fetch_gcs_manifest_entry(gcs_base_url: str, version: str, platform_path: str) -> tuple[str, int] | None:
+    """Fetch the GCS release manifest entry for a platform.
+
+    The manifest at {gcs_base_url}/{version}/manifest.json lists the expected
+    sha256 checksum and exact byte size for every platform binary.
+
+    Args:
+        gcs_base_url: Base URL of the GCS release bucket.
+        version: Release version whose manifest to fetch.
+        platform_path: Manifest platform key (e.g., 'win32-x64').
+
+    Returns:
+        Tuple of (checksum, size) on success, None when the manifest cannot
+        be fetched or does not contain the requested platform.
+    """
+    manifest_url = f'{gcs_base_url}/{version}/manifest.json'
+    manifest_raw: str | None = None
+    try:
+        with urlopen(manifest_url, timeout=30) as response:
+            manifest_raw = response.read().decode('utf-8')
+    except urllib.error.URLError as e:
+        if 'SSL' in str(e) or 'certificate' in str(e).lower():
+            warning('SSL certificate verification failed for manifest, trying with unverified context')
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            try:
+                with urlopen(manifest_url, timeout=30, context=ctx) as response:
+                    manifest_raw = response.read().decode('utf-8')
+            except Exception as ssl_err:
+                error(f'Could not fetch release manifest: {ssl_err}')
+                return None
+        else:
+            error(f'Could not fetch release manifest: {e}')
+            return None
+    except Exception as e:
+        error(f'Could not fetch release manifest: {e}')
+        return None
+
+    if manifest_raw is None:
+        error('Could not fetch release manifest: empty response')
+        return None
+
+    try:
+        manifest = json.loads(manifest_raw)
+        entry = manifest['platforms'][platform_path]
+        checksum = str(entry['checksum'])
+        size = int(entry['size'])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+        error(f'Release manifest is missing data for platform {platform_path}: {e}')
+        return None
+    return (checksum, size)
+
+
+def _verify_gcs_download_integrity(
+    temp_path: Path, file_size: int, gcs_base_url: str, version: str, platform_path: str,
+) -> bool:
+    """Verify a downloaded GCS binary against the release manifest.
+
+    Fails closed: when the manifest cannot be fetched, or the downloaded
+    file's size or sha256 checksum does not match the manifest entry, the
+    download is rejected.
+
+    Args:
+        temp_path: Path to the downloaded temp file.
+        file_size: Size of the downloaded file in bytes.
+        gcs_base_url: Base URL of the GCS release bucket.
+        version: Release version that was downloaded.
+        platform_path: Manifest platform key (e.g., 'win32-x64').
+
+    Returns:
+        True when both size and checksum match the manifest, False otherwise.
+    """
+    manifest_entry = _fetch_gcs_manifest_entry(gcs_base_url, version, platform_path)
+    if manifest_entry is None:
+        error('Cannot verify download integrity without the release manifest')
+        return False
+    expected_checksum, expected_size = manifest_entry
+
+    if file_size != expected_size:
+        error(f'Downloaded file size mismatch: expected {expected_size:,} bytes, got {file_size:,}')
+        return False
+
+    try:
+        actual_checksum = _sha256_file(temp_path)
+    except OSError as e:
+        error(f'Could not hash downloaded file: {e}')
+        return False
+    if actual_checksum.lower() != expected_checksum.lower():
+        error(f'Downloaded file sha256 mismatch: expected {expected_checksum}, got {actual_checksum}')
+        return False
+
+    info('Download integrity verified against release manifest (sha256 and size)')
+    return True
 
 
 def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
@@ -2465,7 +2729,10 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
         'https://storage.googleapis.com/claude-code-dist-'
         '86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases'
     )
-    platform_path, binary_name = _get_gcs_platform_path()
+    platform_info = _get_gcs_platform_path()
+    if platform_info is None:
+        return False
+    platform_path, binary_name = platform_info
     gcs_url = f'{gcs_base_url}/{version}/{platform_path}/{binary_name}'
 
     info(f'Downloading Claude Code v{version} directly from GCS...')
@@ -2515,6 +2782,14 @@ def _download_claude_direct_from_gcs(version: str, target_path: Path) -> bool:
 
         if file_size < min_size:
             error(f'Downloaded file too small ({file_size} bytes), likely invalid')
+            with contextlib.suppress(Exception):
+                temp_path.unlink()
+            return False
+
+        # Integrity gate (fail closed): the release manifest provides the
+        # authoritative sha256 and size per platform, so a manifest fetch
+        # failure or any mismatch rejects the download.
+        if not _verify_gcs_download_integrity(temp_path, file_size, gcs_base_url, version, platform_path):
             with contextlib.suppress(Exception):
                 temp_path.unlink()
             return False
@@ -2699,6 +2974,9 @@ def install_claude_native_windows(version: str | None = None) -> bool:
             time.sleep(1)
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed and source == 'native':
+                if not _verify_installed_binary_executes(claude_path):
+                    warning('GCS download succeeded but verification failed')
+                    return False
                 success(f'GCS download installation verified at: {claude_path}')
                 _finalize_native_install()
                 return True
@@ -2731,6 +3009,9 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         # Verify installation
         is_installed, claude_path, source = verify_claude_installation()
         if is_installed and source == 'native':
+            if not _verify_installed_binary_executes(claude_path):
+                error('Installation verification failed')
+                return False
             success(f'Direct download installation verified at: {claude_path}')
             _finalize_native_install()
             return True
@@ -2862,14 +3143,17 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
 
             # Verify installation with source detection
             is_installed, claude_path, source = verify_claude_installation()
+            post_corrupt = False
             if is_installed and source == 'native':
-                post_version = get_claude_version(claude_path)
-                info(f'Post-install binary version: {post_version}')
-                success(f'Native installation verified at: {claude_path}')
-                _finalize_native_install()
-                return True
+                if _verify_installed_binary_executes(claude_path):
+                    success(f'Native installation verified at: {claude_path}')
+                    _finalize_native_install()
+                    return True
+                post_corrupt = True
             # --- Recovery chain: installer reported success but binary not at expected location ---
-            if is_installed:
+            if post_corrupt:
+                warning('Native installation produced a binary that cannot execute on this machine')
+            elif is_installed:
                 warning(f'Claude found but from {source} source at: {claude_path}')
             else:
                 warning('Native installation reported success but no Claude executable found')
@@ -2916,7 +3200,7 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
                     ensure_local_bin_in_path_windows()
                     time.sleep(1)
                     is_installed, claude_path, source = verify_claude_installation()
-                    if is_installed and source == 'native':
+                    if is_installed and source == 'native' and _verify_installed_binary_executes(claude_path):
                         success(f'GCS download installation verified at: {claude_path}')
                         _finalize_native_install()
                         return True
@@ -3014,6 +3298,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             # Verify installation
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
+                if not _verify_installed_binary_executes(claude_path):
+                    error('Installation verification failed')
+                    return False
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
@@ -3070,11 +3357,11 @@ def install_claude_native_macos(version: str | None = None) -> bool:
                     _ensure_local_bin_in_path_unix()
                     time.sleep(1)
                     is_installed, claude_path, source = verify_claude_installation()
-                    if is_installed and source == 'native':
+                    if is_installed and source == 'native' and _verify_installed_binary_executes(claude_path):
                         success(f'GCS download installation verified at: {claude_path}')
                         _finalize_native_install()
                         return True
-                    if is_installed:
+                    if is_installed and source != 'native':
                         warning(f'Claude found but from {source} source at: {claude_path}')
                 warning('GCS direct download failed')
             else:
@@ -3103,6 +3390,9 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             # Verify installation
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed and source == 'native':
+                if not _verify_installed_binary_executes(claude_path):
+                    error('Installation verification failed')
+                    return False
                 success(f'Native installation verified at: {claude_path}')
                 _finalize_native_install()
                 return True
@@ -3193,6 +3483,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             # Verify installation
             is_installed, claude_path, source = verify_claude_installation()
             if is_installed:
+                if not _verify_installed_binary_executes(claude_path):
+                    error('Installation verification failed')
+                    return False
                 success(f'Native installation verified at: {claude_path} (source: {source})')
                 # Remove npm installation and update config (only if native confirmed)
                 if source == 'native':
@@ -3253,7 +3546,7 @@ def install_claude_native_linux(version: str | None = None) -> bool:
                 _ensure_local_bin_in_path_unix()
                 time.sleep(1)
                 is_installed, claude_path, source = verify_claude_installation()
-                if is_installed and source == 'native':
+                if is_installed and source == 'native' and _verify_installed_binary_executes(claude_path):
                     success(f'GCS download installation verified at: {claude_path}')
                     _finalize_native_install()
                     return True
@@ -3286,6 +3579,9 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         # Verify installation
         is_installed, claude_path, source = verify_claude_installation()
         if is_installed and source == 'native':
+            if not _verify_installed_binary_executes(claude_path):
+                error('Installation verification failed')
+                return False
             success(f'Native installation verified at: {claude_path}')
             _finalize_native_install()
             return True
@@ -3513,8 +3809,10 @@ def ensure_claude() -> bool:
     # Check if a specific version is requested
     requested_version = os.environ.get('CLAUDE_CODE_TOOLBOX_VERSION')
 
-    # Check if already installed
-    current_version = get_claude_version()
+    # Check if already installed. A native binary that exists but cannot
+    # execute (corrupt file or architecture mismatch) is quarantined here so
+    # it cannot shadow the installation methods dispatched below.
+    current_version = get_claude_version(quarantine_corrupt=True)
 
     if current_version:
         if requested_version:
@@ -3557,7 +3855,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code version {new_version} installed successfully via npm fallback')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True
 
                 error(f'Failed to install specific version {requested_version} with all methods')
@@ -3594,10 +3892,10 @@ def ensure_claude() -> bool:
                             _finalize_native_install()
                             return True
                         _warn_migration_failed(claude_path or '')
-                        update_install_method_config('npm')
+                        update_install_method_config('global')
                         return True  # Don't fail, npm still works
                     _warn_migration_failed(claude_path or '')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True  # Don't fail, npm still works
 
             return True
@@ -3634,10 +3932,10 @@ def ensure_claude() -> bool:
                         _finalize_native_install()
                         return True
                     _warn_migration_failed(claude_path or '')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True  # Don't fail, npm still works
                 _warn_migration_failed(claude_path or '')
-                update_install_method_config('npm')
+                update_install_method_config('global')
                 return True  # Don't fail, npm still works
 
         # No specific version requested - check if update needed
@@ -3703,7 +4001,7 @@ def ensure_claude() -> bool:
                             success(
                                 f'Claude Code upgraded to version {npm_version} via npm recovery',
                             )
-                        update_install_method_config('npm')
+                        update_install_method_config('global')
                         return True
                     warning(
                         f'Upgrade verification failed: expected >= {latest_version}, '
@@ -3716,7 +4014,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -3744,7 +4042,7 @@ def ensure_claude() -> bool:
                             success(
                                 f'Claude Code upgraded to version {npm_version} via npm recovery',
                             )
-                        update_install_method_config('npm')
+                        update_install_method_config('global')
                         return True
                     warning(
                         f'Upgrade verification failed: expected >= {latest_version}, '
@@ -3756,7 +4054,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -3796,7 +4094,7 @@ def ensure_claude() -> bool:
                             success(
                                 f'Claude Code upgraded to version {npm_version} via npm recovery',
                             )
-                        update_install_method_config('npm')
+                        update_install_method_config('global')
                         return True
                     warning(
                         f'Upgrade verification failed: expected >= {latest_version}, '
@@ -3809,7 +4107,7 @@ def ensure_claude() -> bool:
                     new_version = get_claude_version()
                     if new_version:
                         success(f'Claude Code upgraded to version {new_version} via npm fallback')
-                    update_install_method_config('npm')
+                    update_install_method_config('global')
                     return True
                 warning('All upgrade methods failed, continuing with current version')
                 return True  # Don't fail the entire installation
@@ -3900,7 +4198,7 @@ def ensure_claude() -> bool:
                 new_version = get_claude_version(claude_path)
                 if new_version:
                     success(f'Claude Code version {new_version} installed successfully via npm fallback')
-                update_install_method_config('npm')
+                update_install_method_config('global')
                 return True
             if attempt < 2:
                 info(f'Waiting for PATH synchronization... (attempt {attempt + 1}/3)')

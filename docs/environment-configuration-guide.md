@@ -155,7 +155,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
 | [`model`](#model)                                     | `str`                  | No       | `None`  | Model alias or custom model name                           |
 | [`permissions`](#permissions)                         | `Permissions`          | No       | `None`  | Permission rules for tools                                 |
-| [`env-variables`](#env-variables)                     | `dict[str, str]`       | No       | `None`  | Claude-level environment variables                         |
+| [`env-variables`](#env-variables)                     | `dict`                 | No       | `None`  | Claude-level environment variables                         |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
 | [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                                     |
 | [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Merged into `settings.json`                                |
@@ -344,7 +344,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
-- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, those controls are automatically removed. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
+- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, stale auto-injected controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
 - **IDE extension management:** When a specific version is set, IDE extension auto-install is disabled and the matching extension version is installed into detected VS Code family IDEs. See [Automatic IDE Extension Version Management](#automatic-ide-extension-version-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
@@ -395,6 +395,8 @@ Platform-specific shell commands to execute during setup.
   - `common` runs on all platforms
   - Platform-specific keys run only on the matching platform
   - Invalid keys raise a `ValueError`
+- **Global npm sudo fallback (Linux/macOS/WSL):** When a `npm install -g ...` dependency fails and the npm global prefix is not writable by the current user (probed via `npm config get prefix` plus a write-access check on `{prefix}/lib/node_modules`), the setup automatically retries the command with sudo using a three-tier fallback: interactive TTY prompt, then cached credentials (`sudo -n true`), then a `/dev/tty` prompt that works even in piped `curl | bash` runs. An informational note that sudo may be requested prints before the first attempt. The retry runs the parsed command arguments with a 600-second timeout. Dependencies containing shell control characters (`;`, `&`, `|`, `<`, `>`, `$`, backquote, newline) are never escalated -- compound user-authored shell strings do not run as root. When no sudo mechanism is available or the retry fails, the setup prints guidance (the manual sudo command, `npm config set prefix ~/.npm-global` plus a PATH export, or reinstalling Node.js with a version manager) and records the dependency as failed.
+- **Failure handling:** Dependency execution continues after a failure (remaining dependencies still run), but every failed command is collected and listed in a dedicated "The following dependencies failed to install:" section of the "Setup Completed with Errors" block at the end of the run, and the setup exits with code 1. CI consumers see a nonzero exit code when any dependency fails.
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: per-platform sub-key list concatenation with deduplication. Parent platform commands appear first; child commands are appended. Duplicates are removed by string equality.
 - **Example:**
 
@@ -639,18 +641,18 @@ Controls adaptive reasoning effort.
   - `low` -- Minimal reasoning, fastest responses
   - `medium` -- Balanced reasoning and speed
   - `high` -- Thorough reasoning for complex tasks
-  - `xhigh` -- Extended reasoning for long-horizon coding and agentic work. **Requires the model to be set to an Opus variant** (the model name must contain `opus`, case-insensitive). Supported on Opus 4.7/4.8; on Opus models that do not support it, Claude Code runs it as `high`
-  - `max` -- Maximum reasoning effort. **Requires the model to be set to an Opus variant** (the model name must contain `opus`, case-insensitive). Supported on Opus 4.6 and later
+  - `xhigh` -- Extended reasoning for long-horizon coding and agentic work. **Requires the model to be an Opus or Fable variant** (the model name must contain `opus` or `fable`, case-insensitive) **or the exact alias `best`**. Supported on Opus 4.7/4.8 and Fable 5; on models that do not support it, Claude Code runs it as `high`
+  - `max` -- Maximum reasoning effort. **Requires the model to be an Opus or Fable variant** (the model name must contain `opus` or `fable`, case-insensitive) **or the exact alias `best`**. Supported on Opus 4.6 and later and Fable 5
 - **Example:**
 
 ```yaml
-# xhigh requires Opus
-model: "opus"
+# xhigh requires an Opus or Fable model
+model: "claude-fable-5"
 effort-level: "xhigh"
 ```
 
 ```yaml
-# max requires Opus
+# max requires an Opus or Fable model
 model: "opus"
 effort-level: "max"
 ```
@@ -660,7 +662,9 @@ effort-level: "max"
 effort-level: "high"
 ```
 
-> **Note:** `ultracode` is **not** an `effort-level` value. It is a session-only Claude Code mode (set with `/effort ultracode` or the `ultracode` session flag) and is intentionally not accepted here, because this key writes the `effortLevel` setting, which accepts only `low`, `medium`, `high`, `xhigh`, and `max`.
+The model gate matches family substrings because the free-form `model` key cannot resolve which version an alias points to; Claude Code gracefully downgrades an unsupported level to the highest supported level at runtime. The alias `best` is accepted by **exact match only** (it always resolves to Fable 5 or the latest Opus model), so arbitrary model names that merely contain `best` are rejected. The alias `default` is rejected for `xhigh`/`max` because it resolves to a Sonnet model on some account types.
+
+> **Note:** Per the official Claude Code documentation, persisted settings files accept only `low`, `medium`, `high`, and `xhigh` for the `effortLevel` setting; `max` (like `ultracode`) is session-only and persists across sessions only via the `CLAUDE_CODE_EFFORT_LEVEL` environment variable. The toolbox still accepts `max` because, for isolated profiles, it delivers `config.json` through the `--settings` flag on every launch, where the value applies per-session. `ultracode` is intentionally **not** an `effort-level` value here.
 
 ### Permissions
 
@@ -700,9 +704,10 @@ permissions:
 
 Claude-level environment variables set in the settings file. These are available within Claude Code sessions only.
 
-- **Type:** `dict[str, str] | None`
+- **Type:** `dict[str, str | None] | None`
 - **Default:** `None`
-- **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$` (must start with a letter or underscore, followed by letters, digits, or underscores). Values cannot contain null bytes.
+- **Special value:** Set a value to `null` to delete an existing variable. In non-isolated mode the variable is deleted from the `env` block of `~/.claude/settings.json`; in isolated mode it is omitted from the atomically rebuilt `~/.claude/{cmd}/config.json` (the literal JSON null is never written for an env entry).
+- **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$` (must start with a letter or underscore, followed by letters, digits, or underscores). Non-null values cannot contain null bytes.
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
 - **Example:**
 
@@ -710,6 +715,7 @@ Claude-level environment variables set in the settings file. These are available
 env-variables:
   API_KEY: "sk-..."
   DATABASE_URL: "postgres://localhost/mydb"
+  OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
 #### `os-env-variables`
@@ -729,7 +735,7 @@ os-env-variables:
   OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
-- **Automatic string conversion:** Non-string YAML values (integers, booleans, floats) in both `env-variables` and `os-env-variables` are automatically converted to strings by the setup script. For example, `MCP_TIMEOUT: 30000` (YAML integer) becomes `"30000"` (string), and `ENABLE_FEATURE: true` (YAML boolean) becomes `"True"` (string). To preserve exact string representation, quote values in YAML: `ENABLE_FEATURE: "true"`.
+- **Automatic string conversion:** Non-string YAML values (integers, booleans, floats) in both `env-variables` and `os-env-variables` are automatically converted to strings by the setup script. For example, `MCP_TIMEOUT: 30000` (YAML integer) becomes `"30000"` (string), and `ENABLE_FEATURE: true` (YAML boolean) becomes `"True"` (string). To preserve exact string representation, quote values in YAML: `ENABLE_FEATURE: "true"`. A `null` value is never stringified -- it is a deletion request (see the `null` special value above).
 - **Current session guidance (Linux/macOS):** When variables are deleted via `null`, the setup script outputs shell-specific `unset` commands so the user can remove those variables from the running session without opening a new terminal:
   - **Bash/Zsh:** `unset VARNAME` for each deleted variable
   - **Fish** (when installed): `set -e VARNAME` for each deleted variable
@@ -756,7 +762,7 @@ When `os-env-variables` are configured, the setup generates Rustup-style env loa
 | `~/.claude/{cmd}/env.ps1`    | PowerShell | Windows only   |
 | `~/.claude/{cmd}/env.cmd`    | CMD batch  | Windows only   |
 
-Variables set to `null` (deletions) are excluded from loader files.
+Loader files are toolbox-owned and rebuilt on every run: variables set to `null` (deletions) are excluded from the exports, and when no active variable remains the files are rewritten header-only so stale exports from a prior run stop being re-applied by the launcher at session start.
 
 ##### Automatic Loading via Launchers
 
@@ -869,6 +875,8 @@ Keys that you put under `user-settings:` are preserved even when you re-run the 
 
 Settings merged into `~/.claude.json` (the Claude Code global configuration file). When `command-names` is present, additionally written to `~/.claude/{cmd}/.claude.json` for isolated environments (Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback to the home directory). Uses deep merge with universal array union: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) and preserving CLI-managed state at runtime (OAuth tokens, per-project trust decisions, user-scoped MCP server approvals via `/mcp approve`, `enabledPlugins`, `enabledMcpjsonServers`/`disabledMcpjsonServers`).
 
+When `command-names` is present, the setup also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the `global-config` write (auto-injected, even when the YAML has no `global-config` section; a user-declared `installMethod` in YAML wins with a warning when it differs; nothing is propagated when the base file or key is absent). The dual-write then carries the correct installation type into the isolated `.claude.json`, so isolated sessions report it correctly.
+
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
 - **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
@@ -914,6 +922,8 @@ global-config:
 - **Nested null** (for example, `permissions: {deny: null}`, `hooks: {PreToolUse: null}`): deletes only the nested sub-key while preserving the rest of the block (`permissions.allow`/`permissions.ask`, other hook event names).
 
 The dict-membership construction in the data flow from YAML root to the writer preserves the distinction between "declared with explicit null" and "absent from YAML" -- only the former triggers deletion. OMITTING a profile-owned key from a subsequent YAML run does NOT delete it; see [Deferred Stale-Key Behavior](#deferred-stale-key-behavior-user-facing-contract) for the intentional preservation contract.
+
+**Per-variable nulls in `env-variables` and `os-env-variables`:** a `null` value deletes the variable instead of setting a literal string -- in BOTH modes for `env-variables` and at the OS level for `os-env-variables`. In non-isolated mode, `env-variables: {VAR: null}` deletes `env.VAR` from `~/.claude/settings.json` via the deep-merge writer (this also cleans up any stale literal value a prior run may have written). In isolated mode, `create_profile_config()` strips null-valued env entries before the atomic `config.json` write -- absence equals deletion under atomic rebuild, and the `env` key is dropped entirely when every entry is null -- so a JSON `null` is never written for an env entry. `os-env-variables: {VAR: null}` deletes the OS-level variable from shell profiles or the Windows registry and excludes it from the env loader files.
 
 #### `company-announcements`
 
@@ -1575,7 +1585,7 @@ Authentication is resolved in this order (highest priority first):
 
 ### Automatic Auto-Update Management
 
-When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into four targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, any previously injected controls are automatically removed to re-enable auto-updates.
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into four targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are automatically cleaned up (re-enabling auto-updates) while user-declared controls are preserved.
 
 #### Injection Targets
 
@@ -1586,17 +1596,16 @@ When `claude-code-version` specifies a pinned version (any value other than `"la
 | `env-variables`    | `DISABLE_AUTOUPDATER`     | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
 | `os-env-variables` | `DISABLE_AUTOUPDATER`     | `"1"`   | Shell profiles / Windows registry                 | Shell profiles / Windows registry                   |
 
-All four targets are injected unconditionally regardless of whether `command-names` is present. In isolated mode (`command-names` present), `env-variables` reaches `~/.claude/{cmd}/config.json` via `create_profile_config()` (Step 18). In non-isolated mode (`command-names` absent), `env-variables` is routed to `~/.claude/settings.json['env']` via `write_profile_settings_to_settings()` (Step 18), which deep-merges the delta into the existing file. Both Target 2 (`user-settings.env.DISABLE_AUTOUPDATER`, written in Step 14) and Target 3 (`env-variables.DISABLE_AUTOUPDATER`, written in Step 18) therefore reach the same on-disk `settings.json['env']` container in non-isolated mode, and deep-merge makes them additive: the Step 14 contribution survives the Step 18 write because `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. When YAML has NO root-level `env-variables`, Step 18 omits `env` from its delta and the Target 2 Step 14 contribution also survives -- unrelated keys to the delta are preserved (see [Profile-Level Settings Routing](#profile-level-settings-routing)).
+All four targets are injected unconditionally regardless of whether `command-names` is present. In isolated mode (`command-names` present), `env-variables` reaches `~/.claude/{cmd}/config.json` via `create_profile_config()` (Step 18). In non-isolated mode (`command-names` absent), `env-variables` is routed to `~/.claude/settings.json['env']` via `write_profile_settings_to_settings()` (Step 18), which deep-merges the delta into the existing file. Both Target 2 (`user-settings.env.DISABLE_AUTOUPDATER`, written in Step 14) and Target 3 (`env-variables.DISABLE_AUTOUPDATER`, written in Step 18) therefore reach the same on-disk `settings.json['env']` container in non-isolated mode, and deep-merge makes them additive: `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. After injection, the setup writes the injected `env-variables` dict back into the resolved configuration, so Step 18 emits Target 3 even when the YAML declares no `env-variables` block (a YAML `env-variables: null` is likewise superseded by the injected dict when pinned). A pinned non-isolated run performs no Step 16 `settings.json` sweep (the base file is the run's own Step 14 and Step 18 write target), so both env-based controls persist in the final base file.
 
 #### Removal Behavior
 
-When the version is `"latest"` or absent:
+When the version is `"latest"` or absent, nothing is auto-injected, so every auto-update control key present in the in-memory configuration comes from the user's YAML and is preserved -- the removal counterpart of the WARN-but-Respect write semantics. Two cleanup mechanisms remove stale artifacts from prior pinned runs instead:
 
-- `autoUpdates` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
-- `DISABLE_AUTOUPDATER` in `user-settings.env` is set to `null` for RFC 7396 null-as-delete (not `del`, because merge semantics require `None` to trigger removal from disk).
-- `DISABLE_AUTOUPDATER` is removed from `env-variables` (using `del`, correct because `create_profile_config()` uses atomic overwrite) and `os-env-variables` (set to `None` for OS-level deletion).
+- **OS-level variable:** `DISABLE_AUTOUPDATER` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
+- **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass. When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). When pinned, it only cleans `~/.claude/settings.json` to prevent bare sessions from inheriting isolated environment restrictions.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env` or `env-variables`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs (`command-names` present), to prevent bare sessions from inheriting isolated environment restrictions; a pinned non-isolated run performs no `settings.json` sweep, because the base file is the run's own write target.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1605,6 +1614,8 @@ If the user explicitly sets a value in the YAML configuration that contradicts t
 - **User value absent:** Auto-inject (proceed silently)
 - **User value matches intent:** No-op (no warning)
 - **User value contradicts intent:** Respect user value, emit warning. For example, if the user sets `autoUpdates: true` in `global-config` while pinning a specific version, the `true` value is preserved and a warning like `"User set global-config.autoUpdates to True (auto-update intent is False for pinned version). Respecting user value."` is displayed.
+
+Injection is gated on key MEMBERSHIP, not on value: an explicit user `null` (a deletion request, legal in every target) is a user declaration that contradicts the intent, so it is respected with a warning and never overwritten.
 
 #### `[auto]` Marker in Installation Summary
 
@@ -1624,9 +1635,9 @@ The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic 
 
 ### Automatic IDE Extension Version Management
 
-When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, any previously injected IDE extension controls are automatically removed.
+When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, stale auto-injected IDE extension controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved.
 
-This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture: same 4-target write matrix, same WARN-but-Respect conflict resolution, same write-remove symmetry cleanup.
+This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 4-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, and same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep).
 
 #### Injection Targets
 
@@ -1641,13 +1652,12 @@ All four targets are injected unconditionally regardless of whether `command-nam
 
 #### Removal Behavior
 
-When the version is `"latest"` or absent:
+When the version is `"latest"` or absent, nothing is auto-injected, so every IDE extension control key present in the in-memory configuration comes from the user's YAML and is preserved -- identical to the auto-update twin. Two cleanup mechanisms remove stale artifacts from prior pinned runs instead:
 
-- `autoInstallIdeExtension` in `global-config` is set to `null` (RFC 7396 null-as-delete) only if the current value is `false`. User-set `true` values are left alone.
-- `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` in `user-settings.env` is set to `null` for RFC 7396 null-as-delete (not `del`, because merge semantics require `None` to trigger removal from disk).
-- `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` is removed from `env-variables` (using `del`, correct because `create_profile_config()` uses atomic overwrite) and `os-env-variables` (set to `None` for OS-level deletion).
+- **OS-level variable:** `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
+- **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files. When pinned, it only cleans `~/.claude/settings.json` to prevent bare sessions from inheriting isolated environment restrictions.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass (Step 16) with identical guards. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files -- unless the current YAML itself declares the key in `user-settings.env` or `env-variables`, in which case the `settings.json` sweep is skipped -- and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files (value-conditional: user-set `true` is preserved). When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs; a pinned non-isolated run performs no `settings.json` sweep.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1667,11 +1677,13 @@ Auto-injected settings (version pinning):
 
 #### VSIX Installation
 
-When a version is pinned, the setup installs the matching Claude Code extension (`anthropic.claude-code`) into all detected VS Code family IDEs using a three-tier fallback chain:
+When a version is pinned, the setup installs the matching Claude Code extension (`anthropic.claude-code`) into all detected VS Code family IDEs. The extension is platform-specific: the marketplace hosts a separate VSIX per OS/architecture pair (`targetPlatform`), so the setup first computes the host identifier as `{os}-{arch}` -- `os` is `win32`, `darwin`, `linux`, or `alpine` (when `/etc/alpine-release` exists), and `arch` is `x64` or `arm64`. Installation then uses a three-tier fallback chain:
 
-1. **Tier 1 -- Bundled VSIX:** Check `~/.claude/local/node_modules/@anthropic-ai/claude-code/vendor/claude-code.vsix`. Validates file exists and `st_size > 1000` (same zero-byte guard as `verify_claude_installation()`). No network download needed.
-2. **Tier 2 -- Marketplace CDN download:** Download the VSIX binary from the VS Code Marketplace CDN (primary URL with fallback). Downloaded to a temp file, installed via `--install-extension <path> --force`, then cleaned up.
-3. **Tier 3 -- Marketplace @version syntax:** Use `anthropic.claude-code@{version}` syntax directly. Emits a warning because VS Code may auto-update the extension despite version pinning.
+1. **Tier 1 -- Bundled VSIX:** Check `~/.claude/local/node_modules/@anthropic-ai/claude-code/vendor/claude-code.vsix`. The file is opened as a zip archive and used only when its embedded `extension/package.json` version equals the pinned version AND its manifest's declared `TargetPlatform` (if any) matches the host. A version or platform mismatch, or an unreadable archive, falls through to Tier 2. No network download needed.
+2. **Tier 2 -- Marketplace CDN download:** Download the platform-specific VSIX from the VS Code Marketplace CDN by appending `?targetPlatform={os}-{arch}` to both the primary and fallback URLs (without the parameter, the marketplace serves an arbitrary platform's build of this platform-specific extension). Gzip-encoded response bodies (served by the fallback endpoint) are decompressed, and every payload is validated against the zip magic prefix before use. The VSIX is written to a temp file, installed via `--install-extension <path> --force`, then cleaned up. Skipped entirely (in favor of Tier 3) when the host OS or architecture has no known marketplace identifier.
+3. **Tier 3 -- Marketplace @version syntax:** Use `anthropic.claude-code@{version}` syntax directly; the IDE resolves its own targetPlatform. Emits a warning because VS Code may auto-update the extension despite version pinning. Also reached when a downloaded payload is invalid or the temp-file write fails.
+
+**Version-missing skip:** When every Tier 2 download URL returns HTTP 404, the pinned Claude Code version has no matching extension in the marketplace for the host targetPlatform (extension version gaps are real). The setup prints a warning naming the version and targetPlatform, skips IDE extension installation, and the IDEs keep their current extension -- this counts as success, not failure, and Tier 3 is not attempted. The warning only fires after at least one IDE was detected. Non-404 download failures (network errors, 5xx) keep the Tier 3 fallback and its auto-update warning.
 
 Installation is **non-fatal**: failures produce warnings but do not abort the setup.
 
@@ -1687,7 +1699,7 @@ The three installation tiers have different auto-update implications for the ins
 
 Since VS Code v1.92, extensions installed via VSIX files (Tiers 1 and 2) have auto-update disabled by default. This is the primary defense mechanism for version pinning -- the installed extension stays at the pinned version without any additional IDE-level configuration.
 
-Tier 3 (marketplace @version syntax) is a last-resort fallback that only triggers when both the bundled VSIX is unavailable and the marketplace CDN download fails. In this case, VS Code may auto-update the extension despite version pinning. When Tier 3 is used, the setup emits a warning with instructions to manually disable auto-update for the extension:
+Tier 3 (marketplace @version syntax) is a last-resort fallback that triggers when no usable bundled VSIX exists AND the marketplace CDN download is unavailable -- the host targetPlatform is unknown, the download fails for a non-404 reason, the payload is not a valid VSIX archive, or the temp-file write fails. (When all download URLs return 404, the setup skips installation with a warning instead of reaching Tier 3 -- see Version-missing skip above.) In the Tier 3 case, VS Code may auto-update the extension despite version pinning, so the setup emits a warning with instructions to manually disable auto-update for the extension:
 
 > In VS Code's Extensions view, right-click the Claude Code extension and set "Auto Update" to off.
 
@@ -1697,7 +1709,13 @@ This per-extension "Auto Update" toggle is the only targeted control available. 
 
 #### VS Code Family IDE Detection
 
-IDEs are detected via `shutil.which()` for each CLI name: `code`, `code-insiders`, `cursor`, `windsurf`, `codium`. The extension is installed into all detected IDEs. If no IDEs are detected, the step is a silent no-op.
+Detection runs in two passes. First, `shutil.which()` checks PATH for each CLI name: `code`, `code-insiders`, `cursor`, `windsurf`, `codium`. Then, for CLI names not found on PATH, well-known install locations are probed (results are deduplicated by CLI name, with a PATH hit always winning):
+
+- **macOS:** App bundles under `/Applications` and `~/Applications` for all five IDEs (for example, `Visual Studio Code.app/Contents/Resources/app/bin/code`) -- drag-and-drop installs do not register the `code` CLI on PATH
+- **Linux:** `/usr/bin/code`, `/usr/share/code/bin/code`, `/snap/bin/code`, and the system and per-user Flatpak exports of `com.visualstudio.code`
+- **Windows:** `%LOCALAPPDATA%\Programs\Microsoft VS Code\bin\code.cmd`
+
+The extension is installed into all detected IDEs. If no IDEs are detected, the step is a silent no-op.
 
 JetBrains IDEs are excluded because they use their own plugin ecosystem and do not support VSIX extensions.
 
@@ -1744,12 +1762,12 @@ For the full technical architecture, see [Cross-Shell Launcher Architecture](cro
 Here is a conceptual overview of what the setup script does when you run it with a configuration:
 
 1. **Install Claude Code** -- Uses the native installer with npm fallback. Skipped with `--skip-install`.
-2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs. Skipped if no version is pinned or `--skip-install` is used.
+2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs, selecting the VSIX build matching the host targetPlatform. Skipped if no version is pinned or `--skip-install` is used. When the pinned version has no matching marketplace extension for the host platform (every download URL returns HTTP 404), the step prints a warning and skips installation, leaving each IDE's current extension in place.
 3. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
 4. **Download custom files** -- Processes `files-to-download` entries.
 5. **Install Node.js** -- If `install-nodejs: true` is set in the config.
-6. **Install dependencies** -- Runs platform-specific dependency commands.
-7. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables`. Generates env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) for launcher auto-sourcing.
+6. **Install dependencies** -- Runs platform-specific dependency commands. Failed global npm installs are retried with sudo on Linux/macOS/WSL when the npm global prefix is not user-writable; every failed dependency is listed in the end-of-run error block and causes exit code 1.
+7. **Set OS environment variables** -- Writes persistent environment variables from `os-env-variables` (a `null` value deletes the variable). Rebuilds the env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) for launcher auto-sourcing -- header-only when no active variable remains, so stale exports are cleared.
 8. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
 9. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
 10. **Process rules** -- Downloads rule Markdown files to `~/.claude/rules/`.
@@ -1757,8 +1775,8 @@ Here is a conceptual overview of what the setup script does when you run it with
 12. **Process system prompt** -- Downloads the prompt file if configured.
 13. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
 14. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
-15. **Write global config** -- Merges `global-config` into `~/.claude.json`.
-16. **Cleanup stale controls** -- Sweeps all filesystem locations for stale auto-update and IDE extension artifacts from prior configurations.
+15. **Write global config** -- Merges `global-config` into `~/.claude.json`. With `command-names`, also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the dual-written isolated `.claude.json`.
+16. **Cleanup stale controls** -- Sweeps stale auto-update and IDE extension artifacts from prior configurations (all filesystem locations on unpinned runs, preserving `settings.json` keys the current YAML itself declares; on pinned runs, only the base `~/.claude/settings.json` and only for isolated environments).
 17. **Download hooks** -- Downloads hook script files to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without). In non-command-names mode, Step 17 runs when ANY of the following are declared: `hooks.events` non-empty, `hooks.files` non-empty, or `status-line.file` set.
 18. **Write profile settings** -- Writes all nine profile-owned keys (`model`, `permissions`, `env`, `attribution`, `alwaysThinkingEnabled`, `effortLevel`, `companyAnnouncements`, `statusLine`, `hooks`) as camelCase keys on disk. With `command-names`: writes to `~/.claude/{cmd}/config.json` via `create_profile_config()` (atomic overwrite -- fresh dict each run). Without `command-names`: writes to `~/.claude/settings.json` via `write_profile_settings_to_settings()`, which delegates to `_write_merged_json()` for **deep-merge, universal array union at every depth, and RFC 7396 null-as-delete** (preserves non-delta keys; see [Profile-Level Settings Routing](#profile-level-settings-routing)).
 19. **Write manifest** -- Creates an installation tracking manifest. (Only if `command-names` is specified.)
@@ -1766,7 +1784,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
 
-Step 17 is skipped if no hooks, hook files, or status-line file are configured. Step 18 is a no-op if the profile delta is empty (no profile-owned keys declared at YAML root level). Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
+Step 17 is skipped if no hooks, hook files, or status-line file are configured. Step 18 is a no-op if the profile delta is empty -- no profile-owned keys declared at YAML root level and no auto-injected `env-variables` controls written back by version pinning. Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
 
 ## Profile-Level Settings Routing
 
@@ -1851,10 +1869,10 @@ Keys absent from the delta are preserved in `~/.claude/settings.json`. This cove
 - Prior contributions from `write_profile_settings_to_settings()` itself across other YAML configurations, including list-valued keys (which accumulate additively under the universal array-union contract).
 - Deep-merged contributions from Step 14 `write_user_settings()` (including any free-form `user-settings` keys, all list-valued keys unioned with structural dedupe across Step 14 and Step 18).
 - User-managed keys outside the toolbox's YAML schema (for example, `includeGitInstructions`, `apiKeyHelper`, `cleanupPeriodDays`, `outputStyle`, `autoMemoryDirectory`, `sandbox.*`, user-managed array-valued keys like `companyAnnouncements` or `permissions.additionalDirectories`).
-- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update Target 2) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension Target 2) controls: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables. When the YAML declares its own `env-variables`, the delta's new env keys are deep-merged on top of the existing env dict rather than replacing it, so the Step 14 Target 2 contributions survive.
+- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update Target 2) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension Target 2) controls: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables. When the YAML declares its own `env-variables`, the delta's new env keys are deep-merged on top of the existing env dict rather than replacing it, so the Step 14 Target 2 contributions survive the Step 18 write itself. (Pinned non-isolated runs perform no Step 16 `settings.json` sweep, so these controls also survive the cleanup pass -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
 - Elements written to list-valued keys by any prior contributor (manual user edits, the Claude Code CLI, teammate YAMLs): new elements from the current YAML are unioned with the existing list rather than replacing it.
 
-**Empty-delta no-op:** If no profile-owned keys are declared at YAML root level, the builder returns `{}` and `write_profile_settings_to_settings()` performs ZERO file I/O -- it neither creates nor touches `~/.claude/settings.json`. A YAML with only `user-settings:`, `global-config:`, `agents:`, and so on will never have Step 18 modify `settings.json`.
+**Empty-delta no-op:** If no profile-owned keys are declared at YAML root level, the builder returns `{}` and `write_profile_settings_to_settings()` performs ZERO file I/O -- it neither creates nor touches `~/.claude/settings.json`. A YAML with only `user-settings:`, `global-config:`, `agents:`, and so on will never have Step 18 modify `settings.json`. (Exception: when `claude-code-version` pins a version, the auto-injected `env-variables` controls are written back into the resolved configuration, so the delta contains `env` and Step 18 does write -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
 
 **Malformed or non-dict existing content:** If `~/.claude/settings.json` contains invalid JSON, unreadable content, or a non-dict top-level value (for example, a bare list), `_write_merged_json()` emits a warning (`"Existing ... is not a dict, starting fresh"` or `"Invalid JSON in ..."`) and starts fresh (treats the existing content as `{}`). The written file ends with a trailing newline for file-format consistency with `write_user_settings()` and `write_global_config()`.
 
@@ -2200,13 +2218,13 @@ Both `command-names` and `command-defaults` must be specified together. Provide 
 
 The `link-projects-dir` flag links an isolated profile's `projects/` directory to the base `~/.claude/projects/`, and isolated profiles exist only when `command-names` is present. Either add `command-names` or remove `link-projects-dir`.
 
-### effort-level 'xhigh'/'max' requires an Opus model
+### effort-level 'xhigh'/'max' is only available for Opus and Fable models
 
-The `xhigh` and `max` effort levels require the `model` key to be set to an Opus variant (the model name must contain `opus`, case-insensitive):
+The `xhigh` and `max` effort levels require the `model` key to be set to an Opus or Fable variant (the model name must contain `opus` or `fable`, case-insensitive) or the exact alias `best`. The validation errors read `effort-level '{level}' requires model to be specified. The '{level}' effort level is only available for Opus and Fable models.` (when `model` is missing) and `effort-level '{level}' is only available for Opus and Fable models, but model is set to '{model}'. Use 'low', 'medium', or 'high' for other models.` (when the model is outside both families):
 
 ```yaml
-model: "opus"
-effort-level: "max"   # or "xhigh"
+model: "claude-fable-5"   # or "opus", "fable", "best"
+effort-level: "max"       # or "xhigh"
 ```
 
 ### Invalid platform keys in dependencies

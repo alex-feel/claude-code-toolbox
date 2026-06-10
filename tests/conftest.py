@@ -399,12 +399,18 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
 
 
 @pytest.fixture(autouse=True)
-def _mock_cleanup_stale_auto_update_controls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent cleanup_stale_auto_update_controls from touching real filesystem.
+def _mock_stale_controls_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent the stale-controls cleanup sweeps from touching the real filesystem.
 
-    This function iterates ~/.claude/ subdirectories and writes to settings.json
-    and .claude.json files. In test environments, it must be mocked to prevent
+    cleanup_stale_auto_update_controls and cleanup_stale_ide_extension_controls
+    iterate ~/.claude/ subdirectories and write to settings.json and
+    .claude.json files. In test environments, they must be mocked to prevent
     the conftest safety guard from blocking writes to real user paths.
+
+    Tests that exercise the real implementations bypass this mock by capturing
+    module-level references to the functions at test-module import time
+    (collection happens before this function-scoped fixture patches the
+    module attributes).
     """
     try:
         import setup_environment
@@ -412,6 +418,34 @@ def _mock_cleanup_stale_auto_update_controls(monkeypatch: pytest.MonkeyPatch) ->
             setup_environment,
             'cleanup_stale_auto_update_controls',
             lambda **_kwargs: None,
+        )
+        monkeypatch.setattr(
+            setup_environment,
+            'cleanup_stale_ide_extension_controls',
+            lambda **_kwargs: None,
+        )
+    except (ImportError, AttributeError):
+        pass  # Not all test modules import setup_environment
+
+
+@pytest.fixture(autouse=True)
+def _mock_install_method_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace _propagate_install_method with a pass-through in unit tests.
+
+    The propagation reads the real ~/.claude.json baseline and can turn an
+    otherwise empty global-config into a non-empty one, which would make
+    main()-flow unit tests write to the real home directory (blocked by the
+    conftest safety guard). The pass-through returns global_config unchanged.
+
+    Tests that exercise the real implementation bypass this mock by capturing
+    a module-level reference to the function at test-module import time.
+    """
+    try:
+        import setup_environment
+        monkeypatch.setattr(
+            setup_environment,
+            '_propagate_install_method',
+            lambda global_config, _primary_command_name, _auto_injected_items: global_config,
         )
     except (ImportError, AttributeError):
         pass  # Not all test modules import setup_environment
@@ -433,6 +467,42 @@ def _mock_manifest_and_stale_marker(request: pytest.FixtureRequest, monkeypatch:
         import setup_environment
         monkeypatch.setattr(setup_environment, 'write_manifest', lambda *_a, **_kw: True)
         monkeypatch.setattr(setup_environment, 'cleanup_stale_marker', lambda *_a, **_kw: None)
+    except (ImportError, AttributeError):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_env_loader_generation(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace generate_env_loader_files with a no-op in main()-flow unit tests.
+
+    Loader files are rebuilt on every isolated-mode run (even when every
+    os-env entry is a deletion), so any main()-flow unit test that declares
+    command-names would write env loader files under the real ~/.claude/{cmd}/
+    (blocked by the conftest safety guard). The no-op returns an empty dict,
+    matching the "nothing generated" main() path.
+
+    Test classes that exercise the real implementation against tmp_path
+    directories are excluded.
+    """
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+    if 'e2e' in str(request.fspath):
+        return
+
+    _excluded_classes = {
+        'TestGenerateEnvLoaderFiles',
+    }
+    parent = request.node.getparent(pytest.Class)
+    if parent is not None and parent.name in _excluded_classes:
+        return
+
+    try:
+        import setup_environment
+        monkeypatch.setattr(
+            setup_environment,
+            'generate_env_loader_files',
+            lambda *_a, **_kw: {},
+        )
     except (ImportError, AttributeError):
         pass
 

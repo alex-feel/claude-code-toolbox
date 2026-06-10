@@ -1752,7 +1752,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files', return_value=(True, []))
     @patch('setup_environment.install_claude', return_value=True)
-    @patch('setup_environment.install_dependencies', return_value=True)
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
     @patch('setup_environment.is_admin', return_value=True)
@@ -1811,7 +1811,7 @@ class TestMainFunctionErrorPaths:
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'env-config'})
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.install_claude', return_value=True)
-    @patch('setup_environment.install_dependencies', return_value=True)
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources', return_value=True)
     @patch(
         'setup_environment.configure_all_mcp_servers',
@@ -1863,7 +1863,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude', return_value=True)
-    @patch('setup_environment.install_dependencies', return_value=True)
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources', return_value=True)
     @patch('setup_environment.handle_resource', return_value=True)
     @patch(
@@ -1967,7 +1967,7 @@ class TestInstallDependenciesEdgeCases:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'windows': ['custom-command install package']})
-        assert result is True
+        assert result == []
 
         # Should use PowerShell with -NoProfile flag for command execution
         call_args = mock_run.call_args[0][0]
@@ -1980,7 +1980,7 @@ class TestInstallDependenciesEdgeCases:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'linux': ['uv tool install pytest']})
-        assert result is True
+        assert result == []
 
         # Should add --force flag
         call_args = mock_run.call_args[0][0]
@@ -1989,14 +1989,15 @@ class TestInstallDependenciesEdgeCases:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
     def test_install_dependencies_failure_continues(self, mock_run, _mock_system):
-        """Test that dependency installation continues after failure."""
+        """Test that dependency installation continues after failure and reports it."""
         mock_run.side_effect = [
             subprocess.CompletedProcess([], 1, '', 'Error'),  # First fails
             subprocess.CompletedProcess([], 0, '', ''),  # Second succeeds
         ]
 
         result = setup_environment.install_dependencies({'windows': ['failing-dep', 'working-dep']})
-        assert result is True
+        # The failing command is reported while later commands still execute
+        assert result == ['failing-dep']
         assert mock_run.call_count == 2
 
 

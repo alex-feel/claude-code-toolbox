@@ -156,9 +156,74 @@ class TestIdeStaleCleanup:
         cmd_claude_json = cmd_dir / '.claude.json'
         cmd_claude_json.write_text(json.dumps({'autoInstallIdeExtension': False}))
 
-        # Run cleanup with not-pinned
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+        # Run cleanup with not-pinned (no isolation, no user-declared key)
+        setup_environment.cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
 
         # Verify all cleaned
         errors = validate_ide_extension_controls(home, pinned=False)
         assert not errors, '\n'.join(errors)
+
+
+class TestIdeUnpinnedRemovalSemantics:
+    """Verify unpinned runs preserve user declarations and sweep stale disk keys."""
+
+    def test_unpinned_preserves_user_declared_env_and_sweep_cleans_disk(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """User-declared controls survive in memory; the disk sweep removes stale keys."""
+        home = e2e_isolated_home['home']
+        claude_dir = home / '.claude'
+
+        # Pre-populate settings.json with stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
+        settings_path = claude_dir / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER_VAR': 'keep'},
+        }))
+
+        # Apply with no version pin: user-declared controls are preserved
+        gc, us, ev, osev, warns, _ = setup_environment.apply_ide_extension_settings(
+            None, {}, {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER_VAR': 'keep'}}, {}, {},
+        )
+        assert us is not None
+        assert us['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1', \
+            'User-declared CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL must be preserved in memory'
+        assert us['env']['OTHER_VAR'] == 'keep'
+        assert not warns
+
+        # Stale on-disk artifacts are removed by the Step 16 sweep helper
+        setup_environment._cleanup_settings_json_ide_skip(settings_path)
+        data = json.loads(settings_path.read_text())
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {}), \
+            'Stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL should be removed from disk by the sweep'
+        assert data['env']['OTHER_VAR'] == 'keep'
+
+    def test_unpinned_schedules_os_level_deletion_when_not_declared(self) -> None:
+        """The OS-level variable gets a deletion entry because it has no disk sweep."""
+        _, _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            None, {}, {}, {}, {},
+        )
+        assert osev is not None
+        assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}, \
+            'Unpinned run must schedule OS-level CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL deletion'
+
+    def test_unpinned_sweep_preserves_user_declared_settings_key(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """The orchestrated sweep keeps a user-declared key in settings.json."""
+        home = e2e_isolated_home['home']
+        claude_dir = home / '.claude'
+
+        settings_path = claude_dir / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
+        }))
+
+        setup_environment.cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=True,
+        )
+
+        data = json.loads(settings_path.read_text())
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1', \
+            'User-declared key must survive the unpinned sweep'

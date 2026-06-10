@@ -13,6 +13,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import glob as glob_module
+import gzip
 import http.client
 import json
 import os
@@ -30,6 +31,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
@@ -581,6 +584,37 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         sys.exit(1)
 
 
+def _is_global_npm_install(dep: str) -> bool:
+    """Check if a dependency command is a global npm package installation.
+
+    Global npm installs write to the npm global prefix, which may require
+    elevated privileges (admin on Windows, sudo on Unix-like systems).
+
+    Args:
+        dep: Dependency command string from the configuration.
+
+    Returns:
+        True if the command installs an npm package globally.
+    """
+    return 'npm install -g' in dep
+
+
+def _contains_shell_control_chars(command: str) -> bool:
+    """Check if a command string contains shell control characters.
+
+    Commands containing these characters can chain commands, redirect
+    output, or expand variables, so they must never be re-executed with
+    elevated privileges.
+
+    Args:
+        command: Shell command string to inspect.
+
+    Returns:
+        True if the command contains any shell control character.
+    """
+    return any(char in command for char in ';&|<>$`\n')
+
+
 def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
     """Check if admin rights are needed for the current operation.
 
@@ -612,7 +646,7 @@ def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool
             # Check for commands that typically need admin
             if 'winget' in dep and '--scope machine' in dep:
                 return True
-            if 'npm install -g' in dep:
+            if _is_global_npm_install(dep):
                 # Global npm installs may need admin depending on Node.js installation
                 return True
 
@@ -681,7 +715,7 @@ class InstallationPlan:
     install_nodejs: bool = False
     skip_install: bool = False
     permissions: dict[str, Any] | None = None
-    env_variables: dict[str, str] | None = None
+    env_variables: dict[str, str | None] | None = None
     os_env_variables: dict[str, Any] | None = None
     user_settings: dict[str, Any] | None = None
     global_config: dict[str, Any] | None = None
@@ -803,6 +837,117 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
         )
     except FileNotFoundError:
         return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
+
+
+def _dev_tty_sudo_available() -> bool:
+    """Check if sudo can acquire credentials via /dev/tty in non-interactive mode.
+
+    When stdin is piped (e.g., curl | bash), sudo cannot prompt via stdin.
+    However, if /dev/tty is available, sudo can be invoked with stdin
+    redirected from /dev/tty to prompt the user directly on the terminal.
+
+    Returns:
+        True if /dev/tty is available and sudo can be used through it,
+        False otherwise.
+    """
+    if sys.platform != 'win32':
+        try:
+            with open('/dev/tty'):
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _run_with_sudo_fallback(
+    cmd: list[str],
+    *,
+    capture_output: bool = True,
+    timeout: int = 30,
+    tty_timeout: int = 60,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run a command with sudo, using a three-tier fallback strategy.
+
+    Tier 1: Interactive mode (stdin is a TTY) -- sudo prompts directly.
+    Tier 2: Cached credentials (sudo -n true succeeds) -- sudo without prompt.
+    Tier 3: /dev/tty available -- sudo with stdin redirected from /dev/tty.
+
+    If all tiers fail, returns None without running the command.
+
+    Args:
+        cmd: Command to execute with sudo prepended
+             (e.g., ['npm', 'uninstall', '-g', 'pkg']).
+        capture_output: Whether to capture stdout/stderr.
+        timeout: Timeout in seconds for Tier 1 and Tier 2 attempts.
+        tty_timeout: Timeout for Tier 3 (/dev/tty) attempt. Longer because
+                     the user may need time to type their password.
+
+    Returns:
+        CompletedProcess if sudo was attempted (check returncode for success),
+        None if no sudo mechanism was available.
+    """
+    if sys.platform != 'win32':
+        sudo_cmd = ['sudo'] + cmd
+
+        # Tier 1: Interactive mode -- user can enter password at stdin
+        if sys.stdin.isatty():
+            try:
+                return subprocess.run(
+                    sudo_cmd,
+                    capture_output=capture_output,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                warning(f'Sudo command timed out after {timeout} seconds')
+                return None
+            except FileNotFoundError:
+                warning('sudo command not found')
+                return None
+
+        # Tier 2: Non-interactive with cached credentials
+        try:
+            cred_check = subprocess.run(
+                ['sudo', '-n', 'true'],
+                capture_output=True,
+                timeout=5,
+            )
+            if cred_check.returncode == 0:
+                try:
+                    return subprocess.run(
+                        sudo_cmd,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    warning(f'Sudo command timed out after {timeout} seconds')
+                    return None
+                except FileNotFoundError:
+                    return None
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        # Tier 3: /dev/tty available -- redirect sudo stdin from terminal
+        if _dev_tty_sudo_available():
+            info('Terminal available via /dev/tty - attempting sudo with terminal prompt...')
+            try:
+                with open('/dev/tty') as tty:
+                    return subprocess.run(
+                        sudo_cmd,
+                        stdin=tty,
+                        capture_output=capture_output,
+                        encoding='utf-8',
+                        errors='replace',
+                        timeout=tty_timeout,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+    # Windows or all tiers exhausted
+    return None
 
 
 def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | None:
@@ -1742,11 +1887,88 @@ def write_global_config(
     return ok
 
 
+def _propagate_install_method(
+    global_config: dict[str, Any] | None,
+    primary_command_name: str | None,
+    auto_injected_items: list[str],
+) -> dict[str, Any] | None:
+    """Propagate installMethod from the base ~/.claude.json into global_config.
+
+    install_claude.py records installMethod only in the base ~/.claude.json,
+    while isolated sessions resolve their global config exclusively through
+    CLAUDE_CONFIG_DIR. Injecting the machine-baseline value into the
+    global-config dict lets the Step 15 dual-write carry it to both the base
+    and the isolated .claude.json, so the CLI sees the correct installation
+    type in isolated sessions.
+
+    WARN-but-Respect: a user-declared YAML global-config value wins with a
+    warning when it differs from the baseline. When the base file or the key
+    is absent, nothing is propagated (no fabrication).
+
+    Args:
+        global_config: Global config dict from the YAML global-config section,
+            or None when the YAML lacks the section.
+        primary_command_name: Primary command name when command-names creates
+            an isolated environment, or None. Without isolation the base file
+            already holds the value, so nothing is propagated.
+        auto_injected_items: Mutable list recording auto-injected control
+            values for the run. Propagation runs at the global-config write
+            step, after the pre-confirmation summary has already rendered, so
+            the propagated value is announced with an info message here and
+            appended to this list for the run record rather than shown in that
+            summary.
+
+    Returns:
+        The global_config dict with installMethod injected (created when the
+        YAML lacks the section), or the unchanged input when nothing is
+        propagated.
+    """
+    if not primary_command_name:
+        return global_config
+
+    base_config_file = get_real_user_home() / '.claude.json'
+    if not base_config_file.exists():
+        return global_config
+    try:
+        base_content = json.loads(base_config_file.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return global_config
+    if not isinstance(base_content, dict):
+        return global_config
+
+    base_value = base_content.get(INSTALL_METHOD_KEY)
+    if base_value is None:
+        return global_config
+
+    if global_config is not None and INSTALL_METHOD_KEY in global_config:
+        user_value = global_config[INSTALL_METHOD_KEY]
+        if user_value != base_value:
+            warning(
+                f'User set global-config.{INSTALL_METHOD_KEY} to {user_value!r} '
+                f'but the base {base_config_file} records {base_value!r}. '
+                f'Respecting user value.',
+            )
+        return global_config
+
+    if global_config is None:
+        global_config = {}
+    global_config[INSTALL_METHOD_KEY] = base_value
+    auto_injected_items.append(f'global-config.{INSTALL_METHOD_KEY}: {base_value}')
+    info(f'Propagating installMethod {base_value!r} into the isolated environment configuration')
+    return global_config
+
+
 # Constants for auto-update management (used for value parity with install_claude.py)
 AUTO_UPDATE_KEY = 'autoUpdates'
 AUTO_UPDATE_DISABLED_VALUE = False
 DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
 DISABLE_AUTOUPDATER_VALUE = '1'
+
+# Key recorded by install_claude.py in the base ~/.claude.json identifying how
+# Claude Code was installed. Isolated profiles resolve their global config via
+# CLAUDE_CONFIG_DIR with no fallback to the home directory, so the value must
+# be propagated into ~/.claude/{cmd}/.claude.json for the CLI to see it there.
+INSTALL_METHOD_KEY = 'installMethod'
 
 # Constants for IDE extension version management
 IDE_AUTO_INSTALL_KEY = 'autoInstallIdeExtension'
@@ -1767,18 +1989,31 @@ VSIX_DOWNLOAD_URL_FALLBACK = (
 )
 # VS Code family IDE CLIs to detect for extension installation
 VSCODE_FAMILY_CLI_NAMES = ('code', 'code-insiders', 'cursor', 'windsurf', 'codium')
+# VS Code Marketplace targetPlatform architecture identifiers by machine name
+VSCODE_TARGET_PLATFORM_ARCHES = {
+    'amd64': 'x64',
+    'x86_64': 'x64',
+    'arm64': 'arm64',
+    'aarch64': 'arm64',
+}
+# Marker file identifying musl-based Alpine Linux, which requires the
+# dedicated 'alpine' targetPlatform instead of the glibc 'linux' build
+ALPINE_RELEASE_MARKER = Path('/etc/alpine-release')
+# Magic prefixes used to validate downloaded VSIX payloads
+GZIP_MAGIC = b'\x1f\x8b'
+ZIP_MAGIC = b'PK\x03\x04'
 
 
 def apply_auto_update_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
     list[str],
     list[str],
@@ -1816,11 +2051,10 @@ def apply_auto_update_settings(
             )
         )
     else:
-        # Latest/absent: remove auto-injected controls
+        # Latest/absent: preserve user declarations, schedule OS-level cleanup
         global_config, user_settings, env_variables, os_env_variables = (
             _remove_auto_update_controls(
                 global_config, user_settings, env_variables, os_env_variables,
-                warnings_list,
             )
         )
 
@@ -1830,29 +2064,38 @@ def apply_auto_update_settings(
 def _inject_auto_update_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
     warnings_list: list[str],
     auto_injected: list[str],
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
-    """Inject auto-update disable controls into all four target dicts."""
+    """Inject auto-update disable controls into all four target dicts.
+
+    Injection is gated on key MEMBERSHIP, not on value: an explicit user
+    null (a YAML deletion request, legal in every target) is a user
+    declaration and is respected with a warning (WARN-but-Respect), never
+    overwritten.
+
+    Returns:
+        Tuple of (global_config, user_settings, env_variables,
+        os_env_variables) with controls injected into absent keys.
+    """
     # Target 1: global_config.autoUpdates = False
     if global_config is None:
         global_config = {}
-    current_auto = global_config.get(AUTO_UPDATE_KEY)
-    if current_auto is None:
+    if AUTO_UPDATE_KEY not in global_config:
         global_config[AUTO_UPDATE_KEY] = AUTO_UPDATE_DISABLED_VALUE
         auto_injected.append(f'global-config.{AUTO_UPDATE_KEY}: false')
-    elif current_auto == AUTO_UPDATE_DISABLED_VALUE:
+    elif global_config[AUTO_UPDATE_KEY] == AUTO_UPDATE_DISABLED_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set global-config.{AUTO_UPDATE_KEY} to {current_auto!r} '
+            f'User set global-config.{AUTO_UPDATE_KEY} to {global_config[AUTO_UPDATE_KEY]!r} '
             f'(auto-update intent is {AUTO_UPDATE_DISABLED_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -1865,15 +2108,14 @@ def _inject_auto_update_controls(
         env_raw = {}
         user_settings['env'] = env_raw
     env_section = cast(dict[str, Any], env_raw)
-    current_disable: object = env_section.get(DISABLE_AUTOUPDATER_KEY)
-    if current_disable is None:
+    if DISABLE_AUTOUPDATER_KEY not in env_section:
         env_section[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
         auto_injected.append(f'user-settings.env.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(current_disable) == DISABLE_AUTOUPDATER_VALUE:
+    elif str(env_section[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set user-settings.env.{DISABLE_AUTOUPDATER_KEY} to {current_disable!r} '
+            f'User set user-settings.env.{DISABLE_AUTOUPDATER_KEY} to {env_section[DISABLE_AUTOUPDATER_KEY]!r} '
             f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -1881,15 +2123,14 @@ def _inject_auto_update_controls(
     # Target 3: env_variables.DISABLE_AUTOUPDATER = "1"
     if env_variables is None:
         env_variables = {}
-    current_env = env_variables.get(DISABLE_AUTOUPDATER_KEY)
-    if current_env is None:
+    if DISABLE_AUTOUPDATER_KEY not in env_variables:
         env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
         auto_injected.append(f'env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(current_env) == DISABLE_AUTOUPDATER_VALUE:
+    elif str(env_variables[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set env-variables.{DISABLE_AUTOUPDATER_KEY} to {current_env!r} '
+            f'User set env-variables.{DISABLE_AUTOUPDATER_KEY} to {env_variables[DISABLE_AUTOUPDATER_KEY]!r} '
             f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -1897,15 +2138,14 @@ def _inject_auto_update_controls(
     # Target 4: os_env_variables.DISABLE_AUTOUPDATER = "1"
     if os_env_variables is None:
         os_env_variables = {}
-    current_os_env = os_env_variables.get(DISABLE_AUTOUPDATER_KEY)
-    if current_os_env is None:
+    if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
         os_env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
         auto_injected.append(f'os-env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(current_os_env) == DISABLE_AUTOUPDATER_VALUE:
+    elif str(os_env_variables[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set os-env-variables.{DISABLE_AUTOUPDATER_KEY} to {current_os_env!r} '
+            f'User set os-env-variables.{DISABLE_AUTOUPDATER_KEY} to {os_env_variables[DISABLE_AUTOUPDATER_KEY]!r} '
             f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -1916,81 +2156,119 @@ def _inject_auto_update_controls(
 def _remove_auto_update_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
-    warnings_list: list[str],
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
-    """Remove auto-injected auto-update controls from all four target dicts."""
-    # Target 1: Remove autoUpdates from global_config (only if False)
-    if global_config is not None and AUTO_UPDATE_KEY in global_config:
-        current_val = global_config[AUTO_UPDATE_KEY]
-        if current_val == AUTO_UPDATE_DISABLED_VALUE:
-            # Set to None for RFC 7396 null-as-delete
-            global_config[AUTO_UPDATE_KEY] = None
-        elif current_val is True:
-            warnings_list.append(
-                f'User explicitly set global-config.{AUTO_UPDATE_KEY} to True. '
-                f'Respecting user value (not removing).',
-            )
+    """Handle auto-update controls for an unpinned run.
 
-    # Target 2: Remove DISABLE_AUTOUPDATER from user_settings.env
-    # Uses None for RFC 7396 null-as-delete: _write_merged_json() ->
-    # _merge_recursive() requires None to trigger target.pop(key, None)
-    # on disk. Using del only removes from in-memory dict; absent key
-    # is preserved during merge. (Target 3 uses del correctly because
-    # create_profile_config() writes atomically, not via merge.)
-    if user_settings is not None:
-        env_section = user_settings.get('env')
-        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
-            env_section[DISABLE_AUTOUPDATER_KEY] = None
+    On an unpinned run, nothing has been auto-injected into the in-memory
+    dicts, so every control key present comes from the user's YAML and is
+    PRESERVED (the removal counterpart of WARN-but-Respect on the write
+    side). Stale on-disk artifacts from a prior pinned run are removed by
+    the Step 16 stale-controls sweep instead.
 
-    # Target 3: Remove DISABLE_AUTOUPDATER from env_variables
-    if env_variables is not None and DISABLE_AUTOUPDATER_KEY in env_variables:
-        del env_variables[DISABLE_AUTOUPDATER_KEY]
+    The OS-level variable has no filesystem sweep, so when the user does
+    not declare DISABLE_AUTOUPDATER in os-env-variables, a deletion entry
+    (None) is scheduled here and set_all_os_env_variables() removes any
+    stale OS-level variable left by a prior pinned run. Deleting an
+    absent variable is a safe no-op on all platforms.
 
-    # Target 4: Set os_env_variables DISABLE_AUTOUPDATER to None (triggers deletion)
-    if os_env_variables is not None and DISABLE_AUTOUPDATER_KEY in os_env_variables:
+    Returns:
+        Tuple of (global_config, user_settings, env_variables,
+        os_env_variables) with the OS-level deletion entry scheduled.
+    """
+    if os_env_variables is None:
+        os_env_variables = {}
+    if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
         os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
 
     return global_config, user_settings, env_variables, os_env_variables
 
 
+def _collect_user_declared_control_keys(
+    user_settings: dict[str, Any] | None,
+    env_variables: dict[str, str | None] | None,
+) -> frozenset[str]:
+    """Identify which managed control keys the resolved YAML itself declares.
+
+    Must be called BEFORE apply_auto_update_settings() and
+    apply_ide_extension_settings() so that auto-injected values are not
+    mistaken for user declarations. The Step 16 unpinned sweep preserves
+    user-declared keys in settings.json files (the removal counterpart of
+    WARN-but-Respect on the write side).
+
+    Args:
+        user_settings: User settings dict from the YAML user-settings section.
+        env_variables: Environment variables dict from the YAML env-variables
+            section.
+
+    Returns:
+        Frozen set containing each managed control key (DISABLE_AUTOUPDATER,
+        CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in user-settings.env or
+        env-variables.
+    """
+    declared: set[str] = set()
+    env_section = user_settings.get('env') if user_settings is not None else None
+    for key in (DISABLE_AUTOUPDATER_KEY, IDE_SKIP_AUTO_INSTALL_KEY):
+        if isinstance(env_section, dict) and key in env_section:
+            declared.add(key)
+        if env_variables is not None and key in env_variables:
+            declared.add(key)
+    return frozenset(declared)
+
+
 def cleanup_stale_auto_update_controls(
     home_dir: Path,
     is_pinned: bool,
+    is_isolated: bool,
+    user_declared: bool,
 ) -> None:
-    """Remove stale auto-update controls from all filesystem locations.
+    """Remove stale auto-update controls from filesystem locations.
 
     Implements write-remove symmetry: writes go to specific locations
-    via scope-based routing, but removal sweeps ALL locations
-    unconditionally to clean up artifacts from prior configurations.
+    via scope-based routing, while removal sweeps the locations that can
+    hold artifacts from prior configurations. Two guards bound the sweep:
+
+    - Unpinned runs sweep ALL locations, except that settings.json files
+      keep DISABLE_AUTOUPDATER when the current YAML itself declares the
+      key (the removal counterpart of WARN-but-Respect on the write side).
+    - Pinned runs sweep the base ~/.claude/settings.json only for
+      isolated runs (bare sessions must not inherit an isolated
+      environment's restrictions). In a non-isolated pinned run the base
+      file is the run's own Step 14 write target, so sweeping it would
+      destroy the controls this run just wrote.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
     Args:
         home_dir: User home directory.
         is_pinned: Whether a specific Claude Code version is pinned.
+        is_isolated: Whether command-names created an isolated environment.
+        user_declared: Whether the current resolved YAML declares
+            DISABLE_AUTOUPDATER in user-settings.env or env-variables.
     """
     claude_dir = home_dir / '.claude'
 
     if not is_pinned:
-        # When NOT pinned: remove auto-update controls from EVERYWHERE
+        # When NOT pinned: remove auto-update controls from EVERYWHERE,
+        # preserving user-declared settings.json keys
 
-        # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
-        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+        if not user_declared:
+            # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
+            _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
 
-        # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    settings_path = subdir / 'settings.json'
-                    if settings_path.exists():
-                        _cleanup_settings_json_autoupdater(settings_path)
+            # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
+            if claude_dir.is_dir():
+                for subdir in claude_dir.iterdir():
+                    if subdir.is_dir():
+                        settings_path = subdir / 'settings.json'
+                        if settings_path.exists():
+                            _cleanup_settings_json_autoupdater(settings_path)
 
         # 3. Clean autoUpdates: false from ~/.claude.json
         _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
@@ -2003,10 +2281,12 @@ def cleanup_stale_auto_update_controls(
                     if claude_json_path.exists():
                         _cleanup_claude_json_auto_updates(claude_json_path)
 
-    else:
-        # When pinned WITH command-names: clean stale DISABLE_AUTOUPDATER
-        # from ~/.claude/settings.json (bare sessions must not inherit
-        # isolated environment restrictions)
+    elif is_isolated:
+        # When pinned WITH an isolated environment: clean stale
+        # DISABLE_AUTOUPDATER from ~/.claude/settings.json (bare sessions
+        # must not inherit isolated environment restrictions). Without
+        # isolation the base file holds this run's own Step 14 output,
+        # so no settings.json sweep runs.
         _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
 
 
@@ -2054,26 +2334,47 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
         pass  # Best-effort cleanup; non-fatal
 
 
-def _run_stale_controls_cleanup(claude_code_version_normalized: str | None) -> None:
-    """Execute Step 16: cleanup stale auto-update and IDE extension controls."""
+def _run_stale_controls_cleanup(
+    claude_code_version_normalized: str | None,
+    is_isolated: bool,
+    user_declared_keys: frozenset[str],
+) -> None:
+    """Execute Step 16: cleanup stale auto-update and IDE extension controls.
+
+    Args:
+        claude_code_version_normalized: Pinned version string, or None for latest.
+        is_isolated: Whether command-names created an isolated environment.
+        user_declared_keys: Control keys the current resolved YAML declares
+            (computed before injection by _collect_user_declared_control_keys()).
+    """
     print()
     print(f'{Colors.CYAN}Step 16: Cleaning stale auto-update and IDE extension controls...{Colors.NC}')
     home = get_real_user_home()
     is_pinned = claude_code_version_normalized is not None
-    cleanup_stale_auto_update_controls(home_dir=home, is_pinned=is_pinned)
-    cleanup_stale_ide_extension_controls(home_dir=home, is_pinned=is_pinned)
+    cleanup_stale_auto_update_controls(
+        home_dir=home,
+        is_pinned=is_pinned,
+        is_isolated=is_isolated,
+        user_declared=DISABLE_AUTOUPDATER_KEY in user_declared_keys,
+    )
+    cleanup_stale_ide_extension_controls(
+        home_dir=home,
+        is_pinned=is_pinned,
+        is_isolated=is_isolated,
+        user_declared=IDE_SKIP_AUTO_INSTALL_KEY in user_declared_keys,
+    )
 
 
 def apply_ide_extension_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
     list[str],
     list[str],
@@ -2111,11 +2412,10 @@ def apply_ide_extension_settings(
             )
         )
     else:
-        # Latest/absent: remove auto-injected controls
+        # Latest/absent: preserve user declarations, schedule OS-level cleanup
         global_config, user_settings, env_variables, os_env_variables = (
             _remove_ide_extension_controls(
                 global_config, user_settings, env_variables, os_env_variables,
-                warnings_list,
             )
         )
 
@@ -2125,29 +2425,38 @@ def apply_ide_extension_settings(
 def _inject_ide_extension_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
     warnings_list: list[str],
     auto_injected: list[str],
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
-    """Inject IDE extension auto-install disable controls into all four target dicts."""
+    """Inject IDE extension auto-install disable controls into all four target dicts.
+
+    Injection is gated on key MEMBERSHIP, not on value: an explicit user
+    null (a YAML deletion request, legal in every target) is a user
+    declaration and is respected with a warning (WARN-but-Respect), never
+    overwritten.
+
+    Returns:
+        Tuple of (global_config, user_settings, env_variables,
+        os_env_variables) with controls injected into absent keys.
+    """
     # Target 1: global_config.autoInstallIdeExtension = False
     if global_config is None:
         global_config = {}
-    current_auto = global_config.get(IDE_AUTO_INSTALL_KEY)
-    if current_auto is None:
+    if IDE_AUTO_INSTALL_KEY not in global_config:
         global_config[IDE_AUTO_INSTALL_KEY] = IDE_AUTO_INSTALL_DISABLED_VALUE
         auto_injected.append(f'global-config.{IDE_AUTO_INSTALL_KEY}: false')
-    elif current_auto == IDE_AUTO_INSTALL_DISABLED_VALUE:
+    elif global_config[IDE_AUTO_INSTALL_KEY] == IDE_AUTO_INSTALL_DISABLED_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set global-config.{IDE_AUTO_INSTALL_KEY} to {current_auto!r} '
+            f'User set global-config.{IDE_AUTO_INSTALL_KEY} to {global_config[IDE_AUTO_INSTALL_KEY]!r} '
             f'(auto-install intent is {IDE_AUTO_INSTALL_DISABLED_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -2160,15 +2469,14 @@ def _inject_ide_extension_controls(
         env_raw = {}
         user_settings['env'] = env_raw
     env_section = cast(dict[str, Any], env_raw)
-    current_disable: object = env_section.get(IDE_SKIP_AUTO_INSTALL_KEY)
-    if current_disable is None:
+    if IDE_SKIP_AUTO_INSTALL_KEY not in env_section:
         env_section[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
         auto_injected.append(f'user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(current_disable) == IDE_SKIP_AUTO_INSTALL_VALUE:
+    elif str(env_section[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_disable!r} '
+            f'User set user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY} to {env_section[IDE_SKIP_AUTO_INSTALL_KEY]!r} '
             f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -2176,15 +2484,14 @@ def _inject_ide_extension_controls(
     # Target 3: env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
     if env_variables is None:
         env_variables = {}
-    current_env = env_variables.get(IDE_SKIP_AUTO_INSTALL_KEY)
-    if current_env is None:
+    if IDE_SKIP_AUTO_INSTALL_KEY not in env_variables:
         env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
         auto_injected.append(f'env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(current_env) == IDE_SKIP_AUTO_INSTALL_VALUE:
+    elif str(env_variables[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_env!r} '
+            f'User set env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {env_variables[IDE_SKIP_AUTO_INSTALL_KEY]!r} '
             f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -2192,15 +2499,14 @@ def _inject_ide_extension_controls(
     # Target 4: os_env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
     if os_env_variables is None:
         os_env_variables = {}
-    current_os_env = os_env_variables.get(IDE_SKIP_AUTO_INSTALL_KEY)
-    if current_os_env is None:
+    if IDE_SKIP_AUTO_INSTALL_KEY not in os_env_variables:
         os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
         auto_injected.append(f'os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(current_os_env) == IDE_SKIP_AUTO_INSTALL_VALUE:
+    elif str(os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
         pass  # Already matches intent
     else:
         warnings_list.append(
-            f'User set os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {current_os_env!r} '
+            f'User set os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY]!r} '
             f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
             f'Respecting user value.',
         )
@@ -2211,45 +2517,35 @@ def _inject_ide_extension_controls(
 def _remove_ide_extension_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str] | None,
+    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
-    warnings_list: list[str],
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str] | None,
+    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
-    """Remove auto-injected IDE extension auto-install controls from all four target dicts."""
-    # Target 1: Remove autoInstallIdeExtension from global_config (only if False)
-    if global_config is not None and IDE_AUTO_INSTALL_KEY in global_config:
-        current_val = global_config[IDE_AUTO_INSTALL_KEY]
-        if current_val == IDE_AUTO_INSTALL_DISABLED_VALUE:
-            # Set to None for RFC 7396 null-as-delete
-            global_config[IDE_AUTO_INSTALL_KEY] = None
-        elif current_val is True:
-            warnings_list.append(
-                f'User explicitly set global-config.{IDE_AUTO_INSTALL_KEY} to True. '
-                f'Respecting user value (not removing).',
-            )
+    """Handle IDE extension auto-install controls for an unpinned run.
 
-    # Target 2: Remove CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from user_settings.env
-    # Uses None for RFC 7396 null-as-delete: _write_merged_json() ->
-    # _merge_recursive() requires None to trigger target.pop(key, None)
-    # on disk. Using del only removes from in-memory dict; absent key
-    # is preserved during merge. (Target 3 uses del correctly because
-    # create_profile_config() writes atomically, not via merge.)
-    if user_settings is not None:
-        env_section = user_settings.get('env')
-        if isinstance(env_section, dict) and IDE_SKIP_AUTO_INSTALL_KEY in env_section:
-            env_section[IDE_SKIP_AUTO_INSTALL_KEY] = None
+    On an unpinned run, nothing has been auto-injected into the in-memory
+    dicts, so every control key present comes from the user's YAML and is
+    PRESERVED (the removal counterpart of WARN-but-Respect on the write
+    side). Stale on-disk artifacts from a prior pinned run are removed by
+    the Step 16 stale-controls sweep instead.
 
-    # Target 3: Remove CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from env_variables
-    if env_variables is not None and IDE_SKIP_AUTO_INSTALL_KEY in env_variables:
-        del env_variables[IDE_SKIP_AUTO_INSTALL_KEY]
+    The OS-level variable has no filesystem sweep, so when the user does
+    not declare CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in os-env-variables, a
+    deletion entry (None) is scheduled here and set_all_os_env_variables()
+    removes any stale OS-level variable left by a prior pinned run.
+    Deleting an absent variable is a safe no-op on all platforms.
 
-    # Target 4: Set os_env_variables CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL to None (triggers deletion)
-    if os_env_variables is not None and IDE_SKIP_AUTO_INSTALL_KEY in os_env_variables:
+    Returns:
+        Tuple of (global_config, user_settings, env_variables,
+        os_env_variables) with the OS-level deletion entry scheduled.
+    """
+    if os_env_variables is None:
+        os_env_variables = {}
+    if IDE_SKIP_AUTO_INSTALL_KEY not in os_env_variables:
         os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = None
 
     return global_config, user_settings, env_variables, os_env_variables
@@ -2302,34 +2598,52 @@ def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
 def cleanup_stale_ide_extension_controls(
     home_dir: Path,
     is_pinned: bool,
+    is_isolated: bool,
+    user_declared: bool,
 ) -> None:
-    """Remove stale IDE extension auto-install controls from all filesystem locations.
+    """Remove stale IDE extension auto-install controls from filesystem locations.
 
     Implements write-remove symmetry: writes go to specific locations
-    via scope-based routing, but removal sweeps ALL locations
-    unconditionally to clean up artifacts from prior configurations.
+    via scope-based routing, while removal sweeps the locations that can
+    hold artifacts from prior configurations. Two guards bound the sweep:
+
+    - Unpinned runs sweep ALL locations, except that settings.json files
+      keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL when the current YAML itself
+      declares the key (the removal counterpart of WARN-but-Respect on
+      the write side).
+    - Pinned runs sweep the base ~/.claude/settings.json only for
+      isolated runs (bare sessions must not inherit an isolated
+      environment's restrictions). In a non-isolated pinned run the base
+      file is the run's own Step 14 write target, so sweeping it would
+      destroy the controls this run just wrote.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
     Args:
         home_dir: User home directory.
         is_pinned: Whether a specific Claude Code version is pinned.
+        is_isolated: Whether command-names created an isolated environment.
+        user_declared: Whether the current resolved YAML declares
+            CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in user-settings.env or
+            env-variables.
     """
     claude_dir = home_dir / '.claude'
 
     if not is_pinned:
-        # When NOT pinned: remove IDE extension controls from EVERYWHERE
+        # When NOT pinned: remove IDE extension controls from EVERYWHERE,
+        # preserving user-declared settings.json keys
 
-        # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
-        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+        if not user_declared:
+            # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
+            _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
 
-        # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    settings_path = subdir / 'settings.json'
-                    if settings_path.exists():
-                        _cleanup_settings_json_ide_skip(settings_path)
+            # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
+            if claude_dir.is_dir():
+                for subdir in claude_dir.iterdir():
+                    if subdir.is_dir():
+                        settings_path = subdir / 'settings.json'
+                        if settings_path.exists():
+                            _cleanup_settings_json_ide_skip(settings_path)
 
         # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
         _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
@@ -2342,11 +2656,193 @@ def cleanup_stale_ide_extension_controls(
                     if claude_json_path.exists():
                         _cleanup_claude_json_ide_auto_install(claude_json_path)
 
-    else:
-        # When pinned WITH command-names: clean stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
-        # from ~/.claude/settings.json (bare sessions must not inherit
-        # isolated environment restrictions)
+    elif is_isolated:
+        # When pinned WITH an isolated environment: clean stale
+        # CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
+        # (bare sessions must not inherit isolated environment
+        # restrictions). Without isolation the base file holds this run's
+        # own Step 14 output, so no settings.json sweep runs.
         _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+
+
+def _vscode_target_platform() -> str | None:
+    """Compute the VS Code Marketplace targetPlatform identifier for the host.
+
+    The Claude Code extension is platform-specific: the marketplace hosts a
+    separate VSIX per OS/architecture pair, and a download URL without the
+    targetPlatform query parameter returns an arbitrary platform's build.
+
+    Returns:
+        Identifier in the form '{os}-{arch}' (e.g. 'win32-x64',
+        'darwin-arm64', 'linux-arm64', 'alpine-x64'), or None when the host
+        OS or architecture has no known marketplace identifier.
+    """
+    arch = VSCODE_TARGET_PLATFORM_ARCHES.get(platform.machine().lower())
+    if arch is None:
+        return None
+
+    if sys.platform == 'win32':
+        os_name = 'win32'
+    elif sys.platform == 'darwin':
+        os_name = 'darwin'
+    elif sys.platform.startswith('linux'):
+        os_name = 'alpine' if ALPINE_RELEASE_MARKER.exists() else 'linux'
+    else:
+        return None
+
+    return f'{os_name}-{arch}'
+
+
+def _vscode_well_known_locations(
+    platform_name: str | None = None,
+    home: Path | None = None,
+    localappdata: str | None = None,
+) -> list[tuple[str, Path]]:
+    """Return (cli_name, path) candidates for VS Code family CLIs at well-known locations.
+
+    Covers installs whose CLI shims are not on PATH: macOS app bundles
+    (drag-and-drop installs do not register the 'code' CLI on PATH), Linux
+    deb/rpm, snap, and Flatpak layouts, and the default Windows per-user
+    install directory. Candidate paths are returned without checking
+    existence; the caller filters.
+
+    Args:
+        platform_name: sys.platform-style identifier; defaults to sys.platform.
+        home: User home directory; defaults to get_real_user_home().
+        localappdata: Windows LOCALAPPDATA directory; defaults to the env var.
+
+    Returns:
+        List of (cli_name, candidate_path) tuples for the given platform.
+    """
+    if platform_name is None:
+        platform_name = sys.platform
+    if home is None:
+        home = get_real_user_home()
+
+    candidates: list[tuple[str, Path]] = []
+    if platform_name == 'darwin':
+        # The CLI shim inside each app bundle is named after the CLI itself
+        mac_bundles = (
+            ('code', 'Visual Studio Code.app'),
+            ('code-insiders', 'Visual Studio Code - Insiders.app'),
+            ('cursor', 'Cursor.app'),
+            ('windsurf', 'Windsurf.app'),
+            ('codium', 'VSCodium.app'),
+        )
+        for root in (Path('/Applications'), home / 'Applications'):
+            for cli_name, bundle in mac_bundles:
+                candidates.append((cli_name, root / bundle / 'Contents' / 'Resources' / 'app' / 'bin' / cli_name))
+    elif platform_name.startswith('linux'):
+        # Flatpak exports the launcher under the app ID, not as 'code'
+        flatpak_export = Path('exports') / 'bin' / 'com.visualstudio.code'
+        candidates.extend([
+            ('code', Path('/usr/bin/code')),
+            ('code', Path('/usr/share/code/bin/code')),
+            ('code', Path('/snap/bin/code')),
+            ('code', Path('/var/lib/flatpak') / flatpak_export),
+            ('code', home / '.local' / 'share' / 'flatpak' / flatpak_export),
+        ])
+    elif platform_name == 'win32':
+        if localappdata is None:
+            localappdata = os.environ.get('LOCALAPPDATA', '')
+        if localappdata:
+            candidates.append(('code', Path(localappdata) / 'Programs' / 'Microsoft VS Code' / 'bin' / 'code.cmd'))
+    return candidates
+
+
+def _detect_vscode_family_ides() -> list[tuple[str, str]]:
+    """Detect installed VS Code family IDEs.
+
+    Checks PATH via shutil.which first, then probes platform-specific
+    well-known install locations for installs whose CLI shim is not on PATH.
+    Deduplicates by CLI name, keeping the first hit.
+
+    Returns:
+        List of (cli_name, cli_path) tuples for each detected IDE.
+    """
+    detected: dict[str, str] = {}
+    for cli_name in VSCODE_FAMILY_CLI_NAMES:
+        cli_path = shutil.which(cli_name)
+        if cli_path:
+            detected[cli_name] = cli_path
+    for cli_name, candidate in _vscode_well_known_locations():
+        if cli_name not in detected and candidate.is_file():
+            detected[cli_name] = str(candidate)
+    return list(detected.items())
+
+
+def _vsix_manifest_target_platform(archive: zipfile.ZipFile) -> str | None:
+    """Extract the TargetPlatform attribute from a VSIX manifest, if declared.
+
+    Platform-specific VSIX builds declare TargetPlatform on the Identity
+    element of extension.vsixmanifest; universal builds omit it.
+
+    Args:
+        archive: Open VSIX zip archive.
+
+    Returns:
+        The declared targetPlatform identifier, or None when absent.
+    """
+    try:
+        with archive.open('extension.vsixmanifest') as manifest_file:
+            manifest_text = manifest_file.read().decode('utf-8', errors='replace')
+    except KeyError:
+        return None
+    match = re.search(r'TargetPlatform="([^"]*)"', manifest_text)
+    return match.group(1) if match else None
+
+
+def _bundled_vsix_matches(vsix_file: Path, version: str, target_platform: str | None) -> bool:
+    """Check whether a bundled VSIX matches the pinned version and host platform.
+
+    Reads extension/package.json inside the VSIX (a zip archive) and requires
+    its version to equal the pinned version. When the VSIX manifest declares
+    a TargetPlatform, it must equal the host targetPlatform. Unreadable or
+    malformed archives are rejected.
+
+    Args:
+        vsix_file: Path to the candidate VSIX file.
+        version: Pinned Claude Code version string.
+        target_platform: Host targetPlatform identifier, or None when unknown.
+
+    Returns:
+        True when the VSIX is safe to install for this version and host.
+    """
+    try:
+        with zipfile.ZipFile(vsix_file) as archive:
+            with archive.open('extension/package.json') as package_file:
+                package_data = json.loads(package_file.read().decode('utf-8'))
+            if package_data.get('version') != version:
+                return False
+            manifest_platform = _vsix_manifest_target_platform(archive)
+            return manifest_platform is None or manifest_platform == target_platform
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile):
+        return False
+
+
+def _normalize_vsix_payload(data: bytes) -> bytes | None:
+    """Normalize a downloaded VSIX payload to raw zip bytes.
+
+    The marketplace /vspackage endpoint serves gzip-compressed bodies even
+    when the request sends no Accept-Encoding header, and urllib does not
+    transparently decompress. Decompresses gzip payloads and validates the
+    zip magic prefix.
+
+    Args:
+        data: Raw response body from a VSIX download URL.
+
+    Returns:
+        Valid VSIX zip bytes, or None when the payload is not a VSIX archive.
+    """
+    if data.startswith(GZIP_MAGIC):
+        # Corrupt deflate streams raise zlib.error, which is not an OSError
+        try:
+            data = gzip.decompress(data)
+        except (OSError, EOFError, zlib.error):
+            return None
+    if not data.startswith(ZIP_MAGIC):
+        return None
+    return data
 
 
 def install_ide_extensions(
@@ -2355,9 +2851,18 @@ def install_ide_extensions(
     """Install pinned-version IDE extensions into all detected VS Code family IDEs.
 
     Uses a three-tier fallback chain:
-    1. Bundled VSIX from CLI package tree (no download needed)
-    2. VSIX download from marketplace CDN (auto-update disabled by VS Code v1.92+)
-    3. Marketplace @version syntax as last resort (with warning about auto-update)
+    1. Bundled VSIX from CLI package tree, used only when its embedded
+       version matches the pinned version (and its declared targetPlatform,
+       if any, matches the host)
+    2. Platform-specific VSIX download from the marketplace CDN
+       (auto-update disabled by VS Code v1.92+); skipped when the host
+       targetPlatform is unknown
+    3. Marketplace @version syntax as last resort (with warning about
+       auto-update); the IDE resolves its own targetPlatform
+
+    When every Tier 2 download URL returns HTTP 404, the pinned version has
+    no matching extension in the marketplace: installation is skipped with a
+    warning and the IDEs keep their current extension.
 
     Non-fatal: returns False on failure but does not raise.
 
@@ -2366,21 +2871,18 @@ def install_ide_extensions(
 
     Returns:
         True if at least one IDE had the extension installed successfully,
-        or if no IDEs were detected (no-op success).
+        if no IDEs were detected (no-op success), or if the pinned version
+        has no matching marketplace extension (skip with warning).
     """
-    # Detect installed VS Code family IDEs
-    detected_ides: list[tuple[str, str]] = []
-    for cli_name in VSCODE_FAMILY_CLI_NAMES:
-        cli_path = shutil.which(cli_name)
-        if cli_path:
-            detected_ides.append((cli_name, cli_path))
-
+    detected_ides = _detect_vscode_family_ides()
     if not detected_ides:
         info('No VS Code family IDEs detected, skipping extension installation')
         return True
 
     ide_names = ', '.join(name for name, _ in detected_ides)
     info(f'Detected VS Code family IDEs: {ide_names}')
+
+    target_platform = _vscode_target_platform()
 
     # Resolve VSIX source using three-tier fallback chain
     vsix_path: str | None = None
@@ -2393,55 +2895,84 @@ def install_ide_extensions(
             get_real_user_home() / '.claude' / 'local' / 'node_modules'
             / '@anthropic-ai' / 'claude-code' / 'vendor' / 'claude-code.vsix'
         )
-        if bundled_vsix.exists() and bundled_vsix.stat().st_size > 1000:
-            vsix_path = str(bundled_vsix)
-            info(f'Using bundled VSIX: {vsix_path}')
-        else:
-            # Tier 2: Download VSIX from marketplace CDN
-            primary_url = VSIX_DOWNLOAD_URL_PRIMARY.format(
-                publisher=IDE_EXTENSION_PUBLISHER,
-                extension=IDE_EXTENSION_NAME,
-                version=version,
-            )
-            fallback_url = VSIX_DOWNLOAD_URL_FALLBACK.format(
-                publisher=IDE_EXTENSION_PUBLISHER,
-                extension=IDE_EXTENSION_NAME,
-                version=version,
+        if bundled_vsix.is_file():
+            if _bundled_vsix_matches(bundled_vsix, version, target_platform):
+                vsix_path = str(bundled_vsix)
+                info(f'Using bundled VSIX: {vsix_path}')
+            else:
+                info(f'Bundled VSIX does not match version {version} for this platform, ignoring')
+
+        if vsix_path is None and target_platform is not None:
+            # Tier 2: Download the platform-specific VSIX from the
+            # marketplace CDN. Both endpoints honor the targetPlatform
+            # query parameter; without it they serve an arbitrary
+            # platform's build of this platform-specific extension.
+            download_urls = tuple(
+                template.format(
+                    publisher=IDE_EXTENSION_PUBLISHER,
+                    extension=IDE_EXTENSION_NAME,
+                    version=version,
+                ) + f'?targetPlatform={target_platform}'
+                for template in (VSIX_DOWNLOAD_URL_PRIMARY, VSIX_DOWNLOAD_URL_FALLBACK)
             )
 
             vsix_data: bytes | None = None
-            for url in (primary_url, fallback_url):
+            not_found_count = 0
+            for url in download_urls:
                 try:
-                    vsix_data = fetch_url_bytes_with_auth(url)
-                    if vsix_data:
-                        break
+                    payload = fetch_url_bytes_with_auth(url)
+                except urllib.error.HTTPError as exc:
+                    # 404 means this URL has no VSIX for the pinned version;
+                    # tracked to distinguish a missing version from
+                    # transient download failures
+                    if exc.code == 404:
+                        not_found_count += 1
+                    continue
                 except Exception:
                     continue
+                vsix_data = _normalize_vsix_payload(payload) if payload else None
+                if vsix_data:
+                    break
+
+            if vsix_data is None and not_found_count == len(download_urls):
+                warning(
+                    f'IDE extension version {version} is not available in the '
+                    f'VS Code Marketplace for {target_platform}. Skipping IDE '
+                    'extension installation; the IDE keeps its current '
+                    'extension version.',
+                )
+                return True
 
             if vsix_data:
                 # Write to temp file
-                tmp_fd, tmp_name = tempfile.mkstemp(suffix='.vsix')
+                tmp_fd: int | None = None
+                tmp_name: str | None = None
                 try:
+                    tmp_fd, tmp_name = tempfile.mkstemp(suffix='.vsix')
                     os.write(tmp_fd, vsix_data)
                     os.close(tmp_fd)
                     vsix_path = tmp_name
                     temp_vsix_path = tmp_name
                     info(f'Downloaded VSIX ({len(vsix_data)} bytes) to {vsix_path}')
                 except Exception:
-                    with contextlib.suppress(OSError):
-                        os.close(tmp_fd)
-                    with contextlib.suppress(OSError):
-                        Path(tmp_name).unlink(missing_ok=True)
-            else:
-                # Tier 3: Fall back to marketplace @version syntax
-                use_marketplace_syntax = True
-                warning(
-                    'Using marketplace @version syntax. '
-                    'VS Code may auto-update this extension. '
-                    'To prevent auto-updates: in VS Code Extensions view, '
-                    'right-click the Claude Code extension and set '
-                    '"Auto Update" to off.',
-                )
+                    if tmp_fd is not None:
+                        with contextlib.suppress(OSError):
+                            os.close(tmp_fd)
+                    if tmp_name is not None:
+                        with contextlib.suppress(OSError):
+                            Path(tmp_name).unlink(missing_ok=True)
+
+        if vsix_path is None:
+            # Tier 3: Fall back to marketplace @version syntax; the IDE
+            # resolves its own targetPlatform during the install
+            use_marketplace_syntax = True
+            warning(
+                'Using marketplace @version syntax. '
+                'VS Code may auto-update this extension. '
+                'To prevent auto-updates: in VS Code Extensions view, '
+                'right-click the Claude Code extension and set '
+                '"Auto Update" to off.',
+            )
 
         # Install into each detected IDE
         any_success = False
@@ -2450,8 +2981,7 @@ def install_ide_extensions(
                 if use_marketplace_syntax:
                     cmd = [cli_path, '--install-extension', f'{IDE_EXTENSION_ID}@{version}']
                 else:
-                    install_target = vsix_path or f'{IDE_EXTENSION_ID}@{version}'
-                    cmd = [cli_path, '--install-extension', install_target, '--force']
+                    cmd = [cli_path, '--install-extension', str(vsix_path), '--force']
                 result = run_command(cmd)
                 if result.returncode == 0:
                     success(f'Installed {IDE_EXTENSION_ID} v{version} into {cli_name}')
@@ -6186,6 +6716,11 @@ def generate_env_loader_files(
         ~/.claude/{cmd}/env.ps1     (PowerShell, Windows only)
         ~/.claude/{cmd}/env.cmd     (CMD batch, Windows only)
 
+    Loader files are toolbox-owned artifacts rebuilt on every run: when no
+    active variable remains (every entry is a deletion, or the dict is
+    empty), the files are still rewritten header-only so that stale exports
+    from a prior run stop being re-applied by the launcher at session start.
+
     Args:
         os_env_vars: Dict of env var names to values. None values = deletions
                      (excluded from loader files since the var should not exist).
@@ -6197,9 +6732,6 @@ def generate_env_loader_files(
     """
     # Filter to only non-None values (deletions are excluded from loader files)
     active_vars = {k: str(v) for k, v in os_env_vars.items() if v is not None}
-
-    if not active_vars:
-        return {}
 
     generated: dict[str, Path] = {}
 
@@ -6479,7 +7011,16 @@ def _install_nodejs_direct() -> bool:
                 return False
         elif system == 'Darwin':
             info('Installing Node.js (may require password)...')
-            result = run_command(['sudo', 'installer', '-pkg', temp_path, '-target', '/'])
+            sudo_result = _run_with_sudo_fallback(
+                ['installer', '-pkg', temp_path, '-target', '/'],
+                timeout=600,
+                tty_timeout=600,
+            )
+            if sudo_result is None:
+                error('Cannot use sudo (non-interactive mode, no terminal available)')
+                info(f'Run manually: sudo installer -pkg {temp_path} -target /')
+                return False
+            result = sudo_result
         else:
             error('Direct Linux installation not yet implemented - use package manager')
             return False
@@ -6532,23 +7073,30 @@ def _install_nodejs_apt() -> bool:
     info('Installing Node.js LTS for Debian/Ubuntu...')
 
     # Update and install prerequisites
-    run_command(['sudo', 'apt-get', 'update'])
-    run_command(['sudo', 'apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'])
+    _run_with_sudo_fallback(['apt-get', 'update'], timeout=600, tty_timeout=600)
+    _run_with_sudo_fallback(
+        ['apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'],
+        timeout=600,
+        tty_timeout=600,
+    )
 
-    # Add NodeSource repository
-    result = run_command([
-        'bash',
-        '-c',
-        'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -',
-    ])
+    # Add NodeSource repository (the setup script must run as root)
+    result = _run_with_sudo_fallback(
+        ['-E', 'bash', '-c', 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -'],
+        timeout=600,
+        tty_timeout=600,
+    )
 
+    if result is None:
+        warning('Cannot use sudo (non-interactive mode, no terminal available)')
+        return False
     if result.returncode != 0:
         return False
 
     # Install Node.js
-    result = run_command(['sudo', 'apt-get', 'install', '-y', 'nodejs'])
+    result = _run_with_sudo_fallback(['apt-get', 'install', '-y', 'nodejs'], timeout=600, tty_timeout=600)
 
-    if result.returncode == 0:
+    if result is not None and result.returncode == 0:
         success('Node.js installed via NodeSource')
         return True
     return False
@@ -6706,11 +7254,41 @@ def install_nodejs_if_requested(config: dict[str, Any]) -> bool:
     return True
 
 
-def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
-    """Install dependencies from configuration."""
+def needs_sudo_for_npm() -> bool:
+    """Check if npm global directory requires sudo on Unix-like systems.
+
+    Returns:
+        True if sudo is needed for npm global installation, False otherwise.
+    """
+    if platform.system() == 'Windows':
+        return False
+
+    npm_path = shutil.which('npm')
+    if not npm_path:
+        return False
+
+    # Get npm global installation directory
+    result = run_command([npm_path, 'config', 'get', 'prefix'], capture_output=True)
+    if result.returncode == 0:
+        prefix_path = Path(result.stdout.strip()) / 'lib' / 'node_modules'
+        # Check if we have write access to the directory
+        try:
+            return not os.access(prefix_path, os.W_OK)
+        except Exception:
+            return False
+    return False
+
+
+def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]:
+    """Install dependencies from configuration.
+
+    Returns:
+        List of dependency commands that failed to install.
+        An empty list means every dependency succeeded (or none were given).
+    """
     if not dependencies:
         info('No dependencies to install')
-        return True
+        return []
 
     # Type annotation already ensures dependencies is a dict
     # Runtime type check removed as it's redundant with proper typing
@@ -6741,7 +7319,8 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
             error('  1. Run this script as administrator')
             error('  2. Modify dependencies to use --scope user instead')
             error('  3. Use --no-admin flag to skip admin-required dependencies')
-            return False
+            # Installation aborts before any dependency runs, so all of them failed
+            return all_deps
 
     # Get system platform
     system = platform.system()
@@ -6772,7 +7351,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
 
     if not platform_deps_list and not common_deps_list:
         info('No dependencies to install for this platform')
-        return True
+        return []
 
     # Helper function to execute a single dependency
     def execute_dependency(dep: str) -> bool:
@@ -6799,7 +7378,42 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
                 result = run_command(['bash', '-c', expanded_dep], capture_output=False)
             else:
                 expanded_dep = expand_tildes_in_command(dep)
+                # Sudo escalation is limited to plain global npm installs into a
+                # non-writable prefix. Commands with shell control characters are
+                # excluded so that user-authored compound shell strings are never
+                # re-executed with elevated privileges, and a command that does
+                # not parse as a simple argument vector is excluded so that a
+                # malformed dependency stays a single recorded failure rather
+                # than aborting the run.
+                sudo_argv: list[str] | None = None
+                if _is_global_npm_install(dep) and not _contains_shell_control_chars(expanded_dep):
+                    try:
+                        sudo_argv = shlex.split(expanded_dep)
+                    except ValueError:
+                        sudo_argv = None
+                sudo_eligible = sudo_argv is not None and needs_sudo_for_npm()
+                if sudo_eligible:
+                    info('The npm global prefix is not writable by the current user; sudo may be requested')
                 result = run_command(['bash', '-c', expanded_dep], capture_output=False)
+                if result.returncode != 0 and sudo_eligible and sudo_argv is not None:
+                    warning(f'Retrying with sudo: {expanded_dep}')
+                    sudo_result = _run_with_sudo_fallback(
+                        sudo_argv,
+                        capture_output=False,
+                        timeout=600,
+                    )
+                    if sudo_result is not None:
+                        result = sudo_result
+                    if sudo_result is None or sudo_result.returncode != 0:
+                        if sudo_result is None:
+                            warning('Cannot use sudo (non-interactive mode, no terminal available)')
+                        info('Options:')
+                        info(f'  1. Run manually: sudo {expanded_dep}')
+                        info('  2. Configure npm for user installs:')
+                        info('       npm config set prefix ~/.npm-global')
+                        info('       export PATH=~/.npm-global/bin:$PATH')
+                        info('  3. Reinstall Node.js with a version manager (see '
+                             'https://docs.npmjs.com/resolving-eacces-permissions-errors-when-installing-packages-globally)')
 
         if result.returncode != 0:
             error(f'Failed to install dependency: {dep}')
@@ -6811,8 +7425,7 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
         return True
 
     # Phase 1: Execute platform-specific dependencies
-    for dep in platform_deps_list:
-        execute_dependency(dep)
+    failed_deps: list[str] = [dep for dep in platform_deps_list if not execute_dependency(dep)]
 
     # Phase 2: Refresh PATH from registry on Windows
     # This picks up any PATH changes from platform-specific installations (e.g., Node.js)
@@ -6820,10 +7433,9 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> bool:
         refresh_path_from_registry()
 
     # Phase 3: Execute common dependencies
-    for dep in common_deps_list:
-        execute_dependency(dep)
+    failed_deps.extend(dep for dep in common_deps_list if not execute_dependency(dep))
 
-    return True
+    return failed_deps
 
 
 class RateLimitCoordinator:
@@ -8905,6 +9517,13 @@ def _build_profile_settings(
       processed value. Empty dicts or empty lists remain as-is (so an
       empty ``attribution`` dict is still stored explicitly).
 
+    Within the ``env`` value, the three-case contract also applies PER KEY:
+    a non-None entry value is stringified, while an entry value of ``None``
+    is preserved verbatim (``settings['env'][key] = None``) so the shared
+    settings.json writer deletes that nested key via RFC 7396
+    null-as-delete and the isolated config.json writer omits it from the
+    atomic rebuild.
+
     The ``hooks`` value in ``profile_config`` is either ``None`` (YAML null),
     absent (YAML omitted), or the full YAML hooks configuration dict with
     ``files`` / ``events`` keys (which is then processed via
@@ -8969,17 +9588,25 @@ def _build_profile_settings(
             info('Using permissions from environment configuration')
             settings['permissions'] = final_permissions
 
-    # env (values stringified)
+    # env (non-None values stringified; per-key None preserved so the
+    # downstream writer can delete the key via RFC 7396 null-as-delete)
     if 'env' in profile_config:
         env = profile_config['env']
         if env is None:
             settings['env'] = None
             info('Deleting env via explicit null')
         elif env:
-            settings['env'] = {k: str(v) for k, v in env.items()}
-            info(f'Setting {len(env)} environment variables')
-            for key in env:
-                info(f'  - {key}')
+            settings['env'] = {k: (None if v is None else str(v)) for k, v in env.items()}
+            active_keys = [k for k, v in env.items() if v is not None]
+            deletion_keys = [k for k, v in env.items() if v is None]
+            if active_keys:
+                info(f'Setting {len(active_keys)} environment variables')
+                for key in active_keys:
+                    info(f'  - {key}')
+            if deletion_keys:
+                info(f'Deleting {len(deletion_keys)} environment variable(s) via explicit null')
+                for key in deletion_keys:
+                    info(f'  - {key}')
 
     # attribution (empty dict is explicit and kept)
     if 'attribution' in profile_config:
@@ -9119,6 +9746,10 @@ def create_profile_config(
     produce a config.json without the key (absent keys are omitted by the
     builder, and null-valued keys serialize as ``"key": null`` in JSON,
     which is equivalent to absent for Claude Code's priority-resolution).
+    Per-key nulls inside the ``env`` dict are STRIPPED before the write:
+    under atomic rebuild semantics absence equals deletion, and Claude
+    Code's treatment of ``"env": {"VAR": null}`` inside ``--settings``
+    files is undocumented, so the literal null is never written.
 
     Args:
         profile_config: Dict of profile-owned keys (camelCase on-disk names).
@@ -9142,6 +9773,19 @@ def create_profile_config(
 
     # Build the profile settings dict via the shared pure builder
     settings = _build_profile_settings(profile_config, hooks_dir)
+
+    # Strip per-key env deletions: the isolated config.json is atomically
+    # rebuilt, so a deleted variable is expressed by absence rather than a
+    # JSON null whose handling by Claude Code is undocumented. A whole-section
+    # env null (settings['env'] is None) is kept as-is; top-level nulls are
+    # documented as equivalent to absent.
+    env_section = settings.get('env')
+    if isinstance(env_section, dict):
+        active_env = {k: v for k, v in env_section.items() if v is not None}
+        if active_env:
+            settings['env'] = active_env
+        else:
+            del settings['env']
 
     # Save settings (always overwrite) - atomic rebuild semantics
     settings_path = config_base_dir / 'config.json'
@@ -10370,7 +11014,7 @@ def main() -> None:
                 for dep in all_deps:
                     if 'winget' in dep and '--scope machine' in dep:
                         info(f'  - System-wide installation: {dep}')
-                    elif 'npm install -g' in dep:
+                    elif _is_global_npm_install(dep):
                         info(f'  - Global npm package: {dep}')
 
             print()
@@ -10445,7 +11089,7 @@ def main() -> None:
         permissions = config.get('permissions')
 
         # Extract environment variables configuration
-        env_variables: dict[str, str] | None = config.get('env-variables')
+        env_variables: dict[str, str | None] | None = config.get('env-variables')
 
         # Extract OS-level environment variables configuration
         os_env_variables = config.get('os-env-variables')
@@ -10505,6 +11149,13 @@ def main() -> None:
         if claude_code_version_normalized is not None:
             os.environ[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
 
+        # Record which managed control keys the resolved YAML itself declares.
+        # Computed BEFORE injection so auto-injected values are excluded; the
+        # Step 16 unpinned sweep preserves user-declared settings.json keys.
+        user_declared_control_keys = _collect_user_declared_control_keys(
+            user_settings, env_variables,
+        )
+
         # Apply automatic auto-update settings based on version pinning
         (
             global_config,
@@ -10542,6 +11193,14 @@ def main() -> None:
             warning(warn_msg)
         # Merge auto-injected items from both auto-update and IDE extension management
         auto_injected_items.extend(ide_ext_auto_injected)
+
+        # Write the (possibly injected) env-variables dict back into config so
+        # both Step 18 profile builders -- which read config by dict
+        # membership -- emit the injected keys even when the YAML lacks the
+        # section. A YAML-declared `env-variables: null` is likewise
+        # superseded by the injected dict when a version is pinned.
+        if env_variables is not None:
+            config['env-variables'] = env_variables
 
         # Validate user-settings section for excluded keys
         if user_settings:
@@ -10768,8 +11427,9 @@ def main() -> None:
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
 
-        # Track download failures across all steps for final error reporting
+        # Track download and dependency failures across all steps for final error reporting
         download_failures: list[str] = []
+        dependency_failures: list[str] = []
 
         # Step 4: Download/copy custom files
         print()
@@ -10791,24 +11451,24 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 6: Installing dependencies...{Colors.NC}')
         dependencies = config.get('dependencies', {})
-        install_dependencies(dependencies)
+        dependency_failures = install_dependencies(dependencies)
 
-        # Step 7: Set OS environment variables
+        # Step 7: Set OS environment variables. An empty or absent dict is a
+        # no-op inside set_all_os_env_variables(), which prints its own
+        # informational message.
         print()
         print(f'{Colors.CYAN}Step 7: Setting OS environment variables...{Colors.NC}')
-        if os_env_variables:
-            set_all_os_env_variables(os_env_variables)
-        else:
-            info('No OS environment variables to configure')
+        set_all_os_env_variables(os_env_variables or {})
 
-        # Generate env loader files for OS environment variables
-        generated_env_files: dict[str, Path] = {}
-        if os_env_variables:
-            generated_env_files = generate_env_loader_files(
-                os_env_variables, command_names, artifact_base_dir if command_names else None,
-            )
-            if generated_env_files:
-                success(f'Generated {len(generated_env_files)} env loader file(s)')
+        # Rebuild env loader files for OS environment variables. Loader files
+        # are toolbox-owned and rebuilt even when every entry is a deletion,
+        # so stale exports from a prior run are cleared instead of being
+        # re-applied by the launcher at session start.
+        generated_env_files: dict[str, Path] = generate_env_loader_files(
+            os_env_variables or {}, command_names, artifact_base_dir if command_names else None,
+        )
+        if generated_env_files:
+            success(f'Generated {len(generated_env_files)} env loader file(s)')
 
         # Step 8: Process agents
         print()
@@ -10927,6 +11587,9 @@ def main() -> None:
         # Step 15: Write global config
         print()
         print(f'{Colors.CYAN}Step 15: Writing global config...{Colors.NC}')
+        global_config = _propagate_install_method(
+            global_config, primary_command_name, auto_injected_items,
+        )
         if global_config:
             if write_global_config(
                 global_config,
@@ -10939,7 +11602,11 @@ def main() -> None:
             info('No global config to write')
 
         # Step 16: Cleanup stale auto-update and IDE extension controls
-        _run_stale_controls_cleanup(claude_code_version_normalized)
+        _run_stale_controls_cleanup(
+            claude_code_version_normalized,
+            is_isolated=bool(primary_command_name),
+            user_declared_keys=user_declared_control_keys,
+        )
 
         # Check if command creation is needed
         if primary_command_name:
@@ -11110,33 +11777,43 @@ def main() -> None:
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Check for download failures and report accordingly
-        if download_failures:
+        # Check for download/dependency failures and report accordingly
+        if download_failures or dependency_failures:
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print()
-            error('The following resources failed to download:')
-            for failure in download_failures:
-                error(f'  - {failure}')
-            print()
-            error('Configuration steps were completed, but some files are missing.')
-            error('Please check your network connection and authentication, then re-run the setup.')
+            if download_failures:
+                error('The following resources failed to download:')
+                for failure in download_failures:
+                    error(f'  - {failure}')
+                print()
+                error('Some files are missing.')
+                error('Please check your network connection and authentication, then re-run the setup.')
+                print()
+            if dependency_failures:
+                error('The following dependencies failed to install:')
+                for failure in dependency_failures:
+                    error(f'  - {failure}')
+                print()
+                error('Review the dependency error messages above, then re-run the setup.')
+                print()
+            error('Configuration steps were completed, but some components are missing.')
             print()
 
             # If running elevated via UAC, add a pause so user can see the error
             if was_elevated_via_uac and not is_running_in_pytest():
                 print()
                 print(f'{Colors.RED}========================================================================{Colors.NC}')
-                print(f'{Colors.RED}     Setup Completed with Download Errors{Colors.NC}')
+                print(f'{Colors.RED}     Setup Completed with Errors{Colors.NC}')
                 print(f'{Colors.RED}========================================================================{Colors.NC}')
                 print()
                 input('Press Enter to exit...')
 
             sys.exit(1)
 
-        # Final message - success (no download failures)
+        # Final message - success (no download or dependency failures)
         print()
         print(f'{Colors.GREEN}========================================================================{Colors.NC}')
         print(f'{Colors.GREEN}                    Setup Complete!{Colors.NC}')

@@ -141,6 +141,8 @@ class TestEnvironmentConfigWithProfileScope:
         """Profile-scoped HTTP server validates correctly."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
+            'command-names': ['test-cmd'],
+            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'profile-server',
                 'transport': 'http',
@@ -156,6 +158,8 @@ class TestEnvironmentConfigWithProfileScope:
         """Profile-scoped stdio server validates correctly."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
+            'command-names': ['test-cmd'],
+            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'profile-server',
                 'command': 'echo hello',
@@ -170,6 +174,8 @@ class TestEnvironmentConfigWithProfileScope:
         """Mix of user, project, and profile scoped servers validates correctly."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
+            'command-names': ['test-cmd'],
+            'command-defaults': {},
             'mcp-servers': [
                 {
                     'name': 'user-server',
@@ -199,6 +205,8 @@ class TestEnvironmentConfigWithProfileScope:
         """SSE transport with profile scope validates correctly."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
+            'command-names': ['test-cmd'],
+            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'sse-profile-server',
                 'transport': 'sse',
@@ -280,6 +288,8 @@ class TestCombinedScopeSupport:
         """EnvironmentConfig validates combined scope correctly."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
+            'command-names': ['test-cmd'],
+            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'combined-server',
                 'transport': 'http',

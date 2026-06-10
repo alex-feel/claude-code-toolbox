@@ -130,6 +130,36 @@ class TestGetRealUserHomeIdentity:
         )
 
 
+class TestSudoFallbackHelpersIdentity:
+    """Enforce that the npm sudo fallback helpers are identical in both scripts."""
+
+    @staticmethod
+    def _assert_function_bodies_identical(func_name: str) -> None:
+        ic_source = _read_source(INSTALL_CLAUDE)
+        se_source = _read_source(SETUP_ENVIRONMENT)
+
+        ic_func = _extract_function_source(ic_source, func_name)
+        se_func = _extract_function_source(se_source, func_name)
+
+        # Normalize whitespace for comparison
+        ic_normalized = '\n'.join(line.rstrip() for line in ic_func.splitlines())
+        se_normalized = '\n'.join(line.rstrip() for line in se_func.splitlines())
+
+        assert ic_normalized == se_normalized, (
+            f'{func_name}() has diverged between install_claude.py and '
+            f'setup_environment.py. Both copies must remain identical.'
+        )
+
+    def test_dev_tty_sudo_available_bodies_identical(self) -> None:
+        self._assert_function_bodies_identical('_dev_tty_sudo_available')
+
+    def test_run_with_sudo_fallback_bodies_identical(self) -> None:
+        self._assert_function_bodies_identical('_run_with_sudo_fallback')
+
+    def test_needs_sudo_for_npm_bodies_identical(self) -> None:
+        self._assert_function_bodies_identical('needs_sudo_for_npm')
+
+
 class TestShellConfigFilesIdentity:
     """Enforce that shell config file lists are identical in both scripts."""
 

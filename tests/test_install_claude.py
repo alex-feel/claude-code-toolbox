@@ -3,6 +3,7 @@ Comprehensive tests for install_claude.py - the main Claude Code installer.
 """
 
 import contextlib
+import errno
 import json
 import os
 import subprocess
@@ -872,13 +873,13 @@ class TestClaudeInstallation:
         assert mock_system.return_value == 'Windows'
         assert mock_exists.return_value is True
         mock_find.return_value = 'C:\\Program Files\\nodejs\\claude.cmd'
-        with patch('install_claude.run_command') as mock_run:
+        with patch('install_claude.subprocess.run') as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, 'claude, version 0.7.7', '')
             version = install_claude.get_claude_version()
             assert version == '0.7.7'
 
     @patch('install_claude.find_command')
-    @patch('install_claude.run_command')
+    @patch('install_claude.subprocess.run')
     def test_get_claude_version_found(self, mock_run, mock_find):
         """Test getting Claude version when found in PATH."""
         mock_find.return_value = '/usr/local/bin/claude'
@@ -2526,6 +2527,7 @@ class TestWindowsFileLockHandling:
 
         with (
             patch('install_claude.urlretrieve', mock_urlretrieve),
+            patch('install_claude._verify_gcs_download_integrity', return_value=True),
             patch.object(Path, 'replace', mock_replace),
         ):
             result = install_claude._download_claude_direct_from_gcs('2.0.76', target)
@@ -2558,6 +2560,7 @@ class TestWindowsFileLockHandling:
 
         with (
             patch('install_claude.urlretrieve', mock_urlretrieve),
+            patch('install_claude._verify_gcs_download_integrity', return_value=True),
             patch.object(Path, 'replace', mock_replace),
             pytest.raises(PermissionError, match='Permission denied'),
         ):
@@ -3324,16 +3327,21 @@ class TestFindCommandRobustNativeFirst:
 class TestGetClaudeVersionExplicitPath:
     """Tests for get_claude_version() with explicit path parameter."""
 
-    @patch('install_claude.run_command')
+    @patch('install_claude.subprocess.run')
     def test_uses_explicit_path(self, mock_run: MagicMock) -> None:
         """When called with explicit path, uses that path directly."""
         mock_run.return_value = MagicMock(returncode=0, stdout='claude, version 2.0.14')
         result = install_claude.get_claude_version('/explicit/claude')
         assert result == '2.0.14'
-        mock_run.assert_called_once_with(['/explicit/claude', '--version'])
+        mock_run.assert_called_once_with(
+            ['/explicit/claude', '--version'],
+            capture_output=True,
+            encoding='utf-8',
+            errors='replace',
+        )
 
     @patch('install_claude.find_command', return_value='/found/claude')
-    @patch('install_claude.run_command')
+    @patch('install_claude.subprocess.run')
     def test_falls_back_to_find_command(
         self, mock_run: MagicMock, mock_find: MagicMock,
     ) -> None:
@@ -3501,19 +3509,19 @@ class TestUpdateInstallMethodConfig:
         assert config['theme'] == 'dark'
         assert config['telemetry'] is False
 
-    def test_update_config_npm_global_method_file(
+    def test_update_config_global_method_file(
         self, tmp_path: Path,
     ) -> None:
-        """Test update_install_method_config works with npm-global method."""
+        """Test update_install_method_config works with the 'global' method."""
         config_file = tmp_path / '.claude.json'
         config_file.write_text('{}')
 
         with patch('install_claude.Path.home', return_value=tmp_path):
-            result = install_claude.update_install_method_config('npm-global')
+            result = install_claude.update_install_method_config('global')
 
         assert result is True
         config = json.loads(config_file.read_text())
-        assert config['installMethod'] == 'npm-global'
+        assert config['installMethod'] == 'global'
 
 
 class TestUpdateInstallMethodConfigDeepMerge:
@@ -4374,7 +4382,7 @@ class TestNodejsSkipMessageWording:
 
 
 class TestNpmFallbackConfigUpdate:
-    """Tests for update_install_method_config('npm') after native->npm fallback."""
+    """Tests for update_install_method_config('global') after native->npm fallback."""
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.update_install_method_config')
@@ -4388,7 +4396,7 @@ class TestNpmFallbackConfigUpdate:
         self, mock_verify, mock_get_version, mock_latest, mock_compare,
         mock_native, mock_npm, mock_config,
     ):
-        """Test that native upgrade fallback to npm calls update_install_method_config('npm')."""
+        """Test that native upgrade fallback to npm calls update_install_method_config('global')."""
         assert mock_latest.return_value == '2.1.39'
         assert mock_compare.return_value is False
         assert mock_native.return_value is False
@@ -4397,7 +4405,7 @@ class TestNpmFallbackConfigUpdate:
         mock_verify.return_value = (True, '/home/user/.local/bin/claude', 'native')
         result = install_claude.ensure_claude()
         assert result is True
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.update_install_method_config')
@@ -4411,7 +4419,7 @@ class TestNpmFallbackConfigUpdate:
         self, mock_verify, mock_get_version, mock_latest, mock_compare,
         mock_native, mock_npm, mock_config,
     ):
-        """Test that unknown source upgrade fallback to npm calls update_install_method_config('npm')."""
+        """Test that unknown source upgrade fallback to npm calls update_install_method_config('global')."""
         assert mock_latest.return_value == '2.1.39'
         assert mock_compare.return_value is False
         assert mock_native.return_value is False
@@ -4420,7 +4428,7 @@ class TestNpmFallbackConfigUpdate:
         mock_verify.return_value = (True, '/opt/claude', 'unknown')
         result = install_claude.ensure_claude()
         assert result is True
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
 
 class TestClassifyLocalappdataClaude:
@@ -4590,7 +4598,7 @@ class TestWarnMigrationFailed:
 
 
 class TestMigrationFailureInstallMethodReset:
-    """Tests for update_install_method_config('npm') on migration failure."""
+    """Tests for update_install_method_config('global') on migration failure."""
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.update_install_method_config')
@@ -4604,7 +4612,7 @@ class TestMigrationFailureInstallMethodReset:
         self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_warn, mock_config,
     ):
-        """Migration failure without version pin resets installMethod to npm."""
+        """Migration failure without version pin resets installMethod to 'global'."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
         assert mock_get_version.return_value == '2.1.0'
@@ -4613,7 +4621,7 @@ class TestMigrationFailureInstallMethodReset:
         mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
         result = install_claude.ensure_claude()
         assert result is True
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
     @patch.dict('os.environ', {
         'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto',
@@ -4628,14 +4636,14 @@ class TestMigrationFailureInstallMethodReset:
         self, mock_verify, mock_get_version,
         mock_native, mock_warn, mock_config,
     ):
-        """Migration failure with version pin resets installMethod to npm."""
+        """Migration failure with version pin resets installMethod to 'global'."""
         assert mock_get_version.return_value == '2.1.0'
         assert mock_native.return_value is False
         assert mock_warn is not None
         mock_verify.return_value = (True, '/usr/lib/node_modules/.bin/claude', 'npm')
         result = install_claude.ensure_claude()
         assert result is True
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.update_install_method_config')
@@ -4649,7 +4657,7 @@ class TestMigrationFailureInstallMethodReset:
         self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_warn, mock_config,
     ):
-        """Migration succeeds but verify returns non-native resets installMethod to npm."""
+        """Migration succeeds but verify returns non-native resets installMethod to 'global'."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
         assert mock_get_version.return_value == '2.1.0'
@@ -4662,7 +4670,7 @@ class TestMigrationFailureInstallMethodReset:
         ]
         result = install_claude.ensure_claude()
         assert result is True
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
     @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
     @patch('install_claude.update_install_method_config')
@@ -4677,7 +4685,7 @@ class TestMigrationFailureInstallMethodReset:
         self, mock_compare, mock_latest, mock_verify,
         mock_get_version, mock_native, mock_npm_check, mock_remove, mock_config,
     ):
-        """Successful migration sets installMethod to native, not npm."""
+        """Successful migration sets installMethod to native, not 'global'."""
         assert mock_compare.return_value is True
         assert mock_latest.return_value == '2.1.0'
         assert mock_native.return_value is True
@@ -5110,6 +5118,36 @@ class TestInstallClaudeNativeLinuxGcsFallback:
 
     @pytest.mark.skipif(sys.platform == 'win32', reason='Not applicable on Windows')
     @patch('platform.system', return_value='Linux')
+    @patch('install_claude._finalize_native_install')
+    @patch('install_claude._verify_installed_binary_executes', return_value=False)
+    @patch('install_claude.verify_claude_installation')
+    @patch('time.sleep')
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('pathlib.Path.chmod')
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
+    @patch('install_claude._install_claude_native_linux_installer', return_value=False)
+    def test_latest_gcs_non_executing_binary_fails(
+        self, mock_native, mock_latest, mock_gcs, mock_chmod, mock_path, mock_sleep,
+        mock_verify, mock_executes, mock_finalize, mock_platform,
+    ):
+        """A downloaded binary that cannot execute is not reported as success."""
+        assert mock_latest.return_value == '2.1.0'
+        assert mock_chmod is not None
+        assert mock_path is not None
+        assert mock_sleep is not None
+        assert mock_platform.return_value == 'Linux'
+        assert mock_executes.return_value is False
+        mock_verify.return_value = (True, '/home/test/.local/bin/claude', 'native')
+        result = install_claude.install_claude_native_linux()
+        assert result is False
+        mock_native.assert_called_once_with(version='latest')
+        mock_gcs.assert_called_once()
+        mock_executes.assert_called_once_with('/home/test/.local/bin/claude')
+        mock_finalize.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='Not applicable on Windows')
+    @patch('platform.system', return_value='Linux')
     @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.0')
     @patch('install_claude._install_claude_native_linux_installer', return_value=False)
@@ -5188,7 +5226,7 @@ class TestEnsureClaudeWingetUpgrade:
         assert result is True
         # npm should be called as fallback
         mock_npm.assert_called_once()
-        mock_config.assert_called_with('npm')
+        mock_config.assert_called_with('global')
 
 
 class TestFinalizeNativeInstallMethodParam:
@@ -5483,7 +5521,7 @@ class TestUpgradeVersionVerification:
         result = install_claude.ensure_claude()
         assert result is True
         mock_npm.assert_called_once()
-        mock_update_config.assert_called_with('npm')
+        mock_update_config.assert_called_with('global')
         assert mock_get_latest.return_value == '2.1.92'
         assert mock_compare.return_value is False
         mock_native.assert_called()
@@ -5977,7 +6015,7 @@ class TestDiagnosticLogging:
 
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
     @patch('install_claude._finalize_native_install')
-    @patch('install_claude.get_claude_version', return_value='2.1.92')
+    @patch('install_claude._probe_claude_version', return_value=('2.1.92', False))
     @patch(
         'install_claude.verify_claude_installation',
         return_value=(True, r'C:\Users\test\.local\bin\claude.exe', 'native'),
@@ -5987,7 +6025,7 @@ class TestDiagnosticLogging:
     @patch('install_claude.urlopen')
     def test_logs_post_install_version(
         self, mock_urlopen, mock_run, mock_path, mock_verify,
-        mock_get_version, mock_finalize, capsys,
+        mock_probe, mock_finalize, capsys,
     ):
         """Diagnostic info line is printed after successful native install."""
         mock_response = MagicMock()
@@ -6002,9 +6040,290 @@ class TestDiagnosticLogging:
         install_claude._install_claude_native_windows_installer()
 
         # Verify all mocks participated correctly
-        mock_get_version.assert_called()
+        mock_probe.assert_called()
         mock_verify.assert_called()
         mock_path.assert_called()
         mock_finalize.assert_called()
         captured = capsys.readouterr()
         assert 'Post-install binary version: 2.1.92' in captured.out
+
+
+class _ExeMachineTypeMismatchError(OSError):
+    """OSError carrying winerror 216 (ERROR_EXE_MACHINE_TYPE_MISMATCH).
+
+    A class attribute stands in for the Windows-only instance attribute so
+    the classification tests run on every platform.
+    """
+
+    winerror = 216
+
+
+class _BadExeFormatError(OSError):
+    """OSError carrying winerror 193 (ERROR_BAD_EXE_FORMAT)."""
+
+    winerror = 193
+
+
+class TestIsExecFormatError:
+    """Tests for _is_exec_format_error() classification."""
+
+    def test_winerror_216_is_exec_format(self):
+        """winerror 216 (machine type mismatch) is an exec-format error."""
+        assert install_claude._is_exec_format_error(_ExeMachineTypeMismatchError()) is True
+
+    def test_winerror_193_is_exec_format(self):
+        """winerror 193 (bad exe format) is an exec-format error."""
+        assert install_claude._is_exec_format_error(_BadExeFormatError()) is True
+
+    def test_enoexec_is_exec_format(self):
+        """POSIX ENOEXEC is an exec-format error."""
+        exc = OSError(errno.ENOEXEC, 'Exec format error')
+        assert install_claude._is_exec_format_error(exc) is True
+
+    def test_file_not_found_is_not_exec_format(self):
+        """A missing binary is never classified as an exec-format error."""
+        exc = FileNotFoundError(errno.ENOENT, 'No such file or directory')
+        assert install_claude._is_exec_format_error(exc) is False
+
+    def test_permission_error_is_not_exec_format(self):
+        """Other OSError values are not classified as exec-format errors."""
+        exc = OSError(errno.EACCES, 'Permission denied')
+        assert install_claude._is_exec_format_error(exc) is False
+
+
+class TestProbeClaudeVersion:
+    """Tests for _probe_claude_version() failure classification."""
+
+    @patch('install_claude.subprocess.run')
+    def test_success_returns_version(self, mock_run):
+        """A successful probe returns the parsed version and no corruption."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='claude, version 2.1.96')
+        assert install_claude._probe_claude_version('/x/claude') == ('2.1.96', False)
+
+    @patch('install_claude.subprocess.run')
+    def test_unparseable_output_returns_full_string(self, mock_run):
+        """Output without a semantic version is returned verbatim."""
+        mock_run.return_value = MagicMock(returncode=0, stdout='dev build')
+        assert install_claude._probe_claude_version('/x/claude') == ('dev build', False)
+
+    @patch('install_claude.subprocess.run')
+    def test_nonzero_exit_is_not_corrupt(self, mock_run):
+        """A failure exit code is not classified as corruption."""
+        mock_run.return_value = MagicMock(returncode=1, stdout='', stderr='boom')
+        assert install_claude._probe_claude_version('/x/claude') == (None, False)
+
+    @patch('install_claude.subprocess.run', side_effect=_ExeMachineTypeMismatchError('[WinError 216] incompatible'))
+    def test_winerror_216_classified_corrupt_with_warning(self, mock_run, capsys):
+        """winerror 216 yields a WARNING-level message, not a [FAIL] error."""
+        assert mock_run is not None
+        version, is_corrupt = install_claude._probe_claude_version('/x/claude')
+        assert version is None
+        assert is_corrupt is True
+        captured = capsys.readouterr()
+        assert 'cannot execute on this machine' in captured.out
+        assert '[WARN]' in captured.out
+        assert '[FAIL]' not in captured.err
+
+    @patch('install_claude.subprocess.run', side_effect=OSError(errno.ENOEXEC, 'Exec format error'))
+    def test_enoexec_classified_corrupt(self, mock_run):
+        """POSIX ENOEXEC is classified as corruption."""
+        assert mock_run is not None
+        assert install_claude._probe_claude_version('/x/claude') == (None, True)
+
+    @patch('install_claude.subprocess.run', side_effect=FileNotFoundError(errno.ENOENT, 'No such file'))
+    def test_missing_binary_not_corrupt(self, mock_run, capsys):
+        """A missing binary is reported as not found, never as corrupt."""
+        assert mock_run is not None
+        version, is_corrupt = install_claude._probe_claude_version('/x/claude')
+        assert version is None
+        assert is_corrupt is False
+        assert 'Command not found' in capsys.readouterr().err
+
+    @patch('install_claude.subprocess.run', side_effect=OSError(errno.EACCES, 'Permission denied'))
+    def test_other_oserror_not_corrupt(self, mock_run, capsys):
+        """Non-exec-format OSErrors keep the generic error handling."""
+        assert mock_run is not None
+        assert install_claude._probe_claude_version('/x/claude') == (None, False)
+        assert 'Error running command' in capsys.readouterr().err
+
+
+class TestGetClaudeVersionQuarantine:
+    """Tests for get_claude_version() quarantine_corrupt behavior."""
+
+    @patch('install_claude._quarantine_corrupt_native_binary')
+    @patch('install_claude._probe_claude_version', return_value=(None, True))
+    @patch('install_claude.find_command', return_value='/x/claude')
+    def test_quarantines_corrupt_binary_when_requested(
+        self, mock_find, mock_probe, mock_quarantine,
+    ):
+        """quarantine_corrupt=True moves a corrupt binary aside."""
+        assert mock_find is not None
+        assert mock_probe is not None
+        assert install_claude.get_claude_version(quarantine_corrupt=True) is None
+        mock_quarantine.assert_called_once_with('/x/claude')
+
+    @patch('install_claude._quarantine_corrupt_native_binary')
+    @patch('install_claude._probe_claude_version', return_value=(None, True))
+    @patch('install_claude.find_command', return_value='/x/claude')
+    def test_no_quarantine_by_default(self, mock_find, mock_probe, mock_quarantine):
+        """The default probe never mutates the filesystem."""
+        assert mock_find is not None
+        assert mock_probe is not None
+        assert install_claude.get_claude_version() is None
+        mock_quarantine.assert_not_called()
+
+    @patch('install_claude._quarantine_corrupt_native_binary')
+    @patch('install_claude._probe_claude_version', return_value=('2.1.96', False))
+    @patch('install_claude.find_command', return_value='/x/claude')
+    def test_no_quarantine_for_healthy_binary(self, mock_find, mock_probe, mock_quarantine):
+        """A healthy binary is never quarantined."""
+        assert mock_find is not None
+        assert mock_probe is not None
+        assert install_claude.get_claude_version(quarantine_corrupt=True) == '2.1.96'
+        mock_quarantine.assert_not_called()
+
+
+class TestQuarantineCorruptNativeBinary:
+    """Tests for _quarantine_corrupt_native_binary()."""
+
+    @patch('sys.platform', 'linux')
+    def test_unix_removes_native_binary(self, tmp_path: Path) -> None:
+        """On Unix the corrupt native binary is removed."""
+        native = tmp_path / '.local' / 'bin' / 'claude'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'x' * 2000)
+        with patch('install_claude.get_real_user_home', return_value=tmp_path):
+            result = install_claude._quarantine_corrupt_native_binary(str(native))
+        assert result is True
+        assert not native.exists()
+
+    @patch('sys.platform', 'win32')
+    def test_windows_renames_native_binary_to_old(self, tmp_path: Path) -> None:
+        """On Windows the corrupt native binary is renamed to a .old backup."""
+        native = tmp_path / '.local' / 'bin' / 'claude.exe'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'x' * 2000)
+        with patch('install_claude.get_real_user_home', return_value=tmp_path):
+            result = install_claude._quarantine_corrupt_native_binary(str(native))
+        assert result is True
+        assert not native.exists()
+        assert (tmp_path / '.local' / 'bin' / 'claude.exe.old').exists()
+
+    @patch('sys.platform', 'win32')
+    def test_windows_uses_unique_old_path_when_old_locked(self, tmp_path: Path) -> None:
+        """A locked .old backup falls back to a unique numbered suffix."""
+        native = tmp_path / '.local' / 'bin' / 'claude.exe'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'x' * 2000)
+        with (
+            patch('install_claude.get_real_user_home', return_value=tmp_path),
+            patch('install_claude._cleanup_old_file_before_rename', return_value=False),
+        ):
+            result = install_claude._quarantine_corrupt_native_binary(str(native))
+        assert result is True
+        assert not native.exists()
+        assert (tmp_path / '.local' / 'bin' / 'claude.exe.old.1').exists()
+
+    @patch('sys.platform', 'linux')
+    def test_non_native_path_is_left_alone(self, tmp_path: Path) -> None:
+        """Binaries outside the native target are not quarantined."""
+        other = tmp_path / 'elsewhere' / 'claude'
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b'x' * 2000)
+        with patch('install_claude.get_real_user_home', return_value=tmp_path):
+            result = install_claude._quarantine_corrupt_native_binary(str(other))
+        assert result is False
+        assert other.exists()
+
+    @patch('sys.platform', 'linux')
+    def test_unix_unlink_failure_returns_false(self, tmp_path: Path) -> None:
+        """A failed removal is reported as a warning, not an exception."""
+        native = tmp_path / '.local' / 'bin' / 'claude'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'x' * 2000)
+        with (
+            patch('install_claude.get_real_user_home', return_value=tmp_path),
+            patch.object(Path, 'unlink', side_effect=OSError('locked')),
+        ):
+            result = install_claude._quarantine_corrupt_native_binary(str(native))
+        assert result is False
+
+
+class TestVerifyInstalledBinaryExecutes:
+    """Tests for _verify_installed_binary_executes() post-install gating."""
+
+    @patch('install_claude._probe_claude_version', return_value=('2.1.96', False))
+    def test_healthy_binary_passes(self, mock_probe, capsys):
+        """A binary that reports a version passes verification."""
+        assert mock_probe is not None
+        assert install_claude._verify_installed_binary_executes('/x/claude') is True
+        assert 'Post-install binary version: 2.1.96' in capsys.readouterr().out
+
+    @patch('install_claude._quarantine_corrupt_native_binary')
+    @patch('install_claude._probe_claude_version', return_value=(None, True))
+    def test_corrupt_binary_fails_and_quarantines(self, mock_probe, mock_quarantine):
+        """A corrupt binary fails verification and is quarantined."""
+        assert mock_probe is not None
+        assert install_claude._verify_installed_binary_executes('/x/claude') is False
+        mock_quarantine.assert_called_once_with('/x/claude')
+
+    @patch('install_claude._probe_claude_version', return_value=(None, False))
+    def test_probe_failure_without_corruption_passes(self, mock_probe):
+        """Probe failures without corruption do not fail verification."""
+        assert mock_probe is not None
+        assert install_claude._verify_installed_binary_executes('/x/claude') is True
+
+    def test_none_path_passes(self):
+        """A missing path means there is nothing to probe."""
+        assert install_claude._verify_installed_binary_executes(None) is True
+
+
+class TestEnsureClaudeCorruptBinaryQuarantine:
+    """Tests for corrupt-binary quarantine in the ensure_claude() probe."""
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'auto'}, clear=False)
+    @patch('install_claude.install_claude_native_cross_platform', return_value=True)
+    @patch('install_claude._quarantine_corrupt_native_binary', return_value=True)
+    @patch('install_claude._probe_claude_version', return_value=(None, True))
+    @patch('install_claude.find_command', return_value='/home/user/.local/bin/claude')
+    def test_corrupt_binary_quarantined_before_install_dispatch(
+        self, mock_find, mock_probe, mock_quarantine, mock_native,
+    ):
+        """The corrupt native binary is moved aside before installation runs."""
+        assert mock_find is not None
+        assert mock_probe is not None
+        manager = MagicMock()
+        manager.attach_mock(mock_quarantine, 'quarantine')
+        manager.attach_mock(mock_native, 'native_install')
+
+        result = install_claude.ensure_claude()
+
+        assert result is True
+        mock_quarantine.assert_called_once_with('/home/user/.local/bin/claude')
+        call_names = [name for name, _args, _kwargs in manager.mock_calls]
+        assert call_names.index('quarantine') < call_names.index('native_install')
+
+    @patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD': 'npm'}, clear=False)
+    @patch('install_claude.install_claude_npm', return_value=True)
+    def test_corrupt_native_binary_cannot_shadow_npm_install(
+        self, mock_npm: MagicMock, tmp_path: Path,
+    ) -> None:
+        """npm-only installs quarantine the corrupt native binary first."""
+        native = tmp_path / '.local' / 'bin' / 'claude'
+        native.parent.mkdir(parents=True)
+        native.write_bytes(b'x' * 2000)
+
+        with (
+            patch('sys.platform', 'linux'),
+            patch('install_claude.get_real_user_home', return_value=tmp_path),
+            patch('install_claude._probe_claude_version', return_value=(None, True)),
+            patch(
+                'install_claude.find_command',
+                side_effect=[str(native), '/usr/local/bin/claude'],
+            ),
+        ):
+            result = install_claude.ensure_claude()
+
+        assert result is True
+        mock_npm.assert_called_once()
+        assert not native.exists()

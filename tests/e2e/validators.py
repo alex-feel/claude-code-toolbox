@@ -362,9 +362,20 @@ def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
 
     # Environment variables
     config_env = config.get('env-variables', {})
+    env_block = data.get('env') or {}
     for key, expected_value in config_env.items():
-        actual = data.get('env', {}).get(key)
-        # Production code coerces env values to strings via str(v)
+        # null-as-delete: a null-valued entry must be ABSENT from the
+        # atomically rebuilt config.json env block (never a JSON null and
+        # never the literal string 'None')
+        if expected_value is None:
+            if key in env_block:
+                errors.append(
+                    f"Env var '{key}': expected ABSENT (null-as-delete), "
+                    f'but found {env_block[key]!r}',
+                )
+            continue
+        actual = env_block.get(key)
+        # Production code coerces non-null env values to strings via str(v)
         expected_str = str(expected_value)
         if actual != expected_str:
             errors.append(
@@ -1169,18 +1180,20 @@ def validate_global_config_output(
 def validate_auto_update_controls(
     home_dir: Path, pinned: bool, command_name: str | None = None,
 ) -> list[str]:
-    """Validate auto-update controls are correctly set or absent.
+    """Validate the autoUpdates control in the .claude.json files.
+
+    Covers the global-config autoUpdates dual-write only; the
+    env.DISABLE_AUTOUPDATER settings.json contribution is validated by
+    validate_settings.
 
     When pinned=True, expects:
     - ~/.claude.json has autoUpdates: false
-    - settings.json (wherever written) has env.DISABLE_AUTOUPDATER: "1"
 
     When pinned=True AND command_name is provided, additionally expects:
     - ~/.claude/{command_name}/.claude.json has autoUpdates: false
 
     When pinned=False, expects:
     - No autoUpdates key injected in ~/.claude.json (or None for null-as-delete)
-    - No DISABLE_AUTOUPDATER in settings env section
 
     Args:
         home_dir: Isolated home directory path
@@ -1238,18 +1251,20 @@ def validate_auto_update_controls(
 def validate_ide_extension_controls(
     home_dir: Path, pinned: bool, command_name: str | None = None,
 ) -> list[str]:
-    """Validate IDE extension auto-install controls are correctly set or absent.
+    """Validate the autoInstallIdeExtension control in the .claude.json files.
+
+    Covers the global-config autoInstallIdeExtension dual-write only; the
+    env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL settings.json contribution is
+    validated by validate_settings.
 
     When pinned=True, expects:
     - ~/.claude.json has autoInstallIdeExtension: false
-    - settings.json has env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
 
     When pinned=True AND command_name is provided, additionally expects:
     - ~/.claude/{command_name}/.claude.json has autoInstallIdeExtension: false
 
     When pinned=False, expects:
     - No autoInstallIdeExtension key injected
-    - No CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in settings env section
 
     Args:
         home_dir: Isolated home directory path

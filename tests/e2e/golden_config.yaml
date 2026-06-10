@@ -218,6 +218,7 @@ env-variables:
   E2E_ANOTHER_VAR: "another_value"
   E2E_PATH_VAR: "~/.claude/e2e-data"
   E2E_INT_VAR: 42
+  E2E_DELETE_VAR: null  # null-as-delete: absent from config.json, deleted from settings.json
 
 # OS-level environment variables
 os-env-variables:

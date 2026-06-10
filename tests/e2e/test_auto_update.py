@@ -215,13 +215,13 @@ class TestPinnedVersionProfileConfig:
         assert data['env']['TEST_VAR'] == 'value'
 
 
-class TestNullAsDeleteTarget2:
-    """Verify _remove_auto_update_controls Target 2 uses None for RFC 7396 merge."""
+class TestUnpinnedRemovalSemantics:
+    """Verify unpinned runs preserve user declarations and sweep stale disk keys."""
 
-    def test_remove_uses_null_as_delete_for_settings_env(
+    def test_unpinned_preserves_user_declared_env_and_sweep_cleans_disk(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """When unpinning, DISABLE_AUTOUPDATER is removed from disk via merge."""
+        """User-declared controls survive in memory; the disk sweep removes stale keys."""
         home = e2e_isolated_home['home']
         claude_dir = home / '.claude'
 
@@ -231,25 +231,171 @@ class TestNullAsDeleteTarget2:
             'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER_VAR': 'keep'},
         }))
 
-        # Apply with no version pin (triggers removal path)
-        gc, us, ev, osev, _, _ = setup_environment.apply_auto_update_settings(
+        # Apply with no version pin: user-declared controls are preserved
+        gc, us, ev, osev, warns, _ = setup_environment.apply_auto_update_settings(
             None, {}, {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER_VAR': 'keep'}}, {}, {},
         )
-
-        # user_settings Target 2 should have None (null-as-delete), not absent
         assert us is not None
-        assert us['env']['DISABLE_AUTOUPDATER'] is None, \
-            'Target 2 must use None (not del) for RFC 7396 null-as-delete'
+        assert us['env']['DISABLE_AUTOUPDATER'] == '1', \
+            'User-declared DISABLE_AUTOUPDATER must be preserved in memory'
         assert us['env']['OTHER_VAR'] == 'keep'
+        assert not warns
 
-        # Write via merge to verify disk effect
-        setup_environment.write_user_settings(us, claude_dir)
-
-        # Verify disk: DISABLE_AUTOUPDATER removed, OTHER_VAR preserved
+        # Stale on-disk artifacts are removed by the Step 16 sweep helper
+        setup_environment._cleanup_settings_json_autoupdater(settings_path)
         data = json.loads(settings_path.read_text())
         assert 'DISABLE_AUTOUPDATER' not in data.get('env', {}), \
-            'DISABLE_AUTOUPDATER should be removed from disk via null-as-delete merge'
+            'Stale DISABLE_AUTOUPDATER should be removed from disk by the sweep'
         assert data['env']['OTHER_VAR'] == 'keep'
+
+    def test_unpinned_schedules_os_level_deletion_when_not_declared(self) -> None:
+        """The OS-level variable gets a deletion entry because it has no disk sweep."""
+        _, _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            None, {}, {}, {}, {},
+        )
+        assert osev is not None
+        assert osev == {'DISABLE_AUTOUPDATER': None}, \
+            'Unpinned run must schedule OS-level DISABLE_AUTOUPDATER deletion'
+
+    def test_unpinned_sweep_preserves_user_declared_settings_key(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """The orchestrated sweep keeps a user-declared key in settings.json."""
+        home = e2e_isolated_home['home']
+        claude_dir = home / '.claude'
+
+        settings_path = claude_dir / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'env': {'DISABLE_AUTOUPDATER': '1'},
+        }))
+
+        setup_environment.cleanup_stale_auto_update_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=True,
+        )
+
+        data = json.loads(settings_path.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1', \
+            'User-declared key must survive the unpinned sweep'
+
+    def test_unpinned_sweep_removes_undeclared_settings_key(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """The orchestrated sweep removes a stale key the current YAML does not declare."""
+        home = e2e_isolated_home['home']
+        claude_dir = home / '.claude'
+
+        settings_path = claude_dir / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'env': {'DISABLE_AUTOUPDATER': '1'},
+        }))
+
+        setup_environment.cleanup_stale_auto_update_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
+
+        data = json.loads(settings_path.read_text())
+        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {}), \
+            'Undeclared stale key must be removed by the unpinned sweep'
+
+
+class TestPinnedBaseFlowSequence:
+    """Verify the pinned non-isolated write sequence keeps env controls on disk."""
+
+    def test_pinned_non_isolated_sequence_keeps_env_controls(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Step 14 write -> Step 16 cleanup (non-isolated) -> Step 18 keeps both keys."""
+        home = e2e_isolated_home['home']
+        claude_dir = home / '.claude'
+
+        # YAML with a pinned version and NO env-variables section
+        config: dict[str, Any] = {'claude-code-version': '2.1.85'}
+        env_variables = config.get('env-variables')
+
+        gc, us, ev, osev, _, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', config.get('global-config'), config.get('user-settings'),
+            env_variables, config.get('os-env-variables'),
+        )
+        gc, us, ev, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            '2.1.85', gc, us, ev, osev,
+        )
+
+        # main() writes the injected env-variables dict back into config
+        if ev is not None:
+            config['env-variables'] = ev
+
+        # Step 14: write user settings to the base ~/.claude/settings.json
+        assert us is not None
+        assert setup_environment.write_user_settings(us, claude_dir)
+        data = json.loads((claude_dir / 'settings.json').read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+
+        # Step 16: pinned non-isolated cleanup must NOT sweep the base file
+        setup_environment._run_stale_controls_cleanup(
+            '2.1.85', is_isolated=False, user_declared_keys=frozenset(),
+        )
+        data = json.loads((claude_dir / 'settings.json').read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1', \
+            'Pinned non-isolated Step 16 must not delete the run-written control'
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1', \
+            'Pinned non-isolated Step 16 must not delete the run-written control'
+
+        # Step 18: profile settings delta built from config the way main() does
+        profile_config: dict[str, Any] = {
+            camel_key: config[yaml_key]
+            for yaml_key, camel_key in setup_environment._YAML_TO_CAMEL_PROFILE_KEYS.items()
+            if yaml_key in config
+        }
+        delta = setup_environment._build_profile_settings(profile_config, claude_dir / 'hooks')
+        setup_environment.write_profile_settings_to_settings(delta, claude_dir)
+
+        # Final state: both injected env keys present in ~/.claude/settings.json
+        data = json.loads((claude_dir / 'settings.json').read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+
+
+class TestEnvVariablesWriteBack:
+    """Verify the injected env-variables dict reaches the Step 18 builders."""
+
+    def test_isolated_pinned_profile_config_includes_injected_env(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Isolated config.json env carries injected keys when YAML lacks env-variables."""
+        home = e2e_isolated_home['home']
+        config_dir = home / '.claude' / 'test-cmd'
+        config_dir.mkdir(parents=True, exist_ok=True)
+
+        # YAML with command-names, a pinned version, and NO env-variables
+        config: dict[str, Any] = {
+            'command-names': ['test-cmd'],
+            'claude-code-version': '2.1.85',
+        }
+        env_variables = config.get('env-variables')
+
+        _, _, ev, _, _, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, env_variables, None,
+        )
+        _, _, ev, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '2.1.85', None, None, ev, None,
+        )
+
+        # main() writes the injected dict back into config
+        if ev is not None:
+            config['env-variables'] = ev
+
+        # Step 18 isolated: profile dict built from config the way main() does
+        profile_config: dict[str, Any] = {
+            camel_key: config[yaml_key]
+            for yaml_key, camel_key in setup_environment._YAML_TO_CAMEL_PROFILE_KEYS.items()
+            if yaml_key in config
+        }
+        setup_environment.create_profile_config(profile_config, config_dir)
+
+        data = json.loads((config_dir / 'config.json').read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
 
 class TestCrossLocationStaleCleanup:

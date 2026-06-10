@@ -2,6 +2,7 @@
 Additional tests for install_claude.py to increase coverage.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -572,6 +573,7 @@ class TestInstallGitWinget:
 class TestGCSDirectDownload:
     """Test direct download from GCS bucket for specific versions."""
 
+    @patch('install_claude._verify_gcs_download_integrity', return_value=True)
     @patch('install_claude._get_gcs_platform_path', return_value=('win32-x64', 'claude.exe'))
     @patch('install_claude.urlretrieve')
     @patch('pathlib.Path.exists')
@@ -590,9 +592,10 @@ class TestGCSDirectDownload:
         mock_exists,
         mock_urlretrieve,
         mock_platform_path,
+        mock_integrity,
     ):
         """Test successful direct download from GCS."""
-        del mock_chmod, mock_unlink  # Prevent real file operations
+        del mock_chmod, mock_unlink, mock_integrity  # Prevent real file operations
         # Mock file exists after download
         mock_exists.return_value = True
         mock_stat.return_value.st_size = 5_000_000  # 5MB file
@@ -670,6 +673,7 @@ class TestGCSDirectDownload:
         mock_urlretrieve.assert_called()  # Download attempted
         mock_unlink.assert_called()  # Corrupted file cleaned up
 
+    @patch('install_claude._verify_gcs_download_integrity', return_value=True)
     @patch('install_claude.urllib.request.build_opener')
     @patch('install_claude.urllib.request.install_opener')
     @patch('install_claude.urlretrieve')
@@ -690,9 +694,10 @@ class TestGCSDirectDownload:
         mock_urlretrieve,
         mock_install_opener,
         mock_build_opener,
+        mock_integrity,
     ):
         """Test direct download with SSL error fallback."""
-        del mock_chmod, mock_unlink  # Prevent real file operations
+        del mock_chmod, mock_unlink, mock_integrity  # Prevent real file operations
         # First call fails with SSL error, second succeeds
         mock_urlretrieve.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
@@ -711,6 +716,170 @@ class TestGCSDirectDownload:
         assert mock_install_opener.call_count == 2
         mock_mkdir.assert_called()  # Directory creation
         mock_replace.assert_called()  # Atomic file move
+
+    @patch('install_claude._get_gcs_platform_path', return_value=('win32-x64', 'claude.exe'))
+    @patch('install_claude.urlretrieve')
+    def test_download_rejected_on_integrity_failure(
+        self, mock_urlretrieve, mock_platform_path, tmp_path,
+    ):
+        """A failed integrity verification deletes the temp file and fails."""
+        assert mock_platform_path.return_value == ('win32-x64', 'claude.exe')
+        target = tmp_path / 'claude.exe'
+
+        def fake_download(_url, filename):
+            Path(filename).write_bytes(b'x' * 2000)
+
+        mock_urlretrieve.side_effect = fake_download
+
+        with patch(
+            'install_claude._verify_gcs_download_integrity', return_value=False,
+        ) as mock_integrity:
+            result = install_claude._download_claude_direct_from_gcs('2.0.76', target)
+
+        assert result is False
+        mock_integrity.assert_called_once()
+        assert not target.exists()
+        assert not (tmp_path / 'claude.tmp').exists()  # Temp file cleaned up
+
+    @patch('install_claude._get_gcs_platform_path', return_value=None)
+    @patch('install_claude.urlretrieve')
+    def test_download_fails_when_platform_unsupported(
+        self, mock_urlretrieve, mock_platform_path, tmp_path,
+    ):
+        """An unsupported architecture aborts before any download."""
+        assert mock_platform_path.return_value is None
+        target = tmp_path / 'claude.exe'
+
+        result = install_claude._download_claude_direct_from_gcs('2.0.76', target)
+
+        assert result is False
+        mock_urlretrieve.assert_not_called()
+
+
+class TestGcsManifestIntegrity:
+    """Tests for GCS release manifest fetching and integrity verification."""
+
+    GCS_BASE = 'https://example.test/releases'
+
+    @staticmethod
+    def _urlopen_response(payload: bytes) -> MagicMock:
+        """Build a context-manager mock for urlopen returning payload."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = payload
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        return mock_response
+
+    @patch('install_claude.urlopen')
+    def test_fetch_manifest_entry_success(self, mock_urlopen):
+        """The platform entry's checksum and size are returned."""
+        manifest = {
+            'version': '2.0.76',
+            'platforms': {
+                'win32-x64': {'binary': 'claude.exe', 'checksum': 'a' * 64, 'size': 2000},
+            },
+        }
+        mock_urlopen.return_value = self._urlopen_response(json.dumps(manifest).encode())
+
+        result = install_claude._fetch_gcs_manifest_entry(self.GCS_BASE, '2.0.76', 'win32-x64')
+
+        assert result == ('a' * 64, 2000)
+        call_url = mock_urlopen.call_args[0][0]
+        assert call_url == f'{self.GCS_BASE}/2.0.76/manifest.json'
+
+    @patch('install_claude.urlopen', side_effect=urllib.error.URLError('Connection refused'))
+    def test_fetch_manifest_entry_network_error(self, mock_urlopen, capsys):
+        """Network errors yield None (the caller fails closed)."""
+        assert mock_urlopen is not None
+        result = install_claude._fetch_gcs_manifest_entry(self.GCS_BASE, '2.0.76', 'win32-x64')
+        assert result is None
+        assert 'Could not fetch release manifest' in capsys.readouterr().err
+
+    @patch('install_claude.urlopen')
+    def test_fetch_manifest_entry_missing_platform(self, mock_urlopen, capsys):
+        """A manifest without the requested platform yields None."""
+        manifest = {'version': '2.0.76', 'platforms': {'linux-x64': {'checksum': 'a' * 64, 'size': 1}}}
+        mock_urlopen.return_value = self._urlopen_response(json.dumps(manifest).encode())
+
+        result = install_claude._fetch_gcs_manifest_entry(self.GCS_BASE, '2.0.76', 'win32-arm64')
+
+        assert result is None
+        assert 'missing data for platform win32-arm64' in capsys.readouterr().err
+
+    @patch('install_claude.urlopen')
+    def test_fetch_manifest_entry_invalid_json(self, mock_urlopen, capsys):
+        """Malformed manifest JSON yields None."""
+        mock_urlopen.return_value = self._urlopen_response(b'not json')
+
+        result = install_claude._fetch_gcs_manifest_entry(self.GCS_BASE, '2.0.76', 'win32-x64')
+
+        assert result is None
+        assert 'missing data for platform' in capsys.readouterr().err
+
+    def test_sha256_file_streams_digest(self, tmp_path):
+        """The streamed digest matches hashlib's direct digest."""
+        payload = b'claude binary payload' * 1024
+        sample = tmp_path / 'claude.tmp'
+        sample.write_bytes(payload)
+
+        assert install_claude._sha256_file(sample) == hashlib.sha256(payload).hexdigest()
+
+    @patch('install_claude._fetch_gcs_manifest_entry', return_value=None)
+    def test_verify_integrity_fails_closed_without_manifest(self, mock_fetch, tmp_path, capsys):
+        """An unavailable manifest rejects the download (fail closed)."""
+        assert mock_fetch is not None
+        sample = tmp_path / 'claude.tmp'
+        sample.write_bytes(b'x' * 2000)
+
+        result = install_claude._verify_gcs_download_integrity(
+            sample, 2000, self.GCS_BASE, '2.0.76', 'win32-x64',
+        )
+
+        assert result is False
+        assert 'Cannot verify download integrity' in capsys.readouterr().err
+
+    @patch('install_claude._fetch_gcs_manifest_entry', return_value=('a' * 64, 9999))
+    def test_verify_integrity_size_mismatch(self, mock_fetch, tmp_path, capsys):
+        """A size mismatch rejects the download."""
+        assert mock_fetch is not None
+        sample = tmp_path / 'claude.tmp'
+        sample.write_bytes(b'x' * 2000)
+
+        result = install_claude._verify_gcs_download_integrity(
+            sample, 2000, self.GCS_BASE, '2.0.76', 'win32-x64',
+        )
+
+        assert result is False
+        assert 'size mismatch' in capsys.readouterr().err
+
+    @patch('install_claude._fetch_gcs_manifest_entry', return_value=('f' * 64, 2000))
+    def test_verify_integrity_checksum_mismatch(self, mock_fetch, tmp_path, capsys):
+        """A sha256 mismatch rejects the download."""
+        assert mock_fetch is not None
+        sample = tmp_path / 'claude.tmp'
+        sample.write_bytes(b'x' * 2000)
+
+        result = install_claude._verify_gcs_download_integrity(
+            sample, 2000, self.GCS_BASE, '2.0.76', 'win32-x64',
+        )
+
+        assert result is False
+        assert 'sha256 mismatch' in capsys.readouterr().err
+
+    @patch('install_claude._fetch_gcs_manifest_entry')
+    def test_verify_integrity_success(self, mock_fetch, tmp_path, capsys):
+        """Matching size and sha256 accept the download."""
+        payload = b'x' * 2000
+        sample = tmp_path / 'claude.tmp'
+        sample.write_bytes(payload)
+        mock_fetch.return_value = (hashlib.sha256(payload).hexdigest(), len(payload))
+
+        result = install_claude._verify_gcs_download_integrity(
+            sample, len(payload), self.GCS_BASE, '2.0.76', 'win32-x64',
+        )
+
+        assert result is True
+        assert 'Download integrity verified' in capsys.readouterr().out
 
 
 class TestHybridInstallApproach:
@@ -953,10 +1122,35 @@ class TestGetGcsPlatformPath:
         assert mock_system.return_value == 'Windows'
         assert mock_machine.return_value == 'AMD64'
 
-        platform_path, binary_name = install_claude._get_gcs_platform_path()
+        result = install_claude._get_gcs_platform_path()
 
-        assert platform_path == 'win32-x64'
-        assert binary_name == 'claude.exe'
+        assert result == ('win32-x64', 'claude.exe')
+
+    @patch('platform.system', return_value='Windows')
+    @patch('platform.machine', return_value='ARM64')
+    def test_get_gcs_platform_path_windows_arm64(self, mock_machine, mock_system):
+        """Test GCS path for Windows on ARM64."""
+        # Verify mock configuration
+        assert mock_system.return_value == 'Windows'
+        assert mock_machine.return_value == 'ARM64'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result == ('win32-arm64', 'claude.exe')
+
+    @patch('platform.system', return_value='Windows')
+    @patch('platform.machine', return_value='mips')
+    def test_get_gcs_platform_path_windows_unknown_arch(
+        self, mock_machine, mock_system, capsys,
+    ):
+        """Unknown Windows architectures fail with an explicit error."""
+        assert mock_system.return_value == 'Windows'
+        assert mock_machine.return_value == 'mips'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result is None
+        assert 'Unsupported Windows architecture' in capsys.readouterr().err
 
     @patch('platform.system', return_value='Darwin')
     @patch('platform.machine', return_value='arm64')
@@ -966,10 +1160,9 @@ class TestGetGcsPlatformPath:
         assert mock_system.return_value == 'Darwin'
         assert mock_machine.return_value == 'arm64'
 
-        platform_path, binary_name = install_claude._get_gcs_platform_path()
+        result = install_claude._get_gcs_platform_path()
 
-        assert platform_path == 'darwin-arm64'
-        assert binary_name == 'claude'
+        assert result == ('darwin-arm64', 'claude')
 
     @patch('platform.system', return_value='Darwin')
     @patch('platform.machine', return_value='x86_64')
@@ -979,10 +1172,23 @@ class TestGetGcsPlatformPath:
         assert mock_system.return_value == 'Darwin'
         assert mock_machine.return_value == 'x86_64'
 
-        platform_path, binary_name = install_claude._get_gcs_platform_path()
+        result = install_claude._get_gcs_platform_path()
 
-        assert platform_path == 'darwin-x64'
-        assert binary_name == 'claude'
+        assert result == ('darwin-x64', 'claude')
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('platform.machine', return_value='ppc64')
+    def test_get_gcs_platform_path_macos_unknown_arch(
+        self, mock_machine, mock_system, capsys,
+    ):
+        """Unknown macOS architectures fail with an explicit error."""
+        assert mock_system.return_value == 'Darwin'
+        assert mock_machine.return_value == 'ppc64'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result is None
+        assert 'Unsupported macOS architecture' in capsys.readouterr().err
 
     @patch('platform.system', return_value='Linux')
     @patch('platform.machine', return_value='x86_64')
@@ -992,10 +1198,9 @@ class TestGetGcsPlatformPath:
         assert mock_system.return_value == 'Linux'
         assert mock_machine.return_value == 'x86_64'
 
-        platform_path, binary_name = install_claude._get_gcs_platform_path()
+        result = install_claude._get_gcs_platform_path()
 
-        assert platform_path == 'linux-x64'
-        assert binary_name == 'claude'
+        assert result == ('linux-x64', 'claude')
 
     @patch('platform.system', return_value='Linux')
     @patch('platform.machine', return_value='aarch64')
@@ -1005,10 +1210,53 @@ class TestGetGcsPlatformPath:
         assert mock_system.return_value == 'Linux'
         assert mock_machine.return_value == 'aarch64'
 
-        platform_path, binary_name = install_claude._get_gcs_platform_path()
+        result = install_claude._get_gcs_platform_path()
 
-        assert platform_path == 'linux-arm64'
-        assert binary_name == 'claude'
+        assert result == ('linux-arm64', 'claude')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('platform.machine', return_value='x86_64')
+    @patch('pathlib.Path.exists', return_value=True)
+    def test_get_gcs_platform_path_linux_x64_musl(
+        self, mock_exists, mock_machine, mock_system,
+    ):
+        """Alpine/musl systems select the linux-x64-musl variant."""
+        assert mock_exists.return_value is True
+        assert mock_system.return_value == 'Linux'
+        assert mock_machine.return_value == 'x86_64'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result == ('linux-x64-musl', 'claude')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('platform.machine', return_value='aarch64')
+    @patch('pathlib.Path.exists', return_value=True)
+    def test_get_gcs_platform_path_linux_arm64_musl(
+        self, mock_exists, mock_machine, mock_system,
+    ):
+        """Alpine/musl systems select the linux-arm64-musl variant."""
+        assert mock_exists.return_value is True
+        assert mock_system.return_value == 'Linux'
+        assert mock_machine.return_value == 'aarch64'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result == ('linux-arm64-musl', 'claude')
+
+    @patch('platform.system', return_value='Linux')
+    @patch('platform.machine', return_value='riscv64')
+    def test_get_gcs_platform_path_linux_unknown_arch(
+        self, mock_machine, mock_system, capsys,
+    ):
+        """Unknown Linux architectures fail with an explicit error."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_machine.return_value == 'riscv64'
+
+        result = install_claude._get_gcs_platform_path()
+
+        assert result is None
+        assert 'Unsupported Linux architecture' in capsys.readouterr().err
 
 
 class TestHybridInstallMacOS:
@@ -1077,6 +1325,38 @@ class TestHybridInstallMacOS:
         call_args = mock_gcs_download.call_args[0]
         assert call_args[0] == '2.0.76'
         mock_ensure_path.assert_called()
+
+    @patch('sys.platform', 'darwin')
+    @patch('install_claude._finalize_native_install')
+    @patch('install_claude._verify_installed_binary_executes', return_value=False)
+    @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
+    @patch('install_claude._ensure_local_bin_in_path_unix')
+    @patch('install_claude.verify_claude_installation')
+    @patch('pathlib.Path.chmod')
+    @patch('time.sleep')
+    def test_macos_specific_version_non_executing_binary_fails(
+        self,
+        mock_sleep,
+        mock_chmod,
+        mock_verify,
+        mock_ensure_path,
+        mock_gcs_download,
+        mock_executes,
+        mock_finalize,
+    ):
+        """A specific-version download that cannot execute is not reported as success."""
+        assert mock_sleep is not None
+        assert mock_chmod is not None
+        assert mock_ensure_path is not None
+        assert mock_gcs_download.return_value is True
+        assert mock_executes.return_value is False
+        mock_verify.return_value = (True, '/Users/Test/.local/bin/claude', 'native')
+
+        result = install_claude.install_claude_native_macos(version='2.0.76')
+
+        assert result is False
+        mock_executes.assert_called_once_with('/Users/Test/.local/bin/claude')
+        mock_finalize.assert_not_called()
 
     @patch('sys.platform', 'darwin')
     @patch('install_claude._download_claude_direct_from_gcs')

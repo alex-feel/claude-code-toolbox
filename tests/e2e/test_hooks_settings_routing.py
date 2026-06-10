@@ -314,7 +314,7 @@ class TestSummaryOutputRouting:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -372,7 +372,7 @@ class TestSummaryOutputRouting:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -429,9 +429,13 @@ class TestSummaryOutputRouting:
 
         mock_launcher.return_value = (Path('/fake/launcher.sh'), Path('/fake/launch.sh'))
 
+        # generate_env_loader_files is mocked because Path.mkdir is mocked
+        # above: loader files are rebuilt even when every os-env entry is a
+        # deletion, and the real writer needs an existing directory.
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
              patch('sys.exit') as mock_exit, \
-             patch.object(setup_environment, 'download_hook_files', return_value=True):
+             patch.object(setup_environment, 'download_hook_files', return_value=True), \
+             patch.object(setup_environment, 'generate_env_loader_files', return_value={}):
             setup_environment.main()
             mock_exit.assert_not_called()
 
@@ -445,7 +449,7 @@ class TestHooksSettingsRoutingStepOutput:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -505,7 +509,7 @@ class TestHooksSettingsRoutingStepOutput:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')

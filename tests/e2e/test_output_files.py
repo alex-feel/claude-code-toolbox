@@ -395,6 +395,44 @@ class TestGlobalConfigOutput:
         for key, expected in global_config.items():
             assert data.get(key) == expected, f'Key {key!r}: expected {expected!r}, got {data.get(key)!r}'
 
+    def test_install_method_propagated_to_both_claude_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify installMethod reaches BOTH .claude.json files in an isolated run.
+
+        The base ~/.claude.json is pre-populated with the value recorded by
+        install_claude.py; the propagation step injects it into global-config
+        and the Step 15 dual-write carries it to the isolated profile.
+        """
+        from scripts.setup_environment import _propagate_install_method
+        from scripts.setup_environment import write_global_config
+
+        paths = e2e_isolated_home
+        home = paths['home']
+
+        # Pre-populate the base file the way install_claude.py leaves it
+        claude_json = home / '.claude.json'
+        claude_json.write_text(json.dumps({'installMethod': 'native'}), encoding='utf-8')
+
+        cmd = golden_config['command-names'][0]
+        artifact_dir = home / '.claude' / cmd
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        global_config = _propagate_install_method(
+            golden_config.get('global-config'), cmd, [],
+        )
+        assert global_config is not None
+        assert write_global_config(global_config, artifact_base_dir=artifact_dir)
+
+        base_data = json.loads(claude_json.read_text(encoding='utf-8'))
+        isolated_data = json.loads((artifact_dir / '.claude.json').read_text(encoding='utf-8'))
+        assert base_data['installMethod'] == 'native', \
+            'Base ~/.claude.json must keep installMethod'
+        assert isolated_data['installMethod'] == 'native', \
+            'Isolated .claude.json must receive installMethod via dual-write'
+
 
 class TestRulesOutput:
     """Test rules files are processed into ~/.claude/rules/."""
