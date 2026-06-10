@@ -58,12 +58,16 @@ def test_environment_config_mergeable_matches_inherit_entry() -> None:
     """EnvironmentConfig.validate_merge_keys inline set must match InheritEntry's."""
     from scripts.models.environment_config import EnvironmentConfig
 
-    # Extract from EnvironmentConfig by attempting validation
+    # Extract from EnvironmentConfig by attempting validation. The payload
+    # includes inherit because non-empty merge-keys requires inherit
+    # (validate_merge_keys_requires_inherit); without it every key would be
+    # rejected for the wrong reason.
     ec_valid: set[str] = set()
     for key in MERGEABLE_CONFIG_KEYS:
         try:
             EnvironmentConfig.model_validate({
                 'name': 'test',
+                'inherit': 'base.yaml',
                 'merge-keys': [key],
             })
             ec_valid.add(key)

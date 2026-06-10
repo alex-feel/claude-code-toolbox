@@ -323,13 +323,13 @@ class TestClaudeInstallationEdgeCases:
         mock_path.return_value = mock_path_instance
         mock_path.home.return_value = mock_path_instance
 
-        with patch('scripts.install_claude.run_command') as mock_run:
+        with patch('scripts.install_claude.subprocess.run') as mock_run:
             mock_run.return_value = subprocess.CompletedProcess([], 0, 'claude, version 0.7.8', '')
 
             version = install_claude.get_claude_version()
 
             assert version == '0.7.8'
-            # Check that run_command was called with the found path
+            # Check that the version probe executed the found path
             mock_run.assert_called()
 
     @patch('scripts.install_claude.platform.system', return_value='Windows')

@@ -1236,7 +1236,7 @@ class TestMainFlowWithValidation:
         mock_error.assert_any_call('  - agent: bad.md')
 
     @patch('setup_environment.process_resources')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.success')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.load_config_from_source')

@@ -539,7 +539,7 @@ class TestConflictDetectionInNonCommandNamesMode:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -605,7 +605,7 @@ class TestProfileMcpValidationError:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -666,7 +666,7 @@ class TestProfileMcpValidationError:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -724,7 +724,7 @@ class TestProfileMcpValidationError:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -792,7 +792,7 @@ class TestSystemPromptWarning:
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
     @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies')
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
     @patch('scripts.setup_environment.process_resources')
     @patch('scripts.setup_environment.process_skills')
     @patch('scripts.setup_environment.configure_all_mcp_servers')
@@ -945,6 +945,45 @@ class TestGoldenConfigNoCommandNames:
 
         # All 9 profile keys present
         assert set(content.keys()) == PROFILE_OWNED_KEYS
+
+    def test_env_null_entry_deletes_stale_value_from_settings_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config_no_command_names: dict[str, Any],
+    ) -> None:
+        """The golden config's null env entry deletes the stale settings.json value.
+
+        Base-mode null-as-delete: a per-key env null flows builder -> writer
+        -> RFC 7396 merge and removes the key, while active values are set
+        as strings and the literal string 'None' never appears.
+        """
+        paths = e2e_isolated_home
+        claude_dir = paths['claude_dir']
+        hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        cfg = golden_config_no_command_names
+        env_section = cfg.get('env-variables', {})
+        assert env_section.get('E2E_DELETE_VAR', '') is None, (
+            'Golden no-command-names config must declare E2E_DELETE_VAR: null'
+        )
+
+        # Pre-seed a stale value as if a prior run had set the variable
+        settings_path = claude_dir / 'settings.json'
+        settings_path.write_text(
+            json.dumps({'env': {'E2E_DELETE_VAR': 'stale_value'}}),
+            encoding='utf-8',
+        )
+
+        delta = _build_profile_settings({'env': env_section}, hooks_dir)
+        write_profile_settings_to_settings(delta, claude_dir)
+
+        content = json.loads(settings_path.read_text(encoding='utf-8'))
+        env_block = content['env']
+        assert 'E2E_DELETE_VAR' not in env_block
+        assert env_block.get('E2E_TEST_VAR') == 'test_value'
+        assert env_block.get('E2E_INT_VAR') == '42'
+        assert 'None' not in env_block.values()
 
     def test_hooks_in_settings_not_config_json(
         self,

@@ -4,6 +4,7 @@ Comprehensive tests for setup_environment.py - the main environment setup script
 
 import argparse
 import contextlib
+import gzip
 import json
 import os
 import platform
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -25,6 +27,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 import math
 
 import setup_environment
+
+# Real references captured at import time so the stale-controls cleanup and
+# installMethod propagation tests can run the actual implementations: the
+# conftest autouse fixtures replace the module attributes with no-op or
+# pass-through mocks before each test runs.
+_real_cleanup_stale_auto_update_controls = setup_environment.cleanup_stale_auto_update_controls
+_real_cleanup_stale_ide_extension_controls = setup_environment.cleanup_stale_ide_extension_controls
+_real_propagate_install_method = setup_environment._propagate_install_method
 
 
 class TestColors:
@@ -1961,7 +1971,7 @@ class TestInstallDependencies:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'windows': ['npm install -g package']})
-        assert result is True
+        assert result == []
         mock_run.assert_called_with(['npm', 'install', '-g', 'package'], capture_output=False)
 
     @patch('platform.system', return_value='Linux')
@@ -1973,7 +1983,7 @@ class TestInstallDependencies:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'linux': ['apt-get install package']})
-        assert result is True
+        assert result == []
         mock_run.assert_called_with(['bash', '-c', 'apt-get install package'], capture_output=False)
 
     @patch('platform.system', return_value='Darwin')
@@ -1990,7 +2000,7 @@ class TestInstallDependencies:
                 'brew install tool',
             ],
         })
-        assert result is True
+        assert result == []
 
         calls = mock_run.call_args_list
         assert len(calls) == 2
@@ -2011,7 +2021,7 @@ class TestInstallDependencies:
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_dependencies({'windows': ['uv tool install ruff']})
-        assert result is True
+        assert result == []
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
     @patch('platform.system', return_value='Windows')
@@ -2036,7 +2046,7 @@ class TestInstallDependencies:
             'windows': ['Write-Output "test" >> ~/.config/file.txt'],
         })
 
-        assert result is True
+        assert result == []
         mock_expand.assert_called_with('Write-Output "test" >> ~/.config/file.txt')
         # Verify PowerShell command uses expanded path
         call_args = mock_run.call_args[0][0]
@@ -2066,7 +2076,7 @@ class TestInstallDependencies:
             'linux': ['uv tool install ~/.local/tools/my-tool'],
         })
 
-        assert result is True
+        assert result == []
         # Verify expand_tildes_in_command was called with the --force flag added
         mock_expand.assert_called()
         call_arg = mock_expand.call_args[0][0]
@@ -2094,12 +2104,380 @@ class TestInstallDependencies:
             'macos': ['uv tool install ~/.local/tools/custom-tool'],
         })
 
-        assert result is True
+        assert result == []
         # Verify expand_tildes_in_command was called with the --force flag added
         mock_expand.assert_called()
         call_arg = mock_expand.call_args[0][0]
         assert '--force' in call_arg
         assert '~/.local/tools/custom-tool' in call_arg
+
+
+class TestInstallDependenciesSudoEscalation:
+    """Test sudo escalation for global npm dependency installs on Unix."""
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_npm_global_failure_retries_with_sudo(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """A failed global npm install retries with sudo when the prefix is not writable."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+        mock_sudo.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['npm install -g @playwright/cli@latest']})
+
+        assert result == []
+        mock_sudo.assert_called_once_with(
+            ['npm', 'install', '-g', '@playwright/cli@latest'],
+            capture_output=False,
+            timeout=600,
+        )
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_sudo_note_printed_before_first_attempt(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A note about possible sudo usage is printed before the first attempt."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['npm install -g pkg']})
+
+        assert result == []
+        mock_sudo.assert_not_called()
+        captured = capsys.readouterr()
+        assert 'sudo may be requested' in captured.out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=False)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_no_sudo_when_prefix_writable(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """No sudo retry when the npm global prefix is writable by the user."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is False
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['npm install -g pkg']})
+
+        assert result == ['npm install -g pkg']
+        mock_sudo.assert_not_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_no_sudo_for_compound_shell_strings(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """Compound shell strings are never re-executed with elevated privileges."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        compound_deps = [
+            'npm install -g pkg && echo done >> ~/.bashrc',
+            'npm install -g pkg; rm -rf /tmp/x',
+            'npm install -g pkg | tee log',
+            'npm install -g $PKG',
+            'npm install -g `cat pkg`',
+        ]
+        result = setup_environment.install_dependencies({'common': compound_deps})
+
+        assert result == compound_deps
+        mock_sudo.assert_not_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_no_sudo_for_non_npm_failures(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """Failures of non-npm dependencies never trigger sudo."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['pip install requests']})
+
+        assert result == ['pip install requests']
+        mock_sudo.assert_not_called()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback', return_value=None)
+    def test_guidance_printed_when_sudo_unavailable(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Actionable guidance is printed when no sudo mechanism is available."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['npm install -g pkg']})
+
+        assert result == ['npm install -g pkg']
+        mock_sudo.assert_called_once()
+        captured = capsys.readouterr()
+        assert 'Cannot use sudo' in captured.out
+        assert 'sudo npm install -g pkg' in captured.out
+        assert 'npm config set prefix ~/.npm-global' in captured.out
+        assert 'version manager' in captured.out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_failed_sudo_retry_reports_dependency_failure(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """A sudo retry that fails leaves the dependency in the failure list."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 1, '', '')
+        mock_sudo.return_value = subprocess.CompletedProcess([], 1, '', '')
+
+        result = setup_environment.install_dependencies({'common': ['npm install -g pkg']})
+
+        assert result == ['npm install -g pkg']
+        mock_sudo.assert_called_once()
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.needs_sudo_for_npm', return_value=True)
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_malformed_npm_dependency_stays_single_failure(
+        self, mock_sudo: MagicMock, mock_needs: MagicMock, mock_run: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """A global npm dependency that does not parse as a simple argument
+        vector is recorded as one failed dependency without aborting the run,
+        and is never escalated with sudo."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_needs.return_value is True
+
+        # Unbalanced quote: passes the npm-global and control-character gates
+        # but cannot be split into an argument vector.
+        malformed = 'npm install -g "@scope/pkg'
+
+        def run_side_effect(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+            returncode = 1 if cmd[-1] == malformed else 0
+            return subprocess.CompletedProcess(cmd, returncode, '', '')
+
+        mock_run.side_effect = run_side_effect
+
+        result = setup_environment.install_dependencies(
+            {'common': [malformed, 'npm install -g valid-pkg']},
+        )
+
+        assert result == [malformed]
+        # The valid dependency still ran after the malformed one (continue-on-failure).
+        assert mock_run.call_count == 2
+        # The malformed dependency is never re-executed with elevated privileges.
+        mock_sudo.assert_not_called()
+
+
+class TestNeedsSudoForNpm:
+    """Test the npm global prefix writability probe."""
+
+    @patch('platform.system', return_value='Windows')
+    def test_windows_never_needs_sudo(self, mock_system: MagicMock) -> None:
+        """Windows never uses sudo for npm."""
+        assert mock_system.return_value == 'Windows'
+        assert setup_environment.needs_sudo_for_npm() is False
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.shutil.which', return_value=None)
+    def test_no_npm_means_no_sudo(self, mock_which: MagicMock, mock_system: MagicMock) -> None:
+        """Missing npm means there is nothing to escalate for."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value is None
+        assert setup_environment.needs_sudo_for_npm() is False
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.shutil.which', return_value='/usr/bin/npm')
+    @patch('setup_environment.run_command')
+    @patch('os.access', return_value=False)
+    def test_unwritable_prefix_needs_sudo(
+        self, mock_access: MagicMock, mock_run: MagicMock, mock_which: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """A non-writable global prefix requires sudo."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value == '/usr/bin/npm'
+        assert mock_access.return_value is False
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '/usr\n', '')
+
+        assert setup_environment.needs_sudo_for_npm() is True
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.shutil.which', return_value='/usr/bin/npm')
+    @patch('setup_environment.run_command')
+    @patch('os.access', return_value=True)
+    def test_writable_prefix_does_not_need_sudo(
+        self, mock_access: MagicMock, mock_run: MagicMock, mock_which: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """A user-writable global prefix does not require sudo."""
+        assert mock_system.return_value == 'Linux'
+        assert mock_which.return_value == '/usr/bin/npm'
+        assert mock_access.return_value is True
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '/home/user/.npm-global\n', '')
+
+        assert setup_environment.needs_sudo_for_npm() is False
+
+
+class TestNpmDependencyClassification:
+    """Test the helpers classifying escalation-eligible dependency commands."""
+
+    @pytest.mark.parametrize(('dep', 'expected'), [
+        ('npm install -g @playwright/cli@latest', True),
+        ('npm install -g pkg', True),
+        ('npm install pkg', False),
+        ('pip install requests', False),
+        ('winget install --scope machine Tool', False),
+    ])
+    def test_is_global_npm_install(self, dep: str, expected: bool) -> None:
+        """Global npm installs are recognized by the shared predicate."""
+        assert setup_environment._is_global_npm_install(dep) is expected
+
+    @pytest.mark.parametrize(('command', 'expected'), [
+        ('npm install -g pkg', False),
+        ('npm install -g pkg; echo hi', True),
+        ('npm install -g pkg && touch /tmp/x', True),
+        ('npm install -g pkg | tee log', True),
+        ('npm install -g pkg > out.txt', True),
+        ('npm install -g pkg < in.txt', True),
+        ('npm install -g $PKG', True),
+        ('npm install -g `cat pkg`', True),
+        ('npm install -g pkg\nrm -rf /', True),
+    ])
+    def test_contains_shell_control_chars(self, command: str, expected: bool) -> None:
+        """Shell control characters are detected to block elevated re-execution."""
+        assert setup_environment._contains_shell_control_chars(command) is expected
+
+
+class TestInstallNodejsAptSudoRouting:
+    """Test that the apt/NodeSource path uses the sudo fallback helper."""
+
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_apt_install_success_routes_through_sudo_helper(self, mock_sudo: MagicMock) -> None:
+        """All apt/NodeSource commands run through the sudo fallback helper."""
+        mock_sudo.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment._install_nodejs_apt()
+
+        assert result is True
+        commands = [call[0][0] for call in mock_sudo.call_args_list]
+        assert commands == [
+            ['apt-get', 'update'],
+            ['apt-get', 'install', '-y', 'ca-certificates', 'curl', 'gnupg'],
+            ['-E', 'bash', '-c', 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -'],
+            ['apt-get', 'install', '-y', 'nodejs'],
+        ]
+        # No command carries its own 'sudo' prefix; the helper prepends it
+        assert all(cmd[0] != 'sudo' for cmd in commands)
+
+    @patch('setup_environment._run_with_sudo_fallback', return_value=None)
+    def test_apt_install_fails_gracefully_without_sudo(
+        self, mock_sudo: MagicMock, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Missing sudo mechanism degrades to a clean failure, not a hang."""
+        assert mock_sudo.return_value is None
+
+        result = setup_environment._install_nodejs_apt()
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert 'Cannot use sudo' in captured.out
+
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_apt_install_nodesource_failure_returns_false(self, mock_sudo: MagicMock) -> None:
+        """A failing NodeSource setup script aborts the installation."""
+        mock_sudo.side_effect = [
+            subprocess.CompletedProcess([], 0, '', ''),  # apt-get update
+            subprocess.CompletedProcess([], 0, '', ''),  # prerequisites
+            subprocess.CompletedProcess([], 1, '', ''),  # NodeSource setup fails
+        ]
+
+        result = setup_environment._install_nodejs_apt()
+
+        assert result is False
+        assert mock_sudo.call_count == 3
+
+
+class TestInstallNodejsDirectDarwinSudoRouting:
+    """Test that the macOS pkg installer uses the sudo fallback helper."""
+
+    @staticmethod
+    def _mock_lts_response() -> MagicMock:
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps([
+            {'version': 'v22.11.0', 'lts': 'Jod'},
+        ]).encode()
+        mock_response.__enter__ = lambda _: mock_response
+        mock_response.__exit__ = lambda *_: None
+        return mock_response
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('platform.machine', return_value='arm64')
+    @patch('setup_environment.urlopen')
+    @patch('setup_environment.urlretrieve')
+    @patch('setup_environment._run_with_sudo_fallback')
+    def test_darwin_pkg_install_routes_through_sudo_helper(
+        self, mock_sudo: MagicMock, mock_urlretrieve: MagicMock, mock_urlopen: MagicMock,
+        mock_machine: MagicMock, mock_system: MagicMock,
+    ) -> None:
+        """The pkg installer runs through the sudo fallback helper."""
+        assert mock_system.return_value == 'Darwin'
+        assert mock_machine.return_value == 'arm64'
+        mock_urlopen.return_value = self._mock_lts_response()
+        mock_urlretrieve.return_value = None
+        mock_sudo.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        result = setup_environment._install_nodejs_direct()
+
+        assert result is True
+        mock_sudo.assert_called_once()
+        sudo_cmd = mock_sudo.call_args[0][0]
+        assert sudo_cmd[0] == 'installer'
+        assert '-pkg' in sudo_cmd
+        assert sudo_cmd[-2:] == ['-target', '/']
+
+    @patch('platform.system', return_value='Darwin')
+    @patch('platform.machine', return_value='arm64')
+    @patch('setup_environment.urlopen')
+    @patch('setup_environment.urlretrieve')
+    @patch('setup_environment._run_with_sudo_fallback', return_value=None)
+    def test_darwin_pkg_install_fails_gracefully_without_sudo(
+        self, mock_sudo: MagicMock, mock_urlretrieve: MagicMock, mock_urlopen: MagicMock,
+        mock_machine: MagicMock, mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Missing sudo mechanism degrades to a clean failure with guidance."""
+        assert mock_system.return_value == 'Darwin'
+        assert mock_machine.return_value == 'arm64'
+        mock_urlopen.return_value = self._mock_lts_response()
+        mock_urlretrieve.return_value = None
+        assert mock_sudo.return_value is None
+
+        result = setup_environment._install_nodejs_direct()
+
+        assert result is False
+        captured = capsys.readouterr()
+        assert 'Cannot use sudo' in captured.err
+        assert 'sudo installer -pkg' in captured.out
 
 
 class TestCheckAdminNeeded:
@@ -4836,7 +5214,7 @@ class TestMainFunction:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_profile_config')
@@ -4885,7 +5263,7 @@ class TestMainFunction:
         mock_validate.return_value = (True, [])
 
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         mock_download.return_value = True
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_settings.return_value = True
@@ -4954,7 +5332,7 @@ class TestMainFunction:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -5022,7 +5400,7 @@ class TestMainFunction:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -5094,7 +5472,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_file_downloads')
     @patch('setup_environment.process_skills')
@@ -5138,7 +5516,7 @@ class TestDownloadFailureTracking:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         # Agents download fails
         mock_resources.return_value = False
         mock_files.return_value = True
@@ -5157,7 +5535,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_file_downloads')
     @patch('setup_environment.process_skills')
@@ -5201,7 +5579,7 @@ class TestDownloadFailureTracking:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         mock_resources.return_value = True
         mock_files.return_value = True
         mock_skills.return_value = True
@@ -5220,7 +5598,7 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_file_downloads')
     @patch('setup_environment.process_skills')
@@ -5266,7 +5644,7 @@ class TestDownloadFailureTracking:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         # Multiple categories fail
         mock_files.return_value = False
         mock_resources.return_value = False
@@ -5293,7 +5671,74 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
+    @patch('setup_environment.process_resources')
+    @patch('setup_environment.configure_all_mcp_servers')
+    @patch('setup_environment.create_profile_config')
+    @patch('setup_environment.create_launcher_script')
+    @patch('setup_environment.register_global_command')
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.write_manifest')
+    @patch('setup_environment.cleanup_stale_marker')
+    @patch('pathlib.Path.mkdir')
+    def test_main_reports_failed_dependencies_and_exits_nonzero(
+        self,
+        mock_mkdir: MagicMock,
+        mock_cleanup_stale_marker: MagicMock,
+        mock_write_manifest: MagicMock,
+        mock_is_admin: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_settings: MagicMock,
+        mock_mcp: MagicMock,
+        mock_download: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+    ) -> None:
+        """Test that main() lists failed dependencies and exits with code 1."""
+        del mock_mkdir, mock_cleanup_stale_marker, mock_write_manifest, mock_is_admin
+        mock_load.return_value = (
+            {
+                'name': 'Test Environment',
+                'command-names': ['test-env'],
+                'dependencies': {
+                    'common': ['npm install -g @playwright/cli@latest'],
+                },
+                'agents': ['agents/test.md'],
+                'slash-commands': ['commands/test.md'],
+                'mcp-servers': [{'name': 'test'}],
+            },
+            'test.yaml',
+        )
+        mock_validate.return_value = (True, [])
+        mock_install.return_value = True
+        mock_deps.return_value = ['npm install -g @playwright/cli@latest']
+        mock_download.return_value = True
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_settings.return_value = True
+        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
+        mock_register.return_value = True
+
+        with (
+            patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
+            patch('builtins.print') as mock_print,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.main()
+        assert exc_info.value.code == 1
+
+        # Verify the dedicated failed-dependencies section was printed
+        printed_text = ' '.join(str(call) for call in mock_print.call_args_list)
+        assert 'Setup Completed with Errors' in printed_text
+        assert 'The following dependencies failed to install:' in printed_text
+        assert 'npm install -g @playwright/cli@latest' in printed_text
+
+    @patch('setup_environment.load_config_from_source')
+    @patch('setup_environment.validate_all_config_files')
+    @patch('setup_environment.install_claude')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_file_downloads')
     @patch('setup_environment.process_skills')
@@ -5338,7 +5783,7 @@ class TestDownloadFailureTracking:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         # Downloads fail
         mock_resources.return_value = False
         mock_files.return_value = True
@@ -7020,6 +7465,27 @@ class TestBuildProfileSettings:
         assert result['env']['FOO'] == 'bar'
         assert result['env']['HELLO'] == 'world'
 
+    def test_env_none_value_preserved_for_null_as_delete(self, tmp_path: Path) -> None:
+        """A per-key env null passes through verbatim while other values stringify.
+
+        The preserved None lets the shared settings.json writer delete the
+        nested key via RFC 7396 null-as-delete and lets the isolated
+        config.json writer omit it from the atomic rebuild.
+        """
+        result = setup_environment._build_profile_settings(
+            {'env': {'DELETE_ME': None, 'KEEP': 'x', 'NUM': 42}},
+            tmp_path,
+        )
+        assert result['env'] == {'DELETE_ME': None, 'KEEP': 'x', 'NUM': '42'}
+        assert result['env']['DELETE_ME'] is None
+
+    def test_env_null_never_becomes_literal_none_string(self, tmp_path: Path) -> None:
+        """The literal string 'None' never appears as an env value for null input."""
+        result = setup_environment._build_profile_settings(
+            {'env': {'A': None, 'B': None}}, tmp_path,
+        )
+        assert 'None' not in result['env'].values()
+
     def test_attribution_passthrough(self, tmp_path: Path) -> None:
         """Attribution dict passed through unchanged."""
         attr = {'commit': 'Test commit', 'pr': 'Test PR'}
@@ -7403,6 +7869,27 @@ class TestWriteProfileSettingsToSettings:
         assert content['permissions']['deny'] == ['Bash(rm -rf)']
         assert content['permissions']['ask'] == ['Edit']
 
+    def test_env_entry_null_deletes_nested_key(self, tmp_path: Path) -> None:
+        """A per-key env null in the delta deletes that key from settings.json env.
+
+        Builds the delta through _build_profile_settings() so the full
+        base-mode pipeline (builder -> writer -> merge) is exercised: the
+        stale key is removed and never written as the literal string 'None'.
+        """
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'STALE_VAR': 'old', 'KEEP_ME': 'yes'},
+        }), encoding='utf-8')
+
+        delta = setup_environment._build_profile_settings(
+            {'env': {'STALE_VAR': None}}, tmp_path / 'hooks',
+        )
+        result = setup_environment.write_profile_settings_to_settings(delta, tmp_path)
+        assert result is True
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['env'] == {'KEEP_ME': 'yes'}
+        assert 'None' not in content['env'].values()
+
     def test_deep_merge_preserves_env_subkeys(self, tmp_path: Path) -> None:
         """Deep-merge preserves env sub-keys not declared in the delta."""
         settings_file = tmp_path / 'settings.json'
@@ -7782,6 +8269,44 @@ class TestCreateProfileConfigDelegation:
 
         # Must match
         assert on_disk == expected
+
+    def test_env_null_entries_stripped_from_config_json(self, tmp_path: Path) -> None:
+        """Per-key env nulls are omitted from the atomically rebuilt config.json.
+
+        Under atomic rebuild semantics absence equals deletion, so the
+        isolated profile never carries a JSON null (or the literal string
+        'None') for a deleted variable.
+        """
+        config_dir = tmp_path / 'profile'
+        setup_environment.create_profile_config(
+            {'env': {'DELETE_ME': None, 'KEEP': 'x'}}, config_dir,
+        )
+        on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
+        assert on_disk['env'] == {'KEEP': 'x'}
+        assert 'DELETE_ME' not in on_disk['env']
+        assert 'None' not in on_disk['env'].values()
+
+    def test_env_key_dropped_when_all_entries_null(self, tmp_path: Path) -> None:
+        """An env dict whose entries are all nulls produces no env key at all."""
+        config_dir = tmp_path / 'profile'
+        setup_environment.create_profile_config(
+            {'env': {'DELETE_A': None, 'DELETE_B': None}}, config_dir,
+        )
+        on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
+        assert 'env' not in on_disk
+
+    def test_whole_env_section_null_written_as_json_null(self, tmp_path: Path) -> None:
+        """A whole-section env null serializes as a top-level JSON null.
+
+        Top-level nulls are documented as equivalent to absent for Claude
+        Code's priority resolution, so they are kept as-is rather than
+        stripped.
+        """
+        config_dir = tmp_path / 'profile'
+        setup_environment.create_profile_config({'env': None}, config_dir)
+        on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
+        assert 'env' in on_disk
+        assert on_disk['env'] is None
 
 
 class TestWriteMergedJson:
@@ -9175,7 +9700,7 @@ class TestCommandNames:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_profile_config')
@@ -9232,7 +9757,7 @@ class TestCommandNames:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         mock_download.return_value = True
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_settings.return_value = True
@@ -9252,7 +9777,7 @@ class TestCommandNames:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_profile_config')
@@ -9309,7 +9834,7 @@ class TestCommandNames:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_deps.return_value = True
+        mock_deps.return_value = []
         mock_download.return_value = True
         mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
         mock_settings.return_value = True
@@ -10728,7 +11253,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -10790,7 +11315,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -10886,7 +11411,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -10947,7 +11472,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -11006,7 +11531,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -11054,7 +11579,7 @@ class TestMainFunctionUserSettings:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -11565,7 +12090,7 @@ class TestUserSettingsErrorRecovery:
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
     @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies')
+    @patch('setup_environment.install_dependencies', return_value=[])
     @patch('setup_environment.process_resources')
     @patch('setup_environment.process_skills')
     @patch('setup_environment.configure_all_mcp_servers')
@@ -12691,7 +13216,12 @@ class TestApplyAutoUpdateSettings:
         assert not warns
         assert len(auto) == 4
 
-    def test_none_version_removes_all_four_targets(self) -> None:
+    def test_none_version_preserves_user_declared_controls(self) -> None:
+        """Unpinned: every control present comes from the user's YAML and is kept.
+
+        Stale on-disk artifacts from a prior pinned run are removed by the
+        Step 16 sweep instead of by in-memory nullification.
+        """
         gc = {'autoUpdates': False, 'other': 'keep'}
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER': 'val'}}
         ev = {'DISABLE_AUTOUPDATER': '1', 'SOME_VAR': 'x'}
@@ -12700,15 +13230,15 @@ class TestApplyAutoUpdateSettings:
             None, gc, us, ev, osev,
         )
         assert gc_r is not None
-        assert gc_r['autoUpdates'] is None  # null-as-delete
+        assert gc_r['autoUpdates'] is False
         assert gc_r['other'] == 'keep'
         assert us_r is not None
-        assert us_r['env']['DISABLE_AUTOUPDATER'] is None  # null-as-delete via merge
+        assert us_r['env']['DISABLE_AUTOUPDATER'] == '1'
         assert us_r['env']['OTHER'] == 'val'
         assert ev_r is not None
-        assert 'DISABLE_AUTOUPDATER' not in ev_r
+        assert ev_r['DISABLE_AUTOUPDATER'] == '1'
         assert osev_r is not None
-        assert osev_r['DISABLE_AUTOUPDATER'] is None
+        assert osev_r['DISABLE_AUTOUPDATER'] == '1'
         assert osev_r['PATH_VAR'] == '/usr'
         assert not warns
         assert not auto
@@ -12761,13 +13291,14 @@ class TestApplyAutoUpdateSettings:
         assert us_r['env']['DISABLE_AUTOUPDATER'] == '0'
         assert any('DISABLE_AUTOUPDATER' in w for w in warns)
 
-    def test_unset_only_removes_false_autoupdates(self) -> None:
+    def test_unset_preserves_user_declared_false_autoupdates(self) -> None:
         gc = {'autoUpdates': False}
-        gc_r, _, _, _, _, _ = setup_environment.apply_auto_update_settings(
+        gc_r, _, _, _, warns, _ = setup_environment.apply_auto_update_settings(
             None, gc, None, None, None,
         )
         assert gc_r is not None
-        assert gc_r['autoUpdates'] is None
+        assert gc_r['autoUpdates'] is False
+        assert not warns
 
     def test_unset_leaves_true_autoupdates_alone(self) -> None:
         gc = {'autoUpdates': True}
@@ -12776,7 +13307,30 @@ class TestApplyAutoUpdateSettings:
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is True
-        assert any('Respecting user value' in w for w in warns)
+        assert not warns
+
+    def test_unset_schedules_os_level_deletion_when_not_declared(self) -> None:
+        """Unpinned: an OS-level deletion entry is scheduled for the variable.
+
+        The OS-level variable has no filesystem sweep, so the deletion entry
+        lets set_all_os_env_variables() remove any stale value left by a
+        prior pinned run.
+        """
+        _, _, _, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None, None,
+        )
+        assert osev is not None
+        assert osev == {'DISABLE_AUTOUPDATER': None}
+        assert not warns
+        assert not auto
+
+    def test_unset_keeps_user_declared_os_variable(self) -> None:
+        osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1'}
+        _, _, _, osev_r, _, _ = setup_environment.apply_auto_update_settings(
+            None, None, None, None, osev,
+        )
+        assert osev_r is not None
+        assert osev_r['DISABLE_AUTOUPDATER'] == '1'
 
     def test_idempotent_double_injection(self) -> None:
         gc1, us1, ev1, osev1, _, auto1 = setup_environment.apply_auto_update_settings(
@@ -12800,6 +13354,34 @@ class TestApplyAutoUpdateSettings:
         assert any('user-settings.env.DISABLE_AUTOUPDATER' in a for a in auto)
         assert any('env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
         assert any('os-env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
+
+    def test_pinned_respects_explicit_null_in_all_four_targets(self) -> None:
+        """Explicit null is a user deletion request, never overwritten with controls.
+
+        Injection is membership-gated: a key present with None counts as a
+        user declaration and triggers WARN-but-Respect in every target,
+        including the free-form global-config and user-settings.env channels
+        where null-as-delete is already legal.
+        """
+        gc: dict[str, Any] = {'autoUpdates': None}
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': None}}
+        ev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': None}
+        osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': None}
+        gc_r, us_r, ev_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc, us, ev, osev,
+        )
+        assert gc_r is not None
+        assert 'autoUpdates' in gc_r
+        assert gc_r['autoUpdates'] is None
+        assert us_r is not None
+        assert us_r['env']['DISABLE_AUTOUPDATER'] is None
+        assert ev_r is not None
+        assert ev_r['DISABLE_AUTOUPDATER'] is None
+        assert osev_r is not None
+        assert osev_r['DISABLE_AUTOUPDATER'] is None
+        assert len(warns) == 4
+        assert all('Respecting user value' in w for w in warns)
+        assert not auto
 
     def test_unconditional_injection_regardless_of_command_names(self) -> None:
         """Function has no knowledge of command-names -- only receives dicts."""
@@ -12826,26 +13408,32 @@ class TestApplyIdeExtensionSettings:
         assert osev is not None
         assert osev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
 
-    def test_none_version_removes_all_four_targets(self) -> None:
-        gc = {'autoInstallIdeExtension': False}
-        us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
-        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
-        osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
-        gc_out, us_out, ev_out, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
+    def test_none_version_preserves_user_declared_controls(self) -> None:
+        """Unpinned: every control present comes from the user's YAML and is kept.
+
+        Stale on-disk artifacts from a prior pinned run are removed by the
+        Step 16 sweep instead of by in-memory nullification.
+        """
+        gc = {'autoInstallIdeExtension': False, 'other': 'keep'}
+        us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER': 'val'}}
+        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'SOME_VAR': 'x'}
+        osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'PATH_VAR': '/usr'}
+        gc_out, us_out, ev_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
             None, gc, us, ev, osev,
         )
-        # Target 1: null-as-delete
         assert gc_out is not None
-        assert gc_out.get('autoInstallIdeExtension') is None
-        # Target 2: None for RFC 7396
+        assert gc_out['autoInstallIdeExtension'] is False
+        assert gc_out['other'] == 'keep'
         assert us_out is not None
-        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
-        # Target 3: key deleted
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        assert us_out['env']['OTHER'] == 'val'
         assert ev_out is not None
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in ev_out
-        # Target 4: None for OS-level deletion
+        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         assert osev_out is not None
-        assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        assert osev_out['PATH_VAR'] == '/usr'
+        assert not warns
+        assert not auto
 
     def test_none_global_config_creates_dict(self) -> None:
         gc, _, _, _, _, _ = setup_environment.apply_ide_extension_settings(
@@ -12889,18 +13477,42 @@ class TestApplyIdeExtensionSettings:
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '0'
         assert any('Respecting user value' in w for w in warns)
 
-    def test_unset_only_removes_false_autoinstall(self) -> None:
+    def test_unset_preserves_user_declared_false_autoinstall(self) -> None:
         gc = {'autoInstallIdeExtension': False}
-        gc_out, _, _, _, _, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
+        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
         assert gc_out is not None
-        assert gc_out['autoInstallIdeExtension'] is None
+        assert gc_out['autoInstallIdeExtension'] is False
+        assert not warns
 
     def test_unset_leaves_true_autoinstall_alone(self) -> None:
         gc = {'autoInstallIdeExtension': True}
         gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
-        assert any('Respecting user value' in w for w in warns)
+        assert not warns
+
+    def test_unset_schedules_os_level_deletion_when_not_declared(self) -> None:
+        """Unpinned: an OS-level deletion entry is scheduled for the variable.
+
+        The OS-level variable has no filesystem sweep, so the deletion entry
+        lets set_all_os_env_variables() remove any stale value left by a
+        prior pinned run.
+        """
+        _, _, _, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, None,
+        )
+        assert osev is not None
+        assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
+        assert not warns
+        assert not auto
+
+    def test_unset_keeps_user_declared_os_variable(self) -> None:
+        osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
+        _, _, _, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, osev,
+        )
+        assert osev_out is not None
+        assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
     def test_idempotent_double_injection(self) -> None:
         gc, us, ev, osev, _, auto1 = setup_environment.apply_ide_extension_settings(
@@ -12922,6 +13534,34 @@ class TestApplyIdeExtensionSettings:
         assert any('env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
         assert any('os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
 
+    def test_pinned_respects_explicit_null_in_all_four_targets(self) -> None:
+        """Explicit null is a user deletion request, never overwritten with controls.
+
+        Injection is membership-gated: a key present with None counts as a
+        user declaration and triggers WARN-but-Respect in every target,
+        including the free-form global-config and user-settings.env channels
+        where null-as-delete is already legal.
+        """
+        gc: dict[str, Any] = {'autoInstallIdeExtension': None}
+        us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}}
+        ev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
+        osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
+        gc_out, us_out, ev_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, us, ev, osev,
+        )
+        assert gc_out is not None
+        assert 'autoInstallIdeExtension' in gc_out
+        assert gc_out['autoInstallIdeExtension'] is None
+        assert us_out is not None
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        assert ev_out is not None
+        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        assert osev_out is not None
+        assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        assert len(warns) == 4
+        assert all('Respecting user value' in w for w in warns)
+        assert not auto
+
     def test_signature_matches_auto_update(self) -> None:
         import inspect
         sig_auto = inspect.signature(setup_environment.apply_auto_update_settings)
@@ -12929,22 +13569,25 @@ class TestApplyIdeExtensionSettings:
         assert list(sig_auto.parameters.keys()) == list(sig_ide.parameters.keys())
         assert sig_auto.return_annotation == sig_ide.return_annotation
 
-    def test_target2_null_as_delete(self) -> None:
+    def test_unset_keeps_user_declared_env_section_value(self) -> None:
         us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
         _, us_out, _, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None, None)
         assert us_out is not None
-        # Must be None (not deleted) for RFC 7396 merge semantics
-        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
+        assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
-    def test_target3_del(self) -> None:
+    def test_unset_keeps_user_declared_env_variables_value(self) -> None:
         ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
         _, _, ev_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, None, ev, None)
         assert ev_out is not None
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in ev_out
+        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
 
 class TestCleanupStaleIdeExtensionControls:
-    """Tests for cleanup_stale_ide_extension_controls()."""
+    """Tests for cleanup_stale_ide_extension_controls().
+
+    Uses the module-level real reference captured at import time because the
+    conftest autouse fixture replaces the module attribute with a no-op mock.
+    """
 
     def test_not_pinned_cleans_all_locations(self, tmp_path: Path) -> None:
         home = tmp_path / 'home'
@@ -12963,7 +13606,9 @@ class TestCleanupStaleIdeExtensionControls:
         cmd_claude_json = cmd_dir / '.claude.json'
         cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
 
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
 
         # Verify cleaned
         data = json.loads(settings.read_text())
@@ -12975,7 +13620,35 @@ class TestCleanupStaleIdeExtensionControls:
         data = json.loads(cmd_claude_json.read_text())
         assert 'autoInstallIdeExtension' not in data
 
-    def test_pinned_cleans_global_settings_only(self, tmp_path: Path) -> None:
+    def test_not_pinned_user_declared_keeps_settings_json(self, tmp_path: Path) -> None:
+        """Unpinned sweep preserves a user-declared key in settings.json files."""
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoInstallIdeExtension": false}')
+
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=True,
+        )
+
+        # settings.json keys preserved (user-declared in the current YAML)
+        data = json.loads(settings.read_text())
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        data = json.loads(cmd_settings.read_text())
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        # .claude.json sweep is unaffected by the settings.json guard
+        data = json.loads(claude_json.read_text())
+        assert 'autoInstallIdeExtension' not in data
+
+    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -12987,19 +13660,42 @@ class TestCleanupStaleIdeExtensionControls:
         cmd_settings = cmd_dir / 'settings.json'
         cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
 
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=True)
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=True, is_isolated=True, user_declared=False,
+        )
 
-        # Global settings cleaned
+        # Global settings cleaned (bare sessions must not inherit isolated
+        # environment restrictions)
         data = json.loads(settings.read_text())
         assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
         # Command settings NOT cleaned when pinned
         data = json.loads(cmd_settings.read_text())
         assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
+    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
+        """Pinned without isolation: the base settings.json is the run's own write target."""
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=True, is_isolated=False, user_declared=False,
+        )
+
+        data = json.loads(settings.read_text())
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+
     def test_missing_files_no_crash(self, tmp_path: Path) -> None:
         home = tmp_path / 'nonexistent'
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=True)
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=True, is_isolated=True, user_declared=False,
+        )
 
     def test_preserves_true_values(self, tmp_path: Path) -> None:
         home = tmp_path / 'home'
@@ -13008,59 +13704,599 @@ class TestCleanupStaleIdeExtensionControls:
         claude_json = home / '.claude.json'
         claude_json.write_text('{"autoInstallIdeExtension": true}')
 
-        setup_environment.cleanup_stale_ide_extension_controls(home, is_pinned=False)
+        _real_cleanup_stale_ide_extension_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
 
         data = json.loads(claude_json.read_text())
         assert data['autoInstallIdeExtension'] is True
 
 
+class TestCleanupStaleAutoUpdateControls:
+    """Tests for cleanup_stale_auto_update_controls().
+
+    Uses the module-level real reference captured at import time because the
+    conftest autouse fixture replaces the module attribute with a no-op mock.
+    """
+
+    def test_not_pinned_cleans_all_locations(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        # Seed stale controls
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoUpdates": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoUpdates": false}')
+
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
+
+        # Verify cleaned
+        data = json.loads(settings.read_text())
+        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
+        data = json.loads(cmd_settings.read_text())
+        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
+        data = json.loads(claude_json.read_text())
+        assert 'autoUpdates' not in data
+        data = json.loads(cmd_claude_json.read_text())
+        assert 'autoUpdates' not in data
+
+    def test_not_pinned_user_declared_keeps_settings_json(self, tmp_path: Path) -> None:
+        """Unpinned sweep preserves a user-declared key in settings.json files."""
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoUpdates": false}')
+
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=True,
+        )
+
+        # settings.json keys preserved (user-declared in the current YAML)
+        data = json.loads(settings.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        data = json.loads(cmd_settings.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        # .claude.json sweep is unaffected by the settings.json guard
+        data = json.loads(claude_json.read_text())
+        assert 'autoUpdates' not in data
+
+    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+        cmd_dir = claude_dir / 'test-cmd'
+        cmd_dir.mkdir()
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        cmd_settings = cmd_dir / 'settings.json'
+        cmd_settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=True, is_isolated=True, user_declared=False,
+        )
+
+        # Global settings cleaned (bare sessions must not inherit isolated
+        # environment restrictions)
+        data = json.loads(settings.read_text())
+        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
+        # Command settings NOT cleaned when pinned
+        data = json.loads(cmd_settings.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
+        """Pinned without isolation: the base settings.json is the run's own write target."""
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        claude_dir.mkdir(parents=True)
+
+        settings = claude_dir / 'settings.json'
+        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=True, is_isolated=False, user_declared=False,
+        )
+
+        data = json.loads(settings.read_text())
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+
+    def test_missing_files_no_crash(self, tmp_path: Path) -> None:
+        home = tmp_path / 'nonexistent'
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=False, is_isolated=False, user_declared=False,
+        )
+        _real_cleanup_stale_auto_update_controls(
+            home, is_pinned=True, is_isolated=True, user_declared=False,
+        )
+
+
+class TestCollectUserDeclaredControlKeys:
+    """Tests for _collect_user_declared_control_keys()."""
+
+    def test_empty_inputs_return_empty_set(self) -> None:
+        assert setup_environment._collect_user_declared_control_keys(None, None) == frozenset()
+        assert setup_environment._collect_user_declared_control_keys({}, {}) == frozenset()
+
+    def test_detects_keys_in_user_settings_env(self) -> None:
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '1'}}
+        result = setup_environment._collect_user_declared_control_keys(us, None)
+        assert result == frozenset({'DISABLE_AUTOUPDATER'})
+
+    def test_detects_keys_in_env_variables(self) -> None:
+        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
+        result = setup_environment._collect_user_declared_control_keys(None, ev)
+        assert result == frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'})
+
+    def test_detects_keys_in_both_sources(self) -> None:
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '0'}}
+        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true'}
+        result = setup_environment._collect_user_declared_control_keys(us, ev)
+        assert result == frozenset({
+            'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
+        })
+
+    def test_ignores_non_dict_env_section(self) -> None:
+        us: dict[str, Any] = {'env': 'not-a-dict'}
+        assert setup_environment._collect_user_declared_control_keys(us, None) == frozenset()
+
+    def test_ignores_unrelated_keys(self) -> None:
+        us: dict[str, Any] = {'env': {'OTHER': 'x'}}
+        ev = {'ANOTHER': 'y'}
+        assert setup_environment._collect_user_declared_control_keys(us, ev) == frozenset()
+
+
+class TestPropagateInstallMethod:
+    """Tests for _propagate_install_method()."""
+
+    def test_propagates_into_created_global_config(self, mock_home_dir: Path) -> None:
+        """The dict is created when the YAML lacks global-config, so Step 15 writes it."""
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'installMethod': 'native'}), encoding='utf-8',
+        )
+        items: list[str] = []
+        result = _real_propagate_install_method(None, 'test-cmd', items)
+        assert result == {'installMethod': 'native'}
+        assert items == ['global-config.installMethod: native']
+
+    def test_dual_write_carries_value_to_isolated_claude_json(self, mock_home_dir: Path) -> None:
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'installMethod': 'native'}), encoding='utf-8',
+        )
+        artifact_dir = mock_home_dir / '.claude' / 'test-cmd'
+        artifact_dir.mkdir(parents=True)
+
+        items: list[str] = []
+        result = _real_propagate_install_method(None, 'test-cmd', items)
+        assert result is not None
+        assert setup_environment.write_global_config(result, artifact_base_dir=artifact_dir)
+
+        base = json.loads((mock_home_dir / '.claude.json').read_text(encoding='utf-8'))
+        isolated = json.loads((artifact_dir / '.claude.json').read_text(encoding='utf-8'))
+        assert base['installMethod'] == 'native'
+        assert isolated['installMethod'] == 'native'
+
+    def test_user_declared_value_wins_with_warning(
+        self, mock_home_dir: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'installMethod': 'native'}), encoding='utf-8',
+        )
+        items: list[str] = []
+        gc: dict[str, Any] = {'installMethod': 'global'}
+        result = _real_propagate_install_method(gc, 'test-cmd', items)
+        assert result is not None
+        assert result['installMethod'] == 'global'
+        assert not items
+        captured = capsys.readouterr()
+        assert 'Respecting user value' in captured.out
+
+    def test_matching_user_value_no_warning_no_item(
+        self, mock_home_dir: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'installMethod': 'native'}), encoding='utf-8',
+        )
+        items: list[str] = []
+        gc: dict[str, Any] = {'installMethod': 'native'}
+        result = _real_propagate_install_method(gc, 'test-cmd', items)
+        assert result is not None
+        assert result['installMethod'] == 'native'
+        assert not items
+        captured = capsys.readouterr()
+        assert 'Respecting user value' not in captured.out
+
+    def test_no_op_when_base_file_missing(self, mock_home_dir: Path) -> None:
+        assert not (mock_home_dir / '.claude.json').exists()
+        items: list[str] = []
+        result = _real_propagate_install_method(None, 'test-cmd', items)
+        assert result is None
+        assert not items
+
+    def test_no_op_when_base_lacks_key(self, mock_home_dir: Path) -> None:
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'userID': 'someone'}), encoding='utf-8',
+        )
+        items: list[str] = []
+        result = _real_propagate_install_method(None, 'test-cmd', items)
+        assert result is None
+        assert not items
+
+    def test_no_op_without_command_names(self, mock_home_dir: Path) -> None:
+        """Without isolation the base file already holds the value."""
+        (mock_home_dir / '.claude.json').write_text(
+            json.dumps({'installMethod': 'native'}), encoding='utf-8',
+        )
+        items: list[str] = []
+        result = _real_propagate_install_method(None, None, items)
+        assert result is None
+        assert not items
+
+    def test_no_op_on_invalid_base_json(self, mock_home_dir: Path) -> None:
+        (mock_home_dir / '.claude.json').write_text('{not json', encoding='utf-8')
+        items: list[str] = []
+        gc: dict[str, Any] = {'editorMode': 'vim'}
+        result = _real_propagate_install_method(gc, 'test-cmd', items)
+        assert result == {'editorMode': 'vim'}
+        assert not items
+
+
+def _make_vsix_bytes(version: str, target_platform: str | None = None) -> bytes:
+    """Build a minimal VSIX (zip) payload with the given embedded version."""
+    import io
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        archive.writestr('extension/package.json', json.dumps({'name': 'claude-code', 'version': version}))
+        if target_platform is not None:
+            archive.writestr(
+                'extension.vsixmanifest',
+                '<PackageManifest><Metadata>'
+                f'<Identity Id="claude-code" Version="{version}" Publisher="anthropic" TargetPlatform="{target_platform}"/>'
+                '</Metadata></PackageManifest>',
+            )
+    return buffer.getvalue()
+
+
+class TestVscodeTargetPlatform:
+    """Tests for _vscode_target_platform()."""
+
+    @pytest.mark.parametrize(
+        ('platform_name', 'machine', 'expected'),
+        [
+            ('win32', 'AMD64', 'win32-x64'),
+            ('win32', 'ARM64', 'win32-arm64'),
+            ('darwin', 'x86_64', 'darwin-x64'),
+            ('darwin', 'arm64', 'darwin-arm64'),
+            ('linux', 'x86_64', 'linux-x64'),
+            ('linux', 'aarch64', 'linux-arm64'),
+        ],
+    )
+    def test_platform_matrix(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        platform_name: str,
+        machine: str,
+        expected: str,
+    ) -> None:
+        monkeypatch.setattr(sys, 'platform', platform_name)
+        monkeypatch.setattr(platform, 'machine', lambda: machine)
+        # Nonexistent marker so glibc Linux is assumed even on Alpine hosts
+        monkeypatch.setattr(setup_environment, 'ALPINE_RELEASE_MARKER', tmp_path / 'alpine-release')
+        assert setup_environment._vscode_target_platform() == expected
+
+    def test_alpine_marker_switches_linux_to_alpine(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        marker = tmp_path / 'alpine-release'
+        marker.write_text('3.20.0')
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(platform, 'machine', lambda: 'x86_64')
+        monkeypatch.setattr(setup_environment, 'ALPINE_RELEASE_MARKER', marker)
+        assert setup_environment._vscode_target_platform() == 'alpine-x64'
+
+    def test_unknown_machine_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(platform, 'machine', lambda: 'riscv64')
+        assert setup_environment._vscode_target_platform() is None
+
+    def test_unknown_os_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sys, 'platform', 'freebsd14')
+        monkeypatch.setattr(platform, 'machine', lambda: 'x86_64')
+        assert setup_environment._vscode_target_platform() is None
+
+
+class TestVscodeWellKnownLocations:
+    """Tests for _vscode_well_known_locations()."""
+
+    def test_darwin_candidates_cover_both_application_roots(self, tmp_path: Path) -> None:
+        candidates = setup_environment._vscode_well_known_locations('darwin', home=tmp_path)
+        assert len(candidates) == 10
+        assert {name for name, _ in candidates} == {'code', 'code-insiders', 'cursor', 'windsurf', 'codium'}
+        bundle_bin = Path('Visual Studio Code.app') / 'Contents' / 'Resources' / 'app' / 'bin' / 'code'
+        paths = [path for _, path in candidates]
+        assert Path('/Applications') / bundle_bin in paths
+        assert tmp_path / 'Applications' / bundle_bin in paths
+
+    def test_linux_candidates_cover_deb_snap_and_flatpak(self, tmp_path: Path) -> None:
+        candidates = setup_environment._vscode_well_known_locations('linux', home=tmp_path)
+        assert all(name == 'code' for name, _ in candidates)
+        paths = [path for _, path in candidates]
+        assert Path('/usr/bin/code') in paths
+        assert Path('/usr/share/code/bin/code') in paths
+        assert Path('/snap/bin/code') in paths
+        assert Path('/var/lib/flatpak/exports/bin/com.visualstudio.code') in paths
+        assert tmp_path / '.local' / 'share' / 'flatpak' / 'exports' / 'bin' / 'com.visualstudio.code' in paths
+
+    def test_windows_candidate_uses_localappdata(self, tmp_path: Path) -> None:
+        candidates = setup_environment._vscode_well_known_locations('win32', localappdata=str(tmp_path))
+        assert candidates == [('code', tmp_path / 'Programs' / 'Microsoft VS Code' / 'bin' / 'code.cmd')]
+
+    def test_windows_without_localappdata_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv('LOCALAPPDATA', raising=False)
+        assert setup_environment._vscode_well_known_locations('win32') == []
+
+    def test_unknown_platform_returns_empty(self) -> None:
+        assert setup_environment._vscode_well_known_locations('freebsd14') == []
+
+    def test_defaults_resolve_platform_and_home(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        candidates = setup_environment._vscode_well_known_locations()
+        assert ('code', tmp_path / '.local' / 'share' / 'flatpak' / 'exports' / 'bin' / 'com.visualstudio.code') in candidates
+
+
+class TestDetectVscodeFamilyIdes:
+    """Tests for _detect_vscode_family_ides()."""
+
+    def test_path_hits_detected_in_cli_name_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(shutil, 'which', lambda name: f'/usr/bin/{name}' if name in ('code', 'cursor') else None)
+        monkeypatch.setattr(setup_environment, '_vscode_well_known_locations', lambda *_a, **_k: [])
+        assert setup_environment._detect_vscode_family_ides() == [('code', '/usr/bin/code'), ('cursor', '/usr/bin/cursor')]
+
+    def test_well_known_location_fallback_requires_existing_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        shim = tmp_path / 'code'
+        shim.write_text('')
+        missing = tmp_path / 'missing' / 'cursor'
+        monkeypatch.setattr(shutil, 'which', lambda _name: None)
+        monkeypatch.setattr(
+            setup_environment, '_vscode_well_known_locations',
+            lambda *_a, **_k: [('code', shim), ('cursor', missing)],
+        )
+        assert setup_environment._detect_vscode_family_ides() == [('code', str(shim))]
+
+    def test_path_hit_takes_priority_over_well_known_location(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        shim = tmp_path / 'code'
+        shim.write_text('')
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(setup_environment, '_vscode_well_known_locations', lambda *_a, **_k: [('code', shim)])
+        assert setup_environment._detect_vscode_family_ides() == [('code', '/usr/bin/code')]
+
+    def test_directory_candidate_excluded(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        directory = tmp_path / 'code'
+        directory.mkdir()
+        monkeypatch.setattr(shutil, 'which', lambda _name: None)
+        monkeypatch.setattr(setup_environment, '_vscode_well_known_locations', lambda *_a, **_k: [('code', directory)])
+        assert setup_environment._detect_vscode_family_ides() == []
+
+
+class TestBundledVsixMatches:
+    """Tests for _bundled_vsix_matches()."""
+
+    def test_matching_version_without_manifest_platform(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(_make_vsix_bytes('2.1.85'))
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is True
+
+    def test_version_mismatch_rejected(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(_make_vsix_bytes('9.9.9'))
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is False
+
+    def test_manifest_platform_match_accepted(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(_make_vsix_bytes('2.1.85', target_platform='linux-x64'))
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is True
+
+    def test_manifest_platform_mismatch_rejected(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(_make_vsix_bytes('2.1.85', target_platform='win32-x64'))
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is False
+
+    def test_manifest_platform_with_unknown_host_rejected(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(_make_vsix_bytes('2.1.85', target_platform='win32-x64'))
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', None) is False
+
+    def test_corrupt_archive_rejected(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        vsix.write_bytes(b'x' * 2000)
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is False
+
+    def test_missing_package_json_rejected(self, tmp_path: Path) -> None:
+        vsix = tmp_path / 'bundle.vsix'
+        with zipfile.ZipFile(vsix, 'w') as archive:
+            archive.writestr('extension/other.txt', 'no manifest here')
+        assert setup_environment._bundled_vsix_matches(vsix, '2.1.85', 'linux-x64') is False
+
+    def test_missing_file_rejected(self, tmp_path: Path) -> None:
+        assert setup_environment._bundled_vsix_matches(tmp_path / 'absent.vsix', '2.1.85', 'linux-x64') is False
+
+
+class TestNormalizeVsixPayload:
+    """Tests for _normalize_vsix_payload()."""
+
+    def test_valid_zip_passthrough(self) -> None:
+        payload = _make_vsix_bytes('2.1.85')
+        assert setup_environment._normalize_vsix_payload(payload) == payload
+
+    def test_gzip_wrapped_zip_decompressed(self) -> None:
+        payload = _make_vsix_bytes('2.1.85')
+        assert setup_environment._normalize_vsix_payload(gzip.compress(payload)) == payload
+
+    def test_non_archive_payload_rejected(self) -> None:
+        assert setup_environment._normalize_vsix_payload(b'<html>error page</html>') is None
+
+    def test_gzip_of_non_zip_rejected(self) -> None:
+        assert setup_environment._normalize_vsix_payload(gzip.compress(b'not a zip')) is None
+
+    def test_truncated_gzip_rejected(self) -> None:
+        assert setup_environment._normalize_vsix_payload(b'\x1f\x8b\x08\x00broken') is None
+
+    def test_corrupt_deflate_stream_rejected(self) -> None:
+        # Valid gzip header followed by an invalid deflate block
+        payload = b'\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03' + b'\xff\xff\xff\xff'
+        assert setup_environment._normalize_vsix_payload(payload) is None
+
+
 class TestInstallIdeExtensions:
     """Tests for install_ide_extensions()."""
 
-    def test_no_ides_detected_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @staticmethod
+    def _isolate(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        target_platform: str | None = 'linux-x64',
+    ) -> None:
+        """Make IDE detection, platform resolution, and home directory hermetic."""
+        monkeypatch.setattr(setup_environment, '_vscode_well_known_locations', lambda *_a, **_k: [])
+        monkeypatch.setattr(setup_environment, '_vscode_target_platform', lambda: target_platform)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+    @staticmethod
+    def _collect_commands(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Capture run_command invocations, reporting success for each."""
+        commands_run: list[list[str]] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            commands_run.append(cmd)
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        return commands_run
+
+    def test_no_ides_detected_returns_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda _name: None)
         assert setup_environment.install_ide_extensions('2.1.85') is True
 
     def test_bundled_vsix_used_when_exists(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # Mock IDE detection
+        self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        # Mock home dir with bundled VSIX
         bundled_dir = tmp_path / '.claude' / 'local' / 'node_modules' / '@anthropic-ai' / 'claude-code' / 'vendor'
         bundled_dir.mkdir(parents=True)
         vsix_path = bundled_dir / 'claude-code.vsix'
-        vsix_path.write_bytes(b'x' * 2000)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        vsix_path.write_bytes(_make_vsix_bytes('2.1.85'))
 
-        commands_run: list[list[str]] = []
+        fetched: list[str] = []
 
-        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
-            commands_run.append(cmd)
-            return MagicMock(returncode=0)
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            fetched.append(url)
+            return b''
 
-        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+        commands_run = self._collect_commands(monkeypatch)
         result = setup_environment.install_ide_extensions('2.1.85')
 
         assert result is True
+        assert fetched == []
         assert len(commands_run) == 1
         assert '--force' in commands_run[0]
         assert str(vsix_path) in commands_run[0]
 
-    def test_vsix_download_and_install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_bundled_vsix_version_mismatch_falls_to_tier2(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        bundled_dir = tmp_path / '.claude' / 'local' / 'node_modules' / '@anthropic-ai' / 'claude-code' / 'vendor'
+        bundled_dir.mkdir(parents=True)
+        vsix_path = bundled_dir / 'claude-code.vsix'
+        vsix_path.write_bytes(_make_vsix_bytes('9.9.9'))
 
-        def mock_fetch(_url: str, **_kw: object) -> bytes:
-            return b'fake-vsix-data'
+        fetched: list[str] = []
+
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            fetched.append(url)
+            return _make_vsix_bytes('2.1.85')
 
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
 
-        commands_run: list[list[str]] = []
+        assert result is True
+        assert fetched != []
+        assert str(vsix_path) not in commands_run[0]
+        assert commands_run[0][2].endswith('.vsix')
+        assert '--force' in commands_run[0]
 
-        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
-            commands_run.append(cmd)
-            return MagicMock(returncode=0)
+    def test_bundled_vsix_platform_mismatch_falls_to_tier2(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        bundled_dir = tmp_path / '.claude' / 'local' / 'node_modules' / '@anthropic-ai' / 'claude-code' / 'vendor'
+        bundled_dir.mkdir(parents=True)
+        vsix_path = bundled_dir / 'claude-code.vsix'
+        vsix_path.write_bytes(_make_vsix_bytes('2.1.85', target_platform='win32-x64'))
 
-        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        monkeypatch.setattr(
+            setup_environment, 'fetch_url_bytes_with_auth',
+            lambda _url, **_kw: _make_vsix_bytes('2.1.85'),
+        )
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert str(vsix_path) not in commands_run[0]
+
+    def test_bundled_vsix_corrupt_falls_to_tier2(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        bundled_dir = tmp_path / '.claude' / 'local' / 'node_modules' / '@anthropic-ai' / 'claude-code' / 'vendor'
+        bundled_dir.mkdir(parents=True)
+        vsix_path = bundled_dir / 'claude-code.vsix'
+        vsix_path.write_bytes(b'x' * 2000)
+
+        monkeypatch.setattr(
+            setup_environment, 'fetch_url_bytes_with_auth',
+            lambda _url, **_kw: _make_vsix_bytes('2.1.85'),
+        )
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert str(vsix_path) not in commands_run[0]
+        assert commands_run[0][2].endswith('.vsix')
+
+    def test_vsix_download_and_install(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(
+            setup_environment, 'fetch_url_bytes_with_auth',
+            lambda _url, **_kw: _make_vsix_bytes('2.1.85'),
+        )
+        commands_run = self._collect_commands(monkeypatch)
         result = setup_environment.install_ide_extensions('2.1.85')
 
         assert result is True
@@ -13068,22 +14304,172 @@ class TestInstallIdeExtensions:
         assert '--install-extension' in commands_run[0]
         assert '--force' in commands_run[0]
 
-    def test_marketplace_version_fallback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def test_download_urls_include_target_platform(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        fetched: list[str] = []
+
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            fetched.append(url)
+            if len(fetched) == 1:
+                raise Exception('primary unavailable')
+            return _make_vsix_bytes('2.1.85')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+        self._collect_commands(monkeypatch)
+        assert setup_environment.install_ide_extensions('2.1.85') is True
+
+        assert len(fetched) == 2
+        assert all(url.endswith('?targetPlatform=linux-x64') for url in fetched)
+        assert 'gallery.vsassets.io' in fetched[0]
+        assert '/vspackage?' in fetched[1]
+
+    def test_unknown_target_platform_skips_tier2(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path, target_platform=None)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+
+        fetched: list[str] = []
+
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            fetched.append(url)
+            return _make_vsix_bytes('2.1.85')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert fetched == []
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+        assert '--force' not in commands_run[0]
+
+    def test_dual_404_warns_and_skips(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+
+        def mock_fetch_404(url: str, **_kw: object) -> bytes:
+            raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_404)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        captured = capsys.readouterr()
+        assert result is True
+        assert commands_run == []
+        assert 'IDE extension version 2.1.85 is not available' in captured.out
+        assert 'linux-x64' in captured.out
+        assert 'keeps its current extension version' in captured.out
+
+    def test_mixed_404_and_failure_falls_back_to_tier3(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            if 'gallery.vsassets.io' in url:
+                raise urllib.error.HTTPError(url, 404, 'Not Found', {}, None)
+            raise Exception('network failure')
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+
+    def test_non_404_http_error_falls_back_to_tier3(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+
+        def mock_fetch_500(url: str, **_kw: object) -> bytes:
+            raise urllib.error.HTTPError(url, 500, 'Internal Server Error', {}, None)
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_500)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        captured = capsys.readouterr()
+        assert result is True
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+        assert 'marketplace @version' in captured.out
+
+    def test_invalid_payload_falls_back_to_tier3(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(
+            setup_environment, 'fetch_url_bytes_with_auth',
+            lambda _url, **_kw: b'<html>service unavailable</html>',
+        )
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+        assert '--force' not in commands_run[0]
+
+    def test_gzip_fallback_payload_decompressed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        payload = _make_vsix_bytes('2.1.85')
+
+        def mock_fetch(url: str, **_kw: object) -> bytes:
+            if 'gallery.vsassets.io' in url:
+                raise Exception('primary unavailable')
+            return gzip.compress(payload)
+
+        monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch)
+
+        installed_bytes: list[bytes] = []
+
+        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
+            installed_bytes.append(Path(cmd[2]).read_bytes())
+            return MagicMock(returncode=0)
+
+        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        assert result is True
+        assert installed_bytes == [payload]
+
+    def test_temp_write_failure_falls_back_to_tier3_with_warning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
+        monkeypatch.setattr(
+            setup_environment, 'fetch_url_bytes_with_auth',
+            lambda _url, **_kw: _make_vsix_bytes('2.1.85'),
+        )
+
+        def mock_mkstemp(*_a: object, **_k: object) -> tuple[int, str]:
+            raise OSError('disk full')
+
+        monkeypatch.setattr(tempfile, 'mkstemp', mock_mkstemp)
+        commands_run = self._collect_commands(monkeypatch)
+        result = setup_environment.install_ide_extensions('2.1.85')
+
+        captured = capsys.readouterr()
+        assert result is True
+        assert 'anthropic.claude-code@2.1.85' in commands_run[0]
+        assert '--force' not in commands_run[0]
+        assert 'marketplace @version' in captured.out
+
+    def test_marketplace_version_fallback(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
 
         def mock_fetch_fail(_url: str, **_kw: object) -> bytes:
             raise Exception('download failed')
 
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', mock_fetch_fail)
-
-        commands_run: list[list[str]] = []
-
-        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
-            commands_run.append(cmd)
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        commands_run = self._collect_commands(monkeypatch)
         result = setup_environment.install_ide_extensions('2.1.85')
 
         assert result is True
@@ -13092,8 +14478,8 @@ class TestInstallIdeExtensions:
     def test_marketplace_fallback_warning_text(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
+        self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
 
         def mock_fetch_fail(_url: str, **_kw: object) -> bytes:
             raise Exception('download failed')
@@ -13108,6 +14494,8 @@ class TestInstallIdeExtensions:
         assert 'Auto Update' in captured.out
 
     def test_multiple_ides_installed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+
         def mock_which(name: str) -> str | None:
             return f'/usr/bin/{name}' if name in ('code', 'cursor') else None
 
@@ -13115,22 +14503,16 @@ class TestInstallIdeExtensions:
             raise Exception('no download')
 
         monkeypatch.setattr(shutil, 'which', mock_which)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
-
-        commands_run: list[list[str]] = []
-
-        def mock_run(cmd: list[str], **_kw: object) -> MagicMock:
-            commands_run.append(cmd)
-            return MagicMock(returncode=0)
-
-        monkeypatch.setattr(setup_environment, 'run_command', mock_run)
+        commands_run = self._collect_commands(monkeypatch)
         result = setup_environment.install_ide_extensions('2.1.85')
 
         assert result is True
         assert len(commands_run) == 2
 
     def test_partial_failure_returns_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+
         def mock_which(name: str) -> str | None:
             return f'/usr/bin/{name}' if name in ('code', 'cursor') else None
 
@@ -13138,7 +14520,6 @@ class TestInstallIdeExtensions:
             raise Exception('no download')
 
         monkeypatch.setattr(shutil, 'which', mock_which)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
 
         call_count = 0
@@ -13153,6 +14534,8 @@ class TestInstallIdeExtensions:
         assert result is True
 
     def test_all_failure_returns_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+
         def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
             raise Exception('no download')
 
@@ -13160,13 +14543,14 @@ class TestInstallIdeExtensions:
             return MagicMock(returncode=1, stderr='error')
 
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
         monkeypatch.setattr(setup_environment, 'run_command', _fail_run)
         result = setup_environment.install_ide_extensions('2.1.85')
         assert result is False
 
     def test_non_fatal_behavior(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._isolate(monkeypatch, tmp_path)
+
         def _raise_fetch(*_args: object, **_kwargs: object) -> bytes:
             raise Exception('no download')
 
@@ -13174,7 +14558,6 @@ class TestInstallIdeExtensions:
             return MagicMock(returncode=1, stderr='error')
 
         monkeypatch.setattr(shutil, 'which', lambda name: '/usr/bin/code' if name == 'code' else None)
-        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(setup_environment, 'fetch_url_bytes_with_auth', _raise_fetch)
         monkeypatch.setattr(setup_environment, 'run_command', _fail_run)
         # Should not raise
@@ -13233,12 +14616,52 @@ class TestGenerateEnvLoaderFiles:
         result = setup_environment.generate_env_loader_files({}, None, None)
         assert result == {}
 
-    def test_all_none_values_returns_empty(self) -> None:
-        """All None values (deletions) produce no files."""
+    def test_all_none_values_without_commands_returns_empty(self) -> None:
+        """All None values (deletions) produce no files without command_names."""
         result = setup_environment.generate_env_loader_files(
             {'DEL_VAR': None, 'DEL_OTHER': None}, None, None,
         )
         assert result == {}
+
+    def test_all_none_values_rewrite_loader_files_header_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """All-deletion dict rewrites per-command loader files header-only.
+
+        Loader files are rebuilt on every run; clearing the export lines is
+        what stops the launcher from re-applying a deleted variable at
+        session start.
+        """
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)  # No fish
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        cmd_dir.mkdir(parents=True)
+        stale = '# Auto-generated by claude-code-toolbox -- do not edit manually\nexport STALE_VAR="old"\n'
+        (cmd_dir / 'env.sh').write_text(stale)
+
+        result = setup_environment.generate_env_loader_files(
+            {'STALE_VAR': None}, ['my-cmd'], cmd_dir,
+        )
+        assert result, 'Expected loader files to be rewritten for all-deletion input'
+        content = (cmd_dir / 'env.sh').read_text()
+        assert content.startswith('# Auto-generated by claude-code-toolbox')
+        assert 'STALE_VAR' not in content
+        assert 'export' not in content
+
+    def test_empty_dict_with_commands_rewrites_header_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An empty dict still rebuilds per-command loader files header-only."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        monkeypatch.setattr(shutil, 'which', lambda _cmd: None)  # No fish
+
+        cmd_dir = tmp_path / '.claude' / 'my-cmd'
+        result = setup_environment.generate_env_loader_files({}, ['my-cmd'], cmd_dir)
+        assert result
+        content = (cmd_dir / 'env.sh').read_text()
+        assert content.startswith('# Auto-generated by claude-code-toolbox')
+        assert 'export' not in content
 
     def test_none_values_excluded_from_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """None values (deletions) are not written to loader files."""

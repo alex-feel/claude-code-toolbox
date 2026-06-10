@@ -32,6 +32,13 @@ GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
     'oauthAccount',
 })
 
+# Model family markers whose presence (case-insensitive substring) in the model
+# identifier indicates support for the extended 'xhigh' and 'max' effort levels:
+# 'xhigh' is supported on Opus 4.7/4.8 and Fable 5; 'max' on Opus 4.6+ and Fable 5.
+# Substring matching covers aliases ('opus', 'fable'), full model IDs
+# ('claude-fable-5'), and provider-prefixed IDs ('us.anthropic.claude-opus-4-8').
+EXTENDED_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable')
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -743,10 +750,11 @@ class EnvironmentConfig(BaseModel):
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
     model: str | None = Field(None, description='Model configuration')
-    env_variables: dict[str, str] | None = Field(
+    env_variables: dict[str, str | None] | None = Field(
         None,
         alias='env-variables',
-        description='Environment variables',
+        description='Environment variables for Claude Code sessions. '
+        'Set value to null to delete the variable.',
     )
     permissions: Permissions | None = Field(None, description='Permissions configuration')
     command_defaults: CommandDefaults | None = Field(
@@ -777,7 +785,8 @@ class EnvironmentConfig(BaseModel):
         None,
         alias='effort-level',
         description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity. '
-        'The "xhigh" and "max" levels are only available for Opus models.',
+        'The "xhigh" and "max" levels are only available for Opus and Fable models '
+        '("xhigh" on Opus 4.7/4.8 and Fable 5; "max" on Opus 4.6+ and Fable 5).',
     )
     install_nodejs: bool | None = Field(
         None,
@@ -1085,15 +1094,17 @@ class EnvironmentConfig(BaseModel):
 
     @field_validator('env_variables')
     @classmethod
-    def validate_env_variables(cls, v: dict[str, str] | None) -> dict[str, str] | None:
+    def validate_env_variables(cls, v: dict[str, str | None] | None) -> dict[str, str | None] | None:
         """Validate environment variables configuration.
 
         Checks that variable names follow the standard pattern
         (letters, digits, underscores; must start with letter or underscore)
-        and that values do not contain null bytes.
+        and that non-null values do not contain null bytes. A null value is
+        a deletion request and carries no content to check.
 
         Args:
-            v: Dictionary of environment variable names to string values.
+            v: Dictionary of environment variable names to string values,
+                or None values for deletion requests.
 
         Returns:
             The validated dictionary.
@@ -1113,7 +1124,7 @@ class EnvironmentConfig(BaseModel):
                     'Must start with letter or underscore, followed by letters, digits, or underscores.',
                 )
 
-            if '\x00' in str(value):
+            if value is not None and '\x00' in str(value):
                 raise ValueError(f'Environment variable {name} value cannot contain null bytes')
 
         return v
@@ -1169,20 +1180,23 @@ class EnvironmentConfig(BaseModel):
         return self
 
     @model_validator(mode='after')
-    def validate_effort_level_opus_only(self) -> 'EnvironmentConfig':
-        """Validate that effort_level 'xhigh' and 'max' are only used with Opus models.
+    def validate_effort_level_model_support(self) -> 'EnvironmentConfig':
+        """Validate that effort_level 'xhigh' and 'max' are used with a supporting model.
 
-        Both 'xhigh' and 'max' are Opus-only effort levels ('xhigh' on Opus 4.7/4.8,
-        'max' on Opus 4.6+). The free-form model field cannot resolve which Opus
-        version an alias points to, so the gate checks for the 'opus' substring;
-        Claude Code gracefully downgrades an unsupported level to the highest
-        supported level at runtime (for example, 'xhigh' runs as 'high' on Opus 4.6).
+        'xhigh' is supported on Opus 4.7/4.8 and Fable 5; 'max' is supported on
+        Opus 4.6+ and Fable 5. The free-form model field cannot resolve which
+        version an alias points to, so the gate checks for the family substrings
+        in EXTENDED_EFFORT_MODEL_MARKERS plus the exact alias 'best' (which always
+        resolves to Fable 5 or the latest Opus model); Claude Code gracefully
+        downgrades an unsupported level to the highest supported level at runtime
+        (for example, 'xhigh' runs as 'high' on Opus 4.6).
 
         Returns:
             The validated EnvironmentConfig instance.
 
         Raises:
-            ValueError: If 'xhigh'/'max' is set without a model or with a non-Opus model.
+            ValueError: If 'xhigh'/'max' is set without a model or with a model
+                outside the Opus and Fable families.
         """
         if self.effort_level not in ('xhigh', 'max'):
             return self
@@ -1190,14 +1204,17 @@ class EnvironmentConfig(BaseModel):
         if self.model is None:
             raise ValueError(
                 f"effort-level '{self.effort_level}' requires model to be specified. "
-                f"The '{self.effort_level}' effort level is only available for Opus models.",
+                f"The '{self.effort_level}' effort level is only available for Opus and Fable models.",
             )
 
-        if 'opus' not in self.model.lower():
+        model_lower = self.model.lower()
+        # The 'best' alias is matched exactly, not as a substring, so arbitrary
+        # model names that merely contain 'best' are not accepted.
+        if model_lower != 'best' and not any(marker in model_lower for marker in EXTENDED_EFFORT_MODEL_MARKERS):
             raise ValueError(
-                f"effort-level '{self.effort_level}' is only available for Opus models, "
+                f"effort-level '{self.effort_level}' is only available for Opus and Fable models, "
                 f"but model is set to '{self.model}'. "
-                "Use 'low', 'medium', or 'high' for non-Opus models.",
+                "Use 'low', 'medium', or 'high' for other models.",
             )
 
         return self

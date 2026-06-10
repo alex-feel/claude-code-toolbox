@@ -38,6 +38,12 @@ The npm method installs via the `@anthropic-ai/claude-code` npm package. It requ
 
 In `auto` mode (the default), the installer tries the full native fallback chain first: native installer (with HTTP retry for transient errors), then GCS direct binary download on all platforms. If all native methods fail, it automatically falls back to npm. This is the recommended approach for most users and requires no additional configuration.
 
+### GCS Direct Download: Platform Selection and Integrity Verification
+
+The GCS direct download selects the binary matching the host platform and architecture: `win32-x64` or `win32-arm64` on Windows, `darwin-x64` or `darwin-arm64` on macOS, and `linux-x64` or `linux-arm64` on Linux, with the musl variants (`linux-x64-musl`, `linux-arm64-musl`) selected automatically on Alpine Linux (detected via `/etc/alpine-release`). On an unrecognized architecture, the installer reports an explicit error and aborts the GCS download instead of fetching a binary that cannot execute on the machine.
+
+Every GCS download is verified against the release manifest (`{version}/manifest.json` in the same GCS bucket), which lists the expected SHA-256 checksum and exact byte size for each platform binary. Verification fails closed: if the manifest cannot be fetched, or the downloaded file's size or checksum does not match, the download is rejected and the temporary file is deleted. After installation, the installer additionally runs `claude --version` on the installed binary (on the native-installer and GCS paths across all platforms); a binary that exists but cannot execute fails verification and triggers the recovery chain or the next fallback method.
+
 ## Environment Variables
 
 ### `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD`
@@ -142,6 +148,10 @@ The installer classifies the existing installation by examining the binary path.
 | Any other path                                    | unknown              | Native-first, npm fallback            |
 | Not found                                         | none                 | Fresh install                         |
 
+### Install Method Recording
+
+After a successful installation or upgrade, the installer records the method in `~/.claude.json` under the `installMethod` key so that Claude Code's own tooling (such as `claude doctor`) reports the installation type correctly. The values written are `native` (native installer or GCS direct download), `global` (npm global installs), and `winget` (Windows package manager installs). Claude Code itself recognizes `native`, `global`, and `local`, and reports a missing value as `unknown`. When `setup_environment.py` creates an isolated environment (`command-names` in YAML), it propagates this recorded value into the isolated `.claude.json` so isolated sessions report the same installation type -- see [`global-config`](environment-configuration-guide.md#global-config) in the Environment Configuration Guide.
+
 ### Switching from npm to Native
 
 To switch manually, uninstall the npm version with `npm uninstall -g @anthropic-ai/claude-code`, then run the installer again. It will use the native method by default. All Claude Code configurations are preserved since both installation methods use the same configuration directory.
@@ -168,6 +178,10 @@ The installer automatically tries GCS direct download before falling back to npm
 
 - **Windows:** `irm https://claude.ai/install.ps1 | iex`
 - **macOS/Linux:** `curl -fsSL https://claude.ai/install.sh | bash`
+
+### Corrupt or Incompatible Binary Detected
+
+If the existing `claude` binary exists but cannot be launched -- Windows reports `WinError 193` (bad executable format) or `WinError 216` (architecture mismatch), and Unix-like systems report `ENOEXEC` -- the installer's version probe classifies the condition as a recoverable corrupt installation. It prints a warning that the binary "cannot execute on this machine (corrupt or architecture mismatch)" and quarantines the native binary before reinstalling: on Windows the file is renamed to `claude.exe.old` (cleaned up automatically on the next run), and on Linux/macOS it is removed. Quarantining happens before any installation method runs, so a broken native binary can no longer shadow a working npm installation. No manual action is needed -- the normal installation flow then installs a fresh binary and verifies that it executes.
 
 ### Winget Version Not Available (Windows)
 

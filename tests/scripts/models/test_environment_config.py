@@ -1279,9 +1279,58 @@ class TestEffortLevel:
         })
         assert config.effort_level == 'max'
 
+    def test_effort_level_max_with_fable_alias(self) -> None:
+        """effort-level 'max' accepted when model is 'fable'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'fable',
+            'effort-level': 'max',
+        })
+        assert config.effort_level == 'max'
+
+    def test_effort_level_max_with_claude_fable_model(self) -> None:
+        """effort-level 'max' accepted when model is 'claude-fable-5'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-fable-5',
+            'effort-level': 'max',
+        })
+        assert config.effort_level == 'max'
+
+    def test_effort_level_max_with_claude_fable_1m_model(self) -> None:
+        """effort-level 'max' accepted when model is 'claude-fable-5[1m]'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-fable-5[1m]',
+            'effort-level': 'max',
+        })
+        assert config.effort_level == 'max'
+
+    def test_effort_level_max_with_bedrock_fable_model(self) -> None:
+        """effort-level 'max' accepted when model is a provider-prefixed Fable ID."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'us.anthropic.claude-fable-5-20260601-v1:0',
+            'effort-level': 'max',
+        })
+        assert config.effort_level == 'max'
+
+    def test_effort_level_max_with_best_alias(self) -> None:
+        """effort-level 'max' accepted when model is exactly 'best'.
+
+        The 'best' alias always resolves to Fable 5 or the latest Opus model,
+        both of which support 'max'.
+        """
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'best',
+            'effort-level': 'max',
+        })
+        assert config.effort_level == 'max'
+
     def test_effort_level_max_rejected_with_sonnet_model(self) -> None:
         """effort-level 'max' rejected when model is 'sonnet'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'sonnet',
@@ -1290,7 +1339,7 @@ class TestEffortLevel:
 
     def test_effort_level_max_rejected_with_haiku_model(self) -> None:
         """effort-level 'max' rejected when model is 'haiku'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'haiku',
@@ -1299,7 +1348,7 @@ class TestEffortLevel:
 
     def test_effort_level_max_rejected_with_claude_sonnet_model(self) -> None:
         """effort-level 'max' rejected when model is 'claude-sonnet-4-6'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'claude-sonnet-4-6',
@@ -1316,10 +1365,23 @@ class TestEffortLevel:
 
     def test_effort_level_max_rejected_with_default_model(self) -> None:
         """effort-level 'max' rejected when model is 'default'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'default',
+                'effort-level': 'max',
+            })
+
+    def test_effort_level_max_rejected_with_model_containing_best(self) -> None:
+        """effort-level 'max' rejected when model merely contains 'best'.
+
+        The 'best' alias is accepted by exact match only; a substring match
+        would wrongly accept arbitrary model names containing 'best'.
+        """
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'bestest-model',
                 'effort-level': 'max',
             })
 
@@ -1385,9 +1447,58 @@ class TestEffortLevel:
         })
         assert config.effort_level == 'xhigh'
 
+    def test_effort_level_xhigh_with_fable_alias(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'fable'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'fable',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_claude_fable_model(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'claude-fable-5'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-fable-5',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_claude_fable_1m_model(self) -> None:
+        """effort-level 'xhigh' accepted when model is 'claude-fable-5[1m]'."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'claude-fable-5[1m]',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_bedrock_fable_model(self) -> None:
+        """effort-level 'xhigh' accepted when model is a provider-prefixed Fable ID."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'us.anthropic.claude-fable-5-20260601-v1:0',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
+    def test_effort_level_xhigh_with_best_alias(self) -> None:
+        """effort-level 'xhigh' accepted when model is exactly 'best'.
+
+        The 'best' alias always resolves to Fable 5 or the latest Opus model,
+        both of which support 'xhigh'.
+        """
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'model': 'best',
+            'effort-level': 'xhigh',
+        })
+        assert config.effort_level == 'xhigh'
+
     def test_effort_level_xhigh_rejected_with_sonnet_model(self) -> None:
         """effort-level 'xhigh' rejected when model is 'sonnet'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'sonnet',
@@ -1396,7 +1507,7 @@ class TestEffortLevel:
 
     def test_effort_level_xhigh_rejected_with_haiku_model(self) -> None:
         """effort-level 'xhigh' rejected when model is 'haiku'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'haiku',
@@ -1405,7 +1516,7 @@ class TestEffortLevel:
 
     def test_effort_level_xhigh_rejected_with_claude_sonnet_model(self) -> None:
         """effort-level 'xhigh' rejected when model is 'claude-sonnet-4-6'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'claude-sonnet-4-6',
@@ -1422,10 +1533,23 @@ class TestEffortLevel:
 
     def test_effort_level_xhigh_rejected_with_default_model(self) -> None:
         """effort-level 'xhigh' rejected when model is 'default'."""
-        with pytest.raises(ValidationError, match='only available for Opus models'):
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
             EnvironmentConfig.model_validate({
                 'name': 'Test',
                 'model': 'default',
+                'effort-level': 'xhigh',
+            })
+
+    def test_effort_level_xhigh_rejected_with_model_containing_best(self) -> None:
+        """effort-level 'xhigh' rejected when model merely contains 'best'.
+
+        The 'best' alias is accepted by exact match only; a substring match
+        would wrongly accept arbitrary model names containing 'best'.
+        """
+        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'model': 'bestest-model',
                 'effort-level': 'xhigh',
             })
 
@@ -1522,24 +1646,32 @@ class TestRulesField:
 
     def test_rules_field_valid(self) -> None:
         """Rules field accepts list of strings."""
-        config = EnvironmentConfig.model_validate({'rules': ['rule1.md', 'rule2.md']})
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'rules': ['rule1.md', 'rule2.md'],
+        })
         assert config.rules == ['rule1.md', 'rule2.md']
 
     def test_rules_field_default_empty_list(self) -> None:
         """Rules field defaults to empty list."""
-        config = EnvironmentConfig.model_validate({})
+        config = EnvironmentConfig.model_validate({'name': 'Test'})
         assert config.rules == []
 
     def test_rules_field_none_accepted(self) -> None:
         """Rules field accepts None value."""
-        config = EnvironmentConfig.model_validate({'rules': None})
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'rules': None,
+        })
         assert config.rules is None
 
     def test_rules_included_in_validate_file_paths(self) -> None:
         """Rules field is covered by validate_file_paths validator."""
         config = EnvironmentConfig.model_validate({
+            'name': 'Test',
             'rules': ['https://example.com/rule.md', 'local-rule.md'],
         })
+        assert config.rules is not None
         assert len(config.rules) == 2
 
 
@@ -1876,6 +2008,22 @@ class TestEnvVariablesValidation:
             'env-variables': {},
         })
         assert config.env_variables == {}
+
+    def test_null_env_variable_value_valid(self) -> None:
+        """A null value (deletion request) passes validation and skips the null-byte check."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'env-variables': {'DELETE_ME': None, 'KEEP': 'value'},
+        })
+        assert config.env_variables == {'DELETE_ME': None, 'KEEP': 'value'}
+
+    def test_invalid_name_with_null_value_still_raises(self) -> None:
+        """Name validation applies even when the value is a null deletion request."""
+        with pytest.raises(ValidationError, match='Invalid environment variable name'):
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'env-variables': {'1BAD': None},
+            })
 
 
 class TestMCPServerStdioArgs:

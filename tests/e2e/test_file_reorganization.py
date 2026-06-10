@@ -187,10 +187,10 @@ class TestFileReorganization:
         hooks_dir = artifact_base_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        env_vars: dict[str, str] = {}
-        raw_env = golden_config.get('env-variables', {})
-        for k, v in raw_env.items():
-            env_vars[k] = str(v)
+        # Pass raw YAML values through (as main() does): stringification of
+        # non-null values and stripping of null deletion entries belong to
+        # the production pipeline, not to the test harness.
+        env_vars: dict[str, Any] = dict(golden_config.get('env-variables', {}))
 
         create_profile_config(
             {
@@ -229,6 +229,10 @@ class TestFileReorganization:
         assert env_block.get('E2E_TEST_VAR') == 'test_value'
         assert env_block.get('E2E_ANOTHER_VAR') == 'another_value'
         assert env_block.get('E2E_INT_VAR') == '42'  # YAML int -> string conversion
+        # null-as-delete: a null-valued entry is stripped from the atomic
+        # rebuild, never written as JSON null or the literal string 'None'
+        assert 'E2E_DELETE_VAR' not in env_block
+        assert 'None' not in env_block.values()
 
         # Verify user-settings content NOT in config.json
         assert 'theme' not in content
