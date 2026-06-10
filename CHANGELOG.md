@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.17.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.0...v5.17.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* correct IDE extension, native install, and config handling ([ee2bddd](https://github.com/alex-feel/claude-code-toolbox/commit/ee2bddd972dac19b4e094be446fedb2dc5127456))
+
 ## [5.17.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.16.0...v5.17.0) (2026-06-05)
 
 
