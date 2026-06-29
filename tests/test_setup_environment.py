@@ -210,6 +210,98 @@ class TestUtilityFunctions:
         # Verify shutil.which was NOT called for empty list
         mock_which.assert_not_called()
 
+    def test_prefer_windows_executable_passes_through_exe(self):
+        """An already-launchable resolution is returned without extra probing."""
+        with patch('scripts.setup_environment.shutil.which') as mock_which:
+            result = setup_environment._prefer_windows_executable('node', r'C:\nodejs\node.exe')
+        assert result == r'C:\nodejs\node.exe'
+        # A path that is already launchable must not trigger sibling probes.
+        mock_which.assert_not_called()
+
+    def test_prefer_windows_executable_replaces_extensionless_shim(self):
+        """The extensionless Unix shim is swapped for the launchable .cmd wrapper."""
+        def which(name):
+            return r'C:\nodejs\npm.cmd' if name == 'npm.cmd' else None
+
+        with patch('scripts.setup_environment.shutil.which', side_effect=which):
+            result = setup_environment._prefer_windows_executable('npm', r'C:\nodejs\npm')
+        assert result == r'C:\nodejs\npm.cmd'
+
+    def test_prefer_windows_executable_none_finds_wrapper(self):
+        """When nothing resolved, the executable wrapper is still discovered."""
+        def which(name):
+            return r'C:\nodejs\npm.cmd' if name == 'npm.cmd' else None
+
+        with patch('scripts.setup_environment.shutil.which', side_effect=which):
+            result = setup_environment._prefer_windows_executable('npm', None)
+        assert result == r'C:\nodejs\npm.cmd'
+
+    def test_prefer_windows_executable_prefers_exe_over_cmd(self):
+        """When both wrappers exist, the real .exe binary wins over .cmd."""
+        wrappers = {'tool.exe': r'C:\bin\tool.exe', 'tool.cmd': r'C:\bin\tool.cmd'}
+
+        with patch('scripts.setup_environment.shutil.which', side_effect=wrappers.get):
+            result = setup_environment._prefer_windows_executable('tool', r'C:\bin\tool')
+        assert result == r'C:\bin\tool.exe'
+
+    def test_prefer_windows_executable_no_wrapper_returns_original(self):
+        """With no executable wrapper available, the original value is preserved."""
+        with patch('scripts.setup_environment.shutil.which', return_value=None):
+            result = setup_environment._prefer_windows_executable('mystery', None)
+        assert result is None
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_windows_resolves_extensionless_shim(self, mock_run, mock_which):
+        """Regression: the extensionless npm shim must not reach subprocess.run.
+
+        Reproduces the affected-Python resolution where shutil.which('npm')
+        returns the extensionless Unix shim (CreateProcess raises WinError 193).
+        run_command must launch the .cmd wrapper instead.
+        """
+        def which(name):
+            return {'npm': r'C:\nodejs\npm', 'npm.cmd': r'C:\nodejs\npm.cmd'}.get(name)
+
+        mock_which.side_effect = which
+        mock_run.return_value = subprocess.CompletedProcess(
+            [r'C:\nodejs\npm.cmd', 'install'], 0, '', '',
+        )
+        result = setup_environment.run_command(['npm', 'install'])
+        assert result.returncode == 0
+        call_args = mock_run.call_args[0][0]
+        # The launchable wrapper is used, never the extensionless shim.
+        assert call_args[0] == r'C:\nodejs\npm.cmd'
+        assert call_args[1] == 'install'
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    @patch('subprocess.run')
+    def test_run_command_oserror_does_not_propagate(self, mock_run, mock_which):
+        """A non-launchable executable (WinError 193) is reported, not raised.
+
+        A single bad command must not abort the whole setup; it is surfaced as
+        a failed CompletedProcess so callers can continue and record it.
+        """
+        mock_which.return_value = r'C:\nodejs\npm.cmd'
+        mock_run.side_effect = OSError(193, '%1 is not a valid Win32 application')
+        result = setup_environment.run_command(['npm', 'install'])
+        assert result.returncode == 1
+        # The failure is surfaced (not raised); it names the resolved executable.
+        assert 'Failed to run' in result.stderr
+        assert 'npm.cmd' in result.stderr
+
+    @patch('scripts.setup_environment.sys.platform', 'win32')
+    @patch('scripts.setup_environment.shutil.which')
+    def test_find_command_windows_avoids_extensionless_shim(self, mock_which):
+        """find_command must prefer the .cmd wrapper over the extensionless shim."""
+        def which(name):
+            return {'npm': r'C:\nodejs\npm', 'npm.cmd': r'C:\nodejs\npm.cmd'}.get(name)
+
+        mock_which.side_effect = which
+        result = setup_environment.find_command('npm')
+        assert result == r'C:\nodejs\npm.cmd'
+
 
 class TestConvertToUnixPath:
     """Tests for convert_to_unix_path function."""

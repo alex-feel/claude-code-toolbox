@@ -52,6 +52,52 @@ class TestColors:
             assert install_claude.Colors.RED == '\033[0;31m'
 
 
+class TestPreferWindowsExecutable:
+    """Test _prefer_windows_executable and its use by find_command."""
+
+    def test_passes_through_exe(self):
+        """An already-launchable resolution is returned without extra probing."""
+        with patch('install_claude.shutil.which') as mock_which:
+            result = install_claude._prefer_windows_executable('node', r'C:\nodejs\node.exe')
+        assert result == r'C:\nodejs\node.exe'
+        mock_which.assert_not_called()
+
+    def test_replaces_extensionless_shim(self):
+        """The extensionless Unix shim is swapped for the launchable .cmd wrapper."""
+        def which(name):
+            return r'C:\nodejs\npm.cmd' if name == 'npm.cmd' else None
+
+        with patch('install_claude.shutil.which', side_effect=which):
+            result = install_claude._prefer_windows_executable('npm', r'C:\nodejs\npm')
+        assert result == r'C:\nodejs\npm.cmd'
+
+    def test_none_finds_wrapper(self):
+        """When nothing resolved, the executable wrapper is still discovered."""
+        def which(name):
+            return r'C:\nodejs\npm.cmd' if name == 'npm.cmd' else None
+
+        with patch('install_claude.shutil.which', side_effect=which):
+            result = install_claude._prefer_windows_executable('npm', None)
+        assert result == r'C:\nodejs\npm.cmd'
+
+    def test_no_wrapper_returns_original(self):
+        """With no executable wrapper available, the original value is preserved."""
+        with patch('install_claude.shutil.which', return_value=None):
+            result = install_claude._prefer_windows_executable('mystery', None)
+        assert result is None
+
+    @patch('install_claude.sys.platform', 'win32')
+    @patch('install_claude.shutil.which')
+    def test_find_command_avoids_extensionless_shim(self, mock_which):
+        """find_command must prefer the .cmd wrapper over the extensionless shim."""
+        def which(name):
+            return {'npm': r'C:\nodejs\npm', 'npm.cmd': r'C:\nodejs\npm.cmd'}.get(name)
+
+        mock_which.side_effect = which
+        result = install_claude.find_command('npm')
+        assert result == r'C:\nodejs\npm.cmd'
+
+
 class TestLoggingFunctions:
     """Test logging functions."""
 
