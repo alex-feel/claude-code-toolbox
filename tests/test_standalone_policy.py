@@ -89,6 +89,26 @@ class TestFindCommandIdentity:
         )
 
 
+class TestPreferWindowsExecutableIdentity:
+    """Enforce that _prefer_windows_executable() is identical in both scripts."""
+
+    def test_prefer_windows_executable_bodies_identical(self) -> None:
+        ic_source = _read_source(INSTALL_CLAUDE)
+        se_source = _read_source(SETUP_ENVIRONMENT)
+
+        ic_func = _extract_function_source(ic_source, '_prefer_windows_executable')
+        se_func = _extract_function_source(se_source, '_prefer_windows_executable')
+
+        # Normalize whitespace for comparison
+        ic_normalized = '\n'.join(line.rstrip() for line in ic_func.splitlines())
+        se_normalized = '\n'.join(line.rstrip() for line in se_func.splitlines())
+
+        assert ic_normalized == se_normalized, (
+            '_prefer_windows_executable() has diverged between install_claude.py '
+            'and setup_environment.py. Both copies must remain identical.'
+        )
+
+
 class TestColorsClassIdentity:
     """Enforce that Colors class is identical in both scripts."""
 

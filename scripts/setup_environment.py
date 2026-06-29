@@ -818,14 +818,51 @@ def header(environment_name: str = 'Development') -> None:
     print()
 
 
+def _prefer_windows_executable(cmd: str, resolved: str | None) -> str | None:
+    """Prefer a launchable Windows wrapper over an extensionless shim.
+
+    ``shutil.which()`` can resolve a command to the extensionless Unix shell
+    shim that Node.js ships beside its Windows wrapper (for example the ``npm``
+    script next to ``npm.cmd``). ``subprocess.run(..., shell=False)`` launches
+    resolved paths through ``CreateProcess``, which cannot execute such a shim
+    and fails with ``OSError`` ``[WinError 193] %1 is not a valid Win32
+    application``. On Python builds before the gh-109590 fix (Windows
+    ``shutil.which`` on CPython 3.12.0 and every 3.11-or-earlier release), the
+    bare command name is probed ahead of the PATHEXT variants, so the shim
+    wins. When ``resolved`` lacks an executable extension, fall back to the
+    ``.exe``/``.cmd``/``.bat``/``.com`` sibling that Windows can launch.
+
+    Args:
+        cmd: The command name originally passed to ``shutil.which()``.
+        resolved: The path ``shutil.which(cmd)`` returned (possibly ``None``).
+
+    Returns:
+        A launchable executable path when one is found, otherwise ``resolved``.
+    """
+    executable_suffixes = ('.exe', '.cmd', '.bat', '.com')
+    if resolved and Path(resolved).suffix.lower() in executable_suffixes:
+        return resolved
+    # ``resolved`` is missing or a non-launchable shim. Probe each executable
+    # extension explicitly: appending a PATHEXT extension makes shutil.which()
+    # return the direct wrapper match on every Python version.
+    for suffix in executable_suffixes:
+        wrapper = shutil.which(cmd + suffix)
+        if wrapper:
+            return wrapper
+    return resolved
+
+
 def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run a command and return the result."""
     try:
-        # On Windows, resolve batch files (.cmd, .bat) to their full path
-        # This is necessary because subprocess.run() with shell=False cannot find
-        # batch files directly - it only finds .exe files
+        # On Windows, resolve the executable to a full path that CreateProcess
+        # can launch. subprocess.run(shell=False) cannot run a command by bare
+        # name, and shutil.which() may resolve npm/npx to the extensionless Unix
+        # shim shipped beside the .cmd wrapper -- launching that shim raises
+        # WinError 193. _prefer_windows_executable() returns the .cmd/.exe
+        # wrapper instead so batch-based tools (npm, npx) run correctly.
         if sys.platform == 'win32' and cmd:
-            resolved = shutil.which(cmd[0])
+            resolved = _prefer_windows_executable(cmd[0], shutil.which(cmd[0]))
             if resolved:
                 cmd = [resolved] + cmd[1:]
 
@@ -837,6 +874,12 @@ def run_command(cmd: list[str], capture_output: bool = True, **kwargs: Any) -> s
         )
     except FileNotFoundError:
         return subprocess.CompletedProcess(cmd, 1, '', f'Command not found: {cmd[0]}')
+    except OSError as exc:
+        # A non-launchable executable (e.g. WinError 193 from a stray shim) must
+        # not abort the whole setup: report it as a failed command so callers
+        # can continue and record the failure, mirroring the FileNotFoundError
+        # handling above.
+        return subprocess.CompletedProcess(cmd, 1, '', f'Failed to run {cmd[0]}: {exc}')
 
 
 def _dev_tty_sudo_available() -> bool:
@@ -981,6 +1024,12 @@ def find_command(cmd: str, fallback_paths: list[str] | None = None) -> str | Non
     # Primary: Use standard PATH search with retry for PATH synchronization
     for attempt in range(2):
         cmd_path = shutil.which(cmd)
+        if sys.platform == 'win32':
+            # shutil.which() can resolve a command to the extensionless Unix
+            # shim shipped beside its Windows wrapper (e.g. 'npm' next to
+            # 'npm.cmd'); subprocess.run(shell=False) cannot launch that shim
+            # and raises WinError 193. Prefer the executable wrapper instead.
+            cmd_path = _prefer_windows_executable(cmd, cmd_path)
         if cmd_path:
             # Normalize extension case on Windows for Git Bash compatibility
             # shutil.which() uses Windows PATHEXT which has uppercase extensions (.EXE)
