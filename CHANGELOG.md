@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.17.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.1...v5.17.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* prefer launchable Windows wrapper over extensionless npm shim ([db5e637](https://github.com/alex-feel/claude-code-toolbox/commit/db5e6377a14dbfbd6f4d6b1299cf8d9f6800def5))
+
 ## [5.17.1](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.0...v5.17.1) (2026-06-10)
 
 
