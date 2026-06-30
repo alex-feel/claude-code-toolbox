@@ -524,8 +524,11 @@ mcp-servers:
     transport: "http"
     url: "http://localhost:3000/api"
     header: "Authorization: Bearer ${MY_TOKEN}"
-    env: "MY_TOKEN"
 ```
+
+**Environment-variable header values (`${VAR}`):** A `${VAR}` (or `${VAR:-default}`) reference inside `header` is preserved literally in the Claude Code configuration and expanded from the environment by Claude Code **at runtime**, when a session starts -- the secret itself is never written into any configuration file, only the placeholder is stored. The setup script preserves the placeholder verbatim when it registers the server (it does not expand it at install time), so the behavior is identical on every operating system and shell. This is the recommended way to configure an authenticated remote MCP server: each user sets the variable (for example `MY_TOKEN`) as a real environment variable on their own machine, and only this placeholder configuration is shared. Do not add `env: "MY_TOKEN"` for this purpose -- `env` configures variables passed to a server and is unrelated to where the header reads its value.
+
+> **The variable must be set when Claude Code launches.** If a `${VAR}` reference has no value and no default, Claude Code fails to parse the MCP configuration. Ensure the variable is exported before launching Claude Code, or provide a fallback with `${VAR:-default}`.
 
 #### SSE Transport
 

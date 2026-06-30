@@ -57,6 +57,9 @@ mcp-servers:
   - name: "context-server"
     transport: "http"
     url: "http://localhost:8000/mcp"
+    # ${VAR} in a header is stored as-is and expanded by Claude Code at runtime,
+    # so the token stays in your environment, never in the config file.
+    header: "Authorization: Bearer ${CONTEXT_SERVER_TOKEN}"
 
 model: "sonnet"
 effort-level: "high"
