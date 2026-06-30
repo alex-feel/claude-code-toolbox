@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.17.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.2...v5.17.3) (2026-06-30)
+
+
+### Bug Fixes
+
+* preserve ${VAR} placeholders in MCP server headers for runtime expansion ([6f41c49](https://github.com/alex-feel/claude-code-toolbox/commit/6f41c49e4fc8faab22e3185d8bc993fce9d7dde9))
+
 ## [5.17.2](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.1...v5.17.2) (2026-06-29)
 
 
