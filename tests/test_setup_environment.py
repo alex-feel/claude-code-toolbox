@@ -2962,12 +2962,13 @@ class TestConfigureMCPServer:
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_header_env_var_expansion_unix(self, mock_run, mock_find, mock_bash):
-        """Test Unix HTTP transport wraps header in double quotes to allow ${VAR} expansion.
+    def test_configure_mcp_server_http_header_env_var_placeholder_preserved_unix(self, mock_run, mock_find, mock_bash):
+        """Unix HTTP transport single-quotes the header so a ${VAR} placeholder is preserved literally.
 
-        Single quotes (from shlex.quote) prevent bash variable expansion.
-        Header values containing ${VAR} patterns must use double quotes so
-        bash resolves environment variables at runtime.
+        The placeholder must reach `claude mcp add` verbatim and be stored as-is in the
+        config; Claude Code expands ${VAR} from the environment at runtime. Double quoting
+        would let bash expand ${VAR} at setup time, baking the resolved value (or an empty
+        string when the variable is unset) into the config instead of the placeholder.
         """
         mock_find.return_value = '/usr/local/bin/claude'
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
@@ -2987,14 +2988,52 @@ class TestConfigureMCPServer:
         assert result is True
         bash_cmd = mock_bash.call_args[0][0]
 
-        # Header must be wrapped in double quotes (not single quotes)
-        # to allow bash ${VAR} expansion at runtime
-        assert '--header "Authorization:${MY_AUTH_TOKEN}"' in bash_cmd, (
-            f'Header must use double quotes for ${{VAR}} expansion, got: {bash_cmd}'
+        # Header must be single-quoted so bash does NOT expand ${VAR} at setup time;
+        # the literal placeholder is stored and Claude Code expands it at runtime.
+        assert "--header 'Authorization:${MY_AUTH_TOKEN}'" in bash_cmd, (
+            f'Header must be single-quoted to preserve the ${{VAR}} placeholder, got: {bash_cmd}'
         )
-        # Verify single quotes are NOT used around the header value
-        assert "--header 'Authorization:${MY_AUTH_TOKEN}'" not in bash_cmd, (
-            'Header must NOT use single quotes (blocks ${VAR} expansion)'
+        # Double quotes around the header would trigger setup-time bash expansion.
+        assert '--header "Authorization:${MY_AUTH_TOKEN}"' not in bash_cmd, (
+            'Header must NOT use double quotes (would expand ${VAR} at setup time)'
+        )
+
+    @patch('platform.system', return_value='Windows')
+    @patch('setup_environment.run_bash_command')
+    @patch('setup_environment.run_command')
+    @patch('setup_environment.find_command')
+    def test_configure_mcp_server_http_header_env_var_placeholder_preserved_windows(
+        self, mock_find, mock_run_cmd, mock_bash_cmd, mock_system,
+    ):
+        """Windows HTTP transport single-quotes the header so a ${VAR} placeholder is preserved literally.
+
+        Git Bash must receive the literal ${VAR} placeholder and pass it to `claude mcp add`
+        verbatim; Claude Code expands it at runtime. Double quoting would let Git Bash expand
+        ${VAR} at setup time, baking the resolved value (or an empty string) into the config.
+        """
+        del mock_system  # Unused but required for patch
+        mock_find.return_value = 'C:\\Users\\Test\\AppData\\Roaming\\npm\\claude.CMD'
+        mock_run_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+        mock_bash_cmd.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        server = {
+            'name': 'env-header-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/mcp',
+            'header': 'Authorization:${MY_AUTH_TOKEN}',
+        }
+
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True
+
+        # The last bash call is the `mcp add` (preceded by 3 best-effort removes).
+        bash_cmd = mock_bash_cmd.call_args[0][0]
+        assert "--header 'Authorization:${MY_AUTH_TOKEN}'" in bash_cmd, (
+            f'Header must be single-quoted to preserve the ${{VAR}} placeholder on Windows, got: {bash_cmd}'
+        )
+        assert '--header "Authorization:${MY_AUTH_TOKEN}"' not in bash_cmd, (
+            'Header must NOT use double quotes on Windows (would expand ${VAR} at setup time)'
         )
 
     @patch('platform.system', return_value='Windows')

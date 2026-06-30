@@ -1225,6 +1225,7 @@ class TestMCPServerConfigurationEdgeCases:
             'env': [
                 'AUTH_TOKEN=token123',
                 'REGION=us-west',
+                'TOKEN=${SECRET_TOKEN}',
             ],
         }
 
@@ -1235,10 +1236,14 @@ class TestMCPServerConfigurationEdgeCases:
         assert mock_run.call_count == 0
         assert mock_bash.call_count == 4
 
-        # Check bash command contains env flags (last bash call is add)
+        # Check bash command contains env flags (last bash call is add). Env values are
+        # quoted via shlex.quote (matching the Unix path): safe values need no quotes,
+        # while a ${VAR} placeholder is single-quoted so Git Bash does not expand it at
+        # setup time (Claude Code expands it from the environment at runtime).
         bash_cmd = mock_bash.call_args[0][0]
-        assert '--env "AUTH_TOKEN=token123"' in bash_cmd
-        assert '--env "REGION=us-west"' in bash_cmd
+        assert '--env AUTH_TOKEN=token123' in bash_cmd
+        assert '--env REGION=us-west' in bash_cmd
+        assert "--env 'TOKEN=${SECRET_TOKEN}'" in bash_cmd
 
 
 class TestCreateSettingsComplex:

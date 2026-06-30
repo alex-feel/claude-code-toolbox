@@ -12,11 +12,15 @@ consuming positional arguments as additional header values, which causes
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
+
+import pytest
 
 from scripts import setup_environment
 from scripts.setup_environment import configure_all_mcp_servers
@@ -37,6 +41,16 @@ def _find_mcp_add_call(call_args_list: list[Any], server_name: str) -> str | Non
         if isinstance(cmd, str) and 'mcp add' in cmd and server_name in cmd:
             return cmd
     return None
+
+
+# Whether a usable bash is unavailable on this host, evaluated once at collection time.
+# The real-shell MCP test needs Git Bash on Windows (run_bash_command) or native bash on
+# Unix; skip it cleanly when neither is present rather than failing.
+_BASH_UNAVAILABLE: bool = (
+    setup_environment.find_bash_windows() is None
+    if sys.platform == 'win32'
+    else shutil.which('bash') is None
+)
 
 
 class TestMCPArgumentOrdering:
@@ -303,26 +317,34 @@ class TestMCPArgumentOrdering:
         )
 
 
-class TestMCPHeaderEnvVarExpansion:
-    """E2E tests for header environment variable expansion using double quotes."""
+class TestMCPHeaderEnvVarPlaceholder:
+    """E2E tests: a ${VAR} header placeholder is preserved literally for runtime expansion.
 
-    def test_http_header_with_env_var_uses_double_quotes_unix(
+    The setup script must NOT expand ${VAR} at install time. It single-quotes the header so
+    `claude mcp add` stores the literal placeholder; Claude Code expands it from the
+    environment when a session starts. These tests cover both the generated command string
+    and -- on the real platform shell -- the value that actually reaches `claude mcp add`.
+    """
+
+    def test_http_header_env_var_placeholder_single_quoted_unix(
         self,
         e2e_isolated_home: dict[str, Path],
-        golden_config: dict[str, Any],
     ) -> None:
-        """Verify Unix HTTP transport wraps header in double quotes for ${VAR} expansion.
-
-        Single quotes (from shlex.quote) prevent bash variable expansion.
-        Header values containing ${VAR} patterns must use double quotes so
-        bash resolves environment variables at runtime.
-        """
+        """The generated Unix bash command single-quotes a ${VAR} header (no setup-time expansion)."""
         mock_bash = MagicMock(
             return_value=subprocess.CompletedProcess([], 0, '', ''),
         )
         mock_run = MagicMock(
             return_value=subprocess.CompletedProcess([], 0, '', ''),
         )
+
+        server = {
+            'name': 'e2e-envheader-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/mcp',
+            'header': 'Authorization: Bearer ${E2E_YT_TOKEN}',
+        }
 
         with (
             patch('platform.system', return_value='Linux'),
@@ -335,23 +357,113 @@ class TestMCPHeaderEnvVarExpansion:
         ):
             profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
             configure_all_mcp_servers(
-                servers=golden_config.get('mcp-servers', []),
+                servers=[server],
                 profile_mcp_config_path=profile_mcp_path,
             )
 
-        # e2e-http-server has header "X-API-Key: test-key"
-        bash_cmd = _find_mcp_add_call(mock_bash.call_args_list, 'e2e-http-server')
+        bash_cmd = _find_mcp_add_call(mock_bash.call_args_list, 'e2e-envheader-server')
         assert bash_cmd is not None, (
-            'No mcp add command found for e2e-http-server in run_bash_command calls'
+            'No mcp add command found for e2e-envheader-server in run_bash_command calls'
         )
 
-        # Header must be wrapped in double quotes (not single quotes)
-        assert '--header "' in bash_cmd, (
-            f'Header must use double quotes for ${{VAR}} expansion, got: {bash_cmd}'
+        # The placeholder must be single-quoted (literal), never double-quoted (which would
+        # let bash expand ${E2E_YT_TOKEN} at setup time instead of preserving it for Claude).
+        assert "--header 'Authorization: Bearer ${E2E_YT_TOKEN}'" in bash_cmd, (
+            f'Header must be single-quoted to preserve the placeholder, got: {bash_cmd}'
         )
-        # Verify single quotes are NOT used around the header value
-        assert "--header '" not in bash_cmd, (
-            'Header must NOT use single quotes (blocks ${VAR} expansion)'
+        assert '--header "' not in bash_cmd, (
+            f'Header must NOT be double-quoted (would expand ${{VAR}} at setup time), got: {bash_cmd}'
+        )
+        assert '${E2E_YT_TOKEN}' in bash_cmd, (
+            'The literal ${VAR} placeholder must be present in the generated command'
+        )
+
+    @pytest.mark.skipif(_BASH_UNAVAILABLE, reason='bash/Git Bash not available on this host')
+    def test_http_header_env_var_placeholder_survives_real_shell(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Real cross-OS: the literal ${VAR} placeholder reaches `claude mcp add` through the actual shell.
+
+        Drives configure_mcp_server end-to-end through the real run_bash_command on whatever
+        OS the test runs (native bash on Linux/macOS, Git Bash on Windows). A fake `claude`
+        records the exact argv it receives. With the auth env var SET to a sentinel at setup
+        time, the recorded --header must still be the literal ${VAR} placeholder -- proving the
+        installer shell does not expand it (Claude Code expands it later, at session start).
+        """
+        # A fake `claude` that records the exact argv of every invocation, then succeeds.
+        local_bin = e2e_isolated_home['local_bin']
+        fake_claude = local_bin / 'claude'
+        fake_claude.write_text(
+            '#!/usr/bin/env bash\n'
+            'for arg in "$@"; do printf "%s\\n" "$arg" >> "$CLAUDE_E2E_RECORD"; done\n'
+            'printf "INVOCATION_END\\n" >> "$CLAUDE_E2E_RECORD"\n'
+            'exit 0\n',
+            encoding='utf-8',
+        )
+        fake_claude.chmod(0o755)
+
+        record_path = e2e_isolated_home['home'] / 'mcp_add_record.txt'
+        # Git Bash needs a POSIX-style path for the redirection target.
+        if sys.platform == 'win32':
+            record_env_value = setup_environment.convert_to_unix_path(str(record_path))
+        else:
+            record_env_value = str(record_path)
+        monkeypatch.setenv('CLAUDE_E2E_RECORD', record_env_value)
+
+        # Set the auth variable at SETUP time. If the installer wrongly expanded ${VAR}
+        # (the old double-quote bug), this sentinel would leak into the recorded header.
+        monkeypatch.setenv('E2E_YT_TOKEN', 'LEAKED_AT_SETUP')
+
+        # Point find_command('claude') at the fake recorder, overriding the autouse mock
+        # (which returns None). Other command lookups pass through.
+        original_find = setup_environment.find_command
+
+        def fake_find(cmd: str) -> str | None:
+            if cmd == 'claude':
+                return str(fake_claude)
+            return original_find(cmd)
+
+        monkeypatch.setattr(setup_environment, 'find_command', fake_find)
+
+        server = {
+            'name': 'e2e-envheader-server',
+            'scope': 'user',
+            'transport': 'http',
+            'url': 'https://api.example.com/mcp',
+            'header': 'Authorization: Bearer ${E2E_YT_TOKEN}',
+        }
+
+        # No platform.system / run_bash_command mocking: exercise the real OS shell.
+        result = setup_environment.configure_mcp_server(server)
+        assert result is True, (
+            'configure_mcp_server should succeed with the fake claude recorder'
+        )
+
+        assert record_path.exists(), (
+            f'Fake claude recorded nothing at {record_path}; the add command did not run'
+        )
+        recorded = record_path.read_text(encoding='utf-8').splitlines()
+
+        # `claude mcp add ... --header <value>` -> --header and its value are separate argv
+        # elements, so the value is the line immediately after the --header line.
+        header_value = None
+        for i, line in enumerate(recorded):
+            if line == '--header' and i + 1 < len(recorded):
+                header_value = recorded[i + 1]
+                break
+
+        assert header_value is not None, (
+            f'No --header argument reached claude. Recorded argv: {recorded}'
+        )
+        assert header_value == 'Authorization: Bearer ${E2E_YT_TOKEN}', (
+            'The real shell must pass the literal ${VAR} placeholder to claude, '
+            f'got: {header_value!r}'
+        )
+        assert 'LEAKED_AT_SETUP' not in header_value, (
+            'The setup-time value of E2E_YT_TOKEN must NOT leak into the stored header '
+            '(it must be expanded by Claude Code at runtime, not by the installer shell)'
         )
 
 

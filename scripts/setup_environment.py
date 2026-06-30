@@ -8833,9 +8833,15 @@ def configure_mcp_server(
                 path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
-                env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
+                # Single-quote --env/--header (via shlex.quote) so a ${VAR} placeholder is
+                # passed to `claude mcp add` literally and stored verbatim in the config;
+                # Claude Code expands it from the environment at runtime. Double-quoting
+                # would let Git Bash expand ${VAR} at setup time, baking the resolved value
+                # (or an empty string when the variable is unset) into the config instead.
+                # This matches the Unix branch and escapes any embedded special characters.
+                env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
-                header_part = f' --header "{header}"' if header else ''
+                header_part = f' --header {shlex.quote(header)}' if header else ''
 
                 bash_cmd = (
                     f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
@@ -8859,8 +8865,11 @@ def configure_mcp_server(
                 parent_dir = Path(claude_cmd).parent
                 env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
-                # Use double quotes for header to allow ${VAR} expansion in bash
-                header_part = f' --header "{header}"' if header else ''
+                # Single-quote the header (via shlex.quote) so a ${VAR} placeholder is
+                # passed to `claude mcp add` literally and stored verbatim; Claude Code
+                # expands it at runtime. Double-quoting would let bash expand ${VAR} at
+                # setup time, baking the resolved value (or an empty string) into the config.
+                header_part = f' --header {shlex.quote(header)}' if header else ''
                 bash_cmd = (
                     f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)}{env_part} '
                     f'--transport {shlex.quote(transport)} {shlex.quote(name)} {shlex.quote(url)}{header_part}'
@@ -8905,7 +8914,11 @@ def configure_mcp_server(
                 path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
-                env_flags = ' '.join(f'--env "{e}"' for e in env_list) if env_list else ''
+                # Single-quote --env (via shlex.quote) so a ${VAR} placeholder in an env
+                # value is passed literally and expanded by Claude Code at runtime, matching
+                # the Unix stdio path which passes --env as argv. Double-quoting would let
+                # Git Bash expand ${VAR} at setup time.
+                env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
                 env_part = f' {env_flags}' if env_flags else ''
 
                 # Build command string for STDIO
