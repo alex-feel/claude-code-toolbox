@@ -242,8 +242,10 @@ def _validate_effort_level_entry(effort_level: object, model: object) -> list[st
     """
     if effort_level not in EFFORT_LEVEL_VALUES:
         return [
-            f'user-settings.effortLevel must be one of '
-            f'{sorted(EFFORT_LEVEL_VALUES)}, got {effort_level!r}.',
+            (
+                f'user-settings.effortLevel must be one of '
+                f'{sorted(EFFORT_LEVEL_VALUES)}, got {effort_level!r}.'
+            ),
         ]
 
     if effort_level not in ('xhigh', 'max'):
@@ -254,8 +256,10 @@ def _validate_effort_level_entry(effort_level: object, model: object) -> list[st
 
     if not isinstance(model, str) or not model.strip():
         return [
-            f"user-settings.effortLevel '{effort_level}' requires user-settings.model "
-            f'to be specified. This effort level is only available for {families}.',
+            (
+                f"user-settings.effortLevel '{effort_level}' requires user-settings.model "
+                f'to be specified. This effort level is only available for {families}.'
+            ),
         ]
 
     model_lower = model.lower()
@@ -263,9 +267,11 @@ def _validate_effort_level_entry(effort_level: object, model: object) -> list[st
     # model names that merely contain 'best' are not accepted.
     if model_lower != 'best' and not any(marker in model_lower for marker in markers):
         return [
-            f"user-settings.effortLevel '{effort_level}' is only available for "
-            f"{families}, but model is set to '{model}'. "
-            "Use 'low', 'medium', or 'high' for other models.",
+            (
+                f"user-settings.effortLevel '{effort_level}' is only available for "
+                f"{families}, but model is set to '{model}'. "
+                "Use 'low', 'medium', or 'high' for other models."
+            ),
         ]
 
     return []
