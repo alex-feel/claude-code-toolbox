@@ -8,20 +8,18 @@
 
 Automated installers and an environment configuration framework for Claude Code on Windows, macOS, and Linux.
 
-Define your complete Claude Code environment in a single YAML file -- custom agents, MCP servers, slash commands, hooks, skills, model settings, and more -- and install everything with one command.
+Define your complete Claude Code environment in a single YAML file -- custom agents, MCP servers, slash commands, hooks, skills, settings, and more -- and install everything with one command.
 
 ## Features
 
 - **Custom agents** -- specialized subagents for code review, research, debugging, and any workflow you design
-- **MCP servers** -- HTTP, SSE, and stdio transports with automatic permission pre-allowing
+- **MCP servers** -- HTTP, SSE, and stdio transports with scope-based registration
 - **Slash commands** -- custom commands for frequently used workflows
 - **Rules** -- user-scope rule files for coding standards, security policies, and project conventions
 - **Skills** -- multi-file skill packages for complex agent capabilities
 - **System prompts** -- replace or append to the default Claude Code prompt
 - **Hooks** -- four hook types: command (shell scripts), HTTP (webhooks), prompt (LLM evaluation), and agent (subagent with tools)
-- **Permissions** -- fine-grained allow, deny, and ask rules for Claude Code tools and actions
-- **Model and reasoning control** -- model selection, effort levels (low, medium, high, xhigh, max), thinking mode
-- **User and global settings** -- direct control over `settings.json` and `~/.claude.json`
+- **User and global settings** -- `user-settings` is raw `settings.json` content (camelCase keys) and `global-config` is raw `~/.claude.json` content, covering model selection, permissions, effort levels, thinking mode, environment variables, and every other Claude Code setting
 - **Status line** -- custom status bar scripts for real-time session information
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
 - **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
@@ -61,8 +59,10 @@ mcp-servers:
     # so the token stays in your environment, never in the config file.
     header: "Authorization: Bearer ${CONTEXT_SERVER_TOKEN}"
 
-model: "sonnet"
-effort-level: "high"
+# user-settings holds raw settings.json content with camelCase keys
+user-settings:
+  model: "sonnet"
+  effortLevel: "high"
 
 command-defaults:
   system-prompt: "prompts/system-prompt.md"

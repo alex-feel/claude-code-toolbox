@@ -1261,8 +1261,9 @@ class TestCreateSettingsComplex:
             }
 
             result = setup_environment.create_profile_config(
-                {'permissions': permissions},
+                {},
                 claude_dir,
+                user_settings={'permissions': permissions},
             )
 
             assert result is True
@@ -1284,8 +1285,9 @@ class TestCreateSettingsComplex:
             permissions = {'deny': ['mcp__blocked_server']}
 
             setup_environment.create_profile_config(
-                {'permissions': permissions},
+                {},
                 claude_dir,
+                user_settings={'permissions': permissions},
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1305,8 +1307,9 @@ class TestCreateSettingsComplex:
             permissions = {'ask': ['mcp__ask_server']}
 
             setup_environment.create_profile_config(
-                {'permissions': permissions},
+                {},
                 claude_dir,
+                user_settings={'permissions': permissions},
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1316,7 +1319,7 @@ class TestCreateSettingsComplex:
             assert 'allow' not in settings['permissions'] or 'mcp__ask_server' not in settings['permissions'].get('allow', [])
 
     def test_create_profile_config_with_env_variables(self):
-        """Test creating settings with environment variables."""
+        """Test creating settings with environment variables passed via user_settings."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -1326,8 +1329,9 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             settings_file = claude_dir / 'config.json'
@@ -1336,7 +1340,7 @@ class TestCreateSettingsComplex:
             assert settings['env'] == env_vars
 
     def test_create_profile_config_with_non_string_env_values(self) -> None:
-        """Non-string env variable values are coerced to strings in config.json."""
+        """Non-string env values passed via user_settings are written as-is without stringification."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -1349,18 +1353,19 @@ class TestCreateSettingsComplex:
             }
 
             setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
-            # All values must be strings in the output
+            # Values pass through as-is; json.loads converts JSON number/boolean back to Python types
             env_output = settings['env']
-            assert env_output['TIMEOUT'] == '30000'
-            assert env_output['ENABLE_FEATURE'] == 'True'
-            assert env_output['THRESHOLD'] == '0.5'
+            assert env_output['TIMEOUT'] == 30000
+            assert env_output['ENABLE_FEATURE'] is True
+            assert env_output['THRESHOLD'] == 0.5
             assert env_output['NORMAL_VAR'] == 'string_value'
 
     @patch('setup_environment.download_file')
@@ -1907,16 +1912,17 @@ class TestMainFunctionErrorPaths:
                 'name': 'Full Test',
                 'command-names': ['full-test'],
                 'base-url': 'https://example.com/base/{path}',
-                'model': 'claude-3-opus',
-                'permissions': {
-                    'default-mode': 'ask',
-                    'allow': ['tool__*'],
-                    'deny': ['mcp__dangerous'],
-                    'ask': ['mcp__sensitive'],
-                },
-                'env-variables': {
-                    'API_KEY': 'test123',
-                    'DEBUG': 'true',
+                'user-settings': {
+                    'model': 'claude-3-opus',
+                    'permissions': {
+                        'defaultMode': 'auto',
+                        'allow': ['tool__*'],
+                        'deny': ['mcp__dangerous'],
+                    },
+                    'env': {
+                        'API_KEY': 'test123',
+                        'DEBUG': 'true',
+                    },
                 },
                 'dependencies': {
                     'windows': ['npm install test'],

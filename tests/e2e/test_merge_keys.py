@@ -125,12 +125,12 @@ class TestTwoLevelMerge:
         assert 'Read' in perms
         assert 'Write' in perms
 
-    def test_env_variables_shallow_merge_null_delete(self, fixtures_dir):
-        """Env-variables shallow merged, null deletes parent key."""
+    def test_user_settings_env_deep_merge_null_delete(self, fixtures_dir):
+        """User-settings.env deep merged, null deletes parent key."""
         child_path = fixtures_dir / 'merge_child.yaml'
         config = _load_yaml(child_path)
         resolved, _ = _resolve(config, str(child_path))
-        env = resolved['env-variables']
+        env = resolved['user-settings']['env']
         assert env['PARENT_VAR'] == 'parent_val'
         assert env['CHILD_VAR'] == 'child_val'
         assert 'SHARED_VAR' not in env

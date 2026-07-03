@@ -23,16 +23,22 @@ COMMON_FILES: Final[list[str]] = [
 
 # Expected keys in generated JSON files
 EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
+    # Top-level camelCase keys expected in the isolated config.json: the
+    # toolbox-built statusLine and hooks entries plus every non-null
+    # top-level key declared in the golden user-settings section.
     'settings': [
+        'language',
+        'theme',
+        'apiKeyHelper',
+        'model',
         'permissions',
         'env',
-        'hooks',
-        'model',
         'alwaysThinkingEnabled',
+        'effortLevel',
         'companyAnnouncements',
         'attribution',
         'statusLine',
-        'effortLevel',
+        'hooks',
     ],
     'mcp-config': [
         'mcpServers',

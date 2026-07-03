@@ -188,38 +188,6 @@ mcp-servers:
     transport: "http"
     url: "http://localhost:3003/combined-api"
 
-# Model configuration
-model: "sonnet"
-
-# Permissions configuration
-permissions:
-  default-mode: "default"
-  additional-directories:
-    - "/tmp/e2e-test-dir"
-  allow:
-    - "mcp__e2e-http-server"
-    - "mcp__e2e-http-profile-server"
-    - "mcp__e2e-sse-server"
-    - "mcp__e2e-stdio-server"
-    - "mcp__e2e-npx-server"
-    - "mcp__e2e-combined-scope-server"
-    - "Read"
-    - "Glob"
-    - "Grep"
-  deny:
-    - "Bash(rm -rf)"
-  ask:
-    - "Edit"
-    - "Write"
-
-# Environment variables for Claude
-env-variables:
-  E2E_TEST_VAR: "test_value"
-  E2E_ANOTHER_VAR: "another_value"
-  E2E_PATH_VAR: "~/.claude/e2e-data"
-  E2E_INT_VAR: 42
-  E2E_DELETE_VAR: null  # null-as-delete: absent from config.json, deleted from settings.json
-
 # OS-level environment variables
 os-env-variables:
   E2E_OS_VAR: "os_test_value"
@@ -234,12 +202,56 @@ command-defaults:
   system-prompt: "prompts/e2e-test-prompt.md"
   mode: "replace"
 
-# User settings (merged into settings.json)
+# User settings (raw settings.json content, camelCase keys).
+# In isolated mode this content is built into config.json; in non-isolated
+# mode it is deep-merged into ~/.claude/settings.json.
 user-settings:
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
   staleSettingToDelete: null  # RFC 7396: this key should be ABSENT from output
+  # Model configuration
+  model: "sonnet"
+  # Permissions configuration
+  permissions:
+    defaultMode: "default"
+    additionalDirectories:
+      - "/tmp/e2e-test-dir"
+    allow:
+      - "mcp__e2e-http-server"
+      - "mcp__e2e-http-profile-server"
+      - "mcp__e2e-sse-server"
+      - "mcp__e2e-stdio-server"
+      - "mcp__e2e-npx-server"
+      - "mcp__e2e-combined-scope-server"
+      - "Read"
+      - "Glob"
+      - "Grep"
+    deny:
+      - "Bash(rm -rf)"
+    ask:
+      - "Edit"
+      - "Write"
+  # Environment variables for Claude (settings.json env block).
+  # Non-string scalar values are quoted because env values must be strings.
+  env:
+    E2E_TEST_VAR: "test_value"
+    E2E_ANOTHER_VAR: "another_value"
+    E2E_PATH_VAR: "~/.claude/e2e-data"
+    E2E_INT_VAR: "42"
+    E2E_DELETE_VAR: null  # null-as-delete: absent from config.json, deleted from settings.json
+  # Always-thinking mode
+  alwaysThinkingEnabled: true
+  # Effort level for adaptive reasoning
+  effortLevel: "low"
+  # Company announcements
+  companyAnnouncements:
+    - "Welcome to E2E Testing Environment"
+    - "This is a test announcement for validation"
+  # Attribution settings
+  attribution:
+    commit: "E2E Test Attribution for Commits"
+    pr: "E2E Test Attribution for Pull Requests"
 
 # Global config (merged into ~/.claude.json)
 global-config:
@@ -249,22 +261,6 @@ global-config:
   terminalProgressBarEnabled: false
   oauthAccount: null
   staleConfigToDelete: null  # RFC 7396: this key should be ABSENT from output
-
-# Always-thinking mode
-always-thinking-enabled: true
-
-# Effort level for adaptive reasoning
-effort-level: "low"
-
-# Company announcements
-company-announcements:
-  - "Welcome to E2E Testing Environment"
-  - "This is a test announcement for validation"
-
-# Attribution settings (new format)
-attribution:
-  commit: "E2E Test Attribution for Commits"
-  pr: "E2E Test Attribution for Pull Requests"
 
 # Status line configuration
 status-line:

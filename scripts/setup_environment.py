@@ -74,7 +74,6 @@ MERGEABLE_CONFIG_KEYS: frozenset[str] = frozenset({
     'mcp-servers',
     'global-config',
     'user-settings',
-    'env-variables',
     'os-env-variables',
 })
 
@@ -100,7 +99,11 @@ FILE_REFERENCE_KEYS: frozenset[str] = frozenset({
 MIN_NODE_VERSION = '18.0.0'
 NODE_LTS_API = 'https://nodejs.org/dist/index.json'
 
-# All valid top-level configuration keys for unknown key detection
+# All valid top-level configuration keys for unknown key detection.
+# Claude Code settings.json content is declared via 'user-settings' and
+# ~/.claude.json content via 'global-config'; only keys that require
+# toolbox-side processing (status-line, hooks, os-env-variables) or that
+# drive the setup process itself live at the YAML root level.
 KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'name',
     'version',
@@ -121,17 +124,10 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'global-config',
     'hooks',
     'mcp-servers',
-    'model',
-    'permissions',
     'post-install-notes',
-    'env-variables',
     'os-env-variables',
     'command-defaults',
     'user-settings',
-    'always-thinking-enabled',
-    'effort-level',
-    'company-announcements',
-    'attribution',
     'status-line',
 })
 
@@ -195,38 +191,69 @@ GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
     'oauthAccount',
 })
 
-# Mapping from root-level YAML keys to their user-settings equivalents
-# Used for conflict detection between profile settings and user settings
-# Root keys use kebab-case, user-settings uses camelCase (matching JSON schema)
-ROOT_TO_USER_SETTINGS_KEY_MAP: dict[str, str] = {
-    'model': 'model',                           # Same in both
-    'permissions': 'permissions',               # Same in both
-    'attribution': 'attribution',               # Same in both
+# Model family markers whose presence (case-insensitive substring) in the model
+# identifier indicates support for the extended effort levels: 'xhigh' is
+# supported on Opus 4.7/4.8 and Fable 5; 'max' on Opus 4.6+, Sonnet 4.6+, and
+# Fable 5. Substring matching covers aliases ('opus', 'fable'), full model IDs
+# ('claude-fable-5'), and provider-prefixed IDs ('us.anthropic.claude-opus-4-8').
+# Intentionally identical to scripts/models/environment_config.py (parity-tested).
+XHIGH_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable')
+MAX_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable', 'sonnet')
+
+# Valid values for the settings.json effortLevel key
+EFFORT_LEVEL_VALUES: frozenset[str] = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
+
+# Valid values for the settings.json permissions.defaultMode key.
+# 'delegate' appears in the published JSON schema but not in the prose
+# documentation; it is accepted to avoid rejecting valid configurations.
+PERMISSIONS_DEFAULT_MODE_VALUES: frozenset[str] = frozenset({
+    'default',
+    'acceptEdits',
+    'plan',
+    'auto',
+    'dontAsk',
+    'bypassPermissions',
+    'delegate',
+})
+
+# user-settings is raw settings.json content and uses camelCase keys.
+# These kebab-case spellings are common mistakes carried over from the
+# root-level YAML naming convention; each maps to its camelCase correction.
+USER_SETTINGS_KEBAB_KEY_CORRECTIONS: dict[str, str] = {
     'always-thinking-enabled': 'alwaysThinkingEnabled',
     'company-announcements': 'companyAnnouncements',
-    'env-variables': 'env',                     # Different names
-    'effort-level': 'effortLevel',              # Adaptive reasoning effort
+    'effort-level': 'effortLevel',
+    'env-variables': 'env',
 }
 
-# Keys that are owned and written by the profile-settings subsystem.
-# These keys are extracted from YAML root level and routed via
-# create_profile_config() (isolated mode -> config.json) or
-# write_profile_settings_to_settings() (non-isolated mode -> settings.json).
-#
-# Both writers are fed by the shared pure builder _build_profile_settings(),
-# which performs kebab-to-camel translation. Values below are the POST-TRANSLATION
-# camelCase keys as they appear in settings.json / config.json on disk.
-#
-# In non-isolated mode, write_profile_settings_to_settings() deep-merges the
-# builder's delta into the shared ~/.claude/settings.json via
-# _write_merged_json(), inheriting: deep-merge for nested dicts, array-union
-# for permissions.allow/deny/ask, RFC 7396 null-as-delete for top-level and
-# nested None values, and preservation for keys omitted from the delta.
-# Keys not declared at YAML root level are PRESERVED in
-# ~/.claude/settings.json (unchanged by this writer), including any
-# prior-run contributions and any keys written by Step 14
-# write_user_settings() under user-settings:.
-PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
+# Nested permissions keys also use camelCase inside user-settings
+PERMISSIONS_KEBAB_KEY_CORRECTIONS: dict[str, str] = {
+    'default-mode': 'defaultMode',
+    'additional-directories': 'additionalDirectories',
+}
+
+# Root-level YAML keys that are not settings.json keys and therefore
+# never valid inside user-settings
+USER_SETTINGS_ROOT_ONLY_KEYS: frozenset[str] = frozenset({
+    'status-line',
+    'os-env-variables',
+})
+
+# Keys that live in ~/.claude.json (global-config), not in settings.json;
+# declaring them in user-settings would be a silent no-op at runtime
+USER_SETTINGS_GLOBAL_ONLY_KEYS: frozenset[str] = frozenset({
+    'autoUpdates',
+    'installMethod',
+    'autoConnectIde',
+    'autoInstallIdeExtension',
+    'externalEditorContext',
+    'teammateDefaultModel',
+    'oauthAccount',
+})
+
+# Keys that live in settings.json (user-settings), not in ~/.claude.json;
+# declaring them in global-config would be a silent no-op at runtime
+GLOBAL_CONFIG_SETTINGS_ONLY_KEYS: frozenset[str] = frozenset({
     'model',
     'permissions',
     'env',
@@ -236,31 +263,44 @@ PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
     'companyAnnouncements',
     'statusLine',
     'hooks',
+    'availableModels',
+    'enforceAvailableModels',
+})
+
+# Environment variable names: letters, digits, underscores; no leading digit
+ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+# Keys that are owned and written by the profile-settings subsystem.
+# These keys are extracted from YAML root level and routed via
+# create_profile_config() (isolated mode -> config.json) or
+# write_profile_settings_to_settings() (non-isolated mode -> settings.json).
+# They require toolbox-side processing (file download, absolute-path command
+# construction) and are therefore excluded from the free-form user-settings
+# section (USER_SETTINGS_EXCLUDED_KEYS).
+#
+# Both writers are fed by the shared pure builder _build_profile_settings().
+# Values below are the on-disk camelCase keys as they appear in
+# settings.json / config.json.
+#
+# In non-isolated mode, write_profile_settings_to_settings() deep-merges the
+# builder's delta into the shared ~/.claude/settings.json via
+# _write_merged_json(), inheriting: deep-merge for nested dicts, array-union
+# for every list at every depth, RFC 7396 null-as-delete for top-level and
+# nested None values, and preservation for keys omitted from the delta.
+PROFILE_OWNED_KEYS: frozenset[str] = frozenset({
+    'statusLine',
+    'hooks',
 })
 
 # Mapping from YAML root kebab-case key names to their on-disk camelCase
-# equivalents for the 9 profile-owned keys. Used by main() to build the
+# equivalents for the profile-owned keys. Used by main() to build the
 # profile_config dict passed to _build_profile_settings(): dict membership
 # encodes the "declared-vs-absent" distinction (which is lost by
-# config.get() alone), and a YAML-level `model: null` declaration passes
-# through as `profile_config['model'] = None`, which the builder forwards
+# config.get() alone), and a YAML-level `hooks: null` declaration passes
+# through as `profile_config['hooks'] = None`, which the builder forwards
 # to the writer so _write_merged_json() can apply RFC 7396 null-as-delete
 # to the shared settings.json.
-#
-# The mapping order matches PROFILE_OWNED_KEYS for visual clarity. It is
-# SEPARATE from ROOT_TO_USER_SETTINGS_KEY_MAP (which covers 7 keys and
-# drives detect_settings_conflicts()): this map intentionally includes
-# `status-line` and `hooks` because they are profile-owned keys that
-# participate in the null-as-delete contract even though they are
-# excluded from the user-settings conflict surface.
 _YAML_TO_CAMEL_PROFILE_KEYS: dict[str, str] = {
-    'model': 'model',
-    'permissions': 'permissions',
-    'env-variables': 'env',
-    'attribution': 'attribution',
-    'always-thinking-enabled': 'alwaysThinkingEnabled',
-    'effort-level': 'effortLevel',
-    'company-announcements': 'companyAnnouncements',
     'status-line': 'statusLine',
     'hooks': 'hooks',
 }
@@ -707,22 +747,15 @@ class InstallationPlan:
     )
 
     # Settings
-    model: str | None = None
     system_prompt: str | None = None
     system_prompt_mode: str = 'replace'
     command_names: list[str] = field(default_factory=lambda: list[str]())
     claude_code_version: str | None = None
     install_nodejs: bool = False
     skip_install: bool = False
-    permissions: dict[str, Any] | None = None
-    env_variables: dict[str, str | None] | None = None
     os_env_variables: dict[str, Any] | None = None
     user_settings: dict[str, Any] | None = None
     global_config: dict[str, Any] | None = None
-    always_thinking_enabled: bool | None = None
-    effort_level: str | None = None
-    company_announcements: list[str] | None = None
-    attribution: dict[str, str] | None = None
     status_line: dict[str, Any] | None = None
 
     # Security analysis
@@ -1787,6 +1820,10 @@ def write_user_settings(
     - Windows: Expands tilde paths in command keys (apiKeyHelper, awsCredentialExport)
     - Linux/macOS/WSL: Preserves tildes for runtime resolution by Claude Code
 
+    Used in non-isolated mode only: when command-names is present, the
+    user-settings section is built into the isolated profile's config.json
+    via create_profile_config() instead.
+
     Args:
         settings: User settings dict from YAML user-settings section
         claude_user_dir: Path to ~/.claude directory
@@ -1812,32 +1849,159 @@ def write_user_settings(
 
     if ok:
         success(f'Wrote user settings to {settings_file}')
-
-        # Warn about potential WSL path issues
-        if is_wsl():
-            for key in TILDE_EXPANSION_KEYS:
-                if key in merged and isinstance(merged[key], str):
-                    value = merged[key]
-                    # Check for Windows path patterns (e.g., C:\, D:\)
-                    if re.search(r'[A-Za-z]:\\', value):
-                        warning(
-                            f'WSL detected: {key} contains Windows-style path: {value}. '
-                            'This may not work in the Linux environment. '
-                            'Consider re-running setup from within WSL.',
-                        )
-                        break
+        _warn_wsl_windows_paths(merged)
     else:
         warning(f'Failed to write user settings to {settings_file}')
 
     return ok
 
 
-def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
-    """Validate user-settings section for excluded keys.
+def _validate_effort_level_entry(effort_level: object, model: object) -> list[str]:
+    """Validate the user-settings effortLevel value and its model support.
 
-    Checks that the user-settings section does not contain keys that are
-    not allowed (hooks, statusLine) due to path resolution or profile-specific
-    behavior issues.
+    The 'xhigh' level requires an Opus or Fable model; 'max' requires an
+    Opus, Sonnet, or Fable model. The exact alias 'best' (which resolves to
+    Fable 5 or the latest Opus model) satisfies both. Claude Code gracefully
+    downgrades an unsupported level at runtime, but declaring one in the
+    profile is almost always a configuration mistake, so it is rejected.
+
+    Args:
+        effort_level: The declared effortLevel value (non-null).
+        model: The declared user-settings model value, or None when absent.
+
+    Returns:
+        List of error messages. Empty list if the entry is valid.
+    """
+    if effort_level not in EFFORT_LEVEL_VALUES:
+        return [
+            f'user-settings.effortLevel must be one of '
+            f'{sorted(EFFORT_LEVEL_VALUES)}, got {effort_level!r}.',
+        ]
+
+    if effort_level not in ('xhigh', 'max'):
+        return []
+
+    markers = XHIGH_EFFORT_MODEL_MARKERS if effort_level == 'xhigh' else MAX_EFFORT_MODEL_MARKERS
+    families = 'Opus and Fable models' if effort_level == 'xhigh' else 'Opus, Sonnet, and Fable models'
+
+    if not isinstance(model, str) or not model.strip():
+        return [
+            f"user-settings.effortLevel '{effort_level}' requires user-settings.model "
+            f'to be specified. This effort level is only available for {families}.',
+        ]
+
+    model_lower = model.lower()
+    # The 'best' alias is matched exactly, not as a substring, so arbitrary
+    # model names that merely contain 'best' are not accepted.
+    if model_lower != 'best' and not any(marker in model_lower for marker in markers):
+        return [
+            f"user-settings.effortLevel '{effort_level}' is only available for "
+            f"{families}, but model is set to '{model}'. "
+            "Use 'low', 'medium', or 'high' for other models.",
+        ]
+
+    return []
+
+
+def _validate_permissions_entry(permissions: object) -> list[str]:
+    """Validate the structure of the user-settings permissions value.
+
+    Known sub-keys are checked (camelCase naming, defaultMode enum, list
+    shapes); unknown sub-keys pass through untouched for forward
+    compatibility with new Claude Code permissions options.
+
+    Args:
+        permissions: The declared permissions value (non-null).
+
+    Returns:
+        List of error messages. Empty list if the value is valid.
+    """
+    if not isinstance(permissions, dict):
+        return ['user-settings.permissions must be a mapping.']
+
+    errors: list[str] = []
+    permissions_dict = cast(dict[str, Any], permissions)
+
+    errors.extend(
+        f"user-settings.permissions uses camelCase keys: use '{camel}' instead of '{kebab}'."
+        for kebab, camel in PERMISSIONS_KEBAB_KEY_CORRECTIONS.items()
+        if kebab in permissions_dict
+    )
+
+    default_mode = permissions_dict.get('defaultMode')
+    if 'defaultMode' in permissions_dict and default_mode is not None and default_mode not in PERMISSIONS_DEFAULT_MODE_VALUES:
+        errors.append(
+            f'user-settings.permissions.defaultMode must be one of '
+            f'{sorted(PERMISSIONS_DEFAULT_MODE_VALUES)}, got {default_mode!r}.',
+        )
+
+    for list_key in ('allow', 'deny', 'ask', 'additionalDirectories'):
+        value = permissions_dict.get(list_key)
+        if list_key in permissions_dict and value is not None:
+            value_list = cast(list[Any], value) if isinstance(value, list) else None
+            if value_list is None or any(not isinstance(item, str) for item in value_list):
+                errors.append(f'user-settings.permissions.{list_key} must be a list of strings.')
+
+    return errors
+
+
+def _validate_env_entry(env: object) -> list[str]:
+    """Validate the structure of the user-settings env value.
+
+    settings.json requires env to be a mapping of string names to string
+    values. A null entry value is a deletion request and carries no content
+    to check.
+
+    Args:
+        env: The declared env value (non-null).
+
+    Returns:
+        List of error messages. Empty list if the value is valid.
+    """
+    if not isinstance(env, dict):
+        return ['user-settings.env must be a mapping of environment variable names to string values.']
+
+    errors: list[str] = []
+    for name, value in cast(dict[Any, Any], env).items():
+        if not isinstance(name, str) or not ENV_VAR_NAME_PATTERN.match(name):
+            errors.append(
+                f'user-settings.env: invalid environment variable name {name!r}. '
+                'Must start with letter or underscore, followed by letters, digits, or underscores.',
+            )
+            continue
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append(
+                f'user-settings.env.{name} must be a string '
+                '(quote the value in YAML) or null to delete the variable.',
+            )
+        elif '\x00' in value:
+            errors.append(f'user-settings.env.{name} value cannot contain null bytes.')
+
+    return errors
+
+
+def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
+    """Validate the user-settings section (excluded keys and known key values).
+
+    user-settings is free-form raw settings.json content: unknown keys pass
+    through untouched so new Claude Code settings work without a toolbox
+    update. Known built-in keys, however, are validated fail-fast, because
+    Claude Code silently ignores malformed or misplaced entries at runtime
+    and the misconfiguration would otherwise go unnoticed. A null value for
+    any key is a deletion request and is always allowed.
+
+    Checks:
+    - 'hooks' and 'statusLine' are excluded (profile-specific, configured
+      via root-level YAML keys with dedicated download and path resolution).
+    - Root-level YAML keys ('status-line', 'os-env-variables') are rejected.
+    - Kebab-case spellings of known camelCase keys are rejected with the
+      camelCase correction.
+    - Keys that belong in global-config (~/.claude.json) are rejected.
+    - Value shapes for model, env, permissions, attribution,
+      alwaysThinkingEnabled, companyAnnouncements, and effortLevel
+      (including the effortLevel/model support cross-check).
 
     Args:
         user_settings: Dict from YAML user-settings section.
@@ -1851,23 +2015,83 @@ def validate_user_settings(user_settings: dict[str, Any]) -> list[str]:
 
         >>> validate_user_settings({'hooks': {'events': []}})
         ["Key 'hooks' is not allowed in user-settings (profile-specific only)"]
-
-        >>> validate_user_settings({'statusLine': {'file': 'script.py'}})
-        ["Key 'statusLine' is not allowed in user-settings (profile-specific only)"]
     """
-    return [
+    errors: list[str] = [
         f"Key '{key}' is not allowed in user-settings (profile-specific only)"
         for key in user_settings
         if key in USER_SETTINGS_EXCLUDED_KEYS
     ]
 
+    errors.extend(
+        f"Key '{key}' is not allowed in user-settings. "
+        'It is a root-level YAML key, not a settings.json key.'
+        for key in sorted(USER_SETTINGS_ROOT_ONLY_KEYS & set(user_settings))
+    )
+
+    errors.extend(
+        f"Key '{kebab}' is not a settings.json key. "
+        f"user-settings holds raw settings.json content with camelCase keys: use '{camel}' instead."
+        for kebab, camel in USER_SETTINGS_KEBAB_KEY_CORRECTIONS.items()
+        if kebab in user_settings
+    )
+
+    errors.extend(
+        f"Key '{key}' belongs in global-config (~/.claude.json), "
+        'not in user-settings (settings.json).'
+        for key in sorted(USER_SETTINGS_GLOBAL_ONLY_KEYS & set(user_settings))
+    )
+
+    model = user_settings.get('model')
+    if 'model' in user_settings and model is not None and (not isinstance(model, str) or not model.strip()):
+        errors.append('user-settings.model must be a non-empty string.')
+
+    env = user_settings.get('env')
+    if 'env' in user_settings and env is not None:
+        errors.extend(_validate_env_entry(env))
+
+    permissions = user_settings.get('permissions')
+    if 'permissions' in user_settings and permissions is not None:
+        errors.extend(_validate_permissions_entry(permissions))
+
+    attribution = user_settings.get('attribution')
+    if 'attribution' in user_settings and attribution is not None:
+        if not isinstance(attribution, dict):
+            errors.append('user-settings.attribution must be a mapping.')
+        else:
+            attribution_dict = cast(dict[str, Any], attribution)
+            for sub in ('commit', 'pr'):
+                value = attribution_dict.get(sub)
+                if sub in attribution_dict and value is not None and not isinstance(value, str):
+                    errors.append(
+                        f'user-settings.attribution.{sub} must be a string '
+                        '(empty string hides attribution).',
+                    )
+
+    always_thinking = user_settings.get('alwaysThinkingEnabled')
+    if 'alwaysThinkingEnabled' in user_settings and always_thinking is not None and not isinstance(always_thinking, bool):
+        errors.append('user-settings.alwaysThinkingEnabled must be a boolean.')
+
+    announcements = user_settings.get('companyAnnouncements')
+    if 'companyAnnouncements' in user_settings and announcements is not None:
+        announcements_list = cast(list[Any], announcements) if isinstance(announcements, list) else None
+        if announcements_list is None or any(not isinstance(item, str) for item in announcements_list):
+            errors.append('user-settings.companyAnnouncements must be a list of strings.')
+
+    effort_level = user_settings.get('effortLevel')
+    if 'effortLevel' in user_settings and effort_level is not None:
+        errors.extend(_validate_effort_level_entry(effort_level, model))
+
+    return errors
+
 
 def validate_global_config(global_config: dict[str, Any]) -> list[str]:
-    """Validate global-config section for excluded keys.
+    """Validate the global-config section (excluded keys and key placement).
 
-    Checks that the global-config section does not contain non-null OAuth
-    credential values. Null values are allowed to support clearing
-    authentication state (e.g., oauthAccount: null).
+    global-config is free-form ~/.claude.json content: unknown keys pass
+    through untouched. Non-null OAuth credential values are rejected (null
+    values are allowed to support clearing authentication state), and known
+    settings.json keys are rejected because ~/.claude.json is not a settings
+    file and Claude Code would silently ignore them at runtime.
 
     Args:
         global_config: Dict from YAML global-config section.
@@ -1875,12 +2099,27 @@ def validate_global_config(global_config: dict[str, Any]) -> list[str]:
     Returns:
         List of error messages. Empty list if validation passes.
     """
-    return [
+    errors: list[str] = [
         f"Key '{key}' cannot be set to a non-null value in global-config "
         '(OAuth credentials)'
         for key in global_config
         if key in GLOBAL_CONFIG_EXCLUDED_KEYS and global_config[key] is not None
     ]
+
+    for key in sorted(GLOBAL_CONFIG_SETTINGS_ONLY_KEYS & set(global_config)):
+        if key in ('statusLine', 'hooks'):
+            root_key = 'status-line' if key == 'statusLine' else 'hooks'
+            errors.append(
+                f"Key '{key}' is not valid in global-config (~/.claude.json). "
+                f"Configure it via the root-level '{root_key}' YAML key.",
+            )
+        else:
+            errors.append(
+                f"Key '{key}' is a settings.json key and is not valid in "
+                'global-config (~/.claude.json). Move it to user-settings.',
+            )
+
+    return errors
 
 
 def write_global_config(
@@ -2057,12 +2296,10 @@ def apply_auto_update_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str | None] | None,
     dict[str, str | None] | None,
     list[str],
     list[str],
@@ -2070,7 +2307,7 @@ def apply_auto_update_settings(
     """Apply automatic auto-update settings based on version pinning.
 
     When a specific version is pinned, disables auto-updates across all
-    four available targets. When version is None (latest/absent), removes
+    three available targets. When version is None (latest/absent), removes
     auto-injected controls.
 
     Operates on in-memory dicts ONLY -- has no knowledge of command-names,
@@ -2081,11 +2318,10 @@ def apply_auto_update_settings(
         claude_code_version_normalized: Pinned version string, or None for latest.
         global_config: Global config dict (may be None).
         user_settings: User settings dict (may be None).
-        env_variables: Environment variables dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables, os_env_variables,
+        Tuple of (global_config, user_settings, os_env_variables,
         warnings, auto_injected_items).
     """
     warnings_list: list[str] = []
@@ -2093,27 +2329,26 @@ def apply_auto_update_settings(
 
     if claude_code_version_normalized is not None:
         # Pinned version: inject auto-update disable controls
-        global_config, user_settings, env_variables, os_env_variables = (
+        global_config, user_settings, os_env_variables = (
             _inject_auto_update_controls(
-                global_config, user_settings, env_variables, os_env_variables,
+                global_config, user_settings, os_env_variables,
                 warnings_list, auto_injected,
             )
         )
     else:
         # Latest/absent: preserve user declarations, schedule OS-level cleanup
-        global_config, user_settings, env_variables, os_env_variables = (
+        global_config, user_settings, os_env_variables = (
             _remove_auto_update_controls(
-                global_config, user_settings, env_variables, os_env_variables,
+                global_config, user_settings, os_env_variables,
             )
         )
 
-    return global_config, user_settings, env_variables, os_env_variables, warnings_list, auto_injected
+    return global_config, user_settings, os_env_variables, warnings_list, auto_injected
 
 
 def _inject_auto_update_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
     warnings_list: list[str],
     auto_injected: list[str],
@@ -2121,9 +2356,8 @@ def _inject_auto_update_controls(
     dict[str, Any] | None,
     dict[str, Any] | None,
     dict[str, str | None] | None,
-    dict[str, str | None] | None,
 ]:
-    """Inject auto-update disable controls into all four target dicts.
+    """Inject auto-update disable controls into all three target dicts.
 
     Injection is gated on key MEMBERSHIP, not on value: an explicit user
     null (a YAML deletion request, legal in every target) is a user
@@ -2131,8 +2365,8 @@ def _inject_auto_update_controls(
     overwritten.
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables,
-        os_env_variables) with controls injected into absent keys.
+        Tuple of (global_config, user_settings, os_env_variables) with
+        controls injected into absent keys.
     """
     # Target 1: global_config.autoUpdates = False
     if global_config is None:
@@ -2169,22 +2403,7 @@ def _inject_auto_update_controls(
             f'Respecting user value.',
         )
 
-    # Target 3: env_variables.DISABLE_AUTOUPDATER = "1"
-    if env_variables is None:
-        env_variables = {}
-    if DISABLE_AUTOUPDATER_KEY not in env_variables:
-        env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
-        auto_injected.append(f'env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(env_variables[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
-        pass  # Already matches intent
-    else:
-        warnings_list.append(
-            f'User set env-variables.{DISABLE_AUTOUPDATER_KEY} to {env_variables[DISABLE_AUTOUPDATER_KEY]!r} '
-            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
-            f'Respecting user value.',
-        )
-
-    # Target 4: os_env_variables.DISABLE_AUTOUPDATER = "1"
+    # Target 3: os_env_variables.DISABLE_AUTOUPDATER = "1"
     if os_env_variables is None:
         os_env_variables = {}
     if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
@@ -2199,18 +2418,16 @@ def _inject_auto_update_controls(
             f'Respecting user value.',
         )
 
-    return global_config, user_settings, env_variables, os_env_variables
+    return global_config, user_settings, os_env_variables
 
 
 def _remove_auto_update_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
     """Handle auto-update controls for an unpinned run.
@@ -2228,20 +2445,19 @@ def _remove_auto_update_controls(
     absent variable is a safe no-op on all platforms.
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables,
-        os_env_variables) with the OS-level deletion entry scheduled.
+        Tuple of (global_config, user_settings, os_env_variables) with the
+        OS-level deletion entry scheduled.
     """
     if os_env_variables is None:
         os_env_variables = {}
     if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
         os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
 
-    return global_config, user_settings, env_variables, os_env_variables
+    return global_config, user_settings, os_env_variables
 
 
 def _collect_user_declared_control_keys(
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
 ) -> frozenset[str]:
     """Identify which managed control keys the resolved YAML itself declares.
 
@@ -2253,20 +2469,15 @@ def _collect_user_declared_control_keys(
 
     Args:
         user_settings: User settings dict from the YAML user-settings section.
-        env_variables: Environment variables dict from the YAML env-variables
-            section.
 
     Returns:
         Frozen set containing each managed control key (DISABLE_AUTOUPDATER,
-        CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in user-settings.env or
-        env-variables.
+        CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in user-settings.env.
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
     for key in (DISABLE_AUTOUPDATER_KEY, IDE_SKIP_AUTO_INSTALL_KEY):
         if isinstance(env_section, dict) and key in env_section:
-            declared.add(key)
-        if env_variables is not None and key in env_variables:
             declared.add(key)
     return frozenset(declared)
 
@@ -2299,7 +2510,7 @@ def cleanup_stale_auto_update_controls(
         is_pinned: Whether a specific Claude Code version is pinned.
         is_isolated: Whether command-names created an isolated environment.
         user_declared: Whether the current resolved YAML declares
-            DISABLE_AUTOUPDATER in user-settings.env or env-variables.
+            DISABLE_AUTOUPDATER in user-settings.env.
     """
     claude_dir = home_dir / '.claude'
 
@@ -2418,12 +2629,10 @@ def apply_ide_extension_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str | None] | None,
     dict[str, str | None] | None,
     list[str],
     list[str],
@@ -2431,7 +2640,7 @@ def apply_ide_extension_settings(
     """Apply automatic IDE extension auto-install settings based on version pinning.
 
     When a specific version is pinned, disables IDE extension auto-installation
-    across all four available targets. When version is None (latest/absent),
+    across all three available targets. When version is None (latest/absent),
     removes auto-injected controls.
 
     Operates on in-memory dicts ONLY -- has no knowledge of command-names,
@@ -2442,11 +2651,10 @@ def apply_ide_extension_settings(
         claude_code_version_normalized: Pinned version string, or None for latest.
         global_config: Global config dict (may be None).
         user_settings: User settings dict (may be None).
-        env_variables: Environment variables dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables, os_env_variables,
+        Tuple of (global_config, user_settings, os_env_variables,
         warnings, auto_injected_items).
     """
     warnings_list: list[str] = []
@@ -2454,27 +2662,26 @@ def apply_ide_extension_settings(
 
     if claude_code_version_normalized is not None:
         # Pinned version: inject IDE extension auto-install disable controls
-        global_config, user_settings, env_variables, os_env_variables = (
+        global_config, user_settings, os_env_variables = (
             _inject_ide_extension_controls(
-                global_config, user_settings, env_variables, os_env_variables,
+                global_config, user_settings, os_env_variables,
                 warnings_list, auto_injected,
             )
         )
     else:
         # Latest/absent: preserve user declarations, schedule OS-level cleanup
-        global_config, user_settings, env_variables, os_env_variables = (
+        global_config, user_settings, os_env_variables = (
             _remove_ide_extension_controls(
-                global_config, user_settings, env_variables, os_env_variables,
+                global_config, user_settings, os_env_variables,
             )
         )
 
-    return global_config, user_settings, env_variables, os_env_variables, warnings_list, auto_injected
+    return global_config, user_settings, os_env_variables, warnings_list, auto_injected
 
 
 def _inject_ide_extension_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
     warnings_list: list[str],
     auto_injected: list[str],
@@ -2482,9 +2689,8 @@ def _inject_ide_extension_controls(
     dict[str, Any] | None,
     dict[str, Any] | None,
     dict[str, str | None] | None,
-    dict[str, str | None] | None,
 ]:
-    """Inject IDE extension auto-install disable controls into all four target dicts.
+    """Inject IDE extension auto-install disable controls into all three target dicts.
 
     Injection is gated on key MEMBERSHIP, not on value: an explicit user
     null (a YAML deletion request, legal in every target) is a user
@@ -2492,8 +2698,8 @@ def _inject_ide_extension_controls(
     overwritten.
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables,
-        os_env_variables) with controls injected into absent keys.
+        Tuple of (global_config, user_settings, os_env_variables) with
+        controls injected into absent keys.
     """
     # Target 1: global_config.autoInstallIdeExtension = False
     if global_config is None:
@@ -2530,22 +2736,7 @@ def _inject_ide_extension_controls(
             f'Respecting user value.',
         )
 
-    # Target 3: env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
-    if env_variables is None:
-        env_variables = {}
-    if IDE_SKIP_AUTO_INSTALL_KEY not in env_variables:
-        env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
-        auto_injected.append(f'env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(env_variables[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
-        pass  # Already matches intent
-    else:
-        warnings_list.append(
-            f'User set env-variables.{IDE_SKIP_AUTO_INSTALL_KEY} to {env_variables[IDE_SKIP_AUTO_INSTALL_KEY]!r} '
-            f'(auto-install intent is {IDE_SKIP_AUTO_INSTALL_VALUE!r} for pinned version). '
-            f'Respecting user value.',
-        )
-
-    # Target 4: os_env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
+    # Target 3: os_env_variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL = "1"
     if os_env_variables is None:
         os_env_variables = {}
     if IDE_SKIP_AUTO_INSTALL_KEY not in os_env_variables:
@@ -2560,18 +2751,16 @@ def _inject_ide_extension_controls(
             f'Respecting user value.',
         )
 
-    return global_config, user_settings, env_variables, os_env_variables
+    return global_config, user_settings, os_env_variables
 
 
 def _remove_ide_extension_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
-    env_variables: dict[str, str | None] | None,
     os_env_variables: dict[str, str | None] | None,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
-    dict[str, str | None] | None,
     dict[str, str | None] | None,
 ]:
     """Handle IDE extension auto-install controls for an unpinned run.
@@ -2589,15 +2778,15 @@ def _remove_ide_extension_controls(
     Deleting an absent variable is a safe no-op on all platforms.
 
     Returns:
-        Tuple of (global_config, user_settings, env_variables,
-        os_env_variables) with the OS-level deletion entry scheduled.
+        Tuple of (global_config, user_settings, os_env_variables) with the
+        OS-level deletion entry scheduled.
     """
     if os_env_variables is None:
         os_env_variables = {}
     if IDE_SKIP_AUTO_INSTALL_KEY not in os_env_variables:
         os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = None
 
-    return global_config, user_settings, env_variables, os_env_variables
+    return global_config, user_settings, os_env_variables
 
 
 def _cleanup_settings_json_ide_skip(settings_path: Path) -> None:
@@ -2673,8 +2862,7 @@ def cleanup_stale_ide_extension_controls(
         is_pinned: Whether a specific Claude Code version is pinned.
         is_isolated: Whether command-names created an isolated environment.
         user_declared: Whether the current resolved YAML declares
-            CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in user-settings.env or
-            env-variables.
+            CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in user-settings.env.
     """
     claude_dir = home_dir / '.claude'
 
@@ -3048,59 +3236,6 @@ def install_ide_extensions(
         if temp_vsix_path:
             with contextlib.suppress(OSError):
                 Path(temp_vsix_path).unlink(missing_ok=True)
-
-
-def detect_settings_conflicts(
-    user_settings: dict[str, Any],
-    root_config: dict[str, Any],
-) -> list[tuple[str, Any, Any]]:
-    """Detect conflicts where same setting appears in both sections.
-
-    Identifies keys that are specified in both the user-settings section
-    and at the root level of the config. When using a profile command,
-    root-level values take precedence over user-settings values.
-
-    Args:
-        user_settings: Dict from YAML user-settings section.
-        root_config: The full root-level config dict.
-
-    Returns:
-        List of (user_settings_key, user_value, root_value) tuples for conflicts.
-        Empty list if no conflicts found.
-
-    Examples:
-        >>> user = {'model': 'claude-opus-4'}
-        >>> root = {'model': 'claude-sonnet-4', 'command-names': ['myenv']}
-        >>> detect_settings_conflicts(user, root)
-        [('model', 'claude-opus-4', 'claude-sonnet-4')]
-
-        >>> user = {'alwaysThinkingEnabled': True}
-        >>> root = {'always-thinking-enabled': False}
-        >>> detect_settings_conflicts(user, root)
-        [('alwaysThinkingEnabled', True, False)]
-
-        >>> user = {'language': 'russian'}
-        >>> root = {'model': 'claude-opus-4'}
-        >>> detect_settings_conflicts(user, root)
-        []
-    """
-    conflicts: list[tuple[str, Any, Any]] = []
-
-    # Build reverse mapping: user-settings key -> root key
-    user_to_root_map: dict[str, str] = {
-        v: k for k, v in ROOT_TO_USER_SETTINGS_KEY_MAP.items()
-    }
-
-    for user_key, user_value in user_settings.items():
-        # Find corresponding root key (may be same or different name)
-        root_key = user_to_root_map.get(user_key, user_key)
-
-        # Check if this key exists at root level
-        if root_key in root_config:
-            root_value = root_config[root_key]
-            conflicts.append((user_key, user_value, root_value))
-
-    return conflicts
 
 
 def build_platform_aware_command(command: str) -> list[str]:
@@ -5321,8 +5456,8 @@ def _merge_config_key(
         c_us = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
         return deep_merge_settings(p_us, c_us, array_union_keys=DEFAULT_ARRAY_UNION_KEYS)
 
-    # Env-variables and os-env-variables: shallow dict merge, null deletes
-    if key in ('env-variables', 'os-env-variables'):
+    # OS-level environment variables: shallow dict merge, null deletes
+    if key == 'os-env-variables':
         p_env = cast(dict[str, str | None], parent_value) if isinstance(parent_value, dict) else {}
         c_env = cast(dict[str, str | None], child_value) if isinstance(child_value, dict) else {}
         merged_env: dict[str, str | None] = dict(p_env)
@@ -5601,7 +5736,7 @@ def resolve_config_inheritance(
         >>> # resolved contains parent's keys + child's 'name' override
 
         >>> # List inheritance (flat composition)
-        >>> child = {'inherit': ['base.yaml', 'ext.yaml'], 'model': 'opus'}
+        >>> child = {'inherit': ['base.yaml', 'ext.yaml'], 'name': 'Leaf'}
         >>> resolved, chain = resolve_config_inheritance(child, 'child.yaml')
         >>> # entries composed left-to-right, each entry's own inherit stripped
     """
@@ -5881,22 +6016,15 @@ def collect_installation_plan(
         hooks_events=hooks_events,
         mcp_servers=mcp_servers,
         dependency_commands=dependency_commands,
-        model=config.get('model'),
         system_prompt=system_prompt,
         system_prompt_mode=system_prompt_mode,
         command_names=command_names,
         claude_code_version=config.get('claude-code-version'),
         install_nodejs=bool(config.get('install-nodejs')),
         skip_install=args.skip_install,
-        permissions=config.get('permissions'),
-        env_variables=config.get('env-variables'),
         os_env_variables=config.get('os-env-variables'),
         user_settings=config.get('user-settings'),
         global_config=config.get('global-config'),
-        always_thinking_enabled=config.get('always-thinking-enabled'),
-        effort_level=config.get('effort-level'),
-        company_announcements=config.get('company-announcements'),
-        attribution=config.get('attribution'),
         status_line=config.get('status-line'),
         unknown_keys=unknown_keys,
         sensitive_paths=sensitive_paths,
@@ -5995,29 +6123,10 @@ def display_installation_summary(
 
     # Settings
     settings_items: list[str] = []
-    if plan.model:
-        settings_items.append(f'Model: {plan.model}')
     if plan.system_prompt:
         settings_items.append(f'System prompt: {plan.system_prompt_mode}')
-    if plan.permissions:
-        perm_parts: list[str] = []
-        if 'default-mode' in plan.permissions:
-            perm_parts.append(f"default-mode={plan.permissions['default-mode']}")
-        if 'allow' in plan.permissions:
-            perm_parts.append(f"{len(plan.permissions['allow'])} allow")
-        if 'deny' in plan.permissions:
-            perm_parts.append(f"{len(plan.permissions['deny'])} deny")
-        if 'ask' in plan.permissions:
-            perm_parts.append(f"{len(plan.permissions['ask'])} ask")
-        settings_items.append(f"Permissions: {', '.join(perm_parts)}")
-    if plan.env_variables:
-        settings_items.append(f'Environment variables: {len(plan.env_variables)}')
     if plan.os_env_variables:
         settings_items.append(f'OS environment variables: {len(plan.os_env_variables)}')
-    if plan.effort_level:
-        settings_items.append(f'Effort level: {plan.effort_level}')
-    if plan.always_thinking_enabled is not None:
-        settings_items.append(f'Always thinking: {plan.always_thinking_enabled}')
     if plan.user_settings:
         null_keys = [k for k, v in plan.user_settings.items() if v is None]
         set_keys = [k for k, v in plan.user_settings.items() if v is not None]
@@ -6042,8 +6151,6 @@ def display_installation_summary(
         settings_items.extend(
             f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
         )
-    if plan.company_announcements:
-        settings_items.append(f'Company announcements: {len(plan.company_announcements)}')
     if plan.command_names:
         settings_items.append(f"Command names: {', '.join(plan.command_names)}")
 
@@ -6756,8 +6863,8 @@ def generate_env_loader_files(
     """Generate shell-specific env loader files for OS environment variables.
 
     Creates Rustup-pattern env files that can be sourced by launchers
-    and users. Contains ONLY os-env-variables (NOT env-variables,
-    which are handled by Claude Code's config.json env key).
+    and users. Contains ONLY os-env-variables (NOT user-settings.env,
+    which is handled by Claude Code's settings-file env key).
 
     Per-command files (when command_names provided):
         ~/.claude/{cmd}/env.sh      (Bash/Zsh)
@@ -9556,14 +9663,12 @@ def _build_profile_settings(
 ) -> dict[str, Any]:
     """Build profile settings dict from a per-key profile_config dict (pure, zero I/O).
 
-    The ``profile_config`` parameter is a dict whose keys are the nine
-    camelCase on-disk names (``model``, ``permissions``, ``env``,
-    ``attribution``, ``alwaysThinkingEnabled``, ``effortLevel``,
-    ``companyAnnouncements``, ``statusLine``, ``hooks``). Dict MEMBERSHIP
-    encodes the YAML declaration state (present-with-value, present-with-null,
-    or absent) which is intentionally preserved end-to-end so that the
-    downstream writer can apply RFC 7396 null-as-delete to the shared
-    ``settings.json`` for top-level YAML nulls.
+    The ``profile_config`` parameter is a dict whose keys are the camelCase
+    on-disk names of the profile-owned keys (``statusLine``, ``hooks``).
+    Dict MEMBERSHIP encodes the YAML declaration state (present-with-value,
+    present-with-null, or absent) which is intentionally preserved
+    end-to-end so that the downstream writer can apply RFC 7396
+    null-as-delete to the shared ``settings.json`` for top-level YAML nulls.
 
     Three cases per key:
 
@@ -9573,18 +9678,9 @@ def _build_profile_settings(
       ``settings[key] = None`` verbatim. The writer deletes the on-disk key
       via RFC 7396 null-as-delete semantics in ``_merge_recursive()``.
     - **Key present with a non-None value** -- the builder performs the
-      usual truthy/empty handling (kebab-to-camel translation for
-      ``permissions``, command-string construction for ``statusLine``,
+      usual processing (command-string construction for ``statusLine``,
       ``_build_hooks_json()`` delegation for ``hooks``) and emits the
-      processed value. Empty dicts or empty lists remain as-is (so an
-      empty ``attribution`` dict is still stored explicitly).
-
-    Within the ``env`` value, the three-case contract also applies PER KEY:
-    a non-None entry value is stringified, while an entry value of ``None``
-    is preserved verbatim (``settings['env'][key] = None``) so the shared
-    settings.json writer deletes that nested key via RFC 7396
-    null-as-delete and the isolated config.json writer omits it from the
-    atomic rebuild.
+      processed value.
 
     The ``hooks`` value in ``profile_config`` is either ``None`` (YAML null),
     absent (YAML omitted), or the full YAML hooks configuration dict with
@@ -9594,8 +9690,7 @@ def _build_profile_settings(
     Args:
         profile_config: Dict of profile-owned keys to build settings from.
             Keys use camelCase on-disk names. Values correspond directly to
-            the YAML-declared values (with pre-translation for ``permissions``
-            kebab-case nested keys and pre-processing for ``statusLine``
+            the YAML-declared values (with pre-processing for ``statusLine``
             file references handled inside this function).
         hooks_dir: Absolute directory path where downloaded hook files reside.
             For isolated mode: ``~/.claude/{cmd}/hooks/``.
@@ -9608,109 +9703,13 @@ def _build_profile_settings(
         ``profile_config`` are absent from the result.
 
     Examples:
-        >>> _build_profile_settings({'model': 'sonnet'}, Path('/tmp/hooks'))
-        {'model': 'sonnet'}
-
-        >>> _build_profile_settings(
-        ...     {'permissions': {'default-mode': 'ask', 'allow': ['Read']}},
-        ...     Path('/tmp/hooks'),
-        ... )
-        {'permissions': {'defaultMode': 'ask', 'allow': ['Read']}}
-
         >>> _build_profile_settings({}, Path('/tmp/hooks'))
         {}
 
-        >>> _build_profile_settings({'model': None}, Path('/tmp/hooks'))
-        {'model': None}
+        >>> _build_profile_settings({'statusLine': None}, Path('/tmp/hooks'))
+        {'statusLine': None}
     """
     settings: dict[str, Any] = {}
-
-    # model
-    if 'model' in profile_config:
-        model = profile_config['model']
-        if model is None:
-            settings['model'] = None
-            info('Deleting model via explicit null')
-        elif model:
-            settings['model'] = model
-            info(f'Setting model: {model}')
-
-    # permissions (kebab-to-camel translation for nested keys)
-    if 'permissions' in profile_config:
-        permissions = profile_config['permissions']
-        if permissions is None:
-            settings['permissions'] = None
-            info('Deleting permissions via explicit null')
-        elif permissions:
-            final_permissions = permissions.copy()
-            if 'default-mode' in final_permissions:
-                final_permissions['defaultMode'] = final_permissions.pop('default-mode')
-            if 'additional-directories' in final_permissions:
-                final_permissions['additionalDirectories'] = final_permissions.pop('additional-directories')
-            info('Using permissions from environment configuration')
-            settings['permissions'] = final_permissions
-
-    # env (non-None values stringified; per-key None preserved so the
-    # downstream writer can delete the key via RFC 7396 null-as-delete)
-    if 'env' in profile_config:
-        env = profile_config['env']
-        if env is None:
-            settings['env'] = None
-            info('Deleting env via explicit null')
-        elif env:
-            settings['env'] = {k: (None if v is None else str(v)) for k, v in env.items()}
-            active_keys = [k for k, v in env.items() if v is not None]
-            deletion_keys = [k for k, v in env.items() if v is None]
-            if active_keys:
-                info(f'Setting {len(active_keys)} environment variables')
-                for key in active_keys:
-                    info(f'  - {key}')
-            if deletion_keys:
-                info(f'Deleting {len(deletion_keys)} environment variable(s) via explicit null')
-                for key in deletion_keys:
-                    info(f'  - {key}')
-
-    # attribution (empty dict is explicit and kept)
-    if 'attribution' in profile_config:
-        attribution = profile_config['attribution']
-        if attribution is None:
-            settings['attribution'] = None
-            info('Deleting attribution via explicit null')
-        else:
-            settings['attribution'] = attribution
-            commit_preview = repr(attribution.get('commit', ''))[:30]
-            pr_preview = repr(attribution.get('pr', ''))[:30]
-            info(f'Setting attribution: commit={commit_preview}, pr={pr_preview}')
-
-    # alwaysThinkingEnabled (False is explicit and kept)
-    if 'alwaysThinkingEnabled' in profile_config:
-        always_thinking_enabled = profile_config['alwaysThinkingEnabled']
-        if always_thinking_enabled is None:
-            settings['alwaysThinkingEnabled'] = None
-            info('Deleting alwaysThinkingEnabled via explicit null')
-        else:
-            settings['alwaysThinkingEnabled'] = always_thinking_enabled
-            info(f'Setting alwaysThinkingEnabled: {always_thinking_enabled}')
-
-    # effortLevel
-    if 'effortLevel' in profile_config:
-        effort_level = profile_config['effortLevel']
-        if effort_level is None:
-            settings['effortLevel'] = None
-            info('Deleting effortLevel via explicit null')
-        else:
-            settings['effortLevel'] = effort_level
-            info(f'Setting effortLevel: {effort_level}')
-
-    # companyAnnouncements
-    if 'companyAnnouncements' in profile_config:
-        company_announcements = profile_config['companyAnnouncements']
-        if company_announcements is None:
-            settings['companyAnnouncements'] = None
-            info('Deleting companyAnnouncements via explicit null')
-        else:
-            settings['companyAnnouncements'] = company_announcements
-            info(f'Setting companyAnnouncements: {len(company_announcements)} announcement(s)')
 
     # statusLine (command-string construction)
     if 'statusLine' in profile_config:
@@ -9790,40 +9789,108 @@ def _build_profile_settings(
     return settings
 
 
+def _strip_null_values(settings: dict[str, Any]) -> dict[str, Any]:
+    """Recursively remove dict members whose value is None.
+
+    Implements deletion-by-absence for atomically rebuilt JSON files: a
+    YAML null is a deletion request (RFC 7396 convention), and under atomic
+    rebuild semantics absence expresses deletion, so the literal JSON null
+    is never written. A nested dict whose members are ALL deletion requests
+    is itself dropped (an env section containing only null entries carries
+    no content, so the emptied key is omitted rather than written as an
+    empty object); a dict the user declared empty passes through unchanged.
+    Only dict members are stripped; None elements inside lists are
+    preserved (a null in an array is data, not a deletion request,
+    matching RFC 7396 which processes object members only).
+
+    Args:
+        settings: Dict to strip (not modified).
+
+    Returns:
+        New dict without None-valued members at any nesting depth.
+    """
+    result: dict[str, Any] = {}
+    for key, value in settings.items():
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            value_dict = cast(dict[str, Any], value)
+            stripped = _strip_null_values(value_dict)
+            if stripped or not value_dict:
+                result[key] = stripped
+        else:
+            result[key] = value
+    return result
+
+
+def _warn_wsl_windows_paths(settings: dict[str, Any]) -> None:
+    """Warn when WSL is detected and a command key carries a Windows path.
+
+    Tilde paths are preserved on non-Windows platforms, but a settings dict
+    authored on Windows may contain absolute Windows-style paths (e.g.
+    C:\\Users\\...) that do not resolve inside the Linux environment.
+
+    Args:
+        settings: Settings dict to inspect for Windows-style paths.
+    """
+    if not is_wsl():
+        return
+    for key in TILDE_EXPANSION_KEYS:
+        if key in settings and isinstance(settings[key], str):
+            value = settings[key]
+            if re.search(r'[A-Za-z]:\\', value):
+                warning(
+                    f'WSL detected: {key} contains Windows-style path: {value}. '
+                    'This may not work in the Linux environment. '
+                    'Consider re-running setup from within WSL.',
+                )
+                break
+
+
 def create_profile_config(
     profile_config: dict[str, Any],
     config_base_dir: Path,
     hooks_base_dir: Path | None = None,
+    user_settings: dict[str, Any] | None = None,
 ) -> bool:
     """Create config.json (profile configuration) for the isolated environment.
 
-    Delegates to the pure builder _build_profile_settings() and atomically
-    writes the result to ~/.claude/{cmd}/config.json. This file is always
-    overwritten on re-run, so YAML removals of keys cleanly propagate to the
-    isolated profile (isolated-mode atomic rebuild semantics).
+    The isolated profile's config.json is delivered to Claude Code via the
+    launcher's --settings flag (command-line settings layer), which outranks
+    a repository's project settings. It carries the profile's complete
+    settings.json content: the user-settings section (raw settings.json
+    keys) plus the toolbox-built statusLine and hooks entries. The two
+    sources are disjoint by construction because 'statusLine' and 'hooks'
+    are rejected inside user-settings.
+
+    Delegates to the pure builder _build_profile_settings() for the
+    profile-owned keys and atomically writes the combined result to
+    ~/.claude/{cmd}/config.json. This file is always overwritten on re-run,
+    so YAML removals of keys cleanly propagate to the isolated profile
+    (isolated-mode atomic rebuild semantics).
 
     In isolated mode, the on-disk config.json is fully toolbox-owned: each
     invocation rebuilds the file from scratch, so the distinction between
-    "YAML key absent" and "YAML key set to null" is cosmetic -- both cases
-    produce a config.json without the key (absent keys are omitted by the
-    builder, and null-valued keys serialize as ``"key": null`` in JSON,
-    which is equivalent to absent for Claude Code's priority-resolution).
-    Per-key nulls inside the ``env`` dict are STRIPPED before the write:
-    under atomic rebuild semantics absence equals deletion, and Claude
-    Code's treatment of ``"env": {"VAR": null}`` inside ``--settings``
-    files is undocumented, so the literal null is never written.
+    "YAML key absent" and "YAML key set to null" collapses -- null-valued
+    dict members at every depth are STRIPPED before the write, because
+    under atomic rebuild semantics absence expresses deletion and Claude
+    Code's treatment of literal nulls inside --settings files is
+    undocumented.
 
     Args:
-        profile_config: Dict of profile-owned keys (camelCase on-disk names).
-            Keys present with values are written; keys present with None are
-            written as JSON null; keys absent are omitted. For the ``hooks``
-            key, the value is the full YAML hooks configuration dict with
-            ``files`` / ``events`` keys.
+        profile_config: Dict of profile-owned keys (camelCase on-disk names:
+            statusLine, hooks). Keys present with values are written; keys
+            absent or null-valued are omitted. For the ``hooks`` key, the
+            value is the full YAML hooks configuration dict with ``files`` /
+            ``events`` keys.
         config_base_dir: Path to the isolated environment directory
             (e.g., ~/.claude/{cmd}/).
         hooks_base_dir: Optional base directory for hook files.
             When provided, hook file paths are resolved relative to this directory
             instead of config_base_dir / 'hooks'.
+        user_settings: Optional user-settings section (raw settings.json
+            content with camelCase keys). Tilde paths in command keys are
+            expanded platform-conditionally before the write.
 
     Returns:
         bool: True if successful, False otherwise.
@@ -9833,27 +9900,26 @@ def create_profile_config(
 
     info('Creating config.json...')
 
-    # Build the profile settings dict via the shared pure builder
-    settings = _build_profile_settings(profile_config, hooks_dir)
+    # user-settings content forms the base of the profile settings
+    settings: dict[str, Any] = {}
+    if user_settings:
+        expanded_user_settings = _expand_tilde_keys_in_settings(user_settings)
+        _warn_wsl_windows_paths(expanded_user_settings)
+        settings.update(_strip_null_values(expanded_user_settings))
+        info(f'Including {len(settings)} user-settings key(s) in config.json')
 
-    # Strip per-key env deletions: the isolated config.json is atomically
-    # rebuilt, so a deleted variable is expressed by absence rather than a
-    # JSON null whose handling by Claude Code is undocumented. A whole-section
-    # env null (settings['env'] is None) is kept as-is; top-level nulls are
-    # documented as equivalent to absent.
-    env_section = settings.get('env')
-    if isinstance(env_section, dict):
-        active_env = {k: v for k, v in env_section.items() if v is not None}
-        if active_env:
-            settings['env'] = active_env
-        else:
-            del settings['env']
+    # Build the profile-owned settings via the shared pure builder
+    settings.update(_strip_null_values(_build_profile_settings(profile_config, hooks_dir)))
 
-    # Save settings (always overwrite) - atomic rebuild semantics
+    # Save settings (always overwrite) - atomic rebuild semantics.
+    # ensure_ascii=False keeps non-ASCII user-settings content readable,
+    # matching the shared settings.json writer.
     settings_path = config_base_dir / 'config.json'
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
-        settings_path.write_text(json.dumps(settings, indent=2), encoding='utf-8')
+        settings_path.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False), encoding='utf-8',
+        )
         success('Created config.json')
         return True
     except Exception as e:
@@ -11144,43 +11210,14 @@ def main() -> None:
             error(f"Invalid mode value: {mode}. Must be 'append' or 'replace'")
             sys.exit(1)
 
-        # Extract model configuration
-        model = config.get('model')
-
-        # Extract permissions configuration
-        permissions = config.get('permissions')
-
-        # Extract environment variables configuration
-        env_variables: dict[str, str | None] | None = config.get('env-variables')
-
         # Extract OS-level environment variables configuration
         os_env_variables = config.get('os-env-variables')
-
-        # Extract company_announcements configuration (still consumed by
-        # the summary printout below; profile_config is rebuilt from `config`
-        # directly via _YAML_TO_CAMEL_PROFILE_KEYS in Step 18).
-        company_announcements = config.get('company-announcements')
 
         # Extract status_line configuration (still consumed by the summary
         # printout and by download_hook_files() path selection below).
         status_line = config.get('status-line')
 
-        # Extract and validate effort_level configuration. When the value is
-        # invalid, remove it from the config dict so that the profile_config
-        # builder (which reads `config` via dict-membership) omits the key
-        # from both the isolated config.json and the shared settings.json.
-        effort_level = config.get('effort-level')
-        if effort_level is not None:
-            valid_effort_levels = ('low', 'medium', 'high', 'xhigh', 'max')
-            if effort_level not in valid_effort_levels:
-                warning(
-                    f'Invalid effort-level value: {effort_level!r}. '
-                    f'Valid values: {", ".join(valid_effort_levels)}. Skipping.',
-                )
-                effort_level = None
-                config.pop('effort-level', None)
-
-        # Extract user-settings configuration (global user-level settings)
+        # Extract user-settings configuration (raw settings.json content)
         user_settings = config.get('user-settings')
 
         # Extract global-config configuration (global Claude Code settings)
@@ -11215,14 +11252,13 @@ def main() -> None:
         # Computed BEFORE injection so auto-injected values are excluded; the
         # Step 16 unpinned sweep preserves user-declared settings.json keys.
         user_declared_control_keys = _collect_user_declared_control_keys(
-            user_settings, env_variables,
+            user_settings,
         )
 
         # Apply automatic auto-update settings based on version pinning
         (
             global_config,
             user_settings,
-            env_variables,
             os_env_variables,
             auto_update_warnings,
             auto_injected_items,
@@ -11230,7 +11266,6 @@ def main() -> None:
             claude_code_version_normalized,
             global_config,
             user_settings,
-            env_variables,
             os_env_variables,
         )
         for warn_msg in auto_update_warnings:
@@ -11240,7 +11275,6 @@ def main() -> None:
         (
             global_config,
             user_settings,
-            env_variables,
             os_env_variables,
             ide_ext_warnings,
             ide_ext_auto_injected,
@@ -11248,7 +11282,6 @@ def main() -> None:
             claude_code_version_normalized,
             global_config,
             user_settings,
-            env_variables,
             os_env_variables,
         )
         for warn_msg in ide_ext_warnings:
@@ -11256,50 +11289,27 @@ def main() -> None:
         # Merge auto-injected items from both auto-update and IDE extension management
         auto_injected_items.extend(ide_ext_auto_injected)
 
-        # Write the (possibly injected) env-variables dict back into config so
-        # both Step 18 profile builders -- which read config by dict
-        # membership -- emit the injected keys even when the YAML lacks the
-        # section. A YAML-declared `env-variables: null` is likewise
-        # superseded by the injected dict when a version is pinned.
-        if env_variables is not None:
-            config['env-variables'] = env_variables
-
-        # Validate user-settings section for excluded keys
+        # Validate user-settings section (excluded keys and known key values)
         if user_settings:
             user_settings_errors = validate_user_settings(user_settings)
             if user_settings_errors:
                 for err in user_settings_errors:
                     error(err)
                 sys.exit(1)
+            if user_settings.get('effortLevel') == 'max':
+                warning(
+                    "user-settings.effortLevel 'max' may be silently ignored by "
+                    'Claude Code when loading settings files. To pin the max '
+                    "effort level reliably, set user-settings.env.CLAUDE_CODE_EFFORT_LEVEL to 'max'.",
+                )
 
-        # Validate global-config section for excluded keys
+        # Validate global-config section (excluded keys and key placement)
         if global_config:
             global_config_errors = validate_global_config(global_config)
             if global_config_errors:
                 for err in global_config_errors:
                     error(err)
                 sys.exit(1)
-
-        # Detect conflicts between user-settings and root-level settings.
-        # Warnings fire in BOTH modes (isolated and non-isolated). In non-
-        # isolated mode, write_profile_settings_to_settings() also applies
-        # root-level precedence for profile-owned keys via Step 14 / Step 18
-        # ordering, so the conflict is meaningful in both branches.
-        if user_settings:
-            conflicts = detect_settings_conflicts(user_settings, config)
-            for user_key, user_value, root_value in conflicts:
-                warning(f"Key '{user_key}' specified in both root level and user-settings.")
-                warning(f'  user-settings value: {user_value}')
-                warning(f'  root-level value: {root_value}')
-                warning(
-                    '  Under deep merge semantics, root-level values overwrite '
-                    'user-settings values for scalar keys. For dict keys, '
-                    'user-settings and root-level values are deep-merged. '
-                    'For ALL array-valued keys at any depth, array union with '
-                    "structural dedupe applies (matching Claude Code CLI's "
-                    'cross-scope merge: "arrays are concatenated and '
-                    'deduplicated, not replaced").',
-                )
 
         # Validate: profile-scoped MCP servers require command-names (launcher)
         # In non-command-names mode, profile-scoped servers have no launcher
@@ -11410,8 +11420,13 @@ def main() -> None:
         artifact_base_dir: Path
 
         if primary_command_name:
-            # Check if user explicitly set CLAUDE_CONFIG_DIR in env-variables
-            user_config_dir = env_variables.get('CLAUDE_CONFIG_DIR') if env_variables else None
+            # Check if user explicitly set CLAUDE_CONFIG_DIR in user-settings.env
+            user_env_section = user_settings.get('env') if user_settings else None
+            user_config_dir = (
+                user_env_section.get('CLAUDE_CONFIG_DIR')
+                if isinstance(user_env_section, dict)
+                else None
+            )
             if user_config_dir:
                 # User overrides isolation path -- use their value
                 info('Using user-specified CLAUDE_CONFIG_DIR for artifact isolation')
@@ -11420,11 +11435,12 @@ def main() -> None:
                 else:
                     isolated_config_dir = Path(user_config_dir)
                 artifact_base_dir = isolated_config_dir
-                # Remove CLAUDE_CONFIG_DIR from env_variables -- the launcher export
-                # is the sole authoritative source. Keeping it in config.json env
-                # section would create a redundant, potentially stale second source.
-                if env_variables and 'CLAUDE_CONFIG_DIR' in env_variables:
-                    env_variables.pop('CLAUDE_CONFIG_DIR')
+                # Remove CLAUDE_CONFIG_DIR from user-settings.env -- the launcher
+                # export is the sole authoritative source. Keeping it in the
+                # profile's config.json env section would create a redundant,
+                # potentially stale second source.
+                if isinstance(user_env_section, dict):
+                    user_env_section.pop('CLAUDE_CONFIG_DIR', None)
             else:
                 # Auto-compute isolation directory from primary command name
                 isolated_config_dir = claude_user_dir / primary_command_name
@@ -11634,17 +11650,22 @@ def main() -> None:
         )
         has_profile_mcp_servers = len(profile_servers) > 0
 
-        # Step 14: Write user settings
+        # Step 14: Write user settings (non-isolated mode only). In isolated
+        # mode, the user-settings section is built into the profile's
+        # config.json at Step 18: the launcher passes config.json via
+        # --settings (command-line settings layer), so the profile's settings
+        # outrank a repository's project settings, matching the enforcement
+        # an isolated environment exists to provide.
         print()
         print(f'{Colors.CYAN}Step 14: Writing user settings...{Colors.NC}')
-        if user_settings:
-            settings_target_dir = artifact_base_dir if primary_command_name else claude_user_dir
-            if write_user_settings(user_settings, settings_target_dir):
-                success('User settings configured successfully')
-            else:
-                warning('Failed to write user settings (non-fatal)')
-        else:
+        if not user_settings:
             info('No user settings to configure')
+        elif primary_command_name:
+            info('Isolated mode: user settings are built into config.json in Step 18')
+        elif write_user_settings(user_settings, claude_user_dir):
+            success('User settings configured successfully')
+        else:
+            warning('Failed to write user settings (non-fatal)')
 
         # Step 15: Write global config
         print()
@@ -11701,6 +11722,7 @@ def main() -> None:
                 profile_config_isolated,
                 artifact_base_dir,
                 hooks_base_dir=hooks_base_dir_arg,
+                user_settings=user_settings,
             )
 
             # Step 19: Write installation manifest
@@ -11754,12 +11776,12 @@ def main() -> None:
                 print(f'{Colors.CYAN}Step 22: Linking projects directory to base...{Colors.NC}')
                 link_projects_directory(artifact_base_dir)
         else:
-            # No command-names: route all profile-owned YAML keys to the
-            # shared ~/.claude/settings.json via deep-merge with RFC 7396
-            # null-as-delete. This achieves full feature parity for model,
-            # permissions, env, attribution, alwaysThinkingEnabled,
-            # effortLevel, companyAnnouncements, statusLine, and hooks
-            # between command-names present/absent modes.
+            # No command-names: route the profile-owned YAML keys
+            # (status-line, hooks) to the shared ~/.claude/settings.json via
+            # deep-merge with RFC 7396 null-as-delete. The user-settings
+            # section reaches the same file through Step 14
+            # write_user_settings(), so both modes deliver the full
+            # settings.json content.
             hooks = config.get('hooks', {})
 
             # Warn about command-defaults.system-prompt without command-names.
@@ -11896,8 +11918,6 @@ def main() -> None:
                 print('   * System prompt: appending to default')
             else:  # mode == 'replace'
                 print('   * System prompt: replacing default')
-        if model:
-            print(f'   * Model: {model}')
         if mcp_stats['combined_count'] > 0:
             # Servers with BOTH global AND profile scope
             profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']
@@ -11914,24 +11934,6 @@ def main() -> None:
                   f"{mcp_stats['profile_count']} profile-only")
         else:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
-        if permissions:
-            perm_items: list[str] = []
-            if 'default-mode' in permissions:
-                perm_items.append(f"default-mode={permissions['default-mode']}")
-            if 'allow' in permissions:
-                perm_items.append(f"{len(permissions['allow'])} allow rules")
-            if 'deny' in permissions:
-                perm_items.append(f"{len(permissions['deny'])} deny rules")
-            if 'ask' in permissions:
-                perm_items.append(f"{len(permissions['ask'])} ask rules")
-            if perm_items:
-                print(f"   * Permissions: {', '.join(perm_items)}")
-        if env_variables:
-            print(f'   * Environment variables: {len(env_variables)} configured')
-        if company_announcements:
-            print(f'   * Company announcements: {len(company_announcements)} configured')
-        if effort_level:
-            print(f'   * Effort level: {effort_level}')
         if status_line and isinstance(status_line, dict):
             status_line_dict = cast(dict[str, Any], status_line)
             status_line_file_val = status_line_dict.get('file', '')

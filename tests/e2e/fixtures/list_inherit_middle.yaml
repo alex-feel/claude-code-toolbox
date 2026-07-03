@@ -12,6 +12,6 @@ mcp-servers:
     url: "http://localhost:3000/middle"
 rules:
   - "rules/middle-rule.md"
-env-variables:
+os-env-variables:
   MIDDLE_VAR: "middle_val"
   SHARED_VAR: "from_middle"

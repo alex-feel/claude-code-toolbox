@@ -3,4 +3,5 @@ inherit:
   - list_inherit_base.yaml
 agents:
   - "agents/single-agent.md"
-model: "opus"
+user-settings:
+  model: "opus"

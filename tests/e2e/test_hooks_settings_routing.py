@@ -87,16 +87,10 @@ class TestHooksToConfigJsonRegression:
         create_profile_config(
             {
                 'hooks': hooks,
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             artifact_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         config_path = artifact_dir / 'config.json'

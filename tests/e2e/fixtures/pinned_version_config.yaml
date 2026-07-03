@@ -6,7 +6,5 @@ global-config:
   editorMode: "vim"
 user-settings:
   language: "english"
-env-variables:
-  TEST_VAR: "value"
 os-env-variables:
   TEST_OS_VAR: "value"

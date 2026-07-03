@@ -314,25 +314,27 @@ def _validate_mcp_server_config(name: str, server: dict[str, Any]) -> list[str]:
 
 
 def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
-    """Validate profile configuration (config.json).
+    """Validate the isolated profile configuration (config.json).
 
-    Validates the environment-specific settings file that is loaded via --settings flag.
-    Contains: model, permissions, env, hooks, attribution, statusLine, etc.
+    The isolated profile's config.json is loaded via the launcher's --settings
+    flag. It carries the profile's complete settings.json content: the
+    user-settings section (raw settings.json keys, camelCase) plus the
+    toolbox-built statusLine and hooks entries. The two sources are disjoint
+    by construction because 'statusLine' and 'hooks' are rejected inside
+    user-settings.
 
     Validates:
     - File exists and is valid JSON
-    - Model matches config if specified
-    - Permissions structure is correct
-    - MCP server permissions are auto-added to allow list
-    - Hooks structure is correct if present
-    - Environment variables are present
-    - alwaysThinkingEnabled matches config if specified
-    - effortLevel matches config if specified
-    - companyAnnouncements are present if specified
-    - statusLine structure is correct if specified
+    - Every non-null top-level user-settings key is present verbatim
+    - The user-settings env block has null entries stripped and non-null
+      string values preserved
+    - The user-settings permissions block is present verbatim (camelCase)
+    - Hooks structure (from the root-level hooks key) is correct if present
+    - statusLine structure (from the root-level status-line key) is correct
+      if specified
 
     Args:
-        path: Path to the settings.json file
+        path: Path to the config.json file
         config: Golden configuration dictionary
 
     Returns:
@@ -346,103 +348,94 @@ def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
 
     assert data is not None  # For type checker
 
-    # Model verification
-    if 'model' in config and data.get('model') != config['model']:
-        errors.append(
-            f"Model mismatch: expected {config['model']!r}, got {data.get('model')!r}",
-        )
+    user_settings = config.get('user-settings', {})
 
-    # Permissions validation
-    if 'permissions' in config:
-        if 'permissions' not in data:
-            errors.append("Missing 'permissions' block in settings.json")
-        else:
-            perm_errors = _validate_permissions(data['permissions'], config['permissions'])
-            errors.extend(perm_errors)
+    # Keys handled by dedicated validators below (env and permissions carry
+    # transform semantics) or verified structurally elsewhere.
+    specially_handled = {'env', 'permissions'}
 
-    # Environment variables
-    config_env = config.get('env-variables', {})
-    env_block = data.get('env') or {}
-    for key, expected_value in config_env.items():
-        # null-as-delete: a null-valued entry must be ABSENT from the
-        # atomically rebuilt config.json env block (never a JSON null and
-        # never the literal string 'None')
+    # Keys that undergo platform-conditional tilde handling during the write.
+    # Windows expands ~ to an absolute path (the shell cannot resolve ~);
+    # Linux/macOS/WSL preserve the tilde for Claude Code to resolve at runtime.
+    tilde_keys = {'apiKeyHelper', 'awsCredentialExport'}
+
+    for key, expected_value in user_settings.items():
+        if key in specially_handled:
+            continue
+        # RFC 7396: null-valued keys are stripped from the atomically rebuilt
+        # config.json (deletion-by-absence), never written as a JSON null.
         if expected_value is None:
-            if key in env_block:
+            if key in data:
                 errors.append(
-                    f"Env var '{key}': expected ABSENT (null-as-delete), "
-                    f'but found {env_block[key]!r}',
+                    f"config.json key '{key}': expected ABSENT (null-as-delete), "
+                    f'but found {data[key]!r}',
                 )
             continue
-        actual = env_block.get(key)
-        # Production code coerces non-null env values to strings via str(v)
-        expected_str = str(expected_value)
-        if actual != expected_str:
+        actual_value = data.get(key)
+        if key in tilde_keys:
+            if sys.platform == 'win32':
+                # Windows: the tilde must have been expanded to an absolute path
+                if actual_value is None:
+                    errors.append(f"config.json key '{key}': missing (expected expanded form)")
+                elif isinstance(actual_value, str) and actual_value.startswith('~'):
+                    errors.append(
+                        f"config.json key '{key}' contains unexpanded tilde: {actual_value}",
+                    )
+            elif actual_value is None:
+                errors.append(f"config.json key '{key}': missing (expected preserved form)")
+            elif actual_value != expected_value:
+                # Unix/WSL: the tilde is preserved verbatim
+                errors.append(
+                    f"config.json key '{key}': expected tilde preserved "
+                    f'{expected_value!r}, got {actual_value!r}',
+                )
+        elif actual_value != expected_value:
             errors.append(
-                f"Env var '{key}': expected {expected_str!r}, got {actual!r}",
+                f"config.json key '{key}': expected {expected_value!r}, got {actual_value!r}",
             )
 
-    # Hooks structure validation
+    # env block: null entries stripped, non-null values preserved verbatim
+    # (production writes string values as-is; the golden config quotes them).
+    config_env = user_settings.get('env')
+    if config_env is not None:
+        env_block = data.get('env') or {}
+        for key, expected_value in config_env.items():
+            if expected_value is None:
+                if key in env_block:
+                    errors.append(
+                        f"config.json env '{key}': expected ABSENT (null-as-delete), "
+                        f'but found {env_block[key]!r}',
+                    )
+                continue
+            actual = env_block.get(key)
+            if actual != expected_value:
+                errors.append(
+                    f"config.json env '{key}': expected {expected_value!r}, got {actual!r}",
+                )
+
+    # Permissions validation (camelCase subkeys, no translation)
+    config_permissions = user_settings.get('permissions')
+    if config_permissions is not None:
+        if 'permissions' not in data:
+            errors.append("Missing 'permissions' block in config.json")
+        else:
+            errors.extend(_validate_permissions(data['permissions'], config_permissions))
+
+    # Hooks structure validation (from the root-level hooks key)
     hooks_config = config.get('hooks', {})
     events = hooks_config.get('events', [])
     if events:
         if 'hooks' not in data:
             errors.append("Missing 'hooks' block (expected due to hooks.events in config)")
         else:
-            hooks_errors = _validate_hooks_structure(data['hooks'], hooks_config)
-            errors.extend(hooks_errors)
+            errors.extend(_validate_hooks_structure(data['hooks'], hooks_config))
 
-    # alwaysThinkingEnabled
-    if 'always-thinking-enabled' in config:
-        expected = config['always-thinking-enabled']
-        actual = data.get('alwaysThinkingEnabled')
-        if actual != expected:
-            errors.append(
-                f'alwaysThinkingEnabled: expected {expected!r}, got {actual!r}',
-            )
-
-    # effortLevel
-    if 'effort-level' in config:
-        expected = config['effort-level']
-        actual = data.get('effortLevel')
-        if actual != expected:
-            errors.append(
-                f'effortLevel: expected {expected!r}, got {actual!r}',
-            )
-
-    # companyAnnouncements
-    if 'company-announcements' in config:
-        if 'companyAnnouncements' not in data:
-            errors.append("Missing 'companyAnnouncements' (expected due to config)")
-        else:
-            expected_count = len(config['company-announcements'])
-            actual_count = len(data.get('companyAnnouncements', []))
-            if actual_count != expected_count:
-                errors.append(
-                    f'companyAnnouncements count: expected {expected_count}, got {actual_count}',
-                )
-
-    # statusLine
+    # statusLine (from the root-level status-line key)
     if 'status-line' in config:
         if 'statusLine' not in data:
             errors.append("Missing 'statusLine' (expected due to config)")
         else:
-            status_errors = _validate_status_line(data['statusLine'], config['status-line'])
-            errors.extend(status_errors)
-
-    # attribution
-    if 'attribution' in config:
-        if 'attribution' not in data:
-            errors.append("Missing 'attribution' (expected due to config)")
-        else:
-            for key in ['commit', 'pr']:
-                if key in config['attribution']:
-                    expected = config['attribution'][key]
-                    actual = data['attribution'].get(key)
-                    if actual != expected:
-                        errors.append(
-                            f'attribution.{key}: expected {expected!r}, got {actual!r}',
-                        )
+            errors.extend(_validate_status_line(data['statusLine'], config['status-line']))
 
     return errors
 
@@ -450,19 +443,23 @@ def validate_settings(path: Path, config: dict[str, Any]) -> list[str]:
 def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> list[str]:
     """Validate permissions structure.
 
+    Reads expectations from the user-settings permissions block, whose
+    sub-keys already use camelCase (defaultMode, additionalDirectories), so
+    no key translation is applied.
+
     Args:
         actual: Actual permissions dict from generated file
-        expected: Expected permissions dict from config
+        expected: Expected permissions dict from user-settings
 
     Returns:
         List of error strings
     """
     errors: list[str] = []
 
-    # Check defaultMode (YAML key: default-mode, JSON key: defaultMode)
-    if 'default-mode' in expected and actual.get('defaultMode') != expected['default-mode']:
+    # Check defaultMode (camelCase in both sides)
+    if 'defaultMode' in expected and actual.get('defaultMode') != expected['defaultMode']:
         errors.append(
-            f"permissions.defaultMode: expected {expected['default-mode']!r}, "
+            f"permissions.defaultMode: expected {expected['defaultMode']!r}, "
             f"got {actual.get('defaultMode')!r}",
         )
 
@@ -490,9 +487,9 @@ def _validate_permissions(actual: dict[str, Any], expected: dict[str, Any]) -> l
         if item not in actual_ask
     )
 
-    # Check additionalDirectories (YAML key: additional-directories, JSON key: additionalDirectories)
-    if 'additional-directories' in expected:
-        expected_dirs = expected['additional-directories']
+    # Check additionalDirectories (camelCase in both sides)
+    if 'additionalDirectories' in expected:
+        expected_dirs = expected['additionalDirectories']
         actual_dirs = actual.get('additionalDirectories', [])
         if actual_dirs != expected_dirs:
             errors.append(

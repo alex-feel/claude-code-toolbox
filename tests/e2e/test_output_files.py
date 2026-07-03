@@ -25,34 +25,31 @@ from tests.e2e.validators import validate_settings_json
 class TestOutputFiles:
     """Test output file content and structure."""
 
-    def test_settings_json_structure(
+    def test_config_json_structure(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify settings.json has correct structure and content.
+        """Verify config.json has correct structure and content.
 
-        Uses validate_settings from validators.py.
-        Checks: model, permissions, env, hooks, alwaysThinkingEnabled,
-        companyAnnouncements, attribution, statusLine.
+        The isolated profile's config.json carries the user-settings section
+        (model, permissions, env, alwaysThinkingEnabled, companyAnnouncements,
+        attribution, effortLevel, and every other raw settings.json key) plus
+        the toolbox-built statusLine and hooks entries. Validated via
+        validate_settings from validators.py.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        # Create settings
+        # Build config.json: user-settings content plus the profile-owned
+        # statusLine/hooks entries.
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             claude_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         # File is written to config_base_dir as config.json
@@ -60,34 +57,30 @@ class TestOutputFiles:
 
         # Validate using validators.py
         errors = validate_settings(settings_path, golden_config)
-        assert not errors, 'settings.json validation failed:\n' + '\n'.join(errors)
+        assert not errors, 'config.json validation failed:\n' + '\n'.join(errors)
 
-    def test_settings_has_expected_keys(
+    def test_config_json_has_expected_keys(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify settings.json contains all expected top-level keys.
+        """Verify config.json contains all expected top-level keys.
 
-        Uses EXPECTED_JSON_KEYS['settings'] for reference.
+        Uses EXPECTED_JSON_KEYS['settings'] for reference: the toolbox-built
+        statusLine and hooks entries plus every non-null top-level key
+        declared in the golden user-settings section.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        # Create settings
+        # Build config.json: user-settings content plus statusLine/hooks
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             claude_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         # File is written to config_base_dir as config.json
@@ -98,7 +91,7 @@ class TestOutputFiles:
         expected_keys = EXPECTED_JSON_KEYS['settings']
 
         missing_keys = [k for k in expected_keys if k not in data]
-        assert not missing_keys, f'Missing expected keys in settings.json: {missing_keys}'
+        assert not missing_keys, f'Missing expected keys in config.json: {missing_keys}'
 
     def test_mcp_json_structure(
         self,
@@ -191,26 +184,31 @@ class TestOutputFiles:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify permissions in settings has all required arrays.
+        """Verify permissions in config.json has all required arrays.
 
-        Checks: defaultMode, allow, deny, ask arrays present with expected values.
+        The permissions block lives inside user-settings and is carried into
+        config.json verbatim (camelCase sub-keys). Checks: defaultMode, allow,
+        deny, ask arrays present with expected values.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        create_profile_config({'permissions': golden_config.get('permissions')}, claude_dir)
+        user_settings = golden_config.get('user-settings', {})
+        expected_permissions = user_settings.get('permissions')
+
+        create_profile_config({}, claude_dir, user_settings=user_settings)
 
         # File is written to config_base_dir as config.json
         settings_path = claude_dir / 'config.json'
 
         data = json.loads(settings_path.read_text())
 
-        if 'permissions' in golden_config:
+        if expected_permissions is not None:
             assert 'permissions' in data, 'Missing permissions block'
 
             expected_perm_keys = EXPECTED_JSON_KEYS['permissions']
             for key in expected_perm_keys:
-                if key in golden_config['permissions']:
+                if key in expected_permissions:
                     assert key in data['permissions'], f'Missing permissions.{key}'
 
 
