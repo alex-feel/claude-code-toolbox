@@ -1,8 +1,14 @@
 """E2E tests for scope-based routing of settings and config files.
 
 Verifies that the presence or absence of command-names in the resolved
-configuration determines whether settings.json is written to the isolated
-directory (~/.claude/{cmd}/) or the standard directory (~/.claude/).
+configuration determines where the user-settings content is written.
+
+- Isolated mode (command-names present): the user-settings section is built
+  into the isolated profile's config.json via create_profile_config(). The
+  toolbox never writes ~/.claude/{cmd}/settings.json; that file is owned by
+  Claude Code (user layer), not the toolbox.
+- Non-isolated mode (command-names absent): the user-settings section is
+  deep-merged into the shared ~/.claude/settings.json via write_user_settings().
 
 Covers: Scenarios 1-8 (scope-based routing) and Scenario 18 (preservation).
 """
@@ -15,6 +21,7 @@ import yaml
 
 from scripts import setup_environment
 from scripts.setup_environment import _merge_configs
+from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_user_settings
 
 
@@ -36,13 +43,13 @@ def _resolve_fixture(
 
 
 class TestScopeBasedRouting:
-    """Verify settings.json is written to the correct directory based on command-names."""
+    """Verify user-settings content is routed to the correct file based on command-names."""
 
-    def test_isolated_config_settings_in_artifact_dir(
+    def test_isolated_config_settings_in_config_json(
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Scenario 1: Config WITH command-names writes settings.json to isolated dir."""
+        """Scenario 1: Config WITH command-names builds user-settings into config.json."""
         config = _load_fixture('scope_isolated.yaml')
         claude_dir = e2e_isolated_home['claude_dir']
 
@@ -51,16 +58,21 @@ class TestScopeBasedRouting:
         artifact_base_dir = claude_dir / primary_cmd
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
 
-        write_user_settings(config['user-settings'], artifact_base_dir)
+        create_profile_config({}, artifact_base_dir, user_settings=config['user-settings'])
 
-        isolated_settings = artifact_base_dir / 'settings.json'
-        assert isolated_settings.exists(), (
-            f'settings.json not created in isolated dir: {isolated_settings}'
+        isolated_config = artifact_base_dir / 'config.json'
+        assert isolated_config.exists(), (
+            f'config.json not created in isolated dir: {isolated_config}'
         )
 
-        content = json.loads(isolated_settings.read_text())
+        content = json.loads(isolated_config.read_text())
         assert content.get('theme') == 'dark'
         assert content.get('language') == 'english'
+
+        # The toolbox does NOT write an isolated settings.json in isolated mode.
+        assert not (artifact_base_dir / 'settings.json').exists(), (
+            'toolbox must not write an isolated settings.json in isolated mode'
+        )
 
         standard_settings = claude_dir / 'settings.json'
         assert not standard_settings.exists(), (
@@ -108,19 +120,20 @@ class TestScopeBasedRouting:
         # Without merge-keys, child's user-settings REPLACES parent's
         assert resolved['user-settings'] == {'language': 'french'}
 
-        # Verify routing goes to isolated dir
+        # Verify routing goes to config.json in the isolated dir
         claude_dir = e2e_isolated_home['claude_dir']
         primary_cmd = resolved['command-names'][0]
         artifact_base_dir = claude_dir / primary_cmd
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
 
-        write_user_settings(resolved['user-settings'], artifact_base_dir)
+        create_profile_config({}, artifact_base_dir, user_settings=resolved['user-settings'])
 
-        isolated_settings = artifact_base_dir / 'settings.json'
-        assert isolated_settings.exists()
+        isolated_config = artifact_base_dir / 'config.json'
+        assert isolated_config.exists()
+        assert json.loads(isolated_config.read_text()).get('language') == 'french'
 
-        standard_settings = claude_dir / 'settings.json'
-        assert not standard_settings.exists()
+        assert not (artifact_base_dir / 'settings.json').exists()
+        assert not (claude_dir / 'settings.json').exists()
 
     def test_merge_keys_preserves_command_names_merges_selected(
         self,
@@ -163,15 +176,16 @@ class TestScopeBasedRouting:
         assert 'command-names' in resolved
         assert resolved['command-names'] == ['parent-cmd']
 
-        # Routing must go to isolated dir
+        # Routing must build config.json in the isolated dir
         claude_dir = e2e_isolated_home['claude_dir']
         primary_cmd = resolved['command-names'][0]
         artifact_base_dir = claude_dir / primary_cmd
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
 
-        write_user_settings(resolved['user-settings'], artifact_base_dir)
+        create_profile_config({}, artifact_base_dir, user_settings=resolved['user-settings'])
 
-        assert (artifact_base_dir / 'settings.json').exists()
+        assert (artifact_base_dir / 'config.json').exists()
+        assert not (artifact_base_dir / 'settings.json').exists()
         assert not (claude_dir / 'settings.json').exists()
 
     def test_explicit_null_deisolates(
@@ -212,47 +226,51 @@ class TestScopeBasedRouting:
         claude_dir = e2e_isolated_home['claude_dir']
 
         configs: list[tuple[str, dict[str, Any]]] = [
-            ('cmd-a', {'a': 1}),
-            ('cmd-b', {'b': 2}),
+            ('cmd-a', {'theme': 'dark'}),
+            ('cmd-b', {'theme': 'light'}),
         ]
 
         for cmd, user_settings in configs:
             target = claude_dir / cmd
             target.mkdir(parents=True, exist_ok=True)
-            write_user_settings(user_settings, target)
+            create_profile_config({}, target, user_settings=user_settings)
 
-        settings_a = json.loads((claude_dir / 'cmd-a' / 'settings.json').read_text())
-        settings_b = json.loads((claude_dir / 'cmd-b' / 'settings.json').read_text())
+        config_a = json.loads((claude_dir / 'cmd-a' / 'config.json').read_text())
+        config_b = json.loads((claude_dir / 'cmd-b' / 'config.json').read_text())
 
-        assert settings_a == {'a': 1}
-        assert settings_b == {'b': 2}
-
-        # No cross-contamination
-        assert 'b' not in settings_a
-        assert 'a' not in settings_b
+        assert config_a == {'theme': 'dark'}
+        assert config_b == {'theme': 'light'}
 
     def test_no_user_settings_no_settings_json(
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Scenario 8: Config with command-names but no user-settings produces no settings.json."""
+        """Scenario 8: Isolated config never yields a toolbox-written settings.json.
+
+        The user-settings section is built into config.json, so the isolated
+        directory receives config.json but never a toolbox-written
+        settings.json (that file is Claude Code's user layer, not the
+        toolbox's).
+        """
         config = _load_fixture('scope_nouser.yaml')
         claude_dir = e2e_isolated_home['claude_dir']
 
         assert config['command-names'] == ['nousercmd']
-        assert 'user-settings' not in config
 
         primary_cmd = config['command-names'][0]
         artifact_base_dir = claude_dir / primary_cmd
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Matching main() logic: only call write_user_settings if user_settings is truthy
-        user_settings = config.get('user-settings')
-        if user_settings:
-            write_user_settings(user_settings, artifact_base_dir)
+        create_profile_config({}, artifact_base_dir, user_settings=config.get('user-settings'))
 
+        # The user-settings model lands in config.json ...
+        isolated_config = artifact_base_dir / 'config.json'
+        assert isolated_config.exists()
+        assert json.loads(isolated_config.read_text()).get('model') == 'sonnet'
+
+        # ... and no toolbox-written settings.json exists anywhere.
         assert not (artifact_base_dir / 'settings.json').exists(), (
-            'settings.json should NOT be created when user-settings is absent'
+            'toolbox must not write an isolated settings.json in isolated mode'
         )
         assert not (claude_dir / 'settings.json').exists()
 

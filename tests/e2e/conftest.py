@@ -178,16 +178,12 @@ def golden_config() -> dict[str, Any]:
     - files-to-download: Additional files with source/dest
     - hooks: Files and events configuration
     - mcp-servers: All transport types (http, sse, stdio)
-    - model: Model configuration
-    - permissions: default-mode, allow, deny, ask lists
-    - env-variables: Environment variables for Claude
     - os-env-variables: OS-level environment variables
     - command-defaults: System prompt and mode
-    - user-settings: User settings to merge
-    - always-thinking-enabled: Thinking mode flag
-    - effort-level: Adaptive reasoning effort level
-    - company-announcements: Announcement messages
-    - attribution: Commit and PR attribution settings
+    - user-settings: Raw settings.json content (camelCase keys), including
+      model, permissions, env, alwaysThinkingEnabled, effortLevel,
+      companyAnnouncements, and attribution
+    - global-config: Raw ~/.claude.json content
     - status-line: Status line configuration
 
     Returns:

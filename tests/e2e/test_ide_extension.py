@@ -36,7 +36,6 @@ class TestPinnedVersionInjectsIdeControls:
         # Extract config sections
         global_config = config.get('global-config')
         user_settings = config.get('user-settings')
-        env_variables = config.get('env-variables')
         os_env_variables = config.get('os-env-variables')
 
         # Normalize version
@@ -44,18 +43,16 @@ class TestPinnedVersionInjectsIdeControls:
         claude_code_version_normalized = None if version_str.lower() == 'latest' else version_str
 
         # Apply IDE extension settings
-        gc, us, ev, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+        gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
             claude_code_version_normalized,
-            global_config, user_settings, env_variables, os_env_variables,
+            global_config, user_settings, os_env_variables,
         )
 
-        # Verify all 4 targets injected
+        # Verify all 3 targets injected
         assert gc is not None
         assert gc.get('autoInstallIdeExtension') is False
         assert us is not None
         assert us.get('env', {}).get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
-        assert ev is not None
-        assert ev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
         assert osev is not None
         assert osev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
 
@@ -80,14 +77,14 @@ class TestLatestVersionNoIdeControls:
     """Verify that latest/absent version does not inject IDE extension controls."""
 
     def test_latest_version_does_not_inject(self) -> None:
-        gc, us, ev, osev, _, auto = setup_environment.apply_ide_extension_settings(
-            None, None, None, None, None,
+        gc, us, osev, _, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None,
         )
         assert not auto
 
     def test_absent_version_does_not_inject(self) -> None:
-        gc, us, ev, osev, _, auto = setup_environment.apply_ide_extension_settings(
-            None, None, None, None, None,
+        gc, us, osev, _, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None,
         )
         assert not auto
 
@@ -100,18 +97,18 @@ class TestIdeAutoMarkerInDryRun:
         version_str = str(config.get('claude-code-version', '')).strip()
         claude_code_version_normalized = None if version_str.lower() == 'latest' else version_str
 
-        _, _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
+        _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
             claude_code_version_normalized,
             config.get('global-config'), config.get('user-settings'),
-            config.get('env-variables'), config.get('os-env-variables'),
+            config.get('os-env-variables'),
         )
-        assert len(auto) == 4
+        assert len(auto) == 3
         assert any('autoInstallIdeExtension' in item for item in auto)
         assert any('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in item for item in auto)
 
     def test_no_auto_marker_when_latest(self) -> None:
-        _, _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
-            None, None, None, None, None,
+        _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None,
         )
         assert len(auto) == 0
 
@@ -121,14 +118,14 @@ class TestIdeUserConflictRespected:
 
     def test_user_autoinstall_true_respected(self) -> None:
         gc = {'autoInstallIdeExtension': True}
-        gc_out, _, _, _, warns, auto = setup_environment.apply_ide_extension_settings(
-            '2.1.85', gc, None, None, None,
+        gc_out, _, _, warns, auto = setup_environment.apply_ide_extension_settings(
+            '2.1.85', gc, None, None,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
         assert any('Respecting user value' in w for w in warns)
         # Other targets still get injected
-        assert len(auto) == 3  # T2, T3, T4 only
+        assert len(auto) == 2  # user-settings.env and os-env-variables only
 
 
 class TestIdeStaleCleanup:
@@ -183,8 +180,8 @@ class TestIdeUnpinnedRemovalSemantics:
         }))
 
         # Apply with no version pin: user-declared controls are preserved
-        gc, us, ev, osev, warns, _ = setup_environment.apply_ide_extension_settings(
-            None, {}, {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER_VAR': 'keep'}}, {}, {},
+        gc, us, osev, warns, _ = setup_environment.apply_ide_extension_settings(
+            None, {}, {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER_VAR': 'keep'}}, {},
         )
         assert us is not None
         assert us['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1', \
@@ -201,8 +198,8 @@ class TestIdeUnpinnedRemovalSemantics:
 
     def test_unpinned_schedules_os_level_deletion_when_not_declared(self) -> None:
         """The OS-level variable gets a deletion entry because it has no disk sweep."""
-        _, _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
-            None, {}, {}, {}, {},
+        _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            None, {}, {}, {},
         )
         assert osev is not None
         assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}, \

@@ -5,4 +5,5 @@ inherit:
       - agents
 agents:
   - "agents/single-structured-agent.md"
-model: "opus"
+user-settings:
+  model: "opus"

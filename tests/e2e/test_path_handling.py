@@ -98,20 +98,15 @@ class TestTildeExpansion:
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        # Create settings
+        # Create settings: profile-owned hooks/statusLine plus the
+        # settings.json content delivered via the user_settings parameter.
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             claude_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         # File is written to claude_user_dir (= claude_dir)

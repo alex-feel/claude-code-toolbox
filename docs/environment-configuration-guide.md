@@ -150,19 +150,12 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`rules`](#rules)                                     | `list[str]`            | No       | `[]`    | Rule markdown file paths (user-scope)                      |
 | [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                                       |
 | [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup                             |
-| [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Settings for `~/.claude.json`                              |
+| [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Raw `~/.claude.json` content (camelCase keys)              |
 | [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)                     |
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
-| [`model`](#model)                                     | `str`                  | No       | `None`  | Model alias or custom model name                           |
-| [`permissions`](#permissions)                         | `Permissions`          | No       | `None`  | Permission rules for tools                                 |
-| [`env-variables`](#env-variables)                     | `dict`                 | No       | `None`  | Claude-level environment variables                         |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
 | [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                                     |
-| [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Merged into `settings.json`                                |
-| [`always-thinking-enabled`](#always-thinking-enabled) | `bool`                 | No       | `None`  | Enable always-on thinking mode                             |
-| [`effort-level`](#effort-level)                       | `str`                  | No       | `None`  | Adaptive reasoning effort level                            |
-| [`company-announcements`](#company-announcements)     | `list[str]`            | No       | `None`  | Announcement strings for users                             |
-| [`attribution`](#attribution)                         | `Attribution`          | No       | `None`  | Commit and PR attribution strings                          |
+| [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Raw `settings.json` content (camelCase keys)               |
 | [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration                           |
 
 > `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
@@ -171,15 +164,15 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 
 ### Configuration key naming
 
-All configuration keys use **kebab-case** (hyphenated lowercase), for example `mcp-servers`, `effort-level`, `files-to-download`. Using underscores (`effort_level`, `mcp_servers`) will cause the key to be flagged as unknown during installation.
+All configuration keys use **kebab-case** (hyphenated lowercase), for example `mcp-servers`, `os-env-variables`, `files-to-download`. Using underscores (`os_env_variables`, `mcp_servers`) will cause the key to be flagged as unknown during installation.
 
 **Sub-key naming conventions:**
 
-- **Top-level keys** (`hooks`, `permissions`, `mcp-servers`, etc.): MUST be kebab-case (validated by `KNOWN_CONFIG_KEYS`)
-- **Sub-keys in structured sections** (`hooks.events[]`, `permissions`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
+- **Top-level keys** (`hooks`, `mcp-servers`, `status-line`, etc.): MUST be kebab-case (validated by `KNOWN_CONFIG_KEYS`)
+- **Sub-keys in structured sections** (`hooks.events[]`): MUST be kebab-case (the toolbox translates to camelCase for Claude Code JSON output)
 - **Sub-keys in free-form sections** (`user-settings`, `global-config`): MUST match Claude Code's native camelCase (pass-through, no translation)
 
-> **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `effort_level` and `effort-level`. However, the runtime setup script (`setup_environment.py`) uses `config.get('effort-level')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
+> **Note:** The Pydantic validation model (`EnvironmentConfig`) uses `populate_by_name=True` for testing convenience, which means CI validation accepts both `os_env_variables` and `os-env-variables`. However, the runtime setup script (`setup_environment.py`) uses `config.get('os-env-variables')` and will not recognize underscore variants. Always use kebab-case in your configuration files.
 
 ## Configuration Keys
 
@@ -316,7 +309,7 @@ List of top-level keys that should be merged (extended from parent) rather than 
 
 - **Type:** `list[str] | None`
 - **Default:** `None`
-- **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `env-variables`, `os-env-variables`
+- **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`
 - **Validation:** Non-eligible keys produce an error. Non-empty `merge-keys` without `inherit` produces a validation error because `merge-keys` controls merge semantics during inheritance resolution and has no effect without a parent configuration to merge from. An empty `merge-keys` list without `inherit` is permitted (treated as a no-op).
 - **Stripped from output:** Yes (like `inherit`)
 - **Inheritance:** Not applicable. Evaluated at each inheritance level independently; not inherited or accumulated across levels.
@@ -608,118 +601,11 @@ Sets an HTTP header for both `http` and `sse` transports.
 - **Format:** `"Header-Name: value"`
 - **Example:** `header: "Authorization: Bearer token123"`
 
-#### Automatic Permission Pre-Allowing
+#### MCP Server Permissions
 
-MCP server names are automatically added to the `permissions.allow` list as `mcp__servername`. You do not need to manually add MCP server permissions.
-
-### Model and Reasoning
-
-#### `model`
-
-Model alias or custom model name for Claude Code.
-
-- **Type:** `str | None`
-- **Default:** `None`
-- **Validation:** Any non-empty string. Supports Anthropic model names (for example, `claude-sonnet-4-20250514`), built-in aliases (`default`, `sonnet`, `opus`, `haiku`, `opus[1m]`, `sonnet[1m]`, `opusplan`), and third-party or provider-prefixed model identifiers (for example, `gpt-4o`, `openrouter/anthropic/claude-3.5-sonnet`). Empty or whitespace-only strings produce a validation error.
-- **Inheritance:** Standard override (child replaces parent)
-- **Example:** `model: "opus"` or `model: "claude-sonnet-4-20250514"` or `model: "openrouter/anthropic/claude-3.5-sonnet"`
-
-#### `always-thinking-enabled`
-
-Enable always-on extended thinking mode.
-
-- **Type:** `bool | None`
-- **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent)
-- **Example:** `always-thinking-enabled: true`
-
-#### `effort-level`
-
-Controls adaptive reasoning effort.
-
-- **Type:** `str | None` (one of `low`, `medium`, `high`, `xhigh`, `max`)
-- **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent)
-- **Values:**
-  - `low` -- Minimal reasoning, fastest responses
-  - `medium` -- Balanced reasoning and speed
-  - `high` -- Thorough reasoning for complex tasks
-  - `xhigh` -- Extended reasoning for long-horizon coding and agentic work. **Requires the model to be an Opus or Fable variant** (the model name must contain `opus` or `fable`, case-insensitive) **or the exact alias `best`**. Supported on Opus 4.7/4.8 and Fable 5; on models that do not support it, Claude Code runs it as `high`
-  - `max` -- Maximum reasoning effort. **Requires the model to be an Opus or Fable variant** (the model name must contain `opus` or `fable`, case-insensitive) **or the exact alias `best`**. Supported on Opus 4.6 and later and Fable 5
-- **Example:**
-
-```yaml
-# xhigh requires an Opus or Fable model
-model: "claude-fable-5"
-effort-level: "xhigh"
-```
-
-```yaml
-# max requires an Opus or Fable model
-model: "opus"
-effort-level: "max"
-```
-
-```yaml
-# low, medium, and high work with any model
-effort-level: "high"
-```
-
-The model gate matches family substrings because the free-form `model` key cannot resolve which version an alias points to; Claude Code gracefully downgrades an unsupported level to the highest supported level at runtime. The alias `best` is accepted by **exact match only** (it always resolves to Fable 5 or the latest Opus model), so arbitrary model names that merely contain `best` are rejected. The alias `default` is rejected for `xhigh`/`max` because it resolves to a Sonnet model on some account types.
-
-> **Note:** Per the official Claude Code documentation, persisted settings files accept only `low`, `medium`, `high`, and `xhigh` for the `effortLevel` setting; `max` (like `ultracode`) is session-only and persists across sessions only via the `CLAUDE_CODE_EFFORT_LEVEL` environment variable. The toolbox still accepts `max` because, for isolated profiles, it delivers `config.json` through the `--settings` flag on every launch, where the value applies per-session. `ultracode` is intentionally **not** an `effort-level` value here.
-
-### Permissions
-
-Permission rules controlling which tools and actions are allowed, denied, or require confirmation.
-
-- **Type:** `Permissions | None`
-- **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent). Note: MCP server permissions are automatically added during setup regardless of inheritance.
-- **Fields:**
-  - `default-mode` -- One of `default`, `acceptEdits`, `plan`, `bypassPermissions`
-  - `allow` -- List of explicitly allowed actions
-  - `deny` -- List of explicitly denied actions
-  - `ask` -- List of actions requiring confirmation
-  - `additional-directories` -- List of additional directory paths
-- **Note:** MCP server permissions (for example, `mcp__servername`) are automatically merged into the `allow` list
-- **Example:**
-
-```yaml
-permissions:
-  default-mode: "default"
-  allow:
-    - "Read"
-    - "Glob"
-    - "Grep"
-  deny:
-    - "Bash(rm -rf)"
-  ask:
-    - "Edit"
-    - "Write"
-  additional-directories:
-    - "/opt/project-data"
-```
+MCP servers are registered with Claude Code via `claude mcp add` (with scope-based routing). To pre-allow specific MCP tools without a per-use confirmation prompt, add `mcp__servername` (or `mcp__servername__toolname`) entries to `permissions.allow` under [`user-settings`](#user-settings).
 
 ### Environment Variables
-
-#### `env-variables`
-
-Claude-level environment variables set in the settings file. These are available within Claude Code sessions only.
-
-- **Type:** `dict[str, str | None] | None`
-- **Default:** `None`
-- **Special value:** Set a value to `null` to delete an existing variable. In non-isolated mode the variable is deleted from the `env` block of `~/.claude/settings.json`; in isolated mode it is omitted from the atomically rebuilt `~/.claude/{cmd}/config.json` (the literal JSON null is never written for an env entry).
-- **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$` (must start with a letter or underscore, followed by letters, digits, or underscores). Non-null values cannot contain null bytes.
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
-- **Example:**
-
-```yaml
-env-variables:
-  API_KEY: "sk-..."
-  DATABASE_URL: "postgres://localhost/mydb"
-  OLD_UNUSED_VAR: null  # Deletes this variable
-```
 
 #### `os-env-variables`
 
@@ -738,23 +624,25 @@ os-env-variables:
   OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
-- **Automatic string conversion:** Non-string YAML values (integers, booleans, floats) in both `env-variables` and `os-env-variables` are automatically converted to strings by the setup script. For example, `MCP_TIMEOUT: 30000` (YAML integer) becomes `"30000"` (string), and `ENABLE_FEATURE: true` (YAML boolean) becomes `"True"` (string). To preserve exact string representation, quote values in YAML: `ENABLE_FEATURE: "true"`. A `null` value is never stringified -- it is a deletion request (see the `null` special value above).
+- **Automatic string conversion:** Non-string YAML values (integers, booleans, floats) in `os-env-variables` are automatically converted to strings by the setup script. For example, `MY_TIMEOUT: 30000` (YAML integer) becomes `"30000"` (string), and `ENABLE_FEATURE: true` (YAML boolean) becomes `"True"` (string). To preserve exact string representation, quote values in YAML: `ENABLE_FEATURE: "true"`. A `null` value is never stringified -- it is a deletion request (see the `null` special value above).
 - **Current session guidance (Linux/macOS):** When variables are deleted via `null`, the setup script outputs shell-specific `unset` commands so the user can remove those variables from the running session without opening a new terminal:
   - **Bash/Zsh:** `unset VARNAME` for each deleted variable
   - **Fish** (when installed): `set -e VARNAME` for each deleted variable
 
 #### Environment Variable Loading
 
-The setup script provides two distinct mechanisms for environment variables, each serving a different scope:
+The setup script supports two distinct kinds of environment variables, each serving a different scope:
 
-| YAML Key           | Scope                | Storage                           | Available In                         |
-|--------------------|----------------------|-----------------------------------|--------------------------------------|
-| `env-variables`    | Claude Code internal | `config.json` `env` key (profile) | Claude Code sessions only            |
-| `os-env-variables` | OS-level persistent  | Shell profiles + Windows registry | All processes (terminals, programs)  |
+| Source              | Scope                | Storage                                               | Available In                        |
+|---------------------|----------------------|-------------------------------------------------------|-------------------------------------|
+| `user-settings.env` | Claude Code internal | `settings.json` `env` key (or profile `config.json`)  | Claude Code sessions only           |
+| `os-env-variables`  | OS-level persistent  | Shell profiles + Windows registry                     | All processes (terminals, programs) |
+
+Claude-session variables are declared under [`user-settings.env`](#user-settings) (raw `settings.json` content). See the [`user-settings`](#user-settings) section for the `env` value rules (string-only values, `null` as delete).
 
 ##### Env Loader Files
 
-When `os-env-variables` are configured, the setup generates Rustup-style env loader files that can be sourced to load the variables into the current shell session. These files contain **only** `os-env-variables` (not `env-variables`, which are handled by Claude Code's `config.json`).
+When `os-env-variables` are configured, the setup generates Rustup-style env loader files that can be sourced to load the variables into the current shell session. These files contain **only** `os-env-variables` (not `user-settings.env`, which Claude Code reads from `settings.json`/`config.json`).
 
 **Per-command files** (generated when `command-names` is specified):
 
@@ -813,76 +701,114 @@ command-defaults:
 
 #### `user-settings`
 
-Free-form settings merged into `~/.claude/settings.json`. Uses deep merge with universal array union: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) ("arrays are concatenated and deduplicated, not replaced").
+Raw `settings.json` content, using Claude Code's native camelCase key names exactly as they appear on disk. This is the single surface for every Claude Code `settings.json` setting -- `model`, `permissions`, `env`, `effortLevel`, and everything else. In non-isolated mode (`command-names` absent) it is deep-merged into `~/.claude/settings.json`; in isolated mode (`command-names` present) it is built into the isolated profile's `config.json` and delivered via `--settings`. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the end-to-end write contract.
+
+The on-disk write uses deep merge with universal array union: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) ("arrays are concatenated and deduplicated, not replaced").
 
 - **Type:** `UserSettings | None`
 - **Default:** `None`
-- **Excluded keys:** `hooks` and `statusLine` (these require dedicated write logic with path resolution and type processing, and must be configured at the root level of the YAML configuration)
+- **Excluded keys:** `hooks` and `statusLine` (these require dedicated write logic with file download, path resolution, and type processing, and must be configured at the YAML root level via the [`hooks`](#hooks) and [`status-line`](#status-line) keys)
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (`permissions.allow`, `permissions.deny`, `permissions.ask` arrays are unioned with deduplication; other arrays use child-replaces-parent semantics in the YAML inheritance layer). Child keys override matching parent keys; `null` values delete keys. **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_user_settings()` -> `_write_merged_json()`) uses universal array union at every depth for all keys; `DEFAULT_ARRAY_UNION_KEYS` applies only inside the YAML composition layer.
 - **Example:**
 
 ```yaml
 user-settings:
+  model: "opus"
+  effortLevel: "high"
+  alwaysThinkingEnabled: true
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
+  permissions:
+    defaultMode: "default"
+    allow:
+      - "Read"
+      - "Glob"
+      - "Grep"
+    deny:
+      - "Bash(rm -rf)"
+    additionalDirectories:
+      - "/opt/project-data"
   env:
+    PROJECT_TYPE: "python"
     DISABLE_AUTOUPDATER: "1"
+    OLD_UNUSED_VAR: null  # Deletes this variable
 ```
 
-##### Relationship to Profile-Owned Keys
+##### Built-in Key Reference (camelCase)
 
-`user-settings` is the **forward-compatibility escape hatch** for the ~85% of Claude Code CLI `settings.json` schema that the toolbox does not model at the YAML root level. It COMPLEMENTS (does not replace or contradict) the profile-settings writer used in non-command-names mode. See also [Profile-Level Settings Routing](#profile-level-settings-routing) for the end-to-end picture.
+`user-settings` accepts any `settings.json` key. The keys below are the common ones and use Claude Code's native camelCase spelling. Because a misplaced or misspelled built-in key is silently ignored by Claude Code at runtime, the toolbox validates these keys fail-fast (setup exits with an error). Unknown keys pass through untouched for forward compatibility.
 
-**Decision matrix -- where should I put a given setting?**
+- **`model`** -- Model alias or custom model name. Any non-empty string: Anthropic model names (`claude-sonnet-4-20250514`), built-in aliases (`default`, `sonnet`, `opus`, `haiku`, `opus[1m]`, `sonnet[1m]`, `opusplan`, `best`), or third-party / provider-prefixed identifiers (`gpt-4o`, `openrouter/anthropic/claude-3.5-sonnet`). Empty or whitespace-only strings are rejected.
+- **`permissions`** -- Permission rules controlling which tools and actions are allowed, denied, or require confirmation. Sub-keys use camelCase: `defaultMode`, `allow`, `deny`, `ask`, `additionalDirectories`. `defaultMode` must be one of `acceptEdits`, `auto`, `bypassPermissions`, `default`, `delegate`, `dontAsk`, `plan`; `allow`, `deny`, `ask`, and `additionalDirectories` must be lists of strings. The kebab-case spellings `default-mode` and `additional-directories` are rejected with the camelCase correction. To pre-allow an MCP server's tools, add `mcp__servername` entries to `permissions.allow` (see [MCP Server Permissions](#mcp-server-permissions)).
+- **`env`** -- Claude-level environment variables available within Claude Code sessions. A mapping of variable names (matching `^[A-Za-z_][A-Za-z0-9_]*$`) to **string** values. A non-string value is rejected (`user-settings.env.NAME must be a string (quote the value in YAML) or null to delete the variable.`) -- quote the value in YAML to keep it a string. A `null` value deletes the variable (see [Key Deletion](#key-deletion-null-as-delete)).
+- **`attribution`** -- Commit and pull-request attribution. A mapping with `commit` and `pr` string sub-keys; set a sub-key to an empty string to hide that attribution.
+- **`alwaysThinkingEnabled`** -- Boolean enabling always-on extended thinking mode.
+- **`companyAnnouncements`** -- List of announcement strings displayed to users.
+- **`effortLevel`** -- Adaptive reasoning effort, one of `high`, `low`, `max`, `medium`, `xhigh`. The `xhigh` level requires `model` to be an Opus or Fable variant (the model name must contain `opus` or `fable`, case-insensitive) or the exact alias `best`; `max` additionally accepts a Sonnet variant. When `model` is absent or outside the required families, the effort level is rejected. See [effortLevel model requirements](#effortlevel-model-requirements) below.
 
-| Setting category                     | YAML root level                      | `user-settings:`         | `global-config:`         |
-|--------------------------------------|--------------------------------------|--------------------------|--------------------------|
-| 9 profile-owned keys (below)         | **YES** (profile-owned, auto-routed) | No                       | No                       |
-| Any other `settings.json` CLI key    | No                                   | **YES** (free-form)      | No                       |
-| Any `~/.claude.json` CLI key         | No                                   | No                       | **YES** (free-form)      |
+###### effortLevel model requirements
 
-**9 profile-owned keys (placed at YAML root level):**
+The model gate matches family substrings because the free-form `model` value cannot resolve which version an alias points to; Claude Code gracefully downgrades an unsupported level to the highest supported level at runtime, but declaring an unsupported combination in the profile is almost always a mistake, so it is rejected. The alias `best` is accepted by **exact match only** (it always resolves to Fable 5 or the latest Opus model), so arbitrary model names that merely contain `best` are rejected.
 
-- `model`, `permissions`, `env-variables`, `attribution`, `always-thinking-enabled`, `effort-level`, `company-announcements`, `status-line`, `hooks`
+```yaml
+# xhigh requires an Opus or Fable model
+user-settings:
+  model: "claude-fable-5"   # or "opus", "fable", "best"
+  effortLevel: "xhigh"
+```
 
-**Examples of "any other `settings.json` CLI key" (placed under `user-settings:`):**
+```yaml
+# max requires an Opus, Sonnet, or Fable model
+user-settings:
+  model: "opus"             # or "sonnet", "fable", "best"
+  effortLevel: "max"
+```
 
-- `language`, `theme`, `includeGitInstructions`, `apiKeyHelper`, `awsCredentialExport`, `cleanupPeriodDays`, `outputStyle`, `autoMemoryDirectory`, `defaultShell`, `respectGitignore`, `sandbox.*`, plus any new Claude Code CLI setting not yet modeled at YAML root level. `user-settings` uses `extra='allow'` Pydantic semantics, so any key that is not explicitly excluded passes through unchanged.
+```yaml
+# low, medium, and high work with any model
+user-settings:
+  effortLevel: "high"
+```
 
-**Examples of "any `~/.claude.json` CLI key" (placed under `global-config:`):**
+> **`max` persistence caveat:** Per the official Claude Code documentation, persisted `settings.json` files accept only `low`, `medium`, `high`, and `xhigh` for `effortLevel`; `max` (like `ultracode`) is session-only and, in a plain `settings.json`, persists across sessions only via the `CLAUDE_CODE_EFFORT_LEVEL` environment variable. The toolbox still accepts `max` because, for isolated profiles, it delivers `config.json` through the `--settings` flag on every launch, where the value applies per-session. The setup emits a warning when `user-settings.effortLevel` is `max`. `ultracode` is intentionally **not** an accepted `effortLevel` value.
 
-- `autoConnectIde`, `editorMode`, `showTurnDuration`, `terminalProgressBarEnabled`, and any other global CLI settings.
+##### Fail-Fast Validation Rules
 
-**Precedence rule for the 9 profile-owned keys:**
+The toolbox validates `user-settings` against Claude Code's `settings.json` schema and rejects (exit 1) misconfigurations that Claude Code would otherwise ignore silently. A `null` value for any key is always allowed (a deletion request). Unknown keys not covered below pass through untouched. The rules are:
 
-If you declare a profile-owned key (for example, `permissions`) at BOTH YAML root level AND under `user-settings:`, Step 18 `write_profile_settings_to_settings()` runs AFTER Step 14 `write_user_settings()` and deep-merges its delta on top of the Step 14 result. For scalar keys, the root-level value overwrites the `user-settings` value. For dict keys (such as `permissions`), the two contributions are deep-merged: sub-keys declared only on one side are preserved, sub-keys declared on both sides are resolved by the root-level value winning, and every list-valued sub-key at any depth (including `permissions.allow`, `permissions.deny`, `permissions.ask`, `permissions.additionalDirectories`) is unioned with structural dedupe across both sources under the universal array-union contract. A warning from `detect_settings_conflicts()` is emitted during validation to make the contract explicit. The warning fires in BOTH command-names-present and command-names-absent modes.
+- **`hooks` and `statusLine` are forbidden.** They must be configured at the YAML root level via [`hooks`](#hooks) and [`status-line`](#status-line). Blocked by `check_excluded_keys` in the `UserSettings` Pydantic model (`USER_SETTINGS_EXCLUDED_KEYS = {'hooks', 'statusLine'}`).
+- **Root-level YAML keys are forbidden.** `status-line` and `os-env-variables` are YAML root keys, not `settings.json` keys, and are rejected with the message `Key '{key}' is not allowed in user-settings. It is a root-level YAML key, not a settings.json key.`
+- **Kebab-case spellings of built-in keys are rejected** with the camelCase correction: `always-thinking-enabled` -> `alwaysThinkingEnabled`, `company-announcements` -> `companyAnnouncements`, `effort-level` -> `effortLevel`, `env-variables` -> `env`; and inside `permissions`, `default-mode` -> `defaultMode` and `additional-directories` -> `additionalDirectories`.
+- **Global-only keys are rejected.** Keys that live in `~/.claude.json` (`autoUpdates`, `installMethod`, `autoConnectIde`, `autoInstallIdeExtension`, `externalEditorContext`, `teammateDefaultModel`, `oauthAccount`) belong in [`global-config`](#global-config), not `user-settings`, and are rejected with the message `Key '{key}' belongs in global-config (~/.claude.json), not in user-settings (settings.json).`
 
-**Why the two surfaces coexist:**
+##### `CLAUDE_CONFIG_DIR` override (isolated mode)
 
-- **Profile-owned keys** (9 keys) have first-class atomic semantics because the toolbox fully owns them: kebab-to-camel translation (`default-mode` -> `defaultMode`), file path resolution for hook events, status-line command-string generation with absolute POSIX paths, and auto-update Target 2/3 injection management.
-- **`user-settings`** passes through any other key without interpretation. This allows users to configure any Claude Code CLI setting the toolbox does not model at the YAML root level -- including settings added in future Claude Code releases -- without waiting for a toolbox update. This is the meaning of "forward-compatibility escape hatch".
+To override the auto-computed isolation directory, set `CLAUDE_CONFIG_DIR` under `user-settings.env` (only meaningful when `command-names` is present). The setup reads and then removes it before writing config.json -- the launcher's `export CLAUDE_CONFIG_DIR` remains the sole authoritative runtime source, so the value is not left in the profile's `env` block.
 
-**Keys explicitly FORBIDDEN under `user-settings:` (validation error):**
+```yaml
+command-names:
+  - "my-env"
 
-- `hooks` -- must be at YAML root level (requires file download, path resolution, type processing via `_build_hooks_json()`).
-- `statusLine` -- must be at YAML root level via `status-line:` (requires file download and path resolution into `hooks.files`).
+user-settings:
+  env:
+    CLAUDE_CONFIG_DIR: "~/.claude/my-custom-dir"
+```
 
-These two keys are blocked by `check_excluded_keys` in the `UserSettings` Pydantic model (`USER_SETTINGS_EXCLUDED_KEYS = {'hooks', 'statusLine'}`). No other keys are blocked -- this exclusion set is NOT extended to cover the 9 profile-owned keys.
+##### Preservation contract for `user-settings`
 
-**Preservation contract for `user-settings`:**
-
-Keys that you put under `user-settings:` are preserved even when you re-run the setup with a different YAML that omits them, because Step 14 `write_user_settings()` uses deep-merge semantics and never deletes keys unless you set them to `null`. Additionally, Step 18 `write_profile_settings_to_settings()` only touches keys that appear in the profile delta; all other keys (including your `user-settings` contributions and any user-managed keys outside the YAML) remain intact. List-valued keys (at any depth) accumulate additively across runs under the universal array-union contract, so elements you wrote in earlier runs are never silently deleted. This is the deliberate shared-file semantics: the toolbox does NOT surprise-delete anything from the shared `~/.claude/settings.json`. See [Profile-Level Settings Routing](#profile-level-settings-routing) below for the full write semantics contract and the deferred stale-key behavior.
+Keys that you put under `user-settings:` are preserved even when you re-run the setup with a different YAML that omits them, because in non-isolated mode `write_user_settings()` uses deep-merge semantics and never deletes keys unless you set them to `null`. List-valued keys (at any depth) accumulate additively across runs under the universal array-union contract, so elements you wrote in earlier runs are never silently deleted. This is the deliberate shared-file semantics: the toolbox does NOT surprise-delete anything from the shared `~/.claude/settings.json`. In isolated mode the profile's `config.json` is rebuilt atomically each run, so removing a key from YAML cleanly removes it from `config.json` on the next run. See [Profile-Level Settings Routing](#profile-level-settings-routing) below for the full write semantics contract and the deferred stale-key behavior.
 
 #### `global-config`
 
-Settings merged into `~/.claude.json` (the Claude Code global configuration file). When `command-names` is present, additionally written to `~/.claude/{cmd}/.claude.json` for isolated environments (Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback to the home directory). Uses deep merge with universal array union: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) and preserving CLI-managed state at runtime (OAuth tokens, per-project trust decisions, user-scoped MCP server approvals via `/mcp approve`, `enabledPlugins`, `enabledMcpjsonServers`/`disabledMcpjsonServers`).
+Raw `~/.claude.json` content, merged into the Claude Code global configuration file. When `command-names` is present, additionally written to `~/.claude/{cmd}/.claude.json` for isolated environments (Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback to the home directory). Uses deep merge with universal array union: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) and preserving CLI-managed state at runtime (OAuth tokens, per-project trust decisions, user-scoped MCP server approvals via `/mcp approve`, `enabledPlugins`, `enabledMcpjsonServers`/`disabledMcpjsonServers`).
 
 When `command-names` is present, the setup also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the `global-config` write (auto-injected, even when the YAML has no `global-config` section; a user-declared `installMethod` in YAML wins with a warning when it differs; nothing is propagated when the base file or key is absent). The dual-write then carries the correct installation type into the isolated `.claude.json`, so isolated sessions report it correctly.
 
 - **Type:** `GlobalConfig | None`
 - **Default:** `None`
 - **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
+- **Settings-only keys rejected:** Keys that live in `settings.json` (`model`, `permissions`, `env`, `attribution`, `alwaysThinkingEnabled`, `effortLevel`, `companyAnnouncements`, `statusLine`, `hooks`, `availableModels`, `enforceAvailableModels`) are rejected in `global-config` because `~/.claude.json` is not a settings file and Claude Code would silently ignore them at runtime. `model` and the other `settings.json` keys are rejected with the message `Key '{key}' is a settings.json key and is not valid in global-config (~/.claude.json). Move it to user-settings.`; `statusLine` and `hooks` are instead directed to the root-level `status-line` and `hooks` YAML keys. A `null` value is always allowed (a deletion request).
 - **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `array_union_keys=set()` (arrays are replaced in the YAML inheritance layer for child-overrides-parent composition). Child keys override matching parent keys; `null` values delete keys (RFC 7396). **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_global_config()` -> `_write_merged_json()`) uses universal array union at every depth; the `set()` form applies only inside the YAML composition layer.
 - **Example:**
 
@@ -919,47 +845,14 @@ global-config:
 
 > **Warning:** Bare YAML keys with no value (`key:`) are equivalent to `key: null`. This means accidentally omitting a value will DELETE that key rather than set it to an empty string. Always use explicit values: `key: ""` for empty strings, `key: null` for intentional deletion.
 
-**Profile-owned keys in non-command-names mode:** The nine profile-owned keys (`model`, `permissions`, `env-variables`, `attribution`, `always-thinking-enabled`, `effort-level`, `company-announcements`, `status-line`, `hooks`) all support null-as-delete at the YAML root level via the deep-merge writer -- see [Profile-Level Settings Routing](#profile-level-settings-routing). Both top-level and nested nulls are covered end-to-end:
+**Profile-owned keys (`status-line`, `hooks`) in non-command-names mode:** The two profile-owned keys support null-as-delete at the YAML root level via the deep-merge writer -- see [Profile-Level Settings Routing](#profile-level-settings-routing). Both top-level and nested nulls are covered end-to-end:
 
-- **Top-level null** (for example, `model: null`, `permissions: null`, `hooks: null`, `env-variables: null`): deletes the entire on-disk key from `~/.claude/settings.json`.
-- **Nested null** (for example, `permissions: {deny: null}`, `hooks: {PreToolUse: null}`): deletes only the nested sub-key while preserving the rest of the block (`permissions.allow`/`permissions.ask`, other hook event names).
+- **Top-level null** (for example, `status-line: null`, `hooks: null`): deletes the entire on-disk key from `~/.claude/settings.json`.
+- **Nested null** (for example, `hooks: {PreToolUse: null}`): deletes only the nested sub-key while preserving the rest of the block (other hook event names).
 
 The dict-membership construction in the data flow from YAML root to the writer preserves the distinction between "declared with explicit null" and "absent from YAML" -- only the former triggers deletion. OMITTING a profile-owned key from a subsequent YAML run does NOT delete it; see [Deferred Stale-Key Behavior](#deferred-stale-key-behavior-user-facing-contract) for the intentional preservation contract.
 
-**Per-variable nulls in `env-variables` and `os-env-variables`:** a `null` value deletes the variable instead of setting a literal string -- in BOTH modes for `env-variables` and at the OS level for `os-env-variables`. In non-isolated mode, `env-variables: {VAR: null}` deletes `env.VAR` from `~/.claude/settings.json` via the deep-merge writer (this also cleans up any stale literal value a prior run may have written). In isolated mode, `create_profile_config()` strips null-valued env entries before the atomic `config.json` write -- absence equals deletion under atomic rebuild, and the `env` key is dropped entirely when every entry is null -- so a JSON `null` is never written for an env entry. `os-env-variables: {VAR: null}` deletes the OS-level variable from shell profiles or the Windows registry and excludes it from the env loader files.
-
-#### `company-announcements`
-
-Announcement strings displayed to users during setup.
-
-- **Type:** `list[str] | None`
-- **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent)
-- **Example:**
-
-```yaml
-company-announcements:
-  - "Welcome to the team development environment!"
-  - "Run /help for available commands"
-```
-
-#### `attribution`
-
-Attribution strings for commits and pull requests. Set a field to an empty string to hide attribution.
-
-- **Type:** `Attribution | None`
-- **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent)
-- **Fields:**
-  - `commit` (str) -- Attribution string for commits
-  - `pr` (str) -- Attribution string for pull requests
-- **Example:**
-
-```yaml
-attribution:
-  commit: "Co-authored-by: AI Assistant"
-  pr: ""  # Hide PR attribution
-```
+**Per-variable nulls in `user-settings.env` and `os-env-variables`:** a `null` value deletes the variable instead of setting a literal string. In non-isolated mode, `user-settings: {env: {VAR: null}}` deletes `env.VAR` from `~/.claude/settings.json` via the deep-merge writer (this also cleans up any stale literal value a prior run may have written). In isolated mode, `create_profile_config()` strips null-valued members recursively before the atomic `config.json` write -- absence equals deletion under atomic rebuild -- so a JSON `null` is never written for an `env` entry. `os-env-variables: {VAR: null}` deletes the OS-level variable from shell profiles or the Windows registry and excludes it from the env loader files.
 
 #### `status-line`
 
@@ -1227,7 +1120,7 @@ Hooks are routed to different target files based on whether `command-names` is s
 | `command-names` present | `~/.claude/{cmd}/config.json`  | `create_profile_config()` (atomic overwrite)           | `~/.claude/{cmd}/hooks/` |
 | `command-names` absent  | `~/.claude/settings.json`      | `write_profile_settings_to_settings()` (deep-merge)    | `~/.claude/hooks/`       |
 
-When `command-names` is absent, the setup writes hooks to the global `~/.claude/settings.json` via `write_profile_settings_to_settings()` as part of the 9-key `PROFILE_OWNED_KEYS` delta. The writer delegates to `_write_merged_json()`, which deep-merges the `hooks` dict into the existing file: disjoint event names (in the delta but not on disk, and vice versa) compose additively, and the per-event matcher-group lists are unioned with structural dedupe across runs (every list at every depth is unioned under the universal array-union contract). All other keys -- user-managed keys, other profile-owned keys not in the current delta, and Step 14 `user-settings` contributions -- are preserved. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the full contract.
+When `command-names` is absent, the setup writes hooks to the global `~/.claude/settings.json` via `write_profile_settings_to_settings()` as part of the 2-key `PROFILE_OWNED_KEYS` delta. The writer delegates to `_write_merged_json()`, which deep-merges the `hooks` dict into the existing file: disjoint event names (in the delta but not on disk, and vice versa) compose additively, and the per-event matcher-group lists are unioned with structural dedupe across runs (every list at every depth is unioned under the universal array-union contract). All other keys -- user-managed keys, other profile-owned keys not in the current delta, and Step 14 `user-settings` contributions -- are preserved. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the full contract.
 
 **Re-run behavior:** When the YAML re-declares `hooks`, the deep-merge writer recurses into the existing `hooks` dict. Disjoint event names compose additively across runs. For the same event name, matcher groups accumulate: two matcher groups with the same `matcher` string but different inner handlers from different runs coexist as separate entries (naive structural dedupe -- they are not structurally equal, so neither is discarded). Structurally identical matcher groups collapse to one, making repeat runs with the same YAML idempotent. This matches [Claude Code's native cross-scope merge semantics](https://code.claude.com/docs/en/settings); at runtime, Claude Code deduplicates command hooks by command string and HTTP hooks by URL (per the [Claude Code hooks documentation](https://code.claude.com/docs/en/hooks): "Command hooks are deduplicated by command string, and HTTP hooks are deduplicated by URL"), so on-disk consolidation is unnecessary. To fully clear stale events for a specific event name, set `hooks: {EventName: null}` to delete just that event list; declaring a new list under the same event name unions with existing entries rather than replacing them.
 
@@ -1301,7 +1194,8 @@ The `inherit` value uses the same routing as config sources:
 ```yaml
 # base.yaml
 name: "Base Environment"
-model: "sonnet"
+user-settings:
+  model: "sonnet"
 agents:
   - "agents/core-agent.md"
 ```
@@ -1313,8 +1207,11 @@ name: "Extended Environment"  # Overrides parent's name
 agents:                       # Completely REPLACES parent's agents list
   - "agents/core-agent.md"
   - "agents/extra-agent.md"
-effort-level: "high"          # Added (not in parent)
-# model: "sonnet" is inherited from parent (not overridden)
+user-settings:                # Completely REPLACES parent's user-settings (not in merge-keys)
+  effortLevel: "high"
+# The parent's user-settings.model is NOT inherited here, because user-settings
+# uses replace semantics by default. Add 'merge-keys: [user-settings]' to deep-merge
+# the parent's model with the child's effortLevel instead.
 ```
 
 ### List Inherit (Composition Chains)
@@ -1376,7 +1273,7 @@ Structured entries have the following fields:
 | `config`     | `str`        | Yes      | Configuration source (URL, path, or repo name)            |
 | `merge-keys` | `list[str]`  | No       | Keys to merge instead of replace at this composition step |
 
-The `merge-keys` in a structured entry accepts the same values as the top-level `merge-keys` directive: `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `env-variables`, `os-env-variables`.
+The `merge-keys` in a structured entry accepts the same values as the top-level `merge-keys` directive: `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`.
 
 Plain strings and structured entries can be mixed in the same list:
 
@@ -1417,8 +1314,9 @@ agents:
   - "agents/core-agent.md"
 rules:
   - "rules/base-rule.md"
-model: "sonnet"
-env-variables:
+user-settings:
+  model: "sonnet"
+os-env-variables:
   SHARED_VAR: "from_base"
   BASE_VAR: "base_val"
 
@@ -1432,7 +1330,7 @@ agents:
   - "agents/extra-agent.md"
 rules:
   - "rules/extra-rule.md"
-env-variables:
+os-env-variables:
   SHARED_VAR: "from_extensions"
   EXT_VAR: "ext_val"
 
@@ -1446,8 +1344,9 @@ inherit:
 name: "My Environment"
 merge-keys:
   - os-env-variables
-model: "opus"
-env-variables:
+user-settings:
+  model: "opus"
+os-env-variables:
   LEAF_VAR: "leaf_val"
 ```
 
@@ -1455,9 +1354,9 @@ Result:
 
 - `agents`: `["agents/core-agent.md", "agents/extra-agent.md"]` -- merged by the structured entry's `merge-keys` (Rule 3)
 - `rules`: `["rules/base-rule.md", "rules/extra-rule.md"]` -- merged by the structured entry's `merge-keys` (Rule 3)
-- `model`: `"opus"` -- leaf overrides
+- `user-settings`: `{"model": "opus"}` -- `user-settings` is not in per-entry merge-keys and not in the leaf's top-level `merge-keys`, so it uses replace semantics: extensions declares none, then the leaf replaces with its own `user-settings`
 - `name`: `"My Environment"` -- leaf overrides
-- `env-variables`: `{"LEAF_VAR": "leaf_val"}` -- extensions replaces base's env-variables (not in per-entry merge-keys), then leaf replaces again
+- `os-env-variables`: `{"SHARED_VAR": "from_extensions", "EXT_VAR": "ext_val", "LEAF_VAR": "leaf_val"}` -- extensions is not in per-entry merge-keys, so it REPLACES base's `os-env-variables` (dropping `BASE_VAR`); then the leaf's top-level `merge-keys: [os-env-variables]` shallow-merges the leaf on top, adding `LEAF_VAR`
 - `some-parent.yaml` referenced in extensions.yaml's own inherit is **never loaded** (Rule 1)
 - extensions.yaml's own `merge-keys: [agents, rules]` is **ignored** (Rule 3)
 
@@ -1501,13 +1400,13 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 | Composite              | `hooks`                             | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
 | Deep dict              | `global-config`                     | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)   |
 | Deep dict              | `user-settings`                     | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only) |
-| Shallow dict           | `env-variables`, `os-env-variables` | Shallow merge; child overrides; `null` deletes (RFC 7396)                             |
+| Shallow dict           | `os-env-variables`                  | Shallow merge; child overrides; `null` deletes (RFC 7396)                             |
 
-> **Note:** The `global-config` and `user-settings` rows above describe the YAML inheritance layer only -- how `merge-keys` composes parent and child configurations before the writer touches disk. The on-disk writers (`write_global_config()`, `write_user_settings()`, `write_profile_settings_to_settings()`) use the universal array-union contract: every list at every depth is unioned with structural dedupe, independent of `DEFAULT_ARRAY_UNION_KEYS`. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the on-disk write contract.
+> **Note:** The `global-config` and `user-settings` rows above describe the YAML inheritance layer only -- how `merge-keys` composes parent and child configurations before the writer touches disk. The `user-settings` deep merge covers its nested `env` block (Claude-session environment variables). The on-disk writers (`write_global_config()`, `write_user_settings()`, `write_profile_settings_to_settings()`) use the universal array-union contract: every list at every depth is unioned with structural dedupe, independent of `DEFAULT_ARRAY_UNION_KEYS`. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the on-disk write contract.
 
 #### Non-Mergeable Keys
 
-Keys not listed in the 12 mergeable keys (such as `name`, `model`, `permissions`, `command-defaults`) always use replace semantics, regardless of `merge-keys`.
+Keys not listed in the 11 mergeable keys (such as `name`, `command-defaults`, `status-line`) always use replace semantics, regardless of `merge-keys`.
 
 #### Complete Merge Example
 
@@ -1588,18 +1487,17 @@ Authentication is resolved in this order (highest priority first):
 
 ### Automatic Auto-Update Management
 
-When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into four targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are automatically cleaned up (re-enabling auto-updates) while user-declared controls are preserved.
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into three targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are automatically cleaned up (re-enabling auto-updates) while user-declared controls are preserved.
 
 #### Injection Targets
 
 | Target             | Key                       | Value   | On-disk file (isolated)                           | On-disk file (non-isolated)                         |
 |--------------------|---------------------------|---------|---------------------------------------------------|-----------------------------------------------------|
 | `global-config`    | `autoUpdates`             | `false` | `~/.claude/{cmd}/.claude.json` + `~/.claude.json` | `~/.claude.json`                                    |
-| `user-settings`    | `env.DISABLE_AUTOUPDATER` | `"1"`   | `~/.claude/{cmd}/settings.json`                   | `~/.claude/settings.json`                           |
-| `env-variables`    | `DISABLE_AUTOUPDATER`     | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
+| `user-settings`    | `env.DISABLE_AUTOUPDATER` | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
 | `os-env-variables` | `DISABLE_AUTOUPDATER`     | `"1"`   | Shell profiles / Windows registry                 | Shell profiles / Windows registry                   |
 
-All four targets are injected unconditionally regardless of whether `command-names` is present. In isolated mode (`command-names` present), `env-variables` reaches `~/.claude/{cmd}/config.json` via `create_profile_config()` (Step 18). In non-isolated mode (`command-names` absent), `env-variables` is routed to `~/.claude/settings.json['env']` via `write_profile_settings_to_settings()` (Step 18), which deep-merges the delta into the existing file. Both Target 2 (`user-settings.env.DISABLE_AUTOUPDATER`, written in Step 14) and Target 3 (`env-variables.DISABLE_AUTOUPDATER`, written in Step 18) therefore reach the same on-disk `settings.json['env']` container in non-isolated mode, and deep-merge makes them additive: `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. After injection, the setup writes the injected `env-variables` dict back into the resolved configuration, so Step 18 emits Target 3 even when the YAML declares no `env-variables` block (a YAML `env-variables: null` is likewise superseded by the injected dict when pinned). A pinned non-isolated run performs no Step 16 `settings.json` sweep (the base file is the run's own Step 14 and Step 18 write target), so both env-based controls persist in the final base file.
+All three targets are injected unconditionally regardless of whether `command-names` is present. The `user-settings.env.DISABLE_AUTOUPDATER` control follows the standard `user-settings` routing: in isolated mode it is built into `~/.claude/{cmd}/config.json` (`env` key) at Step 18; in non-isolated mode it is deep-merged into `~/.claude/settings.json['env']` at Step 14. Deep-merge makes it additive with any user-declared environment variables: `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. A pinned non-isolated run performs no Step 16 `settings.json` sweep (the base file is the run's own Step 14 write target), so the env-based control persists in the final base file.
 
 #### Removal Behavior
 
@@ -1608,7 +1506,7 @@ When the version is `"latest"` or absent, nothing is auto-injected, so every aut
 - **OS-level variable:** `DISABLE_AUTOUPDATER` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
 - **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env` or `env-variables`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs (`command-names` present), to prevent bare sessions from inheriting isolated environment restrictions; a pinned non-isolated run performs no `settings.json` sweep, because the base file is the run's own write target.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs (`command-names` present), to prevent bare sessions from inheriting isolated environment restrictions; a pinned non-isolated run performs no `settings.json` sweep, because the base file is the run's own write target.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1628,30 +1526,28 @@ Auto-injected values are displayed in the installation summary (including `--dry
 Auto-injected settings (version pinning):
   [auto] global-config.autoUpdates: false
   [auto] user-settings.env.DISABLE_AUTOUPDATER: "1"
-  [auto] env-variables.DISABLE_AUTOUPDATER: "1"
   [auto] os-env-variables.DISABLE_AUTOUPDATER: "1"
 ```
 
 #### Defense-in-Depth
 
-The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all four targets provides the best protection.
+The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all three targets provides the best protection.
 
 ### Automatic IDE Extension Version Management
 
 When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, stale auto-injected IDE extension controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved.
 
-This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 4-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, and same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep).
+This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 3-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, and same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep).
 
 #### Injection Targets
 
 | Target             | Key                                     | Value   | On-disk file (isolated)                           | On-disk file (non-isolated)                         |
 |--------------------|-----------------------------------------|---------|---------------------------------------------------|-----------------------------------------------------|
 | `global-config`    | `autoInstallIdeExtension`               | `false` | `~/.claude/{cmd}/.claude.json` + `~/.claude.json` | `~/.claude.json`                                    |
-| `user-settings`    | `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` | `"1"`   | `~/.claude/{cmd}/settings.json`                   | `~/.claude/settings.json`                           |
-| `env-variables`    | `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`     | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
+| `user-settings`    | `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
 | `os-env-variables` | `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`     | `"1"`   | Shell profiles / Windows registry                 | Shell profiles / Windows registry                   |
 
-All four targets are injected unconditionally regardless of whether `command-names` is present, consistent with auto-update management behavior. In non-isolated mode, `env-variables` reaches `~/.claude/settings.json['env']` via the deep-merge writer (`write_profile_settings_to_settings()`), identical routing to auto-update Target 3. Deep-merge recurses into the `env` dict so that the injected IDE control coexists with any user-declared environment variables in the same on-disk container.
+All three targets are injected unconditionally regardless of whether `command-names` is present, consistent with auto-update management behavior. The `user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` control follows the standard `user-settings` routing: in isolated mode it is built into `~/.claude/{cmd}/config.json` (`env` key); in non-isolated mode it is deep-merged into `~/.claude/settings.json['env']`. Deep-merge recurses into the `env` dict so that the injected IDE control coexists with any user-declared environment variables in the same on-disk container.
 
 #### Removal Behavior
 
@@ -1660,7 +1556,7 @@ When the version is `"latest"` or absent, nothing is auto-injected, so every IDE
 - **OS-level variable:** `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
 - **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass (Step 16) with identical guards. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files -- unless the current YAML itself declares the key in `user-settings.env` or `env-variables`, in which case the `settings.json` sweep is skipped -- and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files (value-conditional: user-set `true` is preserved). When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs; a pinned non-isolated run performs no `settings.json` sweep.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass (Step 16) with identical guards. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files -- unless the current YAML itself declares the key in `user-settings.env`, in which case the `settings.json` sweep is skipped -- and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files (value-conditional: user-set `true` is preserved). When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs; a pinned non-isolated run performs no `settings.json` sweep.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1674,7 +1570,6 @@ Auto-injected IDE extension values are displayed with the same green `[auto]` ma
 Auto-injected settings (version pinning):
   [auto] global-config.autoInstallIdeExtension: false
   [auto] user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
-  [auto] env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
   [auto] os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
 ```
 
@@ -1777,50 +1672,42 @@ Here is a conceptual overview of what the setup script does when you run it with
 11. **Process skills** -- Downloads skill file sets to `~/.claude/skills/{name}/`.
 12. **Process system prompt** -- Downloads the prompt file if configured.
 13. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
-14. **Write user settings** -- Merges `user-settings` into `~/.claude/settings.json`.
+14. **Write user settings** -- In non-isolated mode, deep-merges `user-settings` into `~/.claude/settings.json`. In isolated mode, this write is skipped -- the `user-settings` content is built into the profile's `config.json` at Step 18.
 15. **Write global config** -- Merges `global-config` into `~/.claude.json`. With `command-names`, also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the dual-written isolated `.claude.json`.
 16. **Cleanup stale controls** -- Sweeps stale auto-update and IDE extension artifacts from prior configurations (all filesystem locations on unpinned runs, preserving `settings.json` keys the current YAML itself declares; on pinned runs, only the base `~/.claude/settings.json` and only for isolated environments).
 17. **Download hooks** -- Downloads hook script files to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without). In non-command-names mode, Step 17 runs when ANY of the following are declared: `hooks.events` non-empty, `hooks.files` non-empty, or `status-line.file` set.
-18. **Write profile settings** -- Writes all nine profile-owned keys (`model`, `permissions`, `env`, `attribution`, `alwaysThinkingEnabled`, `effortLevel`, `companyAnnouncements`, `statusLine`, `hooks`) as camelCase keys on disk. With `command-names`: writes to `~/.claude/{cmd}/config.json` via `create_profile_config()` (atomic overwrite -- fresh dict each run). Without `command-names`: writes to `~/.claude/settings.json` via `write_profile_settings_to_settings()`, which delegates to `_write_merged_json()` for **deep-merge, universal array union at every depth, and RFC 7396 null-as-delete** (preserves non-delta keys; see [Profile-Level Settings Routing](#profile-level-settings-routing)).
+18. **Write profile settings** -- Writes the profile-owned keys (`statusLine`, `hooks`) as camelCase keys on disk. With `command-names`: writes `~/.claude/{cmd}/config.json` via `create_profile_config()`, merging the `user-settings` content with the built `statusLine`/`hooks` entries (atomic overwrite -- fresh dict each run). Without `command-names`: writes to `~/.claude/settings.json` via `write_profile_settings_to_settings()`, which delegates to `_write_merged_json()` for **deep-merge, universal array union at every depth, and RFC 7396 null-as-delete** (preserves non-delta keys; see [Profile-Level Settings Routing](#profile-level-settings-routing)).
 19. **Write manifest** -- Creates an installation tracking manifest. (Only if `command-names` is specified.)
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
 
-Step 17 is skipped if no hooks, hook files, or status-line file are configured. Step 18 is a no-op if the profile delta is empty -- no profile-owned keys declared at YAML root level and no auto-injected `env-variables` controls written back by version pinning. Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
+Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
 
 ## Profile-Level Settings Routing
 
-The setup script supports two modes of profile-settings routing, controlled by the presence of `command-names:` in the YAML configuration. This section documents how the nine profile-owned keys land on disk in each mode and how they interact with `user-settings:`.
+The setup script supports two modes of profile-settings routing, controlled by the presence of `command-names:` in the YAML configuration. This section documents how the profile-owned keys (`status-line`, `hooks`) and the `user-settings` content land on disk in each mode.
 
 ### Profile-Owned Keys
 
-Nine YAML root-level keys are **profile-owned** -- they are extracted from YAML root, translated to camelCase, and written to disk by the profile-settings subsystem (`_build_profile_settings()` builder + one of two writers):
+Two YAML root-level keys are **profile-owned** -- they are extracted from YAML root, translated to camelCase, and written to disk by the profile-settings subsystem (`_build_profile_settings()` builder + one of two writers) because they require toolbox-side processing (file download, absolute-path command construction):
 
 | YAML root key (kebab-case)    | On-disk key (camelCase)   |
 |-------------------------------|---------------------------|
-| `model`                       | `model`                   |
-| `permissions`                 | `permissions`             |
-| `env-variables`               | `env`                     |
-| `attribution`                 | `attribution`             |
-| `always-thinking-enabled`     | `alwaysThinkingEnabled`   |
-| `effort-level`                | `effortLevel`             |
-| `company-announcements`       | `companyAnnouncements`    |
 | `status-line`                 | `statusLine`              |
 | `hooks`                       | `hooks`                   |
 
-The shared pure builder `_build_profile_settings()` performs kebab-to-camel translation (for nested keys like `permissions.default-mode` -> `permissions.defaultMode`) and delegates to `_build_hooks_json()` for the `hooks` universe. The 9-key set is declared as `PROFILE_OWNED_KEYS` (a `frozenset`) in `scripts/setup_environment.py`, and the mapping of YAML kebab-case root keys to camelCase on-disk names is declared as the module-level constant `_YAML_TO_CAMEL_PROFILE_KEYS`. These keys are distinct from `USER_SETTINGS_EXCLUDED_KEYS = {'hooks', 'statusLine'}`, which remains intentionally narrow because `user-settings` must accept arbitrary Claude Code CLI `settings.json` keys for forward compatibility (see [Relationship to Profile-Owned Keys](#relationship-to-profile-owned-keys)).
+The shared pure builder `_build_profile_settings()` performs status-line command-string construction and delegates to `_build_hooks_json()` for the `hooks` universe. The 2-key set is declared as `PROFILE_OWNED_KEYS = frozenset({'statusLine', 'hooks'})` in `scripts/setup_environment.py`, and the mapping of YAML kebab-case root keys to camelCase on-disk names is declared as the module-level constant `_YAML_TO_CAMEL_PROFILE_KEYS`. These keys match `USER_SETTINGS_EXCLUDED_KEYS = {'hooks', 'statusLine'}` exactly: they are forbidden inside `user-settings` because the toolbox owns their processing, while every other `settings.json` key is declared under `user-settings` (see [`user-settings`](#user-settings)).
 
 ### Isolated Mode (command-names present)
 
-When `command-names` is specified, the setup creates an isolated directory `~/.claude/{cmd}/` containing:
+When `command-names` is specified, the setup creates an isolated directory `~/.claude/{cmd}/`. The `config.json` file carries the complete `settings.json` content -- the `user-settings` section plus the toolbox-built `statusLine` and `hooks` entries -- and the toolbox does not write the isolated `settings.json`:
 
-| File            | Priority (CLI)   | Content                                                 | Writer                    | Step | Semantics                                                                            |
-|-----------------|------------------|---------------------------------------------------------|---------------------------|------|--------------------------------------------------------------------------------------|
-| `settings.json` | 5 (userSettings) | YAML `user-settings:` (all non-excluded keys)           | `write_user_settings()`   | 14   | Deep merge + universal array union at every depth + RFC 7396 null-as-delete          |
-| `config.json`   | 2 (flagSettings) | 9 `PROFILE_OWNED_KEYS` from YAML root                   | `create_profile_config()` | 18   | Atomic overwrite (fresh dict each run, fully toolbox-owned)                          |
+| File          | Priority (CLI)   | Content                                                         | Writer                    | Step | Semantics                                              |
+|---------------|------------------|-----------------------------------------------------------------|---------------------------|------|--------------------------------------------------------|
+| `config.json` | 2 (flagSettings) | `user-settings:` content + built `statusLine` / `hooks` entries | `create_profile_config()` | 18   | Atomic overwrite (fresh dict each run; nulls stripped) |
 
-The launcher script passes `config.json` via the `--settings` flag and sets `CLAUDE_CONFIG_DIR` to the isolated directory. Claude Code CLI's native priority resolution (`flagSettings (2) > userSettings (5)`) ensures `config.json` wins over `settings.json` for overlapping keys at runtime. In isolated mode, stale-key accumulation in `config.json` is NOT a concern because `create_profile_config()` uses atomic overwrite: every run produces a fresh `config.json` containing only the currently-declared keys, so removing a key from YAML cleanly removes it from `config.json` on the next run. The isolated `settings.json` (written by `write_user_settings()`) follows the universal shared-settings merge contract and preserves contributions from prior runs and manual edits.
+The launcher script passes `config.json` via the `--settings` flag (command-line settings layer, priority 2) and sets `CLAUDE_CONFIG_DIR` to the isolated directory. Because `--settings` outranks a repository's project settings, the isolated profile's settings are enforced -- exactly what an isolated environment exists to provide. The `user-settings` section and the built `statusLine`/`hooks` entries are disjoint by construction, because `statusLine` and `hooks` are rejected inside `user-settings`. In isolated mode, stale-key accumulation is NOT a concern because `create_profile_config()` uses atomic overwrite: every run produces a fresh `config.json` containing only the currently-declared keys, so removing a key from YAML cleanly removes it from `config.json` on the next run. Null-valued dict members at every depth are stripped before the write (absence expresses deletion under atomic rebuild), so a literal JSON null is never written.
 
 ### Non-Isolated Mode (command-names absent)
 
@@ -1829,12 +1716,12 @@ When `command-names` is ABSENT, the setup writes to the shared `~/.claude/` dire
 | File                       | Content                                            | Writer                                  | Step | Semantics                                                                    |
 |----------------------------|----------------------------------------------------|-----------------------------------------|------|------------------------------------------------------------------------------|
 | `~/.claude/settings.json`  | YAML `user-settings:` (all non-excluded keys)      | `write_user_settings()`                 | 14   | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  |
-| `~/.claude/settings.json`  | 9 `PROFILE_OWNED_KEYS` delta from YAML root        | `write_profile_settings_to_settings()`  | 18   | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  |
+| `~/.claude/settings.json`  | `statusLine`/`hooks` delta from YAML root          | `write_profile_settings_to_settings()`  | 18   | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  |
 
 1. **Step 14** deep-merges `user-settings:` into `settings.json`. Existing keys are preserved; for leaf scalar conflicts the new YAML values overwrite the existing values; every list at every depth is unioned with structural dedupe; `null` values delete keys via RFC 7396.
-2. **Step 18** deep-merges the profile delta into the same file using the same semantics. Existing keys not in the delta are preserved; existing nested dicts are recursively merged with the delta; every list at every depth is unioned with structural dedupe across both steps; top-level or nested `null` in the delta deletes keys.
+2. **Step 18** deep-merges the `statusLine`/`hooks` delta into the same file using the same semantics. Existing keys not in the delta are preserved; existing nested dicts are recursively merged with the delta; every list at every depth is unioned with structural dedupe across both steps; top-level or nested `null` in the delta deletes keys.
 
-Under this contract, the shared `~/.claude/settings.json` is never scrubbed of keys the current YAML does not declare, and contributions from manual user edits, other YAML configurations, the Claude Code CLI itself, and `user-settings.permissions` at Step 14 all survive profile-settings writes at Step 18. List-valued keys (such as `permissions.allow/deny/ask/additionalDirectories`, `companyAnnouncements`, `hooks.<EventName>` matcher-group lists, `sandbox.filesystem.*` path lists, `disabledMcpjsonServers`/`enabledMcpjsonServers`) accumulate additively across runs, matching [Claude Code CLI's documented cross-scope merge semantics](https://code.claude.com/docs/en/settings): "arrays are concatenated and deduplicated, not replaced".
+Under this contract, the shared `~/.claude/settings.json` is never scrubbed of keys the current YAML does not declare, and contributions from manual user edits, other YAML configurations, the Claude Code CLI itself, and the Step 14 `user-settings` write all survive the profile-settings write at Step 18. List-valued keys (such as `permissions.allow/deny/ask/additionalDirectories`, `companyAnnouncements`, `hooks.<EventName>` matcher-group lists, `sandbox.filesystem.*` path lists, `disabledMcpjsonServers`/`enabledMcpjsonServers`) accumulate additively across runs, matching [Claude Code CLI's documented cross-scope merge semantics](https://code.claude.com/docs/en/settings): "arrays are concatenated and deduplicated, not replaced".
 
 ### Write Semantics Contract
 
@@ -1844,7 +1731,7 @@ Under this contract, the shared `~/.claude/settings.json` is never scrubbed of k
 
 1. **READ** the existing `~/.claude/settings.json` (or start fresh with an empty dict if the file is missing, malformed, or has a non-dict top-level value; a warning is emitted in those cases).
 2. **DEEP MERGE** the builder delta into the existing content via `_merge_recursive()`, which handles:
-   - **Deep recursion** into nested dicts (for example, a delta `permissions: {default-mode: ask}` updates only the `defaultMode` sub-key of `permissions`, leaving `permissions.allow`, `permissions.deny`, `permissions.ask`, and any other sub-keys intact if not in the delta).
+   - **Deep recursion** into nested dicts (for example, a delta `hooks: {PostToolUse: [...]}` updates only the `PostToolUse` sub-key of `hooks`, leaving other event names intact if not in the delta).
    - **Universal array union** at every depth via Python structural equality -- existing and new arrays are combined, order-preserving (existing elements first), with duplicate elements removed. Applies to every list-valued key at any nesting level, matching Claude Code CLI's cross-scope merge semantics.
    - **RFC 7396 null-as-delete**: any value of `None` in the delta (top-level or nested) deletes the corresponding key from the target via `target.pop(key, None)`.
    - **Scalar overwrite** on leaf conflicts (new value wins).
@@ -1863,54 +1750,57 @@ The builder `_build_profile_settings()` accepts a `profile_config` dict keyed by
 | YAML declares `key: null`      | `{'key': None}`           | DELETE the key from the file (RFC 7396 null-as-delete)                                          |
 | YAML omits `key`               | key absent from delta     | PRESERVE existing value unchanged                                                               |
 
-**Null-as-delete is supported for all nine profile-owned keys**, and for every key written by the shared-settings writers, both at the top level (`model: null`, `permissions: null`, `hooks: null`, ...) and nested (`permissions: {deny: null}`, `hooks: {PreToolUse: null}`, ...). The top-level and nested cases go through the same `_merge_recursive()` path inside the writer; the top-level path additionally requires the dict-membership threading in `profile_config` to survive main()'s YAML extraction.
+**Null-as-delete is supported for both profile-owned keys** (`status-line`, `hooks`), and for every key written by the shared-settings writers, both at the top level (`status-line: null`, `hooks: null`) and nested (`hooks: {PreToolUse: null}`). The top-level and nested cases go through the same `_merge_recursive()` path inside the writer; the top-level path additionally requires the dict-membership threading in `profile_config` to survive main()'s YAML extraction.
 
 **Preservation coverage (what survives shared-settings writes):**
 
 Keys absent from the delta are preserved in `~/.claude/settings.json`. This covers:
 
 - Prior contributions from `write_profile_settings_to_settings()` itself across other YAML configurations, including list-valued keys (which accumulate additively under the universal array-union contract).
-- Deep-merged contributions from Step 14 `write_user_settings()` (including any free-form `user-settings` keys, all list-valued keys unioned with structural dedupe across Step 14 and Step 18).
+- Deep-merged contributions from Step 14 `write_user_settings()` (all `user-settings` keys -- `model`, `permissions`, `env`, `effortLevel`, and everything else -- with list-valued keys unioned with structural dedupe across Step 14 and Step 18).
 - User-managed keys outside the toolbox's YAML schema (for example, `includeGitInstructions`, `apiKeyHelper`, `cleanupPeriodDays`, `outputStyle`, `autoMemoryDirectory`, `sandbox.*`, user-managed array-valued keys like `companyAnnouncements` or `permissions.additionalDirectories`).
-- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update Target 2) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension Target 2) controls: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables. When the YAML declares its own `env-variables`, the delta's new env keys are deep-merged on top of the existing env dict rather than replacing it, so the Step 14 Target 2 contributions survive the Step 18 write itself. (Pinned non-isolated runs perform no Step 16 `settings.json` sweep, so these controls also survive the cleanup pass -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
+- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension) controls, which are injected into `user-settings.env` and written by Step 14: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables and survive the Step 18 write, which touches only `statusLine`/`hooks`. (Pinned non-isolated runs perform no Step 16 `settings.json` sweep, so these controls also survive the cleanup pass -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
 - Elements written to list-valued keys by any prior contributor (manual user edits, the Claude Code CLI, teammate YAMLs): new elements from the current YAML are unioned with the existing list rather than replacing it.
 
-**Empty-delta no-op:** If no profile-owned keys are declared at YAML root level, the builder returns `{}` and `write_profile_settings_to_settings()` performs ZERO file I/O -- it neither creates nor touches `~/.claude/settings.json`. A YAML with only `user-settings:`, `global-config:`, `agents:`, and so on will never have Step 18 modify `settings.json`. (Exception: when `claude-code-version` pins a version, the auto-injected `env-variables` controls are written back into the resolved configuration, so the delta contains `env` and Step 18 does write -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
+**Empty-delta no-op:** If neither `status-line` nor `hooks` is declared at YAML root level, the builder returns `{}` and `write_profile_settings_to_settings()` performs ZERO file I/O -- it neither creates nor touches `~/.claude/settings.json`. A YAML with only `user-settings:`, `global-config:`, `agents:`, and so on will never have Step 18 modify `settings.json`; the `user-settings` content (including auto-injected env controls) reaches `settings.json` through Step 14 instead.
 
 **Malformed or non-dict existing content:** If `~/.claude/settings.json` contains invalid JSON, unreadable content, or a non-dict top-level value (for example, a bare list), `_write_merged_json()` emits a warning (`"Existing ... is not a dict, starting fresh"` or `"Invalid JSON in ..."`) and starts fresh (treats the existing content as `{}`). The written file ends with a trailing newline for file-format consistency with `write_user_settings()` and `write_global_config()`.
 
 ### Null-as-Delete for Profile-Owned Keys (YAML contract)
 
-All nine profile-owned keys support null-as-delete at the YAML root level in non-command-names mode. Examples:
+Both profile-owned keys (`status-line`, `hooks`) support null-as-delete at the YAML root level in non-command-names mode. Every other `settings.json` key deletes the same way from under `user-settings` (see [Key Deletion](#key-deletion-null-as-delete)). Examples:
 
 ```yaml
-# Delete the entire permissions block (including allow, deny, ask)
-permissions: null
-
-# Delete just the deny sub-key (keep allow and ask)
-permissions:
-    deny: null
-
-# Delete the model, env, and hooks top-level keys in one YAML
-model: null
-env-variables: null
+# Delete the entire hooks block from settings.json
 hooks: null
+
+# Delete just one event list (keep other event names)
+hooks:
+    PreToolUse: null
+
+# Delete the status-line key
+status-line: null
+
+# Delete a settings.json key managed under user-settings
+user-settings:
+    model: null
+    permissions: null
 ```
 
 **Top-level null vs nested null:**
 
-- **Top-level null** (for example, `model: null`): the entire top-level key is removed from `~/.claude/settings.json` via `existing.pop('model', None)`.
-- **Nested null** (for example, `permissions: {deny: null}`): deep-merge recurses into the `permissions` dict, and the `deny` sub-key is removed while other sub-keys (`allow`, `ask`, and so on) are preserved.
+- **Top-level null** (for example, `hooks: null`): the entire top-level key is removed from `~/.claude/settings.json` via `existing.pop('hooks', None)`.
+- **Nested null** (for example, `hooks: {PreToolUse: null}`): deep-merge recurses into the `hooks` dict, and the `PreToolUse` sub-key is removed while other event names are preserved.
 
-Both cases are handled by `_merge_recursive()` inside `_write_merged_json()`. The top-level case additionally requires the dict-membership construction in `main()` and the builder so that the profile_config can carry `None` for top-level YAML nulls -- a plain `config.get('model')` would otherwise erase the distinction between "absent" and "null".
+Both cases are handled by `_merge_recursive()` inside `_write_merged_json()`. The top-level case additionally requires the dict-membership construction in `main()` and the builder so that the profile_config can carry `None` for top-level YAML nulls -- a plain `config.get('hooks')` would otherwise erase the distinction between "absent" and "null".
 
-**Re-run semantics:** After `model: null` has been applied, removing the `model: null` line from the YAML (so the key is absent) in a later run preserves the `model` key's then-current state (which is "absent from settings.json", unchanged by the new no-op delta). There is no auto-undelete -- once deleted, a key stays deleted until a subsequent YAML explicitly re-declares it with a non-null value.
+**Re-run semantics:** After `hooks: null` has been applied, removing the `hooks: null` line from the YAML (so the key is absent) in a later run preserves the `hooks` key's then-current state (which is "absent from settings.json", unchanged by the new no-op delta). There is no auto-undelete -- once deleted, a key stays deleted until a subsequent YAML explicitly re-declares it with a non-null value.
 
 ### Deferred Stale-Key Behavior (User-Facing Contract)
 
 This is an INTENTIONAL user-facing contract, not a bug. Understanding this behavior is critical to using `command-names`-absent mode correctly.
 
-**Scenario:** You had `permissions: {allow: [Read]}` at YAML root in one setup run. You then remove the entire `permissions` block from your YAML and re-run setup.
+**Scenario:** You had `user-settings: {permissions: {allow: [Read]}}` in one setup run. You then remove the entire `permissions` block from your `user-settings` and re-run setup.
 
 **Result:** The `permissions` key in `~/.claude/settings.json` retains its existing on-disk value (`{allow: [Read]}`). It is NOT deleted.
 
@@ -1925,21 +1815,27 @@ This is an INTENTIONAL user-facing contract, not a bug. Understanding this behav
 
 1. **Set the key to `null` in YAML.** Examples:
    ```yaml
-   permissions: null        # Delete entire permissions block from settings.json
-   model: null              # Delete model key
-   hooks: null              # Delete hooks block
-   env-variables: null      # Delete env block from settings.json
-   permissions:
-       deny: null           # Delete only the deny sub-key (keep allow/ask)
+   hooks: null                     # Delete hooks block (profile-owned, YAML root)
+   status-line: null               # Delete statusLine (profile-owned, YAML root)
+   user-settings:
+       permissions: null           # Delete entire permissions block from settings.json
+       model: null                 # Delete model key
+       env: null                   # Delete env block from settings.json
+   ```
+   To delete only a nested sub-key, nest the null under the parent instead of nulling the whole block (the two forms are mutually exclusive alternatives for the same key):
+   ```yaml
+   user-settings:
+       permissions:
+           deny: null              # Delete only the deny sub-key (keep allow/ask)
    ```
 2. **Manually delete the key** from `~/.claude/settings.json` using a text editor.
 
 Automated YAML-removal-triggered cleanup (a state-tracking sidecar approach, for example `~/.claude/toolbox-managed-keys.json` recording which keys the toolbox wrote in the last run) is not implemented. The preservation behavior is the intended design.
 
-**Security framing: preventing silent destruction of user state.** Deep-merge with universal array-union at every depth is the core mechanism that prevents silent destruction of security rules and user state in the shared `~/.claude/settings.json`. The contract applies uniformly to every list-valued key at any depth: `permissions.allow/deny/ask/additionalDirectories`, `companyAnnouncements`, `hooks.<EventName>` matcher-group lists, `sandbox.filesystem.*` path lists, `disabledMcpjsonServers`/`enabledMcpjsonServers`, `projects.<path>.allowedTools`, and every other list-valued key. A narrower YAML declaration such as `permissions: {allow: [Read]}` MUST NOT remove `permissions.deny` entries, `permissions.additionalDirectories`, `companyAnnouncements` entries, or any other user-managed state contributed by other writers (manual user edits, the Claude Code CLI, teammate YAMLs, or `user-settings.permissions.deny` at Step 14). Under the unified deep-merge + universal-array-union contract, list entries accumulate additively across runs and explicit null is the only way to shrink them:
+**Security framing: preventing silent destruction of user state.** Deep-merge with universal array-union at every depth is the core mechanism that prevents silent destruction of security rules and user state in the shared `~/.claude/settings.json`. The contract applies uniformly to every list-valued key at any depth: `permissions.allow/deny/ask/additionalDirectories`, `companyAnnouncements`, `hooks.<EventName>` matcher-group lists, `sandbox.filesystem.*` path lists, `disabledMcpjsonServers`/`enabledMcpjsonServers`, `projects.<path>.allowedTools`, and every other list-valued key. A narrower YAML declaration such as `user-settings: {permissions: {allow: [Read]}}` MUST NOT remove `permissions.deny` entries, `permissions.additionalDirectories`, `companyAnnouncements` entries, or any other user-managed state contributed by other writers (manual user edits, the Claude Code CLI, or teammate YAMLs). Under the unified deep-merge + universal-array-union contract, list entries accumulate additively across runs and explicit null is the only way to shrink them:
 
-- To remove ALL entries under a list-valued sub-key: nest-null the sub-key (`permissions: {deny: null}` deletes just the `deny` sub-key) or top-level-null the parent (`permissions: null` deletes the entire `permissions` block).
-- To remove a specific element: edit `~/.claude/settings.json` manually, because array union only grows lists -- declaring `permissions: {deny: [X]}` in YAML unions `[X]` with the existing deny list, not replaces it.
+- To remove ALL entries under a list-valued sub-key: nest-null the sub-key (`user-settings: {permissions: {deny: null}}` deletes just the `deny` sub-key) or top-level-null the parent (`user-settings: {permissions: null}` deletes the entire `permissions` block).
+- To remove a specific element: edit `~/.claude/settings.json` manually, because array union only grows lists -- declaring `user-settings: {permissions: {deny: [X]}}` in YAML unions `[X]` with the existing deny list, not replaces it.
 
 Any rule or entry preserved on disk is the combined contribution of all writers; losing rules silently on re-run would be a critical security regression, so the toolbox instead requires explicit null to delete them. This matches [Claude Code CLI's documented cross-scope merge semantics](https://code.claude.com/docs/en/settings) for shared settings files.
 
@@ -1978,38 +1874,16 @@ System prompts are applied by the launcher via `--system-prompt` or `--append-sy
 
 Unlike profile-scoped MCP servers (which are a hard error because silently-dropped servers are a correctness risk), a silently-unused system prompt file is merely a configuration mistake -- a warning is sufficient. Warning output is written to stdout.
 
-### Conflict Detection
+### Four-Writer Architectural Model Summary
 
-`detect_settings_conflicts()` runs UNCONDITIONALLY in BOTH modes (isolated and non-isolated). If you declare a profile-owned key under BOTH `user-settings:` AND at YAML root level, a warning is emitted during the validation phase:
+| Writer                                 | YAML Source                              | Target                                                       | Key Universe                                     | Semantics                                                                   | Step              |
+|----------------------------------------|------------------------------------------|--------------------------------------------------------------|--------------------------------------------------|-----------------------------------------------------------------------------|-------------------|
+| `write_user_settings()`                | `user-settings:`                         | `~/.claude/settings.json` (non-isolated only)                | All non-excluded `settings.json` keys            | Deep merge + universal array union at every depth + RFC 7396 null-as-delete | 14                |
+| `write_global_config()`                | `global-config:`                         | `~/.claude.json` (+ `~/.claude/{cmd}/.claude.json` isolated) | Free-form `~/.claude.json` keys                  | Deep merge + universal array union at every depth + RFC 7396 null-as-delete | 15                |
+| `create_profile_config()`              | `user-settings:` + `status-line`/`hooks` | `~/.claude/{cmd}/config.json`                                | `user-settings` content + 2 `PROFILE_OWNED_KEYS` | Atomic overwrite (fresh dict each run, nulls stripped, fully toolbox-owned) | 18 (isolated)     |
+| `write_profile_settings_to_settings()` | `status-line`/`hooks` (YAML root)        | `~/.claude/settings.json`                                    | 2 `PROFILE_OWNED_KEYS` delta                     | Deep merge + universal array union at every depth + RFC 7396 null-as-delete | 18 (non-isolated) |
 
-```text
-[WARN] Key 'model' specified in both root level and user-settings.
-[WARN]   user-settings value: claude-opus-4
-[WARN]   root-level value: claude-sonnet-4
-[WARN]   Under deep merge semantics, root-level values overwrite user-settings values for scalar keys.
-[WARN]   For dict keys, user-settings and root-level values are deep-merged.
-[WARN]   For ALL array-valued keys at any depth, array union with structural dedupe applies
-[WARN]   (matching Claude Code CLI's cross-scope merge: "arrays are concatenated and
-[WARN]   deduplicated, not replaced").
-```
-
-**How the two contributions compose (in both modes):**
-
-- **Isolated mode:** Step 14 writes `user-settings:` to `~/.claude/{cmd}/settings.json` (priority 5), Step 18 writes the profile delta to `~/.claude/{cmd}/config.json` (priority 2). The CLI's native `flagSettings > userSettings` resolution means `config.json` wins over `settings.json` at runtime for overlapping keys.
-- **Non-isolated mode:** Step 14 writes `user-settings:` to `~/.claude/settings.json` via deep-merge, then Step 18 deep-merges the profile delta into the same file. For scalar keys, the root-level (Step 18) value overwrites the `user-settings` (Step 14) value. For dict keys, the two contributions are deep-merged: sub-keys declared only on one side are preserved, sub-keys declared on both sides are resolved by the root-level value winning. For list-valued keys at any depth, both contributions are unioned with structural dedupe under the universal array-union contract.
-
-The conflict warning ensures users are informed regardless of which mode they use.
-
-### Three-Writer Architectural Model Summary
-
-| Writer                                 | YAML Source                  | Target                                                            | Key Universe                              | Semantics                                                                    | Step                |
-|----------------------------------------|------------------------------|-------------------------------------------------------------------|-------------------------------------------|------------------------------------------------------------------------------|---------------------|
-| `write_user_settings()`                | `user-settings:`             | `~/.claude/settings.json` OR `~/.claude/{cmd}/settings.json`      | ~58 non-excluded CLI keys                 | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  | 14                  |
-| `write_global_config()`                | `global-config:`             | `~/.claude.json` (+ `~/.claude/{cmd}/.claude.json` when isolated) | Free-form CLI keys                        | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  | 15                  |
-| `create_profile_config()`              | YAML root profile keys       | `~/.claude/{cmd}/config.json`                                     | 9 `PROFILE_OWNED_KEYS`                    | Atomic overwrite (fresh dict each run, fully toolbox-owned)                  | 18 (isolated)       |
-| `write_profile_settings_to_settings()` | YAML root profile keys       | `~/.claude/settings.json`                                         | 9 `PROFILE_OWNED_KEYS` delta              | Deep merge + universal array union at every depth + RFC 7396 null-as-delete  | 18 (non-isolated)   |
-
-All three shared-file writers (`write_user_settings()`, `write_global_config()`, `write_profile_settings_to_settings()`) delegate to the same `_write_merged_json()` helper with `array_union_keys=None` (the default), which gives them a single unified universal deep-merge contract: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) ("arrays are concatenated and deduplicated, not replaced"). Both Step 18 writers (`create_profile_config()` and `write_profile_settings_to_settings()`) are fed by the shared pure builder `_build_profile_settings()`, which accepts a `profile_config` dict, translates kebab-case YAML keys to camelCase JSON keys, and delegates to `_build_hooks_json()` for hook events. In isolated mode, `create_profile_config()` atomically rewrites `~/.claude/{cmd}/config.json` from scratch on each run (fully toolbox-owned). In non-isolated mode, `write_profile_settings_to_settings()` deep-merges its delta into the shared `~/.claude/settings.json`, preserving contributions from other writers and accumulating list elements additively across runs.
+The two shared-file merge writers (`write_user_settings()` and `write_global_config()`) plus `write_profile_settings_to_settings()` delegate to the same `_write_merged_json()` helper with `array_union_keys=None` (the default), which gives them a single unified universal deep-merge contract: every list at every depth is unioned with structural dedupe, matching [Claude Code CLI's cross-scope merge semantics](https://code.claude.com/docs/en/settings) ("arrays are concatenated and deduplicated, not replaced"). Both Step 18 writers (`create_profile_config()` and `write_profile_settings_to_settings()`) are fed by the shared pure builder `_build_profile_settings()`, which accepts a `profile_config` dict for the `status-line`/`hooks` keys and delegates to `_build_hooks_json()` for hook events. In isolated mode, `create_profile_config()` atomically rewrites `~/.claude/{cmd}/config.json` from scratch on each run (fully toolbox-owned), merging the `user-settings` content with the built profile-owned entries and stripping null-valued members. In non-isolated mode, `user-settings` reaches `~/.claude/settings.json` through `write_user_settings()` at Step 14, and `write_profile_settings_to_settings()` deep-merges the `status-line`/`hooks` delta into the same file at Step 18, preserving contributions from other writers and accumulating list elements additively across runs.
 
 **YAML inheritance layer is separate.** The per-path whitelist mechanism in `deep_merge_settings()` (`DEFAULT_ARRAY_UNION_KEYS` and explicit `set[str]` arguments) applies only to the YAML composition layer (`_resolve_single_key` call sites): `array_union_keys=set()` for `global-config` inheritance (child replaces parent for arrays) and `array_union_keys=DEFAULT_ARRAY_UNION_KEYS` for `user-settings` inheritance (union only for `permissions.allow/deny/ask`, replace for other arrays). On-disk shared-file writers are decoupled from YAML composition by intent; they always use the universal default.
 
@@ -2086,26 +1960,6 @@ mcp-servers:
     command: "npx @example/code-search-mcp"
     scope: "profile"
 
-# Use Opus model with maximum effort
-model: "opus"
-effort-level: "max"
-always-thinking-enabled: true
-
-# Permissions
-permissions:
-  default-mode: "default"
-  allow:
-    - "Read"
-    - "Glob"
-    - "Grep"
-  deny:
-    - "Bash(rm -rf)"
-
-# Claude-level environment variables
-env-variables:
-  PROJECT_TYPE: "python"
-  COVERAGE_THRESHOLD: "80"
-
 # OS-level persistent environment variables
 os-env-variables:
   PYTHONDONTWRITEBYTECODE: "1"
@@ -2115,24 +1969,39 @@ command-defaults:
   system-prompt: "prompts/python-system-prompt.md"
   mode: "append"
 
-# User settings
+# User settings -- raw settings.json content (camelCase keys)
 user-settings:
+  # Use Opus model with maximum effort
+  model: "opus"
+  effortLevel: "max"
+  alwaysThinkingEnabled: true
   language: "english"
+  # Permissions
+  permissions:
+    defaultMode: "default"
+    allow:
+      - "Read"
+      - "Glob"
+      - "Grep"
+    deny:
+      - "Bash(rm -rf)"
+  # Claude-level environment variables
+  env:
+    PROJECT_TYPE: "python"
+    COVERAGE_THRESHOLD: "80"
+  # Company announcements
+  companyAnnouncements:
+    - "Welcome to the Python development environment!"
+    - "Run /lint to check your code"
+  # Attribution
+  attribution:
+    commit: "Co-authored-by: Claude AI"
+    pr: ""  # Hide PR attribution
 
-# Global config
+# Global config -- raw ~/.claude.json content (camelCase keys)
 global-config:
   autoConnectIde: true
   showTurnDuration: true
-
-# Company announcements
-company-announcements:
-  - "Welcome to the Python development environment!"
-  - "Run /lint to check your code"
-
-# Attribution
-attribution:
-  commit: "Co-authored-by: Claude AI"
-  pr: ""  # Hide PR attribution
 
 # Hooks for code quality and safety
 hooks:
@@ -2221,13 +2090,14 @@ Both `command-names` and `command-defaults` must be specified together. Provide 
 
 The `link-projects-dir` flag links an isolated profile's `projects/` directory to the base `~/.claude/projects/`, and isolated profiles exist only when `command-names` is present. Either add `command-names` or remove `link-projects-dir`.
 
-### effort-level 'xhigh'/'max' is only available for Opus and Fable models
+### user-settings.effortLevel 'xhigh'/'max' requires a matching model
 
-The `xhigh` and `max` effort levels require the `model` key to be set to an Opus or Fable variant (the model name must contain `opus` or `fable`, case-insensitive) or the exact alias `best`. The validation errors read `effort-level '{level}' requires model to be specified. The '{level}' effort level is only available for Opus and Fable models.` (when `model` is missing) and `effort-level '{level}' is only available for Opus and Fable models, but model is set to '{model}'. Use 'low', 'medium', or 'high' for other models.` (when the model is outside both families):
+The `xhigh` and `max` effort levels require `user-settings.model` to be set to a supporting variant: `xhigh` requires an Opus or Fable model (the model name must contain `opus` or `fable`, case-insensitive) or the exact alias `best`; `max` additionally accepts a Sonnet model. The validation errors read `user-settings.effortLevel '{level}' requires user-settings.model to be specified. This effort level is only available for {families}.` (when `model` is missing) and `user-settings.effortLevel '{level}' is only available for {families}, but model is set to '{model}'. Use 'low', 'medium', or 'high' for other models.` (when the model is outside the required families), where `{families}` is "Opus and Fable models" for `xhigh` and "Opus, Sonnet, and Fable models" for `max`:
 
 ```yaml
-model: "claude-fable-5"   # or "opus", "fable", "best"
-effort-level: "max"       # or "xhigh"
+user-settings:
+  model: "claude-fable-5"   # or "opus", "fable", "best"; "sonnet" also works for max
+  effortLevel: "max"        # or "xhigh"
 ```
 
 ### Invalid platform keys in dependencies

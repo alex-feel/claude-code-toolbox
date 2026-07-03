@@ -127,13 +127,15 @@ class TestConfigDirIsolation:
         hooks_dir = artifact_base / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Pass env variables WITHOUT CLAUDE_CONFIG_DIR
-        env_variables: dict[str, str] = {'MY_VAR': 'test_value'}
+        # Pass user-settings env WITHOUT CLAUDE_CONFIG_DIR (env lives in
+        # user-settings; the profile_config carries only statusLine/hooks).
+        user_settings: dict[str, Any] = {'env': {'MY_VAR': 'test_value'}}
 
         result = setup_environment.create_profile_config(
-            {'hooks': golden_config.get('hooks', {}), 'env': env_variables},
+            {'hooks': golden_config.get('hooks', {})},
             artifact_base,
             hooks_base_dir=hooks_dir,
+            user_settings=user_settings,
         )
 
         assert result is True
@@ -194,22 +196,28 @@ class TestConfigDirIsolation:
     ) -> None:
         """Verify user-specified CLAUDE_CONFIG_DIR is NOT written to config.json.
 
-        Even when user provides CLAUDE_CONFIG_DIR in env-variables, it should
-        be popped from the env dict (launcher export is the sole source).
+        Even when the user provides CLAUDE_CONFIG_DIR in user-settings.env, it is
+        popped before the write (the launcher export is the sole source).
         """
         paths = _run_isolated_setup(e2e_isolated_home, golden_config)
         artifact_base = paths.artifact_base_dir
         artifact_base.mkdir(parents=True, exist_ok=True)
 
-        # User explicitly sets CLAUDE_CONFIG_DIR along with other vars
-        user_env = {
-            'CLAUDE_CONFIG_DIR': '/custom/user/path',
-            'OTHER_VAR': 'keep_this',
+        # User explicitly sets CLAUDE_CONFIG_DIR along with other vars in
+        # user-settings.env. main() pops CLAUDE_CONFIG_DIR from this section
+        # before the isolated write; emulate that here.
+        user_settings: dict[str, Any] = {
+            'env': {
+                'CLAUDE_CONFIG_DIR': '/custom/user/path',
+                'OTHER_VAR': 'keep_this',
+            },
         }
+        user_settings['env'].pop('CLAUDE_CONFIG_DIR', None)
 
         result = setup_environment.create_profile_config(
-            {'env': user_env},
+            {},
             artifact_base,
+            user_settings=user_settings,
         )
 
         assert result is True
@@ -218,8 +226,9 @@ class TestConfigDirIsolation:
         settings = json.loads(config_file.read_text())
 
         env_block = settings.get('env', {})
-        # OTHER_VAR should be present
+        # OTHER_VAR should be present, CLAUDE_CONFIG_DIR absent
         assert env_block.get('OTHER_VAR') == 'keep_this'
+        assert 'CLAUDE_CONFIG_DIR' not in env_block
 
     def test_setup_exports_claude_config_dir_for_children(
         self,

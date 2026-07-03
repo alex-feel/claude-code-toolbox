@@ -158,7 +158,7 @@ To switch manually, uninstall the npm version with `npm uninstall -g @anthropic-
 
 ## Auto-Update Management
 
-Auto-update management is handled by `setup_environment.py` via YAML configuration, not by the standalone installer. When `claude-code-version` is specified in a YAML environment configuration, `setup_environment.py` automatically manages auto-update controls across four targets.
+Auto-update management is handled by `setup_environment.py` via YAML configuration, not by the standalone installer. When `claude-code-version` is specified in a YAML environment configuration, `setup_environment.py` automatically manages auto-update controls across three targets.
 
 For version pinning with auto-update protection, use `setup_environment.py` with a YAML configuration specifying `claude-code-version`. See [Automatic Auto-Update Management](environment-configuration-guide.md#automatic-auto-update-management) in the Environment Configuration Guide.
 

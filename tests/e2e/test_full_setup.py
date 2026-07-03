@@ -80,20 +80,15 @@ class TestE2EFullSetup:
         artifact_base_dir = claude_dir / cmd
         artifact_base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create config.json in artifact base dir
+        # Create config.json in artifact base dir: user-settings content plus
+        # the profile-owned statusLine/hooks entries.
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             artifact_base_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         # Create MCP config file in artifact base dir
@@ -143,40 +138,35 @@ class TestE2EFullSetup:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify create_profile_config writes ALL profile-owned keys to config.json.
+        """Verify create_profile_config writes user-settings plus statusLine/hooks to config.json.
 
-        This test validates the isolated-mode writer:
-        - model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
-          companyAnnouncements, statusLine, hooks are all present in config.json
-          (the file written by create_profile_config when command-names is set).
+        This test validates the isolated-mode writer. The isolated profile's
+        config.json carries the user-settings section (model, permissions,
+        env, attribution, alwaysThinkingEnabled, effortLevel,
+        companyAnnouncements, and every other raw settings.json key) plus the
+        toolbox-built statusLine and hooks entries.
 
         NOTE: This test covers ONLY the isolated mode writer. For the non-
         command-names mode, where write_profile_settings_to_settings()
-        writes the same profile-owned keys into the shared settings.json,
-        see tests/e2e/test_profile_settings_routing.py.
+        writes the profile-owned statusLine/hooks delta into the shared
+        settings.json, see tests/e2e/test_profile_settings_routing.py.
         """
         paths = e2e_isolated_home
         claude_dir = paths['claude_dir']
 
-        # Create settings with ALL config keys
+        # Build config.json: user-settings content plus statusLine/hooks
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': golden_config.get('env-variables'),
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             claude_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
-        # Verify settings file exists (written to config_base_dir as config.json)
+        # Verify the file exists (written to config_base_dir as config.json)
         settings_path = claude_dir / 'config.json'
 
-        assert settings_path.exists(), f'settings.json not created: {settings_path}'
+        assert settings_path.exists(), f'config.json not created: {settings_path}'
 
         # Content validation is done in test_output_files.py

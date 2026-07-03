@@ -1,17 +1,18 @@
 # E2E Test Environment - No Command-Names Variant
 # Mirrors golden_config.yaml but with command-names REMOVED.
-# Used by tests/e2e/test_profile_settings_routing.py to verify the
-# profile-settings routing when command-names is absent (non-isolated
-# mode that writes profile-owned keys to the shared settings.json).
+# Exercises non-isolated mode, where user-settings is deep-merged into the
+# shared ~/.claude/settings.json and the profile-owned keys (status-line,
+# hooks) are written into the same file as a delta.
 #
 # Differences from golden_config.yaml:
 # 1. command-names section REMOVED
 # 2. Profile-scoped MCP servers changed to valid non-profile scopes
 #    (profile scope without command-names triggers validation error, so
 #    we use 'user' scope here for the happy-path coverage).
-# 3. All other keys (hooks, permissions, model, env-variables, attribution,
-#    always-thinking-enabled, company-announcements, status-line, effort-level,
-#    user-settings, global-config) are identical.
+# 3. All other keys (hooks, os-env-variables, status-line, user-settings,
+#    global-config) are identical. The settings.json content (model,
+#    permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
+#    companyAnnouncements) lives inside user-settings.
 
 name: "E2E Test Environment (No Command-Names)"
 
@@ -156,35 +157,6 @@ mcp-servers:
     env:
       - "E2E_NPX_DEBUG=1"
 
-# Model configuration
-model: "sonnet"
-
-# Permissions configuration
-permissions:
-  default-mode: "default"
-  additional-directories:
-    - "/tmp/e2e-test-dir"
-  allow:
-    - "mcp__e2e-http-server"
-    - "mcp__e2e-sse-server"
-    - "mcp__e2e-npx-server"
-    - "Read"
-    - "Glob"
-    - "Grep"
-  deny:
-    - "Bash(rm -rf)"
-  ask:
-    - "Edit"
-    - "Write"
-
-# Environment variables for Claude
-env-variables:
-  E2E_TEST_VAR: "test_value"
-  E2E_ANOTHER_VAR: "another_value"
-  E2E_PATH_VAR: "~/.claude/e2e-data"
-  E2E_INT_VAR: 42
-  E2E_DELETE_VAR: null  # null-as-delete: deleted from the shared settings.json env block
-
 # OS-level environment variables
 os-env-variables:
   E2E_OS_VAR: "os_test_value"
@@ -199,12 +171,52 @@ command-defaults:
   system-prompt: "prompts/e2e-test-prompt.md"
   mode: "replace"
 
-# user-settings retains free-form non-profile keys for forward-compat
+# User settings (raw settings.json content, camelCase keys).
+# In non-isolated mode this content is deep-merged into ~/.claude/settings.json.
 user-settings:
   language: "english"
   theme: "dark"
   apiKeyHelper: "uv run --no-project --python 3.12 ~/.claude/scripts/api-key-helper.py"
   staleSettingToDelete: null
+  # Model configuration
+  model: "sonnet"
+  # Permissions configuration
+  permissions:
+    defaultMode: "default"
+    additionalDirectories:
+      - "/tmp/e2e-test-dir"
+    allow:
+      - "mcp__e2e-http-server"
+      - "mcp__e2e-sse-server"
+      - "mcp__e2e-npx-server"
+      - "Read"
+      - "Glob"
+      - "Grep"
+    deny:
+      - "Bash(rm -rf)"
+    ask:
+      - "Edit"
+      - "Write"
+  # Environment variables for Claude (settings.json env block).
+  # Non-string scalar values are quoted because env values must be strings.
+  env:
+    E2E_TEST_VAR: "test_value"
+    E2E_ANOTHER_VAR: "another_value"
+    E2E_PATH_VAR: "~/.claude/e2e-data"
+    E2E_INT_VAR: "42"
+    E2E_DELETE_VAR: null  # null-as-delete: deleted from the shared settings.json env block
+  # Always-thinking mode
+  alwaysThinkingEnabled: true
+  # Effort level for adaptive reasoning
+  effortLevel: "low"
+  # Company announcements
+  companyAnnouncements:
+    - "Welcome to E2E Testing Environment"
+    - "This is a test announcement for validation"
+  # Attribution settings
+  attribution:
+    commit: "E2E Test Attribution for Commits"
+    pr: "E2E Test Attribution for Pull Requests"
 
 # Global config (merged into ~/.claude.json)
 global-config:
@@ -214,22 +226,6 @@ global-config:
   terminalProgressBarEnabled: false
   oauthAccount: null
   staleConfigToDelete: null
-
-# Always-thinking mode
-always-thinking-enabled: true
-
-# Effort level for adaptive reasoning
-effort-level: "low"
-
-# Company announcements
-company-announcements:
-  - "Welcome to E2E Testing Environment"
-  - "This is a test announcement for validation"
-
-# Attribution settings
-attribution:
-  commit: "E2E Test Attribution for Commits"
-  pr: "E2E Test Attribution for Pull Requests"
 
 # Status line configuration
 status-line:

@@ -73,7 +73,7 @@ class TestInheritEntryModel:
         """Multiple valid merge-keys accepted."""
         entry = InheritEntry.model_validate({
             'config': 'x.yaml',
-            'merge-keys': ['agents', 'rules', 'mcp-servers', 'env-variables'],
+            'merge-keys': ['agents', 'rules', 'mcp-servers', 'os-env-variables'],
         })
         assert len(entry.merge_keys) == 4
 
@@ -1184,390 +1184,6 @@ class TestGlobalConfigInEnvironmentConfig:
         assert config.global_config.model_extra.get('autoConnectIde') is True
 
 
-class TestEffortLevel:
-    """Test effort-level field validation on EnvironmentConfig."""
-
-    def test_effort_level_low(self) -> None:
-        """effort-level 'low' validates correctly."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'effort-level': 'low',
-        })
-        assert config.effort_level == 'low'
-
-    def test_effort_level_medium(self) -> None:
-        """effort-level 'medium' validates correctly."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'effort-level': 'medium',
-        })
-        assert config.effort_level == 'medium'
-
-    def test_effort_level_high(self) -> None:
-        """effort-level 'high' validates correctly."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'effort-level': 'high',
-        })
-        assert config.effort_level == 'high'
-
-    def test_effort_level_none_by_default(self) -> None:
-        """effort-level defaults to None when not specified."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-        })
-        assert config.effort_level is None
-
-    def test_effort_level_invalid_value_rejected(self) -> None:
-        """effort-level rejects invalid values."""
-        with pytest.raises(ValidationError):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'effort-level': 'extreme',
-            })
-
-    def test_effort_level_empty_string_rejected(self) -> None:
-        """effort-level rejects empty string."""
-        with pytest.raises(ValidationError):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'effort-level': '',
-            })
-
-    def test_effort_level_max_with_opus_alias(self) -> None:
-        """effort-level 'max' accepted when model is 'opus'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opus',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_opus_1m_alias(self) -> None:
-        """effort-level 'max' accepted when model is 'opus[1m]'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opus[1m]',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_opusplan_alias(self) -> None:
-        """effort-level 'max' accepted when model is 'opusplan'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opusplan',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_claude_opus_model(self) -> None:
-        """effort-level 'max' accepted when model is 'claude-opus-4-6'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-opus-4-6',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_claude_opus_1m_model(self) -> None:
-        """effort-level 'max' accepted when model is 'claude-opus-4-6[1m]'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-opus-4-6[1m]',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_fable_alias(self) -> None:
-        """effort-level 'max' accepted when model is 'fable'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'fable',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_claude_fable_model(self) -> None:
-        """effort-level 'max' accepted when model is 'claude-fable-5'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-fable-5',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_claude_fable_1m_model(self) -> None:
-        """effort-level 'max' accepted when model is 'claude-fable-5[1m]'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-fable-5[1m]',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_bedrock_fable_model(self) -> None:
-        """effort-level 'max' accepted when model is a provider-prefixed Fable ID."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'us.anthropic.claude-fable-5-20260601-v1:0',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_with_best_alias(self) -> None:
-        """effort-level 'max' accepted when model is exactly 'best'.
-
-        The 'best' alias always resolves to Fable 5 or the latest Opus model,
-        both of which support 'max'.
-        """
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'best',
-            'effort-level': 'max',
-        })
-        assert config.effort_level == 'max'
-
-    def test_effort_level_max_rejected_with_sonnet_model(self) -> None:
-        """effort-level 'max' rejected when model is 'sonnet'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'sonnet',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_max_rejected_with_haiku_model(self) -> None:
-        """effort-level 'max' rejected when model is 'haiku'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'haiku',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_max_rejected_with_claude_sonnet_model(self) -> None:
-        """effort-level 'max' rejected when model is 'claude-sonnet-4-6'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'claude-sonnet-4-6',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_max_rejected_without_model(self) -> None:
-        """effort-level 'max' rejected when model is not specified."""
-        with pytest.raises(ValidationError, match='requires model to be specified'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_max_rejected_with_default_model(self) -> None:
-        """effort-level 'max' rejected when model is 'default'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'default',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_max_rejected_with_model_containing_best(self) -> None:
-        """effort-level 'max' rejected when model merely contains 'best'.
-
-        The 'best' alias is accepted by exact match only; a substring match
-        would wrongly accept arbitrary model names containing 'best'.
-        """
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'bestest-model',
-                'effort-level': 'max',
-            })
-
-    def test_effort_level_high_allowed_without_model(self) -> None:
-        """effort-level 'high' accepted even without model (non-max levels are unrestricted)."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'effort-level': 'high',
-        })
-        assert config.effort_level == 'high'
-
-    def test_effort_level_high_allowed_with_sonnet_model(self) -> None:
-        """effort-level 'high' accepted with non-opus model (non-max levels are unrestricted)."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'sonnet',
-            'effort-level': 'high',
-        })
-        assert config.effort_level == 'high'
-
-    def test_effort_level_xhigh_with_opus_alias(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'opus'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opus',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_opus_1m_alias(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'opus[1m]'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opus[1m]',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_opusplan_alias(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'opusplan'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opusplan',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_claude_opus_4_7_model(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'claude-opus-4-7'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-opus-4-7',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_claude_opus_4_8_model(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'claude-opus-4-8'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-opus-4-8',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_fable_alias(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'fable'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'fable',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_claude_fable_model(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'claude-fable-5'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-fable-5',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_claude_fable_1m_model(self) -> None:
-        """effort-level 'xhigh' accepted when model is 'claude-fable-5[1m]'."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-fable-5[1m]',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_bedrock_fable_model(self) -> None:
-        """effort-level 'xhigh' accepted when model is a provider-prefixed Fable ID."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'us.anthropic.claude-fable-5-20260601-v1:0',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_with_best_alias(self) -> None:
-        """effort-level 'xhigh' accepted when model is exactly 'best'.
-
-        The 'best' alias always resolves to Fable 5 or the latest Opus model,
-        both of which support 'xhigh'.
-        """
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'best',
-            'effort-level': 'xhigh',
-        })
-        assert config.effort_level == 'xhigh'
-
-    def test_effort_level_xhigh_rejected_with_sonnet_model(self) -> None:
-        """effort-level 'xhigh' rejected when model is 'sonnet'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'sonnet',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_xhigh_rejected_with_haiku_model(self) -> None:
-        """effort-level 'xhigh' rejected when model is 'haiku'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'haiku',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_xhigh_rejected_with_claude_sonnet_model(self) -> None:
-        """effort-level 'xhigh' rejected when model is 'claude-sonnet-4-6'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'claude-sonnet-4-6',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_xhigh_rejected_without_model(self) -> None:
-        """effort-level 'xhigh' rejected when model is not specified."""
-        with pytest.raises(ValidationError, match='requires model to be specified'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_xhigh_rejected_with_default_model(self) -> None:
-        """effort-level 'xhigh' rejected when model is 'default'."""
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'default',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_xhigh_rejected_with_model_containing_best(self) -> None:
-        """effort-level 'xhigh' rejected when model merely contains 'best'.
-
-        The 'best' alias is accepted by exact match only; a substring match
-        would wrongly accept arbitrary model names containing 'best'.
-        """
-        with pytest.raises(ValidationError, match='only available for Opus and Fable models'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'bestest-model',
-                'effort-level': 'xhigh',
-            })
-
-    def test_effort_level_ultracode_rejected(self) -> None:
-        """effort-level 'ultracode' rejected: it is not an effortLevel value.
-
-        'ultracode' is a session-only Claude Code mode (set via /effort ultracode
-        or the 'ultracode' session flag), not a value accepted in the effortLevel
-        setting that this toolbox writes. It must never be an accepted effort-level.
-        """
-        with pytest.raises(ValidationError):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': 'opus',
-                'effort-level': 'ultracode',
-            })
-
-
 class TestVersionValidation:
     """Test version field validation (semantic versioning)."""
 
@@ -1766,11 +1382,11 @@ class TestMergeKeysField:
         assert config.merge_keys == []
 
     def test_merge_keys_all_valid_keys(self) -> None:
-        """Field accepts all 12 mergeable keys at once."""
+        """Field accepts all 11 mergeable keys at once."""
         all_keys = [
             'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
             'files-to-download', 'hooks', 'mcp-servers',
-            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+            'global-config', 'user-settings', 'os-env-variables',
         ]
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
@@ -1902,128 +1518,6 @@ class TestInheritValidation:
             'inherit': [{'config': 'x.yaml', 'merge-keys': ['agents']}],
         })
         assert len(config.inherit) == 1
-
-
-class TestModelValidation:
-    """Tests for relaxed model field validation."""
-
-    def test_claude_model_valid(self) -> None:
-        """Claude model name passes."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'claude-sonnet-4-20250514',
-        })
-        assert config.model == 'claude-sonnet-4-20250514'
-
-    def test_model_alias_valid(self) -> None:
-        """Known alias passes."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'opus',
-        })
-        assert config.model == 'opus'
-
-    def test_third_party_model_valid(self) -> None:
-        """Third-party model name passes."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'gpt-4o',
-        })
-        assert config.model == 'gpt-4o'
-
-    def test_openrouter_model_valid(self) -> None:
-        """OpenRouter-prefixed model passes."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'model': 'openrouter/anthropic/claude-3.5-sonnet',
-        })
-        assert config.model == 'openrouter/anthropic/claude-3.5-sonnet'
-
-    def test_empty_model_raises(self) -> None:
-        """Empty string model raises."""
-        with pytest.raises(ValidationError, match='empty or whitespace'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': '',
-            })
-
-    def test_whitespace_model_raises(self) -> None:
-        """Whitespace-only model raises."""
-        with pytest.raises(ValidationError, match='empty or whitespace'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'model': '   ',
-            })
-
-    def test_none_model_valid(self) -> None:
-        """None (omitted) model is valid."""
-        config = EnvironmentConfig.model_validate({'name': 'Test'})
-        assert config.model is None
-
-
-class TestEnvVariablesValidation:
-    """Tests for env-variables field validation."""
-
-    def test_valid_env_variables(self) -> None:
-        """Valid environment variable names pass."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'env-variables': {'MY_VAR': 'value', '_PRIVATE': 'secret', 'PATH_EXT': '/usr/bin'},
-        })
-        assert config.env_variables == {'MY_VAR': 'value', '_PRIVATE': 'secret', 'PATH_EXT': '/usr/bin'}
-
-    def test_invalid_env_variable_name_starts_with_digit(self) -> None:
-        """Variable name starting with digit raises."""
-        with pytest.raises(ValidationError, match='Invalid environment variable name'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'env-variables': {'1BAD': 'value'},
-            })
-
-    def test_invalid_env_variable_name_has_dash(self) -> None:
-        """Variable name with dash raises."""
-        with pytest.raises(ValidationError, match='Invalid environment variable name'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'env-variables': {'MY-VAR': 'value'},
-            })
-
-    def test_env_variable_value_with_null_byte_raises(self) -> None:
-        """Value containing null byte raises."""
-        with pytest.raises(ValidationError, match='null bytes'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'env-variables': {'MY_VAR': 'val\x00ue'},
-            })
-
-    def test_none_env_variables_valid(self) -> None:
-        """None (omitted) env-variables is valid."""
-        config = EnvironmentConfig.model_validate({'name': 'Test'})
-        assert config.env_variables is None
-
-    def test_empty_env_variables_valid(self) -> None:
-        """Empty dict for env-variables is valid."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'env-variables': {},
-        })
-        assert config.env_variables == {}
-
-    def test_null_env_variable_value_valid(self) -> None:
-        """A null value (deletion request) passes validation and skips the null-byte check."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'env-variables': {'DELETE_ME': None, 'KEEP': 'value'},
-        })
-        assert config.env_variables == {'DELETE_ME': None, 'KEEP': 'value'}
-
-    def test_invalid_name_with_null_value_still_raises(self) -> None:
-        """Name validation applies even when the value is a null deletion request."""
-        with pytest.raises(ValidationError, match='Invalid environment variable name'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'env-variables': {'1BAD': None},
-            })
 
 
 class TestMCPServerStdioArgs:
@@ -2264,3 +1758,558 @@ class TestProfileMCPRequiresCommandNames:
                     {'name': 'my-http', 'scope': 'profile', 'transport': 'http', 'url': 'http://localhost:3000'},
                 ],
             })
+
+
+class TestUserSettingsRootOnlyKeys:
+    """Reject root-level YAML keys placed inside user-settings."""
+
+    def test_status_line_kebab_rejected(self) -> None:
+        """'status-line' is a root-level YAML key, not a settings.json key."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'status-line': {'file': 'x.py'}})
+        assert "Key 'status-line' is not allowed in user-settings" in str(exc_info.value)
+        assert 'root-level YAML key' in str(exc_info.value)
+
+    def test_os_env_variables_rejected(self) -> None:
+        """'os-env-variables' is a root-level YAML key, not a settings.json key."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'os-env-variables': {'VAR': 'value'}})
+        assert "Key 'os-env-variables' is not allowed in user-settings" in str(exc_info.value)
+        assert 'root-level YAML key' in str(exc_info.value)
+
+
+class TestUserSettingsKebabCorrections:
+    """Reject kebab-case spellings of known camelCase settings keys."""
+
+    def test_always_thinking_enabled_kebab_rejected(self) -> None:
+        """'always-thinking-enabled' must be spelled 'alwaysThinkingEnabled'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'always-thinking-enabled': True})
+        assert "Key 'always-thinking-enabled' is not a settings.json key" in str(exc_info.value)
+        assert "use 'alwaysThinkingEnabled' instead" in str(exc_info.value)
+
+    def test_company_announcements_kebab_rejected(self) -> None:
+        """'company-announcements' must be spelled 'companyAnnouncements'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'company-announcements': ['note']})
+        assert "use 'companyAnnouncements' instead" in str(exc_info.value)
+
+    def test_effort_level_kebab_rejected(self) -> None:
+        """'effort-level' must be spelled 'effortLevel'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'effort-level': 'high'})
+        assert "use 'effortLevel' instead" in str(exc_info.value)
+
+    def test_env_variables_kebab_rejected(self) -> None:
+        """'env-variables' must be spelled 'env'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'env-variables': {'VAR': 'value'}})
+        assert "Key 'env-variables' is not a settings.json key" in str(exc_info.value)
+        assert "use 'env' instead" in str(exc_info.value)
+
+
+class TestUserSettingsGlobalOnlyKeys:
+    """Reject keys that live in ~/.claude.json (global-config)."""
+
+    @pytest.mark.parametrize('key', [
+        'autoUpdates',
+        'installMethod',
+        'autoConnectIde',
+        'autoInstallIdeExtension',
+        'externalEditorContext',
+        'teammateDefaultModel',
+    ])
+    def test_global_only_key_rejected(self, key: str) -> None:
+        """Global-config keys are rejected in user-settings."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({key: 'value'})
+        assert f"Key '{key}' belongs in global-config" in str(exc_info.value)
+        assert 'not in user-settings' in str(exc_info.value)
+
+    def test_global_only_key_rejected_even_when_null(self) -> None:
+        """Placement is wrong regardless of value; a null global-only key is still rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'autoConnectIde': None})
+        assert "Key 'autoConnectIde' belongs in global-config" in str(exc_info.value)
+
+
+class TestUserSettingsModelValue:
+    """Validate the user-settings model value shape."""
+
+    def test_model_string_accepted(self) -> None:
+        """A non-empty model string is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'opus'})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('model') == 'opus'
+
+    def test_model_empty_string_rejected(self) -> None:
+        """An empty model string is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': ''})
+        assert 'user-settings.model must be a non-empty string' in str(exc_info.value)
+
+    def test_model_non_string_rejected(self) -> None:
+        """A non-string model is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': 123})
+        assert 'user-settings.model must be a non-empty string' in str(exc_info.value)
+
+    def test_model_null_allowed(self) -> None:
+        """A null model is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('model') is None
+
+
+class TestUserSettingsEnvValue:
+    """Validate the user-settings env value shape."""
+
+    def test_env_string_values_accepted(self) -> None:
+        """A mapping of names to string values is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'env': {'FOO': 'bar', 'BAZ': 'qux'}})
+        assert settings.model_extra is not None
+        assert settings.model_extra['env'] == {'FOO': 'bar', 'BAZ': 'qux'}
+
+    def test_env_null_entry_value_allowed(self) -> None:
+        """A null env entry value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'env': {'DELETE_ME': None, 'KEEP': 'v'}})
+        assert settings.model_extra is not None
+        assert settings.model_extra['env'] == {'DELETE_ME': None, 'KEEP': 'v'}
+
+    def test_env_non_string_value_rejected(self) -> None:
+        """A non-string, non-null env value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'env': {'PORT': 8080}})
+        assert 'user-settings.env.PORT must be a string' in str(exc_info.value)
+        assert 'quote the value in YAML' in str(exc_info.value)
+
+    def test_env_not_a_mapping_rejected(self) -> None:
+        """A non-mapping env value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'env': ['FOO=bar']})
+        assert 'user-settings.env must be a mapping' in str(exc_info.value)
+
+    def test_env_invalid_name_rejected(self) -> None:
+        """An invalid environment variable name is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'env': {'1BAD': 'value'}})
+        assert 'invalid environment variable name' in str(exc_info.value)
+
+    def test_env_value_with_null_byte_rejected(self) -> None:
+        """A string env value containing a null byte is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'env': {'FOO': 'bar\x00baz'}})
+        assert 'user-settings.env.FOO value cannot contain null bytes' in str(exc_info.value)
+
+    def test_env_null_whole_value_allowed(self) -> None:
+        """A null env value (deleting the whole env key) is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'env': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('env') is None
+
+
+class TestUserSettingsPermissionsValue:
+    """Validate the user-settings permissions value shape."""
+
+    def test_permissions_valid_shape_accepted(self) -> None:
+        """A well-formed permissions mapping is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({
+            'permissions': {
+                'defaultMode': 'acceptEdits',
+                'allow': ['Read(*)'],
+                'deny': ['Bash(rm *)'],
+                'ask': ['Write(*)'],
+                'additionalDirectories': ['/tmp'],
+            },
+        })
+        assert settings.model_extra is not None
+        assert settings.model_extra['permissions']['defaultMode'] == 'acceptEdits'
+
+    def test_permissions_not_a_mapping_rejected(self) -> None:
+        """A non-mapping permissions value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': ['Read(*)']})
+        assert 'user-settings.permissions must be a mapping' in str(exc_info.value)
+
+    def test_permissions_default_mode_kebab_rejected(self) -> None:
+        """Kebab-case 'default-mode' must be 'defaultMode'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': {'default-mode': 'default'}})
+        assert 'user-settings.permissions uses camelCase keys' in str(exc_info.value)
+        assert "use 'defaultMode' instead of 'default-mode'" in str(exc_info.value)
+
+    def test_permissions_additional_directories_kebab_rejected(self) -> None:
+        """Kebab-case 'additional-directories' must be 'additionalDirectories'."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': {'additional-directories': ['/tmp']}})
+        assert "use 'additionalDirectories' instead of 'additional-directories'" in str(exc_info.value)
+
+    def test_permissions_default_mode_invalid_enum_rejected(self) -> None:
+        """An unknown defaultMode value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': {'defaultMode': 'turbo'}})
+        assert 'user-settings.permissions.defaultMode must be one of' in str(exc_info.value)
+
+    @pytest.mark.parametrize('mode', [
+        'acceptEdits', 'auto', 'bypassPermissions', 'default', 'delegate', 'dontAsk', 'plan',
+    ])
+    def test_permissions_default_mode_valid_enum_accepted(self, mode: str) -> None:
+        """Every documented defaultMode value is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'permissions': {'defaultMode': mode}})
+        assert settings.model_extra is not None
+        assert settings.model_extra['permissions']['defaultMode'] == mode
+
+    def test_permissions_list_key_non_list_rejected(self) -> None:
+        """A list-typed permissions key with a non-list value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': {'allow': 'Read(*)'}})
+        assert 'user-settings.permissions.allow must be a list of strings' in str(exc_info.value)
+
+    def test_permissions_list_key_non_string_item_rejected(self) -> None:
+        """A list-typed permissions key with a non-string item is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'permissions': {'deny': [123]}})
+        assert 'user-settings.permissions.deny must be a list of strings' in str(exc_info.value)
+
+    def test_permissions_null_allowed(self) -> None:
+        """A null permissions value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'permissions': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('permissions') is None
+
+    def test_permissions_unknown_subkey_passes_through(self) -> None:
+        """Unknown permissions sub-keys pass through untouched."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'permissions': {'futureOption': True}})
+        assert settings.model_extra is not None
+        assert settings.model_extra['permissions']['futureOption'] is True
+
+
+class TestUserSettingsAttributionValue:
+    """Validate the user-settings attribution value shape."""
+
+    def test_attribution_valid_shape_accepted(self) -> None:
+        """A well-formed attribution mapping is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'attribution': {'commit': '', 'pr': 'Co-authored-by'}})
+        assert settings.model_extra is not None
+        assert settings.model_extra['attribution'] == {'commit': '', 'pr': 'Co-authored-by'}
+
+    def test_attribution_not_a_mapping_rejected(self) -> None:
+        """A non-mapping attribution value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'attribution': 'none'})
+        assert 'user-settings.attribution must be a mapping' in str(exc_info.value)
+
+    def test_attribution_non_string_sub_value_rejected(self) -> None:
+        """A non-string attribution sub-value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'attribution': {'commit': True}})
+        assert 'user-settings.attribution.commit must be a string' in str(exc_info.value)
+
+    def test_attribution_null_allowed(self) -> None:
+        """A null attribution value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'attribution': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('attribution') is None
+
+
+class TestUserSettingsAlwaysThinkingEnabledValue:
+    """Validate the user-settings alwaysThinkingEnabled value shape."""
+
+    def test_boolean_accepted(self) -> None:
+        """A boolean value is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'alwaysThinkingEnabled': True})
+        assert settings.model_extra is not None
+        assert settings.model_extra['alwaysThinkingEnabled'] is True
+
+    def test_non_boolean_rejected(self) -> None:
+        """A non-boolean value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'alwaysThinkingEnabled': 'yes'})
+        assert 'user-settings.alwaysThinkingEnabled must be a boolean' in str(exc_info.value)
+
+    def test_null_allowed(self) -> None:
+        """A null value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'alwaysThinkingEnabled': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('alwaysThinkingEnabled') is None
+
+
+class TestUserSettingsCompanyAnnouncementsValue:
+    """Validate the user-settings companyAnnouncements value shape."""
+
+    def test_list_of_strings_accepted(self) -> None:
+        """A list of strings is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'companyAnnouncements': ['a', 'b']})
+        assert settings.model_extra is not None
+        assert settings.model_extra['companyAnnouncements'] == ['a', 'b']
+
+    def test_non_list_rejected(self) -> None:
+        """A non-list value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'companyAnnouncements': 'single'})
+        assert 'user-settings.companyAnnouncements must be a list of strings' in str(exc_info.value)
+
+    def test_non_string_item_rejected(self) -> None:
+        """A list with a non-string item is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'companyAnnouncements': ['ok', 42]})
+        assert 'user-settings.companyAnnouncements must be a list of strings' in str(exc_info.value)
+
+    def test_null_allowed(self) -> None:
+        """A null value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'companyAnnouncements': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('companyAnnouncements') is None
+
+
+class TestUserSettingsEffortLevelValue:
+    """Validate the user-settings effortLevel value and its model support."""
+
+    @pytest.mark.parametrize('level', ['low', 'medium', 'high'])
+    def test_unrestricted_levels_accepted_without_model(self, level: str) -> None:
+        """low/medium/high require no model and are accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'effortLevel': level})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == level
+
+    def test_invalid_effort_level_rejected(self) -> None:
+        """An unknown effortLevel value is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'effortLevel': 'extreme'})
+        assert 'user-settings.effortLevel must be one of' in str(exc_info.value)
+
+    def test_null_allowed(self) -> None:
+        """A null effortLevel value is a deletion request and is allowed."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'effortLevel': None})
+        assert settings.model_extra is not None
+        assert settings.model_extra.get('effortLevel') is None
+
+    # --- xhigh model support cross-check ---
+    def test_xhigh_requires_model(self) -> None:
+        """effortLevel 'xhigh' without a model is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'effortLevel': 'xhigh'})
+        assert 'requires user-settings.model to be specified' in str(exc_info.value)
+
+    def test_xhigh_with_opus_accepted(self) -> None:
+        """effortLevel 'xhigh' with an Opus model is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'claude-opus-4-8', 'effortLevel': 'xhigh'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'xhigh'
+
+    def test_xhigh_with_fable_accepted(self) -> None:
+        """effortLevel 'xhigh' with a Fable model is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'claude-fable-5', 'effortLevel': 'xhigh'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'xhigh'
+
+    def test_xhigh_with_best_alias_accepted(self) -> None:
+        """effortLevel 'xhigh' with the exact 'best' alias is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'best', 'effortLevel': 'xhigh'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'xhigh'
+
+    def test_xhigh_with_sonnet_rejected(self) -> None:
+        """effortLevel 'xhigh' with a Sonnet model is rejected (Opus/Fable only)."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': 'claude-sonnet-4-6', 'effortLevel': 'xhigh'})
+        assert 'only available for Opus and Fable models' in str(exc_info.value)
+
+    def test_xhigh_with_bestish_substring_rejected(self) -> None:
+        """effortLevel 'xhigh' with a model merely containing 'best' is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': 'bestish-model', 'effortLevel': 'xhigh'})
+        assert 'only available for Opus and Fable models' in str(exc_info.value)
+
+    # --- max model support cross-check ---
+    def test_max_requires_model(self) -> None:
+        """effortLevel 'max' without a model is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'effortLevel': 'max'})
+        assert 'requires user-settings.model to be specified' in str(exc_info.value)
+
+    def test_max_with_sonnet_accepted(self) -> None:
+        """effortLevel 'max' with a Sonnet model is accepted (Sonnet supports max)."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'claude-sonnet-4-6', 'effortLevel': 'max'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'max'
+
+    def test_max_with_opus_accepted(self) -> None:
+        """effortLevel 'max' with an Opus model is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'opus', 'effortLevel': 'max'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'max'
+
+    def test_max_with_best_alias_accepted(self) -> None:
+        """effortLevel 'max' with the exact 'best' alias is accepted."""
+        from scripts.models.environment_config import UserSettings
+        settings = UserSettings.model_validate({'model': 'best', 'effortLevel': 'max'})
+        assert settings.model_extra is not None
+        assert settings.model_extra['effortLevel'] == 'max'
+
+    def test_max_with_haiku_rejected(self) -> None:
+        """effortLevel 'max' with a Haiku model is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': 'haiku', 'effortLevel': 'max'})
+        assert 'only available for Opus, Sonnet, and Fable models' in str(exc_info.value)
+
+    def test_max_with_bestish_substring_rejected(self) -> None:
+        """effortLevel 'max' with a model merely containing 'best' is rejected."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({'model': 'bestish-model', 'effortLevel': 'max'})
+        assert 'only available for Opus, Sonnet, and Fable models' in str(exc_info.value)
+
+
+class TestUserSettingsMultipleErrors:
+    """Multiple validation failures are surfaced together (newline-joined)."""
+
+    def test_multiple_errors_reported(self) -> None:
+        """Several rule violations appear in one raised message."""
+        from scripts.models.environment_config import UserSettings
+        with pytest.raises(ValidationError) as exc_info:
+            UserSettings.model_validate({
+                'model': '',
+                'autoUpdates': False,
+                'effort-level': 'high',
+            })
+        message = str(exc_info.value)
+        assert 'user-settings.model must be a non-empty string' in message
+        assert "Key 'autoUpdates' belongs in global-config" in message
+        assert "use 'effortLevel' instead" in message
+
+
+class TestGlobalConfigKnownKeyPlacement:
+    """Reject known settings.json keys misplaced into global-config."""
+
+    @pytest.mark.parametrize('key', [
+        'model',
+        'permissions',
+        'env',
+        'attribution',
+        'alwaysThinkingEnabled',
+        'effortLevel',
+        'companyAnnouncements',
+        'availableModels',
+        'enforceAvailableModels',
+    ])
+    def test_settings_only_key_rejected(self, key: str) -> None:
+        """A settings.json key placed in global-config is rejected."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({key: 'value'})
+        message = str(exc_info.value)
+        assert f"Key '{key}' is a settings.json key" in message
+        assert 'Move it to user-settings' in message
+
+    def test_status_line_key_rejected_with_root_hint(self) -> None:
+        """'statusLine' in global-config points to the root-level status-line key."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({'statusLine': {'file': 'x.py'}})
+        message = str(exc_info.value)
+        assert "Key 'statusLine' is not valid in global-config" in message
+        assert "root-level 'status-line' YAML key" in message
+
+    def test_hooks_key_rejected_with_root_hint(self) -> None:
+        """'hooks' in global-config points to the root-level hooks key."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({'hooks': {'events': []}})
+        message = str(exc_info.value)
+        assert "Key 'hooks' is not valid in global-config" in message
+        assert "root-level 'hooks' YAML key" in message
+
+    def test_settings_only_null_value_still_rejected(self) -> None:
+        """Placement errors apply regardless of value, including null."""
+        from scripts.models.environment_config import GlobalConfig
+        with pytest.raises(ValidationError) as exc_info:
+            GlobalConfig.model_validate({'model': None})
+        assert "Key 'model' is a settings.json key" in str(exc_info.value)
+
+    def test_global_only_key_accepted(self) -> None:
+        """A genuine global-config key passes."""
+        from scripts.models.environment_config import GlobalConfig
+        config = GlobalConfig.model_validate({'autoUpdates': True, 'installMethod': 'native'})
+        assert config.model_extra is not None
+        assert config.model_extra['autoUpdates'] is True
+        assert config.model_extra['installMethod'] == 'native'
+
+
+class TestSettingsValidationValueFunctions:
+    """Direct coverage of the pure validation helpers."""
+
+    def test_validate_user_settings_values_empty(self) -> None:
+        """No known keys means no errors."""
+        from scripts.models.environment_config import validate_user_settings_values
+        assert validate_user_settings_values({'customKey': 'value'}) == []
+
+    def test_validate_user_settings_values_collects_errors(self) -> None:
+        """Errors are returned as a list rather than raised."""
+        from scripts.models.environment_config import validate_user_settings_values
+        errors = validate_user_settings_values({'status-line': {}, 'model': ''})
+        assert len(errors) == 2
+
+    def test_validate_global_config_values_empty(self) -> None:
+        """No settings.json keys means no errors."""
+        from scripts.models.environment_config import validate_global_config_values
+        assert validate_global_config_values({'autoConnectIde': True}) == []
+
+    def test_validate_global_config_values_collects_errors(self) -> None:
+        """Settings-only keys are returned as errors."""
+        from scripts.models.environment_config import validate_global_config_values
+        errors = validate_global_config_values({'model': 'opus', 'hooks': {}})
+        assert len(errors) == 2

@@ -8,6 +8,6 @@ mcp-servers:
     url: "http://localhost:3000/base"
 rules:
   - "rules/base-rule.md"
-env-variables:
+os-env-variables:
   BASE_VAR: "base_val"
   SHARED_VAR: "from_base"

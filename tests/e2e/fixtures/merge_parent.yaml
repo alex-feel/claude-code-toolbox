@@ -37,10 +37,9 @@ user-settings:
   permissions:
     allow:
       - "Read"
-
-env-variables:
-  PARENT_VAR: "parent_val"
-  SHARED_VAR: "from_parent"
+  env:
+    PARENT_VAR: "parent_val"
+    SHARED_VAR: "from_parent"
 
 os-env-variables:
   PARENT_OS: "parent_os_val"

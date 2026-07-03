@@ -33,11 +33,82 @@ GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
 })
 
 # Model family markers whose presence (case-insensitive substring) in the model
-# identifier indicates support for the extended 'xhigh' and 'max' effort levels:
-# 'xhigh' is supported on Opus 4.7/4.8 and Fable 5; 'max' on Opus 4.6+ and Fable 5.
-# Substring matching covers aliases ('opus', 'fable'), full model IDs
+# identifier indicates support for the extended effort levels: 'xhigh' is
+# supported on Opus 4.7/4.8 and Fable 5; 'max' on Opus 4.6+, Sonnet 4.6+, and
+# Fable 5. Substring matching covers aliases ('opus', 'fable'), full model IDs
 # ('claude-fable-5'), and provider-prefixed IDs ('us.anthropic.claude-opus-4-8').
-EXTENDED_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable')
+XHIGH_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable')
+MAX_EFFORT_MODEL_MARKERS: tuple[str, ...] = ('opus', 'fable', 'sonnet')
+
+# Valid values for the settings.json effortLevel key
+EFFORT_LEVEL_VALUES: frozenset[str] = frozenset({'low', 'medium', 'high', 'xhigh', 'max'})
+
+# Valid values for the settings.json permissions.defaultMode key.
+# 'delegate' appears in the published JSON schema but not in the prose
+# documentation; it is accepted to avoid rejecting valid configurations.
+PERMISSIONS_DEFAULT_MODE_VALUES: frozenset[str] = frozenset({
+    'default',
+    'acceptEdits',
+    'plan',
+    'auto',
+    'dontAsk',
+    'bypassPermissions',
+    'delegate',
+})
+
+# user-settings is raw settings.json content and uses camelCase keys.
+# These kebab-case spellings are common mistakes carried over from the
+# root-level YAML naming convention; each maps to its camelCase correction.
+USER_SETTINGS_KEBAB_KEY_CORRECTIONS: dict[str, str] = {
+    'always-thinking-enabled': 'alwaysThinkingEnabled',
+    'company-announcements': 'companyAnnouncements',
+    'effort-level': 'effortLevel',
+    'env-variables': 'env',
+}
+
+# Nested permissions keys also use camelCase inside user-settings
+PERMISSIONS_KEBAB_KEY_CORRECTIONS: dict[str, str] = {
+    'default-mode': 'defaultMode',
+    'additional-directories': 'additionalDirectories',
+}
+
+# Root-level YAML keys that are not settings.json keys and therefore
+# never valid inside user-settings
+USER_SETTINGS_ROOT_ONLY_KEYS: frozenset[str] = frozenset({
+    'status-line',
+    'os-env-variables',
+})
+
+# Keys that live in ~/.claude.json (global-config), not in settings.json;
+# declaring them in user-settings would be a silent no-op at runtime
+USER_SETTINGS_GLOBAL_ONLY_KEYS: frozenset[str] = frozenset({
+    'autoUpdates',
+    'installMethod',
+    'autoConnectIde',
+    'autoInstallIdeExtension',
+    'externalEditorContext',
+    'teammateDefaultModel',
+    'oauthAccount',
+})
+
+# Keys that live in settings.json (user-settings), not in ~/.claude.json;
+# declaring them in global-config would be a silent no-op at runtime
+GLOBAL_CONFIG_SETTINGS_ONLY_KEYS: frozenset[str] = frozenset({
+    'model',
+    'permissions',
+    'env',
+    'attribution',
+    'alwaysThinkingEnabled',
+    'effortLevel',
+    'companyAnnouncements',
+    'statusLine',
+    'hooks',
+    'availableModels',
+    'enforceAvailableModels',
+})
+
+# Environment variable names: letters, digits, underscores; no leading digit
+ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 
 def _extract_basename(path_or_url: str) -> str:
@@ -153,15 +224,263 @@ def _validate_scope_combination(scopes: list[str]) -> tuple[bool, str | None]:
     return True, None
 
 
+def _validate_effort_level_entry(effort_level: object, model: object) -> list[str]:
+    """Validate the user-settings effortLevel value and its model support.
+
+    The 'xhigh' level requires an Opus or Fable model; 'max' requires an
+    Opus, Sonnet, or Fable model. The exact alias 'best' (which resolves to
+    Fable 5 or the latest Opus model) satisfies both. Claude Code gracefully
+    downgrades an unsupported level at runtime, but declaring one in the
+    profile is almost always a configuration mistake, so it is rejected.
+
+    Args:
+        effort_level: The declared effortLevel value (non-null).
+        model: The declared user-settings model value, or None when absent.
+
+    Returns:
+        List of error messages. Empty list if the entry is valid.
+    """
+    if effort_level not in EFFORT_LEVEL_VALUES:
+        return [
+            f'user-settings.effortLevel must be one of '
+            f'{sorted(EFFORT_LEVEL_VALUES)}, got {effort_level!r}.',
+        ]
+
+    if effort_level not in ('xhigh', 'max'):
+        return []
+
+    markers = XHIGH_EFFORT_MODEL_MARKERS if effort_level == 'xhigh' else MAX_EFFORT_MODEL_MARKERS
+    families = 'Opus and Fable models' if effort_level == 'xhigh' else 'Opus, Sonnet, and Fable models'
+
+    if not isinstance(model, str) or not model.strip():
+        return [
+            f"user-settings.effortLevel '{effort_level}' requires user-settings.model "
+            f'to be specified. This effort level is only available for {families}.',
+        ]
+
+    model_lower = model.lower()
+    # The 'best' alias is matched exactly, not as a substring, so arbitrary
+    # model names that merely contain 'best' are not accepted.
+    if model_lower != 'best' and not any(marker in model_lower for marker in markers):
+        return [
+            f"user-settings.effortLevel '{effort_level}' is only available for "
+            f"{families}, but model is set to '{model}'. "
+            "Use 'low', 'medium', or 'high' for other models.",
+        ]
+
+    return []
+
+
+def _validate_permissions_entry(permissions: object) -> list[str]:
+    """Validate the structure of the user-settings permissions value.
+
+    Known sub-keys are checked (camelCase naming, defaultMode enum, list
+    shapes); unknown sub-keys pass through untouched for forward
+    compatibility with new Claude Code permissions options.
+
+    Args:
+        permissions: The declared permissions value (non-null).
+
+    Returns:
+        List of error messages. Empty list if the value is valid.
+    """
+    if not isinstance(permissions, dict):
+        return ['user-settings.permissions must be a mapping.']
+
+    errors: list[str] = []
+    permissions_dict = cast(dict[str, object], permissions)
+
+    for kebab, camel in PERMISSIONS_KEBAB_KEY_CORRECTIONS.items():
+        if kebab in permissions_dict:
+            errors.append(
+                f'user-settings.permissions uses camelCase keys: '
+                f"use '{camel}' instead of '{kebab}'.",
+            )
+
+    default_mode = permissions_dict.get('defaultMode')
+    if 'defaultMode' in permissions_dict and default_mode is not None and default_mode not in PERMISSIONS_DEFAULT_MODE_VALUES:
+        errors.append(
+            f'user-settings.permissions.defaultMode must be one of '
+            f'{sorted(PERMISSIONS_DEFAULT_MODE_VALUES)}, got {default_mode!r}.',
+        )
+
+    for list_key in ('allow', 'deny', 'ask', 'additionalDirectories'):
+        value = permissions_dict.get(list_key)
+        if list_key in permissions_dict and value is not None:
+            value_list = cast(list[object], value) if isinstance(value, list) else None
+            if value_list is None or any(not isinstance(item, str) for item in value_list):
+                errors.append(f'user-settings.permissions.{list_key} must be a list of strings.')
+
+    return errors
+
+
+def _validate_env_entry(env: object) -> list[str]:
+    """Validate the structure of the user-settings env value.
+
+    settings.json requires env to be a mapping of string names to string
+    values. A null entry value is a deletion request and carries no content
+    to check.
+
+    Args:
+        env: The declared env value (non-null).
+
+    Returns:
+        List of error messages. Empty list if the value is valid.
+    """
+    if not isinstance(env, dict):
+        return ['user-settings.env must be a mapping of environment variable names to string values.']
+
+    errors: list[str] = []
+    for name, value in cast(dict[object, object], env).items():
+        if not isinstance(name, str) or not ENV_VAR_NAME_PATTERN.match(name):
+            errors.append(
+                f'user-settings.env: invalid environment variable name {name!r}. '
+                'Must start with letter or underscore, followed by letters, digits, or underscores.',
+            )
+            continue
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            errors.append(
+                f'user-settings.env.{name} must be a string '
+                '(quote the value in YAML) or null to delete the variable.',
+            )
+        elif '\x00' in value:
+            errors.append(f'user-settings.env.{name} value cannot contain null bytes.')
+
+    return errors
+
+
+def validate_user_settings_values(data: dict[str, object]) -> list[str]:
+    """Validate known settings.json keys inside a user-settings mapping.
+
+    user-settings is free-form: unknown keys pass through untouched so new
+    Claude Code settings work without a toolbox update. Known built-in keys,
+    however, are validated fail-fast, because Claude Code silently ignores
+    malformed or misplaced entries at runtime and the misconfiguration would
+    otherwise go unnoticed. A null value for any key is a deletion request
+    and is always allowed.
+
+    Checks:
+    - Root-level YAML keys ('status-line', 'os-env-variables') are rejected.
+    - Kebab-case spellings of known camelCase keys are rejected with the
+      camelCase correction.
+    - Keys that belong in global-config (~/.claude.json) are rejected.
+    - Value shapes for model, env, permissions, attribution,
+      alwaysThinkingEnabled, companyAnnouncements, and effortLevel
+      (including the effortLevel/model support cross-check).
+
+    Args:
+        data: The user-settings mapping from YAML.
+
+    Returns:
+        List of error messages. Empty list if validation passes.
+    """
+    errors: list[str] = [
+        f"Key '{key}' is not allowed in user-settings. "
+        'It is a root-level YAML key, not a settings.json key.'
+        for key in sorted(USER_SETTINGS_ROOT_ONLY_KEYS & set(data))
+    ]
+
+    errors.extend(
+        f"Key '{kebab}' is not a settings.json key. "
+        f"user-settings holds raw settings.json content with camelCase keys: use '{camel}' instead."
+        for kebab, camel in USER_SETTINGS_KEBAB_KEY_CORRECTIONS.items()
+        if kebab in data
+    )
+
+    errors.extend(
+        f"Key '{key}' belongs in global-config (~/.claude.json), "
+        'not in user-settings (settings.json).'
+        for key in sorted(USER_SETTINGS_GLOBAL_ONLY_KEYS & set(data))
+    )
+
+    model = data.get('model')
+    if 'model' in data and model is not None and (not isinstance(model, str) or not model.strip()):
+        errors.append('user-settings.model must be a non-empty string.')
+
+    env = data.get('env')
+    if 'env' in data and env is not None:
+        errors.extend(_validate_env_entry(env))
+
+    permissions = data.get('permissions')
+    if 'permissions' in data and permissions is not None:
+        errors.extend(_validate_permissions_entry(permissions))
+
+    attribution = data.get('attribution')
+    if 'attribution' in data and attribution is not None:
+        if not isinstance(attribution, dict):
+            errors.append('user-settings.attribution must be a mapping.')
+        else:
+            attribution_dict = cast(dict[str, object], attribution)
+            for sub in ('commit', 'pr'):
+                value = attribution_dict.get(sub)
+                if sub in attribution_dict and value is not None and not isinstance(value, str):
+                    errors.append(
+                        f'user-settings.attribution.{sub} must be a string '
+                        '(empty string hides attribution).',
+                    )
+
+    always_thinking = data.get('alwaysThinkingEnabled')
+    if 'alwaysThinkingEnabled' in data and always_thinking is not None and not isinstance(always_thinking, bool):
+        errors.append('user-settings.alwaysThinkingEnabled must be a boolean.')
+
+    announcements = data.get('companyAnnouncements')
+    if 'companyAnnouncements' in data and announcements is not None:
+        announcements_list = cast(list[object], announcements) if isinstance(announcements, list) else None
+        if announcements_list is None or any(not isinstance(item, str) for item in announcements_list):
+            errors.append('user-settings.companyAnnouncements must be a list of strings.')
+
+    effort_level = data.get('effortLevel')
+    if 'effortLevel' in data and effort_level is not None:
+        errors.extend(_validate_effort_level_entry(effort_level, model))
+
+    return errors
+
+
+def validate_global_config_values(data: dict[str, object]) -> list[str]:
+    """Validate known key placement inside a global-config mapping.
+
+    global-config is free-form: unknown keys pass through untouched. Known
+    settings.json keys, however, are rejected because ~/.claude.json is not
+    a settings file and Claude Code would silently ignore them at runtime.
+
+    Args:
+        data: The global-config mapping from YAML.
+
+    Returns:
+        List of error messages. Empty list if validation passes.
+    """
+    errors: list[str] = []
+    for key in sorted(GLOBAL_CONFIG_SETTINGS_ONLY_KEYS & set(data)):
+        if key in ('statusLine', 'hooks'):
+            root_key = 'status-line' if key == 'statusLine' else 'hooks'
+            errors.append(
+                f"Key '{key}' is not valid in global-config (~/.claude.json). "
+                f"Configure it via the root-level '{root_key}' YAML key.",
+            )
+        else:
+            errors.append(
+                f"Key '{key}' is a settings.json key and is not valid in "
+                'global-config (~/.claude.json). Move it to user-settings.',
+            )
+    return errors
+
+
 class UserSettings(BaseModel):
-    """User settings configuration for ~/.claude/settings.json.
+    """User settings configuration holding raw settings.json content.
 
     Free-form model that accepts any keys supported by Claude Code's
-    settings.json schema. No specific keys are hardcoded -- the model
-    passes through all provided settings without field-level validation.
+    settings.json schema, using camelCase key names exactly as they appear
+    on disk. Unknown keys pass through without validation for forward
+    compatibility.
 
-    The only structural guard is the exclusion of 'hooks' and 'statusLine'
-    keys, which are profile-specific and must not appear in user-settings.
+    Structural guards:
+    - 'hooks' and 'statusLine' are excluded (profile-specific, configured
+      via root-level YAML keys with dedicated download and path resolution).
+    - Known built-in keys are validated fail-fast via
+      validate_user_settings_values(): value shapes, camelCase naming, and
+      section placement (settings.json vs ~/.claude.json).
     """
 
     model_config = ConfigDict(extra='allow')
@@ -178,18 +497,31 @@ class UserSettings(BaseModel):
                 )
         return data
 
+    @model_validator(mode='before')
+    @classmethod
+    def check_known_key_values(cls, data: dict[str, object]) -> dict[str, object]:
+        """Validate values and placement of known built-in settings keys."""
+        errors = validate_user_settings_values(data)
+        if errors:
+            raise ValueError('\n'.join(errors))
+        return data
+
 
 class GlobalConfig(BaseModel):
     """Global configuration for ~/.claude.json.
 
     Free-form model that accepts any keys supported by Claude Code's
-    global configuration schema. No specific keys are hardcoded -- the model
-    passes through all provided settings without field-level validation.
+    global configuration schema. Unknown keys pass through without
+    validation for forward compatibility.
 
-    The only structural guard is the exclusion of the OAuth credential key
-    (oauthAccount): non-null values are rejected to prevent credential
-    exposure in version-controlled YAML configuration files. Null values
-    are allowed to support clearing authentication state.
+    Structural guards:
+    - The OAuth credential key (oauthAccount) is rejected for non-null
+      values to prevent credential exposure in version-controlled YAML
+      files. Null values are allowed to support clearing authentication
+      state.
+    - Known settings.json keys are rejected via
+      validate_global_config_values() because ~/.claude.json is not a
+      settings file and misplaced keys are silent no-ops at runtime.
     """
 
     model_config = ConfigDict(extra='allow')
@@ -205,6 +537,15 @@ class GlobalConfig(BaseModel):
                     '(OAuth credentials). Set to null to clear authentication state, '
                     'or omit the key entirely.',
                 )
+        return data
+
+    @model_validator(mode='before')
+    @classmethod
+    def check_known_key_placement(cls, data: dict[str, object]) -> dict[str, object]:
+        """Reject known settings.json keys misplaced into global-config."""
+        errors = validate_global_config_values(data)
+        if errors:
+            raise ValueError('\n'.join(errors))
         return data
 
 
@@ -555,13 +896,6 @@ class Skill(BaseModel):
         return v
 
 
-class Attribution(BaseModel):
-    """Attribution configuration for commits and PRs."""
-
-    commit: str | None = Field(None, description='Custom attribution string for commits. Empty string hides attribution.')
-    pr: str | None = Field(None, description='Custom attribution string for PRs. Empty string hides attribution.')
-
-
 class StatusLine(BaseModel):
     """Status line configuration for custom status display."""
 
@@ -600,24 +934,6 @@ class Hooks(BaseModel):
 
     files: list[str] = Field(default_factory=lambda: [], description='Hook script files to download')
     events: list[HookEvent] = Field(default_factory=lambda: [], description='Hook event configurations')
-
-
-class Permissions(BaseModel):
-    """Permissions configuration."""
-
-    default_mode: Literal['default', 'acceptEdits', 'plan', 'bypassPermissions'] | None = Field(
-        None,
-        alias='default-mode',
-        description='Default permission mode',
-    )
-    allow: list[str] | None = Field(None, description='Explicitly allowed actions')
-    deny: list[str] | None = Field(None, description='Explicitly denied actions')
-    ask: list[str] | None = Field(None, description='Actions requiring confirmation')
-    additional_directories: list[str] | None = Field(
-        None,
-        alias='additional-directories',
-        description='Additional accessible directories',
-    )
 
 
 class CommandDefaults(BaseModel):
@@ -682,7 +998,7 @@ class InheritEntry(BaseModel):
         mergeable: frozenset[str] = frozenset({
             'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
             'files-to-download', 'hooks', 'mcp-servers',
-            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+            'global-config', 'user-settings', 'os-env-variables',
         })
         invalid = [k for k in v if k not in mergeable]
         if invalid:
@@ -749,44 +1065,15 @@ class EnvironmentConfig(BaseModel):
         description='Files to download during environment setup',
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
-    model: str | None = Field(None, description='Model configuration')
-    env_variables: dict[str, str | None] | None = Field(
-        None,
-        alias='env-variables',
-        description='Environment variables for Claude Code sessions. '
-        'Set value to null to delete the variable.',
-    )
-    permissions: Permissions | None = Field(None, description='Permissions configuration')
     command_defaults: CommandDefaults | None = Field(
         None,
         alias='command-defaults',
         description='Command launch defaults',
     )
-    company_announcements: list[str] | None = Field(
-        None,
-        alias='company-announcements',
-        description='List of company announcement strings to display to users',
-    )
-    attribution: Attribution | None = Field(
-        None,
-        description='Attribution configuration for commits and PRs. Replaces deprecated include-co-authored-by.',
-    )
     status_line: StatusLine | None = Field(
         None,
         alias='status-line',
         description='Status line configuration with script file and optional padding',
-    )
-    always_thinking_enabled: bool | None = Field(
-        None,
-        alias='always-thinking-enabled',
-        description='Whether to enable always-on thinking mode for extended reasoning (default: False)',
-    )
-    effort_level: Literal['low', 'medium', 'high', 'xhigh', 'max'] | None = Field(
-        None,
-        alias='effort-level',
-        description='Effort level for adaptive reasoning. Controls how much thinking is allocated based on task complexity. '
-        'The "xhigh" and "max" levels are only available for Opus and Fable models '
-        '("xhigh" on Opus 4.7/4.8 and Fable 5; "max" on Opus 4.6+ and Fable 5).',
     )
     install_nodejs: bool | None = Field(
         None,
@@ -835,8 +1122,10 @@ class EnvironmentConfig(BaseModel):
     user_settings: UserSettings | None = Field(
         None,
         alias='user-settings',
-        description='User-level settings written to ~/.claude/settings.json. '
-        'These settings apply across all sessions.',
+        description='Raw settings.json content (camelCase keys). Written to '
+        '~/.claude/settings.json via deep merge in non-isolated mode, or built '
+        "into the isolated profile's config.json (delivered via --settings) "
+        'when command-names is present.',
     )
     global_config: GlobalConfig | None = Field(
         None,
@@ -942,25 +1231,6 @@ class EnvironmentConfig(BaseModel):
             validated.append(server)  # Keep original dict for compatibility
 
         return validated
-
-    @field_validator('model')
-    @classmethod
-    def validate_model(cls, v: str | None) -> str | None:
-        """Validate model configuration.
-
-        Accepts any non-empty model identifier string to support
-        Anthropic models, third-party models, and provider-prefixed
-        model names (e.g., OpenRouter, AWS Bedrock).
-
-        Returns:
-            The validated model string.
-
-        Raises:
-            ValueError: If model is empty or whitespace-only.
-        """
-        if v is not None and not v.strip():
-            raise ValueError('model cannot be empty or whitespace-only')
-        return v
 
     @field_validator('claude_code_version')
     @classmethod
@@ -1082,7 +1352,7 @@ class EnvironmentConfig(BaseModel):
         mergeable: frozenset[str] = frozenset({
             'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
             'files-to-download', 'hooks', 'mcp-servers',
-            'global-config', 'user-settings', 'env-variables', 'os-env-variables',
+            'global-config', 'user-settings', 'os-env-variables',
         })
         invalid = [k for k in v if k not in mergeable]
         if invalid:
@@ -1090,43 +1360,6 @@ class EnvironmentConfig(BaseModel):
                 f'Invalid merge-keys: {invalid}. '
                 f'Valid mergeable keys: {sorted(mergeable)}',
             )
-        return v
-
-    @field_validator('env_variables')
-    @classmethod
-    def validate_env_variables(cls, v: dict[str, str | None] | None) -> dict[str, str | None] | None:
-        """Validate environment variables configuration.
-
-        Checks that variable names follow the standard pattern
-        (letters, digits, underscores; must start with letter or underscore)
-        and that non-null values do not contain null bytes. A null value is
-        a deletion request and carries no content to check.
-
-        Args:
-            v: Dictionary of environment variable names to string values,
-                or None values for deletion requests.
-
-        Returns:
-            The validated dictionary.
-
-        Raises:
-            ValueError: If variable names are invalid or values contain null bytes.
-        """
-        if v is None:
-            return v
-
-        env_var_pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-
-        for name, value in v.items():
-            if not env_var_pattern.match(name):
-                raise ValueError(
-                    f'Invalid environment variable name: {name}. '
-                    'Must start with letter or underscore, followed by letters, digits, or underscores.',
-                )
-
-            if value is not None and '\x00' in str(value):
-                raise ValueError(f'Environment variable {name} value cannot contain null bytes')
-
         return v
 
     @field_validator('os_env_variables')
@@ -1175,46 +1408,6 @@ class EnvironmentConfig(BaseModel):
             raise ValueError(
                 'command-defaults requires command-names to be specified. '
                 'Either provide both command-names and command-defaults, or omit both.',
-            )
-
-        return self
-
-    @model_validator(mode='after')
-    def validate_effort_level_model_support(self) -> 'EnvironmentConfig':
-        """Validate that effort_level 'xhigh' and 'max' are used with a supporting model.
-
-        'xhigh' is supported on Opus 4.7/4.8 and Fable 5; 'max' is supported on
-        Opus 4.6+ and Fable 5. The free-form model field cannot resolve which
-        version an alias points to, so the gate checks for the family substrings
-        in EXTENDED_EFFORT_MODEL_MARKERS plus the exact alias 'best' (which always
-        resolves to Fable 5 or the latest Opus model); Claude Code gracefully
-        downgrades an unsupported level to the highest supported level at runtime
-        (for example, 'xhigh' runs as 'high' on Opus 4.6).
-
-        Returns:
-            The validated EnvironmentConfig instance.
-
-        Raises:
-            ValueError: If 'xhigh'/'max' is set without a model or with a model
-                outside the Opus and Fable families.
-        """
-        if self.effort_level not in ('xhigh', 'max'):
-            return self
-
-        if self.model is None:
-            raise ValueError(
-                f"effort-level '{self.effort_level}' requires model to be specified. "
-                f"The '{self.effort_level}' effort level is only available for Opus and Fable models.",
-            )
-
-        model_lower = self.model.lower()
-        # The 'best' alias is matched exactly, not as a substring, so arbitrary
-        # model names that merely contain 'best' are not accepted.
-        if model_lower != 'best' and not any(marker in model_lower for marker in EXTENDED_EFFORT_MODEL_MARKERS):
-            raise ValueError(
-                f"effort-level '{self.effort_level}' is only available for Opus and Fable models, "
-                f"but model is set to '{self.model}'. "
-                "Use 'low', 'medium', or 'high' for other models.",
             )
 
         return self

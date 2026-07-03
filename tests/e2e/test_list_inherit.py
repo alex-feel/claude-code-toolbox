@@ -79,23 +79,23 @@ class TestBasicListComposition:
         assert 'middle-server' in server_names
         assert 'base-server' not in server_names
 
-    def test_leaf_replaces_env_variables(self, fixtures_dir):
-        """Leaf env-variables replaces accumulated (no merge-keys for env-variables)."""
+    def test_leaf_replaces_os_env_variables(self, fixtures_dir):
+        """Leaf os-env-variables replaces accumulated (no merge-keys for os-env-variables)."""
         path = fixtures_dir / 'list_inherit_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        # Leaf has env-variables without merge-keys, so it replaces entirely
-        assert resolved['env-variables'] == {'LEAF_VAR': 'leaf_val'}
-        assert 'BASE_VAR' not in resolved['env-variables']
-        assert 'MIDDLE_VAR' not in resolved['env-variables']
+        # Leaf has os-env-variables without merge-keys, so it replaces entirely
+        assert resolved['os-env-variables'] == {'LEAF_VAR': 'leaf_val'}
+        assert 'BASE_VAR' not in resolved['os-env-variables']
+        assert 'MIDDLE_VAR' not in resolved['os-env-variables']
 
     def test_leaf_keys_added(self, fixtures_dir):
         """Leaf's own keys appear in result."""
         path = fixtures_dir / 'list_inherit_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        assert resolved['model'] == 'sonnet'
-        assert resolved['env-variables']['LEAF_VAR'] == 'leaf_val'
+        assert resolved['user-settings']['model'] == 'sonnet'
+        assert resolved['os-env-variables']['LEAF_VAR'] == 'leaf_val'
 
     def test_meta_keys_stripped(self, fixtures_dir):
         """inherit and merge-keys stripped from final result."""
@@ -244,7 +244,7 @@ class TestSingleElementListNormalization:
         resolved, chain = _resolve(config, str(path))
         # Should behave like inherit: list_inherit_base.yaml
         assert resolved['name'] == 'List Inherit Single'
-        assert resolved['model'] == 'opus'
+        assert resolved['user-settings']['model'] == 'opus'
 
     def test_single_element_inherits_base_agents(self, fixtures_dir):
         """Single-element list inherits parent agents (replaced by leaf)."""
@@ -269,7 +269,7 @@ class TestSingleElementListNormalization:
         # Composition mode: chain has 1 entry (base)
         assert len(chain) == 1
         assert resolved['name'] == 'Single Structured'
-        assert resolved['model'] == 'opus'
+        assert resolved['user-settings']['model'] == 'opus'
 
     def test_single_structured_merges_agents(self, fixtures_dir):
         """Single structured entry's merge-keys merges agents with base."""
@@ -449,25 +449,25 @@ class TestChainOrdering:
         assert chain[1].name == 'List Inherit Middle'
 
 
-class TestEnvVariableComposition:
-    """Test that env-variables compose correctly across list entries."""
+class TestOsEnvVariableComposition:
+    """Test that os-env-variables compose correctly across list entries."""
 
-    def test_leaf_env_vars_replace_accumulated(self, fixtures_dir):
-        """Leaf env-variables replaces accumulated (no merge-keys for env-variables)."""
+    def test_leaf_os_env_vars_replace_accumulated(self, fixtures_dir):
+        """Leaf os-env-variables replaces accumulated (no merge-keys for os-env-variables)."""
         path = fixtures_dir / 'list_inherit_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        # Leaf has env-variables without merge-keys, so it replaces entirely
-        env_vars = resolved['env-variables']
+        # Leaf has os-env-variables without merge-keys, so it replaces entirely
+        env_vars = resolved['os-env-variables']
         assert env_vars == {'LEAF_VAR': 'leaf_val'}
 
-    def test_env_vars_from_middle_when_no_leaf_env_vars(self, fixtures_dir):
-        """Middle's env-variables survives when leaf has no env-variables key."""
+    def test_os_env_vars_from_middle_when_no_leaf_os_env_vars(self, fixtures_dir):
+        """Middle's os-env-variables survives when leaf has no os-env-variables key."""
         path = fixtures_dir / 'list_inherit_merge_keys_leaf.yaml'
         config = _load_yaml(path)
         resolved, _ = _resolve(config, str(path))
-        # Middle's own merge-keys is STRIPPED, so middle REPLACES base env-variables
-        # Leaf has NO env-variables key, so accumulated env-variables survive
-        env_vars = resolved.get('env-variables', {})
+        # Middle's own merge-keys is STRIPPED, so middle REPLACES base os-env-variables
+        # Leaf has NO os-env-variables key, so accumulated os-env-variables survive
+        env_vars = resolved.get('os-env-variables', {})
         assert env_vars.get('MIDDLE_VAR') == 'middle_val'
         assert env_vars.get('SHARED_VAR') == 'from_middle'

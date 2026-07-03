@@ -77,12 +77,14 @@ class TestBugFixVerification:
         hooks_dir = artifact_base_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create config with custom env vars (but no CLAUDE_CONFIG_DIR)
-        env_vars: dict[str, str] = {'MY_VAR': 'val'}
+        # Create config with custom env vars (but no CLAUDE_CONFIG_DIR).
+        # env lives in user-settings; profile_config carries hooks/statusLine.
+        user_settings: dict[str, Any] = {'env': {'MY_VAR': 'val'}}
         create_profile_config(
-            {'hooks': golden_config.get('hooks', {}), 'env': env_vars},
+            {'hooks': golden_config.get('hooks', {})},
             artifact_base_dir,
             hooks_base_dir=hooks_dir,
+            user_settings=user_settings,
         )
 
         # Verify config.json does NOT contain CLAUDE_CONFIG_DIR
@@ -114,31 +116,36 @@ class TestBugFixVerification:
         """Scenario 16: User-explicit CLAUDE_CONFIG_DIR is used for dir, popped from env."""
         claude_dir = e2e_isolated_home['claude_dir']
 
-        # Simulate the main() logic for user-supplied CLAUDE_CONFIG_DIR
-        env_variables: dict[str, str] = {
-            'CLAUDE_CONFIG_DIR': str(claude_dir / 'custom-env'),
-            'OTHER_VAR': 'keep',
+        # Simulate the main() logic for a user-supplied CLAUDE_CONFIG_DIR,
+        # which main() reads from user-settings.env and pops before writes.
+        user_settings: dict[str, Any] = {
+            'env': {
+                'CLAUDE_CONFIG_DIR': str(claude_dir / 'custom-env'),
+                'OTHER_VAR': 'keep',
+            },
         }
+        env_section = user_settings['env']
 
         # Step 1: Extract user's custom config dir
-        user_config_dir = env_variables.get('CLAUDE_CONFIG_DIR')
+        user_config_dir = env_section.get('CLAUDE_CONFIG_DIR')
         assert user_config_dir is not None
         isolated_config_dir = Path(user_config_dir)
         isolated_config_dir.mkdir(parents=True, exist_ok=True)
 
-        # Step 2: Pop CLAUDE_CONFIG_DIR from env before passing to create_profile_config
-        env_variables.pop('CLAUDE_CONFIG_DIR')
-        assert 'CLAUDE_CONFIG_DIR' not in env_variables
-        assert env_variables == {'OTHER_VAR': 'keep'}
+        # Step 2: Pop CLAUDE_CONFIG_DIR from user-settings.env before the write
+        env_section.pop('CLAUDE_CONFIG_DIR')
+        assert 'CLAUDE_CONFIG_DIR' not in env_section
+        assert env_section == {'OTHER_VAR': 'keep'}
 
         # Step 3: Create config -- CLAUDE_CONFIG_DIR must NOT appear in output
         hooks_dir = isolated_config_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         create_profile_config(
-            {'env': env_variables},
+            {},
             isolated_config_dir,
             hooks_base_dir=hooks_dir,
+            user_settings=user_settings,
         )
 
         config_path = isolated_config_dir / 'config.json'

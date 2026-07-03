@@ -1,271 +1,244 @@
-"""E2E tests for profile-settings routing in non-command-names mode.
+"""E2E tests for settings routing in non-command-names (non-isolated) mode.
 
-Verifies that when `command-names` is absent, all profile-owned keys
-(model, permissions, env, attribution, alwaysThinkingEnabled, effortLevel,
-companyAnnouncements, statusLine, hooks) are correctly routed to
-~/.claude/settings.json via write_profile_settings_to_settings(), which
-deep-merges the delta into the existing file: nested dicts are
-recursively merged, EVERY list at every depth is unioned with structural
-dedupe (matching Claude Code CLI's cross-scope merge: "arrays are
-concatenated and deduplicated, not replaced"), RFC 7396 null (both
-top-level and nested) deletes keys, and keys not in the delta are
-preserved unchanged.
+When ``command-names`` is absent, the toolbox writes to the shared
+``~/.claude/settings.json`` in two passes:
 
-Test coverage matrix:
-- Happy path: all 9 profile-owned keys deep-merged correctly
-- Partial config: only subset of keys declared, rest preserved
-- Deep-merge preservation: pre-existing settings.json sub-keys survive
-- Step 14/18 interaction: user-settings contributions preserved
-- Array union at every depth: permissions.allow/deny/ask,
-  permissions.additionalDirectories, companyAnnouncements,
-  hooks.<EventName>, and every other list-valued key accumulate
-  across runs
-- Conflict detection: warnings fire in non-command-names mode
-- Top-level null-as-delete: model/permissions/env/hooks/... all removable via null
-- Nested null-as-delete: permissions.deny=None removes just the deny sub-key
-- Re-invocation across configurations: a second invocation updates values
-  written by the first invocation when keys are re-declared
-- Stale-key preservation: when an invocation omits a key already on disk,
-  the existing value is left in place
-- Profile-scoped MCP validation: exit 1 with 4-option message
-- System-prompt warning: warning emitted, setup continues
-- Empty profile delta: settings.json untouched when no profile keys
+- Step 14 (``write_user_settings``) deep-merges the raw ``user-settings``
+  section (model, permissions, env, and every other settings.json key) into
+  ``~/.claude/settings.json`` with universal array union and RFC 7396
+  null-as-delete.
+- Step 18 (``write_profile_settings_to_settings``) applies the profile-owned
+  delta -- only ``statusLine`` and ``hooks`` -- into the same file via the
+  same deep-merge helper.
+
+Both passes preserve every key outside their own delta, so the two
+contributions coexist in one file. The profile-owned key set is exactly
+``{'statusLine', 'hooks'}`` because those two keys require dedicated write
+logic (path resolution and per-event processing) and are rejected inside
+``user-settings``; every other settings.json key is expressed directly in
+``user-settings``.
+
+Test coverage:
+- ``_build_profile_settings`` statusLine/hooks behavior, including explicit
+  nulls and the empty/absent cases.
+- Step 18 writes ONLY the statusLine/hooks delta and preserves unrelated
+  on-disk keys; top-level null deletes statusLine/hooks.
+- Step 14 user-settings deep-merge: array union, RFC 7396 null-as-delete,
+  and env sub-dict merge.
+- ``golden_config_no_command_names.yaml`` end-to-end: user-settings content
+  plus statusLine and hooks all land in ``~/.claude/settings.json``.
+- Auto-update Target ``user-settings.env`` survival across the Step 14 then
+  Step 18 ordering.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 import yaml
 
 from scripts.setup_environment import PROFILE_OWNED_KEYS
 from scripts.setup_environment import _build_profile_settings
-from scripts.setup_environment import detect_settings_conflicts
 from scripts.setup_environment import write_profile_settings_to_settings
-
-if TYPE_CHECKING:
-    from unittest.mock import MagicMock
-
+from scripts.setup_environment import write_user_settings
 
 # ---------------------------------------------------------------------------
-# Test Class 1: Deep-Merge Writer Filesystem Semantics
+# Test Class 1: _build_profile_settings statusLine/hooks Behavior
 # ---------------------------------------------------------------------------
 
 
-class TestDeepMergeWriterFilesystem:
-    """Filesystem-level tests of write_profile_settings_to_settings().
+class TestBuildProfileSettings:
+    """Verify the pure builder emits only the two profile-owned keys.
 
-    Verifies that the shared settings.json writer applies deep-merge via
-    delegation to _write_merged_json() with the universal union-all-arrays
-    default (array_union_keys=None): nested dicts are recursively merged,
-    EVERY array at every depth is unioned with structural dedupe,
-    RFC 7396 null-as-delete works for both top-level keys and nested
-    sub-keys, and keys not present in the delta are preserved unchanged.
-
-    Matches Claude Code CLI's documented cross-scope merge semantics:
-    "Array settings merge across scopes. When the same array-valued
-    setting appears in multiple scopes, the arrays are concatenated and
-    deduplicated, not replaced."
+    ``_build_profile_settings`` is I/O-free. It maps a per-key
+    ``profile_config`` dict (camelCase names) to a settings delta, handling
+    exactly ``statusLine`` and ``hooks``. Dict membership encodes the YAML
+    declaration state: absent keys are omitted, keys present with ``None``
+    propagate as ``None`` for downstream null-as-delete.
     """
 
-    def test_happy_path_all_nine_keys(self, tmp_path: Path) -> None:
-        """All nine PROFILE_OWNED_KEYS routed to settings.json correctly."""
+    def test_profile_owned_keys_is_status_line_and_hooks(self) -> None:
+        """PROFILE_OWNED_KEYS is exactly {statusLine, hooks}."""
+        assert frozenset({'statusLine', 'hooks'}) == PROFILE_OWNED_KEYS
+
+    def test_empty_profile_config_yields_empty_delta(self, tmp_path: Path) -> None:
+        """No profile-owned keys declared -> empty delta."""
+        assert _build_profile_settings({}, tmp_path / 'hooks') == {}
+
+    def test_non_profile_keys_are_ignored(self, tmp_path: Path) -> None:
+        """Keys other than statusLine/hooks are not emitted by the builder."""
+        delta = _build_profile_settings(
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}, 'env': {'A': 'b'}},
+            tmp_path / 'hooks',
+        )
+        assert delta == {}
+
+    def test_status_line_built_into_command(self, tmp_path: Path) -> None:
+        """A statusLine file reference becomes a command-string entry."""
         hooks_dir = tmp_path / 'hooks'
         hooks_dir.mkdir()
+        delta = _build_profile_settings(
+            {'statusLine': {'file': 'status.py', 'padding': 0}},
+            hooks_dir,
+        )
+        assert set(delta.keys()) == {'statusLine'}
+        assert delta['statusLine']['type'] == 'command'
+        assert 'uv run' in delta['statusLine']['command']
+        assert (hooks_dir / 'status.py').as_posix() in delta['statusLine']['command']
+        assert delta['statusLine']['padding'] == 0
 
+    def test_hooks_built_into_event_structure(self, tmp_path: Path) -> None:
+        """A hooks config with events becomes an event-keyed structure."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
         delta = _build_profile_settings(
             {
-                'hooks': {'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
-                                      'type': 'command', 'command': 'test.sh'}]},
-                'model': 'sonnet',
-                'permissions': {'allow': ['Read'], 'deny': ['Bash(rm -rf)']},
-                'env': {'FOO': 'bar'},
-                'alwaysThinkingEnabled': True,
-                'companyAnnouncements': ['Welcome'],
-                'attribution': {'commit': 'cm', 'pr': 'pr'},
-                'statusLine': {'file': 'status.py'},
-                'effortLevel': 'high',
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
             },
             hooks_dir,
         )
+        assert set(delta.keys()) == {'hooks'}
+        assert 'PreToolUse' in delta['hooks']
 
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert set(content.keys()) == PROFILE_OWNED_KEYS
+    def test_explicit_null_status_line_propagates(self, tmp_path: Path) -> None:
+        """statusLine present with None propagates as None for null-as-delete."""
+        delta = _build_profile_settings({'statusLine': None}, tmp_path / 'hooks')
+        assert delta == {'statusLine': None}
 
-    def test_partial_delta_only_specified_keys_written(self, tmp_path: Path) -> None:
-        """YAML with only model and permissions writes only those two keys."""
+    def test_explicit_null_hooks_propagates(self, tmp_path: Path) -> None:
+        """hooks present with None propagates as None for null-as-delete."""
+        delta = _build_profile_settings({'hooks': None}, tmp_path / 'hooks')
+        assert delta == {'hooks': None}
+
+    def test_empty_hooks_dict_omitted(self, tmp_path: Path) -> None:
+        """An empty hooks dict (no events) is omitted from the delta."""
+        delta = _build_profile_settings({'hooks': {}}, tmp_path / 'hooks')
+        assert delta == {}
+
+    def test_both_keys_together(self, tmp_path: Path) -> None:
+        """statusLine and hooks together yield both entries."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
         delta = _build_profile_settings(
-            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
-            tmp_path / 'hooks',
+            {
+                'statusLine': {'file': 'status.py'},
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
+        )
+        assert set(delta.keys()) == {'statusLine', 'hooks'}
+
+
+# ---------------------------------------------------------------------------
+# Test Class 2: Step 18 Writes ONLY the statusLine/hooks Delta
+# ---------------------------------------------------------------------------
+
+
+class TestProfileDeltaWriter:
+    """Filesystem tests of write_profile_settings_to_settings().
+
+    Step 18 deep-merges the statusLine/hooks delta into
+    ~/.claude/settings.json via the shared _write_merged_json() helper:
+    unrelated keys are preserved, nested dicts merge, every array unions,
+    and RFC 7396 null deletes keys.
+    """
+
+    def test_empty_delta_does_not_create_file(self, tmp_path: Path) -> None:
+        """Empty delta -> no file created."""
+        write_profile_settings_to_settings({}, tmp_path)
+        assert not (tmp_path / 'settings.json').exists()
+
+    def test_empty_delta_does_not_modify_existing(self, tmp_path: Path) -> None:
+        """Empty delta -> existing settings.json unchanged."""
+        settings_file = tmp_path / 'settings.json'
+        original = {'language': 'english', 'model': 'sonnet'}
+        settings_file.write_text(json.dumps(original), encoding='utf-8')
+
+        write_profile_settings_to_settings({}, tmp_path)
+
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content == original
+
+    def test_only_status_line_and_hooks_written(self, tmp_path: Path) -> None:
+        """The written keys are exactly the profile-owned delta keys."""
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta = _build_profile_settings(
+            {
+                'statusLine': {'file': 'status.py'},
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
         )
         write_profile_settings_to_settings(delta, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert set(content.keys()) == {'model', 'permissions'}
+        assert set(content.keys()) == {'statusLine', 'hooks'}
 
     def test_unrelated_keys_preserved(self, tmp_path: Path) -> None:
-        """Non-profile keys in existing settings.json are preserved."""
+        """User-settings keys written by Step 14 survive the Step 18 delta write.
+
+        Step 14 leaves model/permissions/env/language in settings.json. The
+        Step 18 profile delta only carries statusLine, so every user-settings
+        key must remain intact.
+        """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
+            'model': 'sonnet',
+            'permissions': {'allow': ['Read'], 'deny': ['Bash(rm -rf)']},
+            'env': {'FOO': 'bar'},
             'language': 'english',
-            'includeGitInstructions': False,
-            'apiKeyHelper': '/tmp/key.sh',
-            'cleanupPeriodDays': 30,
         }), encoding='utf-8')
 
-        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
+        hooks_dir = tmp_path / 'hooks'
+        hooks_dir.mkdir()
+        delta = _build_profile_settings({'statusLine': {'file': 'status.py'}}, hooks_dir)
         write_profile_settings_to_settings(delta, tmp_path)
+
         content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['model'] == 'sonnet'
+        assert content['permissions'] == {'allow': ['Read'], 'deny': ['Bash(rm -rf)']}
+        assert content['env'] == {'FOO': 'bar'}
         assert content['language'] == 'english'
-        assert content['includeGitInstructions'] is False
-        assert content['apiKeyHelper'] == '/tmp/key.sh'
-        assert content['cleanupPeriodDays'] == 30
+        assert content['statusLine']['type'] == 'command'
+
+    def test_top_level_null_status_line_deletes_key(self, tmp_path: Path) -> None:
+        """Top-level None for statusLine deletes only that key."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'statusLine': {'type': 'command', 'command': 'x'},
+            'model': 'sonnet',
+        }), encoding='utf-8')
+
+        write_profile_settings_to_settings({'statusLine': None}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert 'statusLine' not in content
         assert content['model'] == 'sonnet'
 
-    def test_omitted_profile_key_preserved_when_yaml_does_not_declare_it(
-        self, tmp_path: Path,
-    ) -> None:
-        """A profile key that the new delta does not declare survives unchanged.
-
-        The shared settings.json is a user-facing file, so the writer must
-        not silently scrub profile keys already on disk when the current
-        configuration omits them. To delete a key, the user must declare it
-        explicitly as None in the delta or remove it manually.
-        """
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'model': 'sonnet',
-            'permissions': {'allow': ['Read']},
-            'effortLevel': 'high',
-        }), encoding='utf-8')
-
-        # New invocation declares ONLY model (permissions and effortLevel omitted)
-        delta = _build_profile_settings({'model': 'opus'}, tmp_path / 'hooks')
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-
-        # Model updated
-        assert content['model'] == 'opus'
-        # Omitted keys PRESERVED unchanged
-        assert content['permissions'] == {'allow': ['Read']}
-        assert content['effortLevel'] == 'high'
-
-    def test_explicit_null_deletes_key(self, tmp_path: Path) -> None:
-        """Explicit None value in delta deletes the key from settings.json."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'model': 'sonnet',
-            'permissions': {'allow': ['Read']},
-        }), encoding='utf-8')
-
-        write_profile_settings_to_settings({'model': None}, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert 'model' not in content
-        # Unrelated profile key PRESERVED
-        assert content['permissions'] == {'allow': ['Read']}
-
-    def test_deep_merge_preserves_unrelated_permissions_subkeys(self, tmp_path: Path) -> None:
-        """Deep-merge preserves permissions sub-keys not declared in the delta.
-
-        When the delta carries a partial permissions dict (e.g., only 'allow'),
-        existing sub-keys ('deny', 'ask') declared by other contributors must
-        be preserved. This is the headline security guarantee: a narrower
-        permissions: {allow: [Read]} YAML declaration MUST NOT destroy
-        permissions.deny entries set by prior runs, user manual edits, or the
-        Claude Code CLI itself. The 'allow' sub-key is unioned via
-        DEFAULT_ARRAY_UNION_KEYS, so existing and new allow entries accumulate.
-        """
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'permissions': {
-                'allow': ['Read', 'Write', 'Glob'],
-                'deny': ['Bash(rm -rf)'],
-                'ask': ['Edit'],
-            },
-        }), encoding='utf-8')
-
-        # YAML declares a narrower permissions dict (only 'allow')
-        delta: dict[str, Any] = {'permissions': {'allow': ['Grep']}}
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-
-        # 'allow' array-unioned (order-preserving, deduped)
-        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Glob', 'Grep'}
-        # 'deny' and 'ask' PRESERVED intact
-        assert content['permissions']['deny'] == ['Bash(rm -rf)']
-        assert content['permissions']['ask'] == ['Edit']
-
-    def test_permissions_deny_preserved_across_yaml_runs(self, tmp_path: Path) -> None:
-        """Security guarantee: permissions.deny entries accumulate across runs.
-
-        Flagship security test. A pre-existing settings.json with enterprise
-        deny rules is updated by a narrower YAML declaration; the deny rules
-        must survive and accumulate rather than being silently destroyed.
-        """
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'permissions': {'deny': ['Bash(rm -rf *)', 'Bash(sudo *)']},
-        }), encoding='utf-8')
-
-        # First YAML run adds allow entries
-        delta1 = _build_profile_settings(
-            {'permissions': {'allow': ['Read']}}, tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta1, tmp_path)
-
-        # Second YAML run adds an additional deny rule
-        delta2 = _build_profile_settings(
-            {'permissions': {'deny': ['Bash(curl *)']}}, tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta2, tmp_path)
-
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # All 3 deny rules present, union preserved
-        assert set(content['permissions']['deny']) == {
-            'Bash(rm -rf *)', 'Bash(sudo *)', 'Bash(curl *)',
-        }
-        # 'allow' from first run still present
-        assert content['permissions']['allow'] == ['Read']
-
-    def test_env_deep_merge_preserves_auto_update_injection(self, tmp_path: Path) -> None:
-        """env dict deep-merges, preserving Target 2 auto-update injection.
-
-        Pre-populate with DISABLE_AUTOUPDATER (the state after Step 14 runs
-        with an auto-update-pinned YAML). Write a delta with a new env key.
-        Both keys must be present in the result.
-        """
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'env': {'DISABLE_AUTOUPDATER': '1'},
-        }), encoding='utf-8')
-
-        delta = _build_profile_settings(
-            {'env': {'MY_VAR': 'x'}}, tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # Both keys present
-        assert content['env']['DISABLE_AUTOUPDATER'] == '1'
-        assert content['env']['MY_VAR'] == 'x'
-
-    def test_top_level_null_permissions_deletes_block(self, tmp_path: Path) -> None:
-        """Top-level None for permissions deletes the entire permissions block."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
-            'model': 'sonnet',
-        }), encoding='utf-8')
-
-        write_profile_settings_to_settings({'permissions': None}, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert content == {'model': 'sonnet'}
-
-    def test_top_level_null_hooks_deletes_block(self, tmp_path: Path) -> None:
-        """Top-level None for hooks deletes the entire hooks block."""
+    def test_top_level_null_hooks_deletes_key(self, tmp_path: Path) -> None:
+        """Top-level None for hooks deletes only that key."""
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
             'hooks': {'PreToolUse': [{'matcher': '', 'hooks': []}]},
@@ -274,75 +247,33 @@ class TestDeepMergeWriterFilesystem:
 
         write_profile_settings_to_settings({'hooks': None}, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert content == {'model': 'sonnet'}
+        assert 'hooks' not in content
+        assert content['model'] == 'sonnet'
 
-    def test_top_level_null_all_profile_keys_deletes_all(self, tmp_path: Path) -> None:
-        """All nine profile-owned keys set to None deletes them all."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'model': 'sonnet',
-            'permissions': {'allow': ['Read']},
-            'env': {'FOO': 'bar'},
-            'attribution': {'commit': 'x'},
-            'alwaysThinkingEnabled': True,
-            'effortLevel': 'high',
-            'companyAnnouncements': ['msg'],
-            'statusLine': {'type': 'command', 'command': 'a'},
-            'hooks': {'PreToolUse': []},
-            'language': 'english',  # Unrelated key, should be preserved
-        }), encoding='utf-8')
-
-        delta: dict[str, Any] = dict.fromkeys(PROFILE_OWNED_KEYS)
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # All nine profile-owned keys deleted; unrelated key preserved
-        assert content == {'language': 'english'}
-
-    def test_nested_null_permissions_deny_only_deletes_sub_key(
-        self, tmp_path: Path,
-    ) -> None:
-        """Nested None (permissions.deny) deletes only the deny sub-key."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
-        }), encoding='utf-8')
-
-        write_profile_settings_to_settings(
-            {'permissions': {'deny': None}}, tmp_path,
-        )
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # 'allow' preserved, 'deny' deleted
-        assert content['permissions'] == {'allow': ['Read']}
-
-    def test_company_announcements_preserved_across_runs(self, tmp_path: Path) -> None:
-        """companyAnnouncements unions across two Step 18 filesystem writes."""
-        hooks_dir = tmp_path / 'hooks'
-        hooks_dir.mkdir()
-        delta_a = _build_profile_settings({'companyAnnouncements': ['Welcome']}, hooks_dir)
-        write_profile_settings_to_settings(delta_a, tmp_path)
-        delta_b = _build_profile_settings({'companyAnnouncements': ['Maintenance']}, hooks_dir)
-        write_profile_settings_to_settings(delta_b, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert content['companyAnnouncements'] == ['Welcome', 'Maintenance']
-
-    def test_permissions_additional_directories_preserved(self, tmp_path: Path) -> None:
-        """permissions.additionalDirectories unions across two Step 18 writes."""
+    def test_explicit_null_hooks_removes_stale_block(self, tmp_path: Path) -> None:
+        """A YAML root null removes a hooks block written by an earlier run."""
         hooks_dir = tmp_path / 'hooks'
         hooks_dir.mkdir()
         delta_a = _build_profile_settings(
-            {'permissions': {'additionalDirectories': ['/existing']}},
+            {
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
             hooks_dir,
         )
         write_profile_settings_to_settings(delta_a, tmp_path)
-        delta_b = _build_profile_settings(
-            {'permissions': {'additionalDirectories': ['/new']}},
-            hooks_dir,
-        )
-        write_profile_settings_to_settings(delta_b, tmp_path)
+        # A later YAML with hooks: null -> delta {'hooks': None}
+        write_profile_settings_to_settings({'hooks': None}, tmp_path)
         content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert content['permissions']['additionalDirectories'] == ['/existing', '/new']
+        assert 'hooks' not in content
 
-    def test_hooks_event_list_preserved_across_runs(self, tmp_path: Path) -> None:
+    def test_hooks_event_lists_union_across_runs(self, tmp_path: Path) -> None:
         """Two Step 18 writes with different hook events both survive on disk."""
         hooks_dir = tmp_path / 'hooks'
         hooks_dir.mkdir()
@@ -378,480 +309,107 @@ class TestDeepMergeWriterFilesystem:
         assert 'PreToolUse' in content['hooks']
         assert 'PostToolUse' in content['hooks']
 
-    def test_user_managed_array_outside_delta_preserved(self, tmp_path: Path) -> None:
-        """A user-managed array outside the toolbox delta survives Step 18."""
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(
-            json.dumps({'customUserArray': ['a', 'b']}),
-            encoding='utf-8',
-        )
-        hooks_dir = tmp_path / 'hooks'
-        hooks_dir.mkdir()
-        delta = _build_profile_settings({'model': 'sonnet'}, hooks_dir)
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert content['customUserArray'] == ['a', 'b']
-        assert content['model'] == 'sonnet'
-
-    def test_explicit_null_hooks_removes_stale_block(self, tmp_path: Path) -> None:
-        """Explicit RFC 7396 null at YAML root removes the entire hooks block."""
-        hooks_dir = tmp_path / 'hooks'
-        hooks_dir.mkdir()
-        delta_a = _build_profile_settings(
-            {
-                'hooks': {
-                    'events': [
-                        {
-                            'event': 'PreToolUse', 'matcher': 'Bash',
-                            'type': 'command', 'command': 'a.sh',
-                        },
-                    ],
-                },
-            },
-            hooks_dir,
-        )
-        write_profile_settings_to_settings(delta_a, tmp_path)
-        # Simulate YAML with hooks: null -> delta has {'hooks': None}
-        write_profile_settings_to_settings({'hooks': None}, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert 'hooks' not in content
-
 
 # ---------------------------------------------------------------------------
-# Test Class 2: Step 14 / Step 18 Interaction (user-settings + profile delta)
+# Test Class 3: Step 14 user-settings Deep-Merge Into Shared settings.json
 # ---------------------------------------------------------------------------
 
 
-class TestStep14Step18Interaction:
-    """Verify write_user_settings() contributions survive Step 18 writes.
+class TestUserSettingsDeepMerge:
+    """Verify write_user_settings() deep-merge semantics on ~/.claude/settings.json.
 
-    Step 14 (write_user_settings) runs first and deep-merges the
-    user-settings YAML section into settings.json. Step 18
-    (write_profile_settings_to_settings) runs second and applies the
-    profile delta. Step 18 must not delete keys that Step 14 wrote
-    when those keys are absent from the profile delta.
+    Step 14 deep-merges the raw user-settings section into the shared file:
+    every array unions with structural dedupe, nested dicts merge, RFC 7396
+    null deletes keys, and the env sub-dict merges key-by-key.
     """
 
-    def test_user_settings_permissions_preserved_when_no_root_permissions(
-        self, tmp_path: Path,
-    ) -> None:
-        """user-settings.permissions survives when YAML has no root-level permissions.
+    def test_initial_write_creates_file(self, tmp_path: Path) -> None:
+        """First write against an empty directory creates settings.json."""
+        write_user_settings({'model': 'sonnet', 'theme': 'dark'}, tmp_path)
+        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
+        assert content == {'model': 'sonnet', 'theme': 'dark'}
 
-        Step 14 write_user_settings() runs first and writes
-        user-settings.permissions into settings.json via deep-merge. Step
-        18 write_profile_settings_to_settings() then runs against a
-        profile delta that does not contain 'permissions' (root YAML has
-        no permissions declaration, so the builder omits the key). The
-        Step 14 permissions entry remains intact because the deep-merge
-        writer only touches keys present in its own delta.
-        """
-        # Simulate Step 14 having written user-settings.permissions
+    def test_unrelated_keys_preserved(self, tmp_path: Path) -> None:
+        """Keys already on disk and outside the delta are preserved."""
         settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'permissions': {'allow': ['Read', 'Write']},
-            'language': 'english',
-        }), encoding='utf-8')
-
-        # Step 18: delta has NO 'permissions' (YAML root lacks it)
-        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
-        assert 'permissions' not in delta
-
-        write_profile_settings_to_settings(delta, tmp_path)
+        settings_file.write_text(json.dumps({'cleanupPeriodDays': 30}), encoding='utf-8')
+        write_user_settings({'model': 'sonnet'}, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-
-        # user-settings.permissions PRESERVED
-        assert content['permissions'] == {'allow': ['Read', 'Write']}
-        # user-settings.language PRESERVED
-        assert content['language'] == 'english'
-        # Profile delta model ADDED
+        assert content['cleanupPeriodDays'] == 30
         assert content['model'] == 'sonnet'
 
-    def test_root_permissions_union_with_user_settings_permissions(
-        self, tmp_path: Path,
-    ) -> None:
-        """Step 14 user-settings.permissions and Step 18 root permissions accumulate via union.
+    def test_permissions_allow_unions_across_runs(self, tmp_path: Path) -> None:
+        """permissions.allow accumulates across successive user-settings writes."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'permissions': {'allow': ['Read'], 'deny': ['Bash(sudo *)']},
+        }), encoding='utf-8')
 
-        Under the universal union-all-arrays default, EVERY list at
-        every depth is unioned across Step 14 (write_user_settings) and
-        Step 18 (write_profile_settings_to_settings). This specific test
-        is one instance of a general behavior that covers
-        permissions.allow, permissions.deny, permissions.ask, and every
-        other array-valued key. A team's shared user-settings 'deny'
-        rules compose with a per-run YAML's additional 'deny' rules
-        rather than one destroying the other.
-        """
-        # Step 14 wrote user-settings.permissions
+        write_user_settings(
+            {'permissions': {'allow': ['Write', 'Edit']}}, tmp_path,
+        )
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        # allow unioned, deny preserved intact
+        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Edit'}
+        assert content['permissions']['deny'] == ['Bash(sudo *)']
+
+    def test_permissions_deny_preserved_when_only_allow_declared(self, tmp_path: Path) -> None:
+        """A narrower permissions dict must not destroy existing deny rules."""
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
             'permissions': {
                 'allow': ['Read'],
-                'deny': ['Bash(sudo *)'],
+                'deny': ['Bash(rm -rf *)', 'Bash(curl *)'],
+                'ask': ['Edit'],
             },
         }), encoding='utf-8')
 
-        # Step 18 has root-level permissions (different but overlapping rules)
-        delta = _build_profile_settings(
-            {
-                'permissions': {
-                    'allow': ['Write', 'Edit'],
-                    'deny': ['Bash(rm -rf)'],
-                },
-            },
-            tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta, tmp_path)
+        write_user_settings({'permissions': {'allow': ['Grep']}}, tmp_path)
         content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert set(content['permissions']['allow']) == {'Read', 'Grep'}
+        assert content['permissions']['deny'] == ['Bash(rm -rf *)', 'Bash(curl *)']
+        assert content['permissions']['ask'] == ['Edit']
 
-        # Both 'allow' sets are array-unioned (Read + Write + Edit)
-        assert set(content['permissions']['allow']) == {'Read', 'Write', 'Edit'}
-        # Both 'deny' sets are array-unioned (sudo rule + rm -rf rule)
-        assert set(content['permissions']['deny']) == {'Bash(sudo *)', 'Bash(rm -rf)'}
+    def test_env_sub_dict_merges_key_by_key(self, tmp_path: Path) -> None:
+        """The env sub-dict merges: existing keys survive, new keys are added."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'DISABLE_AUTOUPDATER': '1', 'KEEP_ME': 'preserved'},
+        }), encoding='utf-8')
 
+        write_user_settings({'env': {'FOO': 'bar'}}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert content['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert content['env']['KEEP_ME'] == 'preserved'
+        assert content['env']['FOO'] == 'bar'
 
-# ---------------------------------------------------------------------------
-# Test Class 3: Conflict Detection in Non-Command-Names Mode
-# ---------------------------------------------------------------------------
+    def test_top_level_null_deletes_key(self, tmp_path: Path) -> None:
+        """RFC 7396: a top-level null deletes the on-disk key."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'model': 'sonnet', 'theme': 'dark',
+        }), encoding='utf-8')
 
+        write_user_settings({'model': None}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert 'model' not in content
+        assert content['theme'] == 'dark'
 
-class TestConflictDetectionInNonCommandNamesMode:
-    """Verify detect_settings_conflicts() fires when command-names is absent.
+    def test_nested_null_deletes_env_sub_key(self, tmp_path: Path) -> None:
+        """RFC 7396: a nested null deletes just that env sub-key."""
+        settings_file = tmp_path / 'settings.json'
+        settings_file.write_text(json.dumps({
+            'env': {'STALE_VAR': 'x', 'KEEP_ME': 'y'},
+        }), encoding='utf-8')
 
-    The function runs unconditionally in both isolated and non-isolated modes
-    and reports keys declared at both YAML root level and under user-settings.
-    """
-
-    def test_conflict_detected_in_non_command_names_mode(self) -> None:
-        """Conflict between user-settings and root fires in non-command-names mode."""
-        user_settings = {'model': 'claude-opus-4'}
-        root_config = {'model': 'claude-sonnet-4'}  # NO command-names
-
-        conflicts = detect_settings_conflicts(user_settings, root_config)
-        assert conflicts == [('model', 'claude-opus-4', 'claude-sonnet-4')]
-
-    def test_kebab_to_camel_key_mapped(self) -> None:
-        """kebab-case root keys mapped to camelCase user-settings keys."""
-        user_settings = {'alwaysThinkingEnabled': True}
-        root_config = {'always-thinking-enabled': False}
-
-        conflicts = detect_settings_conflicts(user_settings, root_config)
-        assert conflicts == [('alwaysThinkingEnabled', True, False)]
-
-    @patch('scripts.setup_environment.load_config_from_source')
-    @patch('scripts.setup_environment.validate_all_config_files')
-    @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies', return_value=[])
-    @patch('scripts.setup_environment.process_resources')
-    @patch('scripts.setup_environment.process_skills')
-    @patch('scripts.setup_environment.configure_all_mcp_servers')
-    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
-    @patch('scripts.setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_conflict_warning_emitted_via_main_without_command_names(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        e2e_isolated_home: dict[str, Path],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Warning is emitted via main() when root-level and user-settings conflict without command-names."""
-        del mock_mkdir, mock_is_admin, mock_find_cmd, mock_skills, mock_resources
-        del mock_deps, e2e_isolated_home
-        mock_load.return_value = (
-            {
-                'name': 'Conflict Test',
-                # NO command-names
-                'model': 'claude-sonnet-4',
-                'user-settings': {'model': 'claude-opus-4'},
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-
-        from scripts import setup_environment
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             patch('sys.exit') as mock_exit, \
-             patch.object(setup_environment, 'write_user_settings', return_value=True), \
-             patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        captured = capsys.readouterr()
-        # Warning text identifies the conflicting key and both surfaces
-        assert "Key 'model' specified in both root level and user-settings" in captured.out
-        # Composite deep-merge precedence message
-        assert 'Under deep merge semantics' in captured.out
-        assert 'array union with structural dedupe applies' in captured.out
+        write_user_settings({'env': {'STALE_VAR': None}}, tmp_path)
+        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        assert 'STALE_VAR' not in content['env']
+        assert content['env']['KEEP_ME'] == 'y'
 
 
 # ---------------------------------------------------------------------------
-# Test Class 4: Profile-Scoped MCP Validation Error
-# ---------------------------------------------------------------------------
-
-
-class TestProfileMcpValidationError:
-    """Verify exit 1 with 4-option fix-up message for profile MCP without command-names."""
-
-    @patch('scripts.setup_environment.load_config_from_source')
-    @patch('scripts.setup_environment.validate_all_config_files')
-    @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies', return_value=[])
-    @patch('scripts.setup_environment.process_resources')
-    @patch('scripts.setup_environment.process_skills')
-    @patch('scripts.setup_environment.configure_all_mcp_servers')
-    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
-    @patch('scripts.setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_profile_scope_alone_triggers_error(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        e2e_isolated_home: dict[str, Path],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Scope 'profile' without command-names -> exit 1 with actionable message."""
-        del mock_mkdir, mock_is_admin, mock_find_cmd, mock_skills, mock_resources
-        del mock_deps, e2e_isolated_home
-        mock_load.return_value = (
-            {
-                'name': 'Profile MCP No Command',
-                # NO command-names
-                'mcp-servers': [
-                    {
-                        'name': 'profile-server',
-                        'scope': 'profile',
-                        'transport': 'http',
-                        'url': 'http://localhost:3000',
-                    },
-                ],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-
-        from scripts import setup_environment
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             pytest.raises(SystemExit) as excinfo:
-            setup_environment.main()
-
-        # sys.exit(1) invoked
-        assert excinfo.value.code == 1
-
-        # error() messages go to stderr
-        captured = capsys.readouterr()
-        assert "MCP server 'profile-server' declares scope: profile" in captured.err
-        assert 'command-names is not specified' in captured.err
-
-    @patch('scripts.setup_environment.load_config_from_source')
-    @patch('scripts.setup_environment.validate_all_config_files')
-    @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies', return_value=[])
-    @patch('scripts.setup_environment.process_resources')
-    @patch('scripts.setup_environment.process_skills')
-    @patch('scripts.setup_environment.configure_all_mcp_servers')
-    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
-    @patch('scripts.setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_combined_user_profile_scope_triggers_error(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        e2e_isolated_home: dict[str, Path],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Scope [user, profile] without command-names -> exit 1."""
-        del mock_mkdir, mock_is_admin, mock_find_cmd, mock_skills, mock_resources
-        del mock_deps, e2e_isolated_home
-        mock_load.return_value = (
-            {
-                'name': 'Combined Profile MCP No Command',
-                'mcp-servers': [
-                    {
-                        'name': 'combined-server',
-                        'scope': ['user', 'profile'],
-                        'transport': 'http',
-                        'url': 'http://localhost:3000',
-                    },
-                ],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-
-        from scripts import setup_environment
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             pytest.raises(SystemExit) as excinfo:
-            setup_environment.main()
-
-        assert excinfo.value.code == 1
-
-        captured = capsys.readouterr()
-        # error() messages go to stderr
-        assert "MCP server 'combined-server' declares scope: profile" in captured.err
-
-    @patch('scripts.setup_environment.load_config_from_source')
-    @patch('scripts.setup_environment.validate_all_config_files')
-    @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies', return_value=[])
-    @patch('scripts.setup_environment.process_resources')
-    @patch('scripts.setup_environment.process_skills')
-    @patch('scripts.setup_environment.configure_all_mcp_servers')
-    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
-    @patch('scripts.setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_error_message_contains_4_options(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        e2e_isolated_home: dict[str, Path],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Error message enumerates all 4 fix-up options."""
-        del mock_mkdir, mock_is_admin, mock_find_cmd, mock_skills, mock_resources
-        del mock_deps, e2e_isolated_home
-        mock_load.return_value = (
-            {
-                'name': 'Profile MCP 4 Options Test',
-                'mcp-servers': [
-                    {
-                        'name': 'any-profile-server',
-                        'scope': 'profile',
-                        'transport': 'http',
-                        'url': 'http://localhost:3000',
-                    },
-                ],
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-
-        from scripts import setup_environment
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             pytest.raises(SystemExit):
-            setup_environment.main()
-
-        captured = capsys.readouterr()
-        # error() messages go to stderr - all four options enumerated in the error message
-        assert '1. Add "command-names: [your-name]"' in captured.err
-        assert '2. Change scope to "user"' in captured.err
-        assert '3. Change scope to "local"' in captured.err
-        assert '4. Change scope to "project"' in captured.err
-
-
-# ---------------------------------------------------------------------------
-# Test Class 5: System-Prompt Warning Without Command-Names
-# ---------------------------------------------------------------------------
-
-
-class TestSystemPromptWarning:
-    """Verify warning emitted when command-defaults.system-prompt is set without command-names."""
-
-    @patch('scripts.setup_environment.load_config_from_source')
-    @patch('scripts.setup_environment.validate_all_config_files')
-    @patch('scripts.setup_environment.install_claude')
-    @patch('scripts.setup_environment.install_dependencies', return_value=[])
-    @patch('scripts.setup_environment.process_resources')
-    @patch('scripts.setup_environment.process_skills')
-    @patch('scripts.setup_environment.configure_all_mcp_servers')
-    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
-    @patch('scripts.setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_warning_emitted(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        e2e_isolated_home: dict[str, Path],
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Warning is printed; setup continues successfully."""
-        del mock_mkdir, mock_is_admin, mock_find_cmd, mock_skills, mock_resources
-        del mock_deps, e2e_isolated_home
-        mock_load.return_value = (
-            {
-                'name': 'System Prompt Warning Test',
-                # NO command-names
-                'command-defaults': {
-                    'system-prompt': 'prompts/my-prompt.md',
-                    'mode': 'replace',
-                },
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-
-        from scripts import setup_environment
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install']), \
-             patch('sys.exit') as mock_exit, \
-             patch.object(setup_environment, 'handle_resource', return_value=True), \
-             patch.object(setup_environment, 'download_hook_files', return_value=True), \
-             patch.object(setup_environment, 'write_profile_settings_to_settings', return_value=True):
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        captured = capsys.readouterr()
-        # warning() messages go to stdout
-        assert 'command-defaults.system-prompt' in captured.out
-        assert 'but command-names is not specified' in captured.out
-        assert 'there is no launcher' in captured.out
-        assert 'system prompt will NOT be applied' in captured.out
-
-
-# ---------------------------------------------------------------------------
-# Test Class 6: Golden Config (No Command-Names) End-to-End Integration
+# Test Class 4: golden_config_no_command_names End-to-End
 # ---------------------------------------------------------------------------
 
 
@@ -866,40 +424,48 @@ def golden_config_no_command_names() -> dict[str, Any]:
 
 
 class TestGoldenConfigNoCommandNames:
-    """End-to-end integration test using golden_config_no_command_names.yaml."""
+    """End-to-end integration test using golden_config_no_command_names.yaml.
 
-    def test_golden_config_absence_of_command_names(
+    Reproduces the Step 14 then Step 18 ordering that main() applies in
+    non-isolated mode and asserts that both the user-settings content and the
+    profile-owned statusLine/hooks entries coexist in ~/.claude/settings.json,
+    with no config.json written anywhere.
+    """
+
+    def test_no_command_names_declared(
         self,
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
-        """Verify golden_config_no_command_names.yaml does not declare command-names."""
+        """The fixture intentionally omits command-names (non-isolated mode)."""
         assert 'command-names' not in golden_config_no_command_names
 
-    def test_golden_config_has_all_profile_keys(
+    def test_settings_json_content_key_lives_in_user_settings(
         self,
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
-        """Verify the golden config declares every profile-owned key at root level."""
+        """settings.json content keys are declared inside user-settings, not at root."""
         cfg = golden_config_no_command_names
-        assert 'model' in cfg
-        assert 'permissions' in cfg
-        assert 'env-variables' in cfg
-        assert 'attribution' in cfg
-        assert 'always-thinking-enabled' in cfg
-        assert 'effort-level' in cfg
-        assert 'company-announcements' in cfg
+        user_settings = cfg['user-settings']
+        assert user_settings.get('model') == 'sonnet'
+        assert 'permissions' in user_settings
+        assert 'env' in user_settings
+        assert user_settings.get('alwaysThinkingEnabled') is True
+        assert user_settings.get('effortLevel') == 'low'
+        # The two profile-owned keys remain at the YAML root (dedicated write logic)
         assert 'status-line' in cfg
         assert 'hooks' in cfg
+        # Removed root keys must not resurface at the YAML root
+        for stale_root_key in (
+            'model', 'permissions', 'env-variables', 'attribution',
+            'always-thinking-enabled', 'effort-level', 'company-announcements',
+        ):
+            assert stale_root_key not in cfg
 
-    def test_golden_config_no_profile_scoped_mcp(
+    def test_no_profile_scoped_mcp(
         self,
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
-        """Verify NO mcp-server in the fixture uses scope 'profile'.
-
-        Profile-scoped servers without command-names trigger an error; the
-        no-command-names fixture must avoid them for happy-path coverage.
-        """
+        """No mcp-server uses scope 'profile' (which requires command-names)."""
         for server in golden_config_no_command_names.get('mcp-servers', []):
             scope = server.get('scope')
             if isinstance(scope, str):
@@ -907,65 +473,80 @@ class TestGoldenConfigNoCommandNames:
             elif isinstance(scope, list):
                 assert 'profile' not in scope
 
-    def test_all_profile_keys_in_settings_json(
+    def test_user_settings_and_profile_keys_coexist_in_settings_json(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
-        """After building delta + writing, all 9 profile-owned keys appear in settings.json."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
+        """Step 14 then Step 18 leave both contributions in settings.json.
+
+        The user-settings content (model, permissions, env, ...) is written by
+        write_user_settings, then the statusLine/hooks delta is written by
+        write_profile_settings_to_settings. Both survive in the same file, and
+        no config.json is created in non-isolated mode.
+        """
+        claude_dir = e2e_isolated_home['claude_dir']
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         cfg = golden_config_no_command_names
 
+        # Step 14: write user-settings section
+        write_user_settings(cfg['user-settings'], claude_dir)
+
+        # Step 18: build and write the profile-owned delta (statusLine + hooks)
         profile_config = {
             camel_key: cfg[yaml_key]
             for yaml_key, camel_key in {
-                'hooks': 'hooks',
-                'model': 'model',
-                'permissions': 'permissions',
-                'env-variables': 'env',
-                'always-thinking-enabled': 'alwaysThinkingEnabled',
-                'company-announcements': 'companyAnnouncements',
-                'attribution': 'attribution',
                 'status-line': 'statusLine',
-                'effort-level': 'effortLevel',
+                'hooks': 'hooks',
             }.items()
             if yaml_key in cfg
         }
         delta = _build_profile_settings(profile_config, hooks_dir)
-
         write_profile_settings_to_settings(delta, claude_dir)
 
         settings_path = claude_dir / 'settings.json'
         assert settings_path.exists()
         content = json.loads(settings_path.read_text(encoding='utf-8'))
 
-        # All 9 profile keys present
-        assert set(content.keys()) == PROFILE_OWNED_KEYS
+        # user-settings content present
+        assert content['model'] == 'sonnet'
+        assert content['permissions']['defaultMode'] == 'default'
+        assert content['alwaysThinkingEnabled'] is True
+        assert content['effortLevel'] == 'low'
+        assert content['companyAnnouncements'] == [
+            'Welcome to E2E Testing Environment',
+            'This is a test announcement for validation',
+        ]
+        assert content['attribution'] == {
+            'commit': 'E2E Test Attribution for Commits',
+            'pr': 'E2E Test Attribution for Pull Requests',
+        }
+        # profile-owned keys present
+        assert content['statusLine']['type'] == 'command'
+        assert 'PostToolUse' in content['hooks']
 
-    def test_env_null_entry_deletes_stale_value_from_settings_json(
+        # Non-isolated mode: NO config.json anywhere
+        assert not (claude_dir / 'config.json').exists()
+
+    def test_env_null_entry_deletes_stale_value(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
         """The golden config's null env entry deletes the stale settings.json value.
 
-        Base-mode null-as-delete: a per-key env null flows builder -> writer
-        -> RFC 7396 merge and removes the key, while active values are set
-        as strings and the literal string 'None' never appears.
+        Base-mode null-as-delete: a per-key env null in user-settings flows
+        through the deep-merge writer and removes the key, while active values
+        are set as strings and the literal string 'None' never appears.
         """
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-        hooks_dir.mkdir(parents=True, exist_ok=True)
+        claude_dir = e2e_isolated_home['claude_dir']
 
         cfg = golden_config_no_command_names
-        env_section = cfg.get('env-variables', {})
+        env_section = cfg['user-settings']['env']
         assert env_section.get('E2E_DELETE_VAR', '') is None, (
-            'Golden no-command-names config must declare E2E_DELETE_VAR: null'
+            'Golden no-command-names config must declare user-settings.env.E2E_DELETE_VAR: null'
         )
 
         # Pre-seed a stale value as if a prior run had set the variable
@@ -975,8 +556,7 @@ class TestGoldenConfigNoCommandNames:
             encoding='utf-8',
         )
 
-        delta = _build_profile_settings({'env': env_section}, hooks_dir)
-        write_profile_settings_to_settings(delta, claude_dir)
+        write_user_settings(cfg['user-settings'], claude_dir)
 
         content = json.loads(settings_path.read_text(encoding='utf-8'))
         env_block = content['env']
@@ -985,50 +565,20 @@ class TestGoldenConfigNoCommandNames:
         assert env_block.get('E2E_INT_VAR') == '42'
         assert 'None' not in env_block.values()
 
-    def test_hooks_in_settings_not_config_json(
-        self,
-        e2e_isolated_home: dict[str, Path],
-        golden_config_no_command_names: dict[str, Any],
-    ) -> None:
-        """Hooks key appears in settings.json; no config.json is created."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
-        hooks_dir = claude_dir / 'hooks'
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-
-        cfg = golden_config_no_command_names
-
-        delta = _build_profile_settings(
-            {'hooks': cfg.get('hooks', {}), 'model': cfg.get('model')},
-            hooks_dir,
-        )
-        write_profile_settings_to_settings(delta, claude_dir)
-
-        settings_path = claude_dir / 'settings.json'
-        content = json.loads(settings_path.read_text(encoding='utf-8'))
-        assert 'hooks' in content
-        assert 'PostToolUse' in content['hooks']
-        # Non-isolated mode: NO config.json anywhere
-        assert not (claude_dir / 'config.json').exists()
-
     def test_status_line_absolute_path_in_settings(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config_no_command_names: dict[str, Any],
     ) -> None:
-        """statusLine.command has absolute POSIX path under ~/.claude/hooks/."""
-        paths = e2e_isolated_home
-        claude_dir = paths['claude_dir']
+        """statusLine.command has an absolute POSIX path under ~/.claude/hooks/."""
+        claude_dir = e2e_isolated_home['claude_dir']
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
         cfg = golden_config_no_command_names
 
         delta = _build_profile_settings(
-            {
-                'hooks': cfg.get('hooks', {}),
-                'statusLine': cfg.get('status-line'),
-            },
+            {'statusLine': cfg.get('status-line')},
             hooks_dir,
         )
         write_profile_settings_to_settings(delta, claude_dir)
@@ -1041,276 +591,80 @@ class TestGoldenConfigNoCommandNames:
         assert expected_path in sl['command']
         # Python script -> uv run prefix
         assert 'uv run' in sl['command']
-        # Config file embedded in command string
+        # Config file embedded in the command string
         expected_cfg = (hooks_dir / 'e2e-statusline-config.yaml').as_posix()
         assert expected_cfg in sl['command']
 
 
 # ---------------------------------------------------------------------------
-# Test Class 7: Behavior Across Repeated Invocations With Evolving Content
+# Test Class 5: Auto-Update Target user-settings.env Survival
 # ---------------------------------------------------------------------------
 
 
-class TestRepeatedInvocationSemantics:
-    """Verify behavior across multiple invocations with evolving YAML content."""
-
-    def test_initial_invocation_populates_declared_keys(self, tmp_path: Path) -> None:
-        """First invocation against an empty file writes all declared keys."""
-        delta = _build_profile_settings(
-            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
-            tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert content == {'model': 'sonnet', 'permissions': {'allow': ['Read']}}
-
-    def test_re_declaration_overwrites_previous_value(self, tmp_path: Path) -> None:
-        """Re-declaring a key with a new value overwrites the previous value."""
-        # First invocation
-        delta1 = _build_profile_settings(
-            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
-            tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta1, tmp_path)
-
-        # Second invocation (same keys, different values; deep-merge unions
-        # permissions.allow)
-        delta2 = _build_profile_settings(
-            {'model': 'opus', 'permissions': {'allow': ['Write']}},
-            tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta2, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        assert content['model'] == 'opus'
-        # Array-union semantics: both 'Read' and 'Write' accumulate
-        assert set(content['permissions']['allow']) == {'Read', 'Write'}
-
-    def test_omitting_key_preserves_previous_value(self, tmp_path: Path) -> None:
-        """Omitting a key on a later invocation preserves the previous value.
-
-        The shared settings.json is a user-facing file, so the writer
-        does not delete profile-owned keys when the current invocation
-        does not declare them. To delete a key, the user must declare it
-        explicitly as None or remove it manually.
-        """
-        # First invocation: both model and permissions
-        delta1 = _build_profile_settings(
-            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
-            tmp_path / 'hooks',
-        )
-        write_profile_settings_to_settings(delta1, tmp_path)
-
-        # Second invocation: only model (permissions omitted)
-        delta2 = _build_profile_settings({'model': 'opus'}, tmp_path / 'hooks')
-        write_profile_settings_to_settings(delta2, tmp_path)
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-
-        # Model updated, permissions PRESERVED from previous invocation
-        assert content['model'] == 'opus'
-        assert content['permissions'] == {'allow': ['Read']}
-
-    def test_multiple_invocations_accumulate_distinct_keys(self, tmp_path: Path) -> None:
-        """Multiple invocations with different subsets preserve accumulated state."""
-        # First invocation: model + permissions
-        write_profile_settings_to_settings(
-            _build_profile_settings(
-                {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
-                tmp_path / 'hooks',
-            ),
-            tmp_path,
-        )
-
-        # Second invocation: add env (model re-declared, permissions omitted)
-        write_profile_settings_to_settings(
-            _build_profile_settings(
-                {'model': 'opus', 'env': {'FOO': 'bar'}},
-                tmp_path / 'hooks',
-            ),
-            tmp_path,
-        )
-
-        # Third invocation: add effort_level (previous keys all omitted)
-        write_profile_settings_to_settings(
-            _build_profile_settings(
-                {'effortLevel': 'high'},
-                tmp_path / 'hooks',
-            ),
-            tmp_path,
-        )
-
-        content = json.loads((tmp_path / 'settings.json').read_text(encoding='utf-8'))
-        # Accumulated: permissions from the first invocation, env from the
-        # second, effortLevel from the third. Model gets re-declared in the
-        # second invocation, so it ends up as 'opus'.
-        assert content['model'] == 'opus'
-        assert content['permissions'] == {'allow': ['Read']}
-        assert content['env'] == {'FOO': 'bar'}
-        assert content['effortLevel'] == 'high'
-
-
-# ---------------------------------------------------------------------------
-# Test Class 8: Auto-Update Target 2 Survival (regression)
-# ---------------------------------------------------------------------------
-
-
-class TestAutoUpdateTarget2Survival:
-    """Verify the Target 2 auto-update injection survives the profile settings write.
+class TestAutoUpdateEnvSurvival:
+    """Verify the auto-update user-settings.env injection survives Step 14 then Step 18.
 
     When version pinning is active, apply_auto_update_settings() injects
-    DISABLE_AUTOUPDATER into user_settings.env (its Target 2). Step 14
-    then writes that entry to settings.json.env. The subsequent Step 18
-    profile-settings write must not destroy that entry when the YAML
-    root has no env-variables declaration.
+    DISABLE_AUTOUPDATER into user_settings.env (one of its three targets).
+    Step 14 (write_user_settings) writes that entry to settings.json.env.
+    The subsequent Step 18 profile-settings write carries only statusLine and
+    hooks, so it must not touch the env block that Step 14 wrote.
     """
 
-    def test_disable_autoupdater_preserved_when_no_root_env(self, tmp_path: Path) -> None:
-        """DISABLE_AUTOUPDATER in settings.json.env survives the profile write.
+    def test_disable_autoupdater_survives_step14_then_step18(self, tmp_path: Path) -> None:
+        """DISABLE_AUTOUPDATER written by Step 14 survives the Step 18 delta write."""
+        claude_dir = tmp_path
+        hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir()
 
-        Set up settings.json.env containing DISABLE_AUTOUPDATER (the state
-        Step 14 leaves behind for a pinned-version configuration), then
-        run the profile-settings writer with a delta that contains no
-        'env' key. The writer must leave the existing 'env' value alone.
-        """
-        # Simulate Step 14 having written user_settings with env DISABLE_AUTOUPDATER
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'env': {'DISABLE_AUTOUPDATER': '1'},
-        }), encoding='utf-8')
+        # Step 14: user-settings carrying the injected env target
+        write_user_settings(
+            {'model': 'sonnet', 'env': {'DISABLE_AUTOUPDATER': '1'}},
+            claude_dir,
+        )
 
-        # Step 18: delta has no 'env' key (YAML has no env-variables)
-        delta = _build_profile_settings({'model': 'sonnet'}, tmp_path / 'hooks')
+        # Step 18: profile delta has statusLine only (no env)
+        delta = _build_profile_settings({'statusLine': {'file': 'status.py'}}, hooks_dir)
         assert 'env' not in delta
+        write_profile_settings_to_settings(delta, claude_dir)
 
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
+        content = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))
         assert content['env']['DISABLE_AUTOUPDATER'] == '1'
         assert content['model'] == 'sonnet'
+        assert content['statusLine']['type'] == 'command'
 
-    def test_root_env_variables_deep_merge_preserves_existing_env_keys(
-        self, tmp_path: Path,
-    ) -> None:
-        """Deep-merge preserves existing env keys not declared in the delta.
+    def test_ide_and_auto_update_env_targets_both_survive(self, tmp_path: Path) -> None:
+        """Both env auto-control targets written by Step 14 survive Step 18."""
+        claude_dir = tmp_path
+        hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir()
 
-        When the YAML declares env-variables with a narrow set of keys, any
-        existing env entries written by prior steps (e.g., DISABLE_AUTOUPDATER
-        from auto-update Target 2, CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from IDE
-        Target 2) MUST survive. Deep-merge recurses into the 'env' dict so the
-        delta's new keys are added and existing keys are preserved; keys also
-        declared in the delta are overwritten by the delta value.
-        """
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(json.dumps({
-            'env': {
-                'DISABLE_AUTOUPDATER': '1',
-                'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true',
-                'KEEP_ME': 'preserved',
+        write_user_settings(
+            {
+                'env': {
+                    'DISABLE_AUTOUPDATER': '1',
+                    'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true',
+                },
             },
-        }), encoding='utf-8')
-
-        # The delta carries a root-level env value adding a new key
-        delta = _build_profile_settings(
-            {'env': {'FOO': 'bar'}}, tmp_path / 'hooks',
+            claude_dir,
         )
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
 
-        # Existing env keys PRESERVED
+        delta = _build_profile_settings(
+            {
+                'hooks': {
+                    'events': [
+                        {
+                            'event': 'PreToolUse', 'matcher': 'Bash',
+                            'type': 'command', 'command': 'a.sh',
+                        },
+                    ],
+                },
+            },
+            hooks_dir,
+        )
+        write_profile_settings_to_settings(delta, claude_dir)
+
+        content = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))
         assert content['env']['DISABLE_AUTOUPDATER'] == '1'
         assert content['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == 'true'
-        assert content['env']['KEEP_ME'] == 'preserved'
-        # New env key ADDED
-        assert content['env']['FOO'] == 'bar'
-
-
-# ---------------------------------------------------------------------------
-# Test Class 9: No Profile Keys = No File I/O
-# ---------------------------------------------------------------------------
-
-
-class TestEmptyDeltaNoOp:
-    """Verify writer does not touch settings.json when delta is empty."""
-
-    def test_empty_delta_does_not_create_file(self, tmp_path: Path) -> None:
-        """Empty delta -> no file created."""
-        write_profile_settings_to_settings({}, tmp_path)
-        assert not (tmp_path / 'settings.json').exists()
-
-    def test_empty_delta_does_not_modify_existing(self, tmp_path: Path) -> None:
-        """Empty delta -> existing settings.json unchanged."""
-        settings_file = tmp_path / 'settings.json'
-        original = {'language': 'english', 'model': 'sonnet'}
-        settings_file.write_text(json.dumps(original), encoding='utf-8')
-
-        write_profile_settings_to_settings({}, tmp_path)
-
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert content == original
-
-
-# ---------------------------------------------------------------------------
-# Test Class 10: YAML Null Propagation End-to-End
-# ---------------------------------------------------------------------------
-
-
-class TestBuildProfileSettingsNullPropagation:
-    """Verify YAML null declarations propagate to settings.json deletions end-to-end.
-
-    These tests construct a mock YAML config dict (with explicit None
-    values for profile-owned keys), compute the profile_config dict the
-    same way main() does via _YAML_TO_CAMEL_PROFILE_KEYS, invoke
-    _build_profile_settings() with that dict, and verify
-    write_profile_settings_to_settings() deletes the corresponding keys
-    from a pre-populated settings.json.
-    """
-
-    @pytest.mark.parametrize(
-        ('yaml_key', 'camel_key', 'initial_value'),
-        [
-            ('model', 'model', 'sonnet'),
-            ('permissions', 'permissions', {'allow': ['Read']}),
-            ('env-variables', 'env', {'FOO': 'bar'}),
-            ('attribution', 'attribution', {'commit': 'x', 'pr': 'y'}),
-            ('always-thinking-enabled', 'alwaysThinkingEnabled', True),
-            ('effort-level', 'effortLevel', 'high'),
-            ('company-announcements', 'companyAnnouncements', ['Welcome']),
-            ('status-line', 'statusLine', {'type': 'command', 'command': 'x'}),
-            ('hooks', 'hooks', {'PreToolUse': []}),
-        ],
-    )
-    def test_yaml_null_deletes_key_end_to_end(
-        self,
-        tmp_path: Path,
-        yaml_key: str,
-        camel_key: str,
-        initial_value: object,
-    ) -> None:
-        """A YAML-level `key: null` declaration deletes the on-disk key."""
-        from scripts.setup_environment import _YAML_TO_CAMEL_PROFILE_KEYS
-
-        # Pre-populate settings.json with the key
-        settings_file = tmp_path / 'settings.json'
-        settings_file.write_text(
-            json.dumps({camel_key: initial_value}), encoding='utf-8',
-        )
-
-        # Mock YAML config with an explicit null for the key
-        mock_config = {yaml_key: None}
-
-        # Replicate the main() call site logic: build profile_config dict
-        profile_config = {
-            ck: mock_config[yk]
-            for yk, ck in _YAML_TO_CAMEL_PROFILE_KEYS.items()
-            if yk in mock_config
-        }
-        assert profile_config == {camel_key: None}
-
-        # Invoke the builder
-        delta = _build_profile_settings(profile_config, tmp_path / 'hooks')
-        assert delta == {camel_key: None}
-
-        # Apply the delta via the writer
-        write_profile_settings_to_settings(delta, tmp_path)
-        content = json.loads(settings_file.read_text(encoding='utf-8'))
-
-        # The key has been deleted
-        assert camel_key not in content
+        assert 'PreToolUse' in content['hooks']

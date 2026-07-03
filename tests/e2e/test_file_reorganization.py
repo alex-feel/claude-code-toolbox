@@ -56,11 +56,13 @@ class TestFileReorganization:
         hooks_dir = artifact_base_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create profile config (config.json)
+        # Create profile config (config.json): profile-owned hooks plus the
+        # user-settings content (model lives inside user-settings now).
         create_profile_config(
-            {'hooks': golden_config.get('hooks', {}), 'model': golden_config.get('model')},
+            {'hooks': golden_config.get('hooks', {})},
             artifact_base_dir,
             hooks_base_dir=hooks_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         # Create MCP config (mcp.json)
@@ -177,7 +179,7 @@ class TestFileReorganization:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Scenario 11: config.json contains correct keys and excludes user-settings content."""
+        """Scenario 11: config.json merges user-settings content with built statusLine/hooks."""
         claude_dir = e2e_isolated_home['claude_dir']
         command_names: list[str] = golden_config['command-names']
         cmd = command_names[0]
@@ -187,36 +189,30 @@ class TestFileReorganization:
         hooks_dir = artifact_base_dir / 'hooks'
         hooks_dir.mkdir(parents=True, exist_ok=True)
 
-        # Pass raw YAML values through (as main() does): stringification of
-        # non-null values and stripping of null deletion entries belong to
-        # the production pipeline, not to the test harness.
-        env_vars: dict[str, Any] = dict(golden_config.get('env-variables', {}))
-
+        # In isolated mode, config.json is the user-settings content (null
+        # stripped, tilde expanded) merged with the toolbox-built statusLine
+        # and hooks. The profile-owned keys carry hooks and status-line; the
+        # settings.json content (model, permissions, env, ...) is delivered
+        # through the user_settings parameter.
         create_profile_config(
             {
                 'hooks': golden_config.get('hooks', {}),
-                'model': golden_config.get('model'),
-                'permissions': golden_config.get('permissions'),
-                'env': env_vars,
-                'alwaysThinkingEnabled': golden_config.get('always-thinking-enabled'),
-                'companyAnnouncements': golden_config.get('company-announcements'),
-                'attribution': golden_config.get('attribution'),
                 'statusLine': golden_config.get('status-line'),
-                'effortLevel': golden_config.get('effort-level'),
             },
             artifact_base_dir,
             hooks_base_dir=hooks_dir,
+            user_settings=golden_config.get('user-settings'),
         )
 
         config_path = artifact_base_dir / 'config.json'
         assert config_path.exists()
         content = json.loads(config_path.read_text())
 
-        # Verify expected keys present
+        # Verify expected keys present (from user-settings and built profile keys)
         assert 'hooks' in content
         assert 'env' in content
         assert 'permissions' in content
-        assert 'model' in content
+        assert content.get('model') == 'sonnet'
         assert content.get('alwaysThinkingEnabled') is True
         assert isinstance(content.get('companyAnnouncements'), list)
         assert isinstance(content.get('attribution'), dict)
@@ -228,16 +224,18 @@ class TestFileReorganization:
         assert 'CLAUDE_CONFIG_DIR' not in env_block
         assert env_block.get('E2E_TEST_VAR') == 'test_value'
         assert env_block.get('E2E_ANOTHER_VAR') == 'another_value'
-        assert env_block.get('E2E_INT_VAR') == '42'  # YAML int -> string conversion
+        assert env_block.get('E2E_INT_VAR') == '42'  # quoted string in user-settings.env
         # null-as-delete: a null-valued entry is stripped from the atomic
         # rebuild, never written as JSON null or the literal string 'None'
         assert 'E2E_DELETE_VAR' not in env_block
         assert 'None' not in env_block.values()
 
-        # Verify user-settings content NOT in config.json
-        assert 'theme' not in content
-        assert 'language' not in content
-        assert 'apiKeyHelper' not in content
+        # Verify remaining user-settings content IS present in config.json
+        assert content.get('theme') == 'dark'
+        assert content.get('language') == 'english'
+        assert 'apiKeyHelper' in content
+        # Top-level null user-settings entry is stripped from the rebuild
+        assert 'staleSettingToDelete' not in content
 
     def test_launcher_script_paths_correct(
         self,

@@ -3632,24 +3632,7 @@ class TestCreateSettings:
     """Test settings creation."""
 
     def test_create_profile_config_basic(self):
-        """Test creating basic settings."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'model': 'claude-3-opus'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            assert settings_file.exists()
-
-            settings = json.loads(settings_file.read_text())
-            assert settings['model'] == 'claude-3-opus'
-
-    def test_create_profile_config_with_mcp_permissions(self):
-        """Test creating settings without automatic MCP server permissions."""
+        """Test creating basic empty config.json."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -3660,40 +3643,139 @@ class TestCreateSettings:
 
             assert result is True
             settings_file = claude_dir / 'config.json'
+            assert settings_file.exists()
+
             settings = json.loads(settings_file.read_text())
+            assert settings == {}
 
-            # MCP servers should NOT be automatically added to permissions
-            assert 'permissions' not in settings or (
-                'mcp__server1' not in settings.get('permissions', {}).get('allow', [])
-                and 'mcp__server2' not in settings.get('permissions', {}).get('allow', [])
-            )
-
-    def test_create_profile_config_with_explicit_permissions(self):
-        """Test that explicit permissions are still preserved."""
+    def test_create_profile_config_user_settings_content_written(self):
+        """Test user-settings content lands in config.json verbatim."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
-            permissions = {
-                'allow': ['mcp__server1', 'tool__*'],
-                'deny': ['mcp__server3'],
+            user_settings = {
+                'model': 'claude-3-opus',
+                'permissions': {'allow': ['mcp__server1'], 'deny': ['mcp__server3']},
+                'effortLevel': 'high',
             }
 
             result = setup_environment.create_profile_config(
-                {'permissions': permissions},
+                {},
                 claude_dir,
+                user_settings=user_settings,
             )
 
             assert result is True
             settings_file = claude_dir / 'config.json'
             settings = json.loads(settings_file.read_text())
 
-            # Explicit permissions should be preserved exactly as provided
-            assert 'permissions' in settings
-            assert 'mcp__server1' in settings['permissions']['allow']
-            assert 'tool__*' in settings['permissions']['allow']
-            # server2 should NOT be auto-added
-            assert 'mcp__server2' not in settings['permissions']['allow']
-            assert 'mcp__server3' in settings['permissions']['deny']
+            assert settings['model'] == 'claude-3-opus'
+            assert settings['permissions']['allow'] == ['mcp__server1']
+            assert settings['permissions']['deny'] == ['mcp__server3']
+            assert settings['effortLevel'] == 'high'
+
+    def test_create_profile_config_user_settings_top_level_null_stripped(self):
+        """Test a top-level null user-settings member is stripped from config.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            user_settings = {'model': 'sonnet', 'effortLevel': None}
+
+            result = setup_environment.create_profile_config(
+                {},
+                claude_dir,
+                user_settings=user_settings,
+            )
+
+            assert result is True
+            settings = json.loads((claude_dir / 'config.json').read_text())
+
+            assert settings == {'model': 'sonnet'}
+            assert 'effortLevel' not in settings
+
+    def test_create_profile_config_user_settings_nested_null_stripped(self):
+        """Test a nested null member is stripped recursively from config.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            user_settings = {
+                'env': {'KEEP': '1', 'DROP': None},
+                'permissions': {'allow': ['tool__*'], 'defaultMode': None},
+            }
+
+            result = setup_environment.create_profile_config(
+                {},
+                claude_dir,
+                user_settings=user_settings,
+            )
+
+            assert result is True
+            settings = json.loads((claude_dir / 'config.json').read_text())
+
+            assert settings['env'] == {'KEEP': '1'}
+            assert 'DROP' not in settings['env']
+            assert settings['permissions'] == {'allow': ['tool__*']}
+            assert 'defaultMode' not in settings['permissions']
+
+    def test_create_profile_config_user_settings_list_null_preserved(self):
+        """Test None elements inside lists are preserved (RFC 7396 object-member-only)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            user_settings = {'someList': ['a', None, 'b']}
+
+            result = setup_environment.create_profile_config(
+                {},
+                claude_dir,
+                user_settings=user_settings,
+            )
+
+            assert result is True
+            settings = json.loads((claude_dir / 'config.json').read_text())
+
+            assert settings['someList'] == ['a', None, 'b']
+
+    @patch('setup_environment.handle_resource')
+    def test_create_profile_config_user_settings_and_hooks_combine(self, mock_download):
+        """Test user-settings content and built hooks combine disjointly in config.json."""
+        mock_download.return_value = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = Path(tmpdir)
+
+            hooks = {
+                'files': ['hooks/test.py'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit',
+                        'type': 'command',
+                        'command': 'test.py',
+                    },
+                ],
+            }
+            user_settings = {'model': 'sonnet', 'effortLevel': 'high'}
+
+            setup_environment.download_hook_files(
+                hooks,
+                claude_dir,
+                config_source='https://example.com/config.yaml',
+            )
+
+            result = setup_environment.create_profile_config(
+                {'hooks': hooks},
+                claude_dir,
+                user_settings=user_settings,
+            )
+
+            assert result is True
+            settings = json.loads((claude_dir / 'config.json').read_text())
+
+            # user-settings content
+            assert settings['model'] == 'sonnet'
+            assert settings['effortLevel'] == 'high'
+            # built hooks
+            assert 'PostToolUse' in settings['hooks']
 
     @patch('setup_environment.handle_resource')
     def test_create_profile_config_with_hooks(self, mock_download):
@@ -3961,286 +4043,6 @@ class TestCreateSettings:
 
             hook_command = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
             assert hook_command.startswith('node ')
-
-    def test_create_profile_config_always_thinking_enabled_true(self):
-        """Test alwaysThinkingEnabled set to true."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'alwaysThinkingEnabled': True},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'alwaysThinkingEnabled' in settings
-            assert settings['alwaysThinkingEnabled'] is True
-
-    def test_create_profile_config_always_thinking_enabled_false(self):
-        """Test alwaysThinkingEnabled set to false."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'alwaysThinkingEnabled': False},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'alwaysThinkingEnabled' in settings
-            assert settings['alwaysThinkingEnabled'] is False
-
-    def test_create_profile_config_always_thinking_enabled_none_not_included(self):
-        """Test alwaysThinkingEnabled not included when absent from profile_config."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'alwaysThinkingEnabled' not in settings
-
-    def test_create_profile_config_effort_level_low(self):
-        """Test effortLevel set to low."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'effortLevel': 'low'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' in settings
-            assert settings['effortLevel'] == 'low'
-
-    def test_create_profile_config_effort_level_medium(self):
-        """Test effortLevel set to medium."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'effortLevel': 'medium'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' in settings
-            assert settings['effortLevel'] == 'medium'
-
-    def test_create_profile_config_effort_level_high(self):
-        """Test effortLevel set to high."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'effortLevel': 'high'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' in settings
-            assert settings['effortLevel'] == 'high'
-
-    def test_create_profile_config_effort_level_max(self):
-        """Test effortLevel set to max."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'effortLevel': 'max'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' in settings
-            assert settings['effortLevel'] == 'max'
-
-    def test_create_profile_config_effort_level_xhigh(self):
-        """Test effortLevel set to xhigh."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'effortLevel': 'xhigh'},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' in settings
-            assert settings['effortLevel'] == 'xhigh'
-
-    def test_create_profile_config_effort_level_none_not_included(self):
-        """Test effortLevel not included when absent from profile_config."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'effortLevel' not in settings
-
-    def test_create_profile_config_company_announcements(self):
-        """Test companyAnnouncements set with multiple items."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            announcements = [
-                'Welcome to Acme Corp!',
-                'Code reviews required for all PRs',
-            ]
-
-            result = setup_environment.create_profile_config(
-                {'companyAnnouncements': announcements},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'companyAnnouncements' in settings
-            assert settings['companyAnnouncements'] == announcements
-            assert len(settings['companyAnnouncements']) == 2
-
-    def test_create_profile_config_company_announcements_single(self):
-        """Test companyAnnouncements with single announcement."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            announcements = ['Single announcement']
-
-            result = setup_environment.create_profile_config(
-                {'companyAnnouncements': announcements},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'companyAnnouncements' in settings
-            assert settings['companyAnnouncements'] == announcements
-
-    def test_create_profile_config_company_announcements_empty_list(self):
-        """Test companyAnnouncements with empty list."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {'companyAnnouncements': []},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            # Empty list should still be included (explicit configuration)
-            assert 'companyAnnouncements' in settings
-            assert settings['companyAnnouncements'] == []
-
-    def test_create_profile_config_company_announcements_none_not_included(self):
-        """Test companyAnnouncements not included when absent from profile_config."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'companyAnnouncements' not in settings
-
-    def test_create_profile_config_attribution_full(self):
-        """Test attribution with both commit and pr values."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            attribution = {
-                'commit': 'Custom commit attribution',
-                'pr': 'Custom PR attribution',
-            }
-
-            result = setup_environment.create_profile_config(
-                {'attribution': attribution},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'attribution' in settings
-            assert settings['attribution']['commit'] == 'Custom commit attribution'
-            assert settings['attribution']['pr'] == 'Custom PR attribution'
-
-    def test_create_profile_config_attribution_hide_all(self):
-        """Test attribution with empty strings to hide all."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-            attribution = {'commit': '', 'pr': ''}
-
-            result = setup_environment.create_profile_config(
-                {'attribution': attribution},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert settings['attribution'] == {'commit': '', 'pr': ''}
-
-    def test_create_profile_config_attribution_none_not_included(self):
-        """Test attribution not included when absent from profile_config."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            claude_dir = Path(tmpdir)
-
-            result = setup_environment.create_profile_config(
-                {},
-                claude_dir,
-            )
-
-            assert result is True
-            settings_file = claude_dir / 'config.json'
-            settings = json.loads(settings_file.read_text())
-
-            assert 'attribution' not in settings
 
     def test_create_profile_config_status_line_python(self):
         """Test statusLine with Python script."""
@@ -4751,7 +4553,7 @@ class TestArtifactIsolation:
             assert result is True
 
     def test_create_profile_config_claude_config_dir_injection(self):
-        """Test that CLAUDE_CONFIG_DIR is injected into settings env block."""
+        """Test that CLAUDE_CONFIG_DIR from user-settings.env lands in config.json."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = Path(tmpdir)
 
@@ -4759,8 +4561,9 @@ class TestArtifactIsolation:
             env_vars['CLAUDE_CONFIG_DIR'] = '~/.claude/my-env'
 
             result = setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             assert result is True
@@ -4779,8 +4582,9 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': '/custom/path'}
 
             result = setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             assert result is True
@@ -4800,8 +4604,9 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': '~/.claude/my-env'}
 
             result = setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             assert result is True
@@ -4819,8 +4624,9 @@ class TestArtifactIsolation:
             env_vars = {'CLAUDE_CONFIG_DIR': r'C:\Users\test\.claude\my-env'}
 
             result = setup_environment.create_profile_config(
-                {'env': env_vars},
+                {},
                 claude_dir,
+                user_settings={'env': env_vars},
             )
 
             assert result is True
@@ -5459,142 +5265,6 @@ class TestMainFunction:
             setup_environment.main()
             mock_exit.assert_not_called()
         del mock_mkdir  # Explicitly acknowledge usage
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies', return_value=[])
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.process_skills')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_profile_config')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
-    @patch('pathlib.Path.mkdir')
-    def test_main_invalid_effort_level_warns_and_skips(
-        self,
-        mock_mkdir: MagicMock,
-        mock_cleanup_stale_marker: MagicMock,
-        mock_write_manifest: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_register: MagicMock,
-        mock_launcher: MagicMock,
-        mock_settings: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """main() warns and skips invalid effort-level value (non-fatal)."""
-        # Mocks required by @patch decorators but not directly asserted
-        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
-        del mock_cleanup_stale_marker, mock_write_manifest
-        mock_load.return_value = (
-            {
-                'name': 'Effort Level Test',
-                'command-names': ['test-cmd'],
-                'effort-level': 'extreme',  # Invalid value
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        captured = capsys.readouterr()
-        assert 'Invalid effort-level value' in captured.out
-        assert "'extreme'" in captured.out
-
-        # Verify create_profile_config receives a profile_config without
-        # an effortLevel entry (invalid values are stripped from config
-        # before profile_config construction).
-        mock_settings.assert_called_once()
-        call_args = mock_settings.call_args
-        # profile_config is the first positional argument
-        profile_config = call_args[0][0]
-        assert 'effortLevel' not in profile_config
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies', return_value=[])
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.process_skills')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.create_profile_config')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
-    @patch('pathlib.Path.mkdir')
-    def test_main_xhigh_effort_level_not_stripped(
-        self,
-        mock_mkdir: MagicMock,
-        mock_cleanup_stale_marker: MagicMock,
-        mock_write_manifest: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_register: MagicMock,
-        mock_launcher: MagicMock,
-        mock_settings: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """main() keeps 'xhigh' effort-level (valid value is not stripped)."""
-        # Mocks required by @patch decorators but not directly asserted
-        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
-        del mock_cleanup_stale_marker, mock_write_manifest
-        mock_load.return_value = (
-            {
-                'name': 'Effort Level Test',
-                'command-names': ['test-cmd'],
-                'model': 'opus',
-                'effort-level': 'xhigh',  # Valid value (Opus-only)
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_settings.return_value = True
-        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        captured = capsys.readouterr()
-        assert 'Invalid effort-level value' not in captured.out
-
-        # Verify create_profile_config receives a profile_config that retains
-        # the effortLevel entry set to 'xhigh' (valid values pass through the
-        # runtime allowlist without being stripped).
-        mock_settings.assert_called_once()
-        call_args = mock_settings.call_args
-        # profile_config is the first positional argument
-        profile_config = call_args[0][0]
-        assert profile_config.get('effortLevel') == 'xhigh'
 
 
 class TestDownloadFailureTracking:
@@ -6307,13 +5977,6 @@ class TestMergeKeys:
         result = setup_environment._merge_config_key('user-settings', parent, child)
         assert set(result['permissions']['allow']) == {'Read', 'Write'}
 
-    def test_merge_config_key_env_variables(self):
-        """Dispatch: env-variables uses shallow dict merge with null deletes."""
-        parent = {'A': '1', 'B': '2'}
-        child = {'B': None, 'C': '3'}
-        result = setup_environment._merge_config_key('env-variables', parent, child)
-        assert result == {'A': '1', 'C': '3'}
-
     def test_merge_config_key_os_env_variables(self):
         """Dispatch: os-env-variables uses shallow dict merge with null deletes."""
         parent = {'X': 'val1'}
@@ -6378,7 +6041,7 @@ class TestMergeKeys:
     def test_validation_invalid_key_in_merge_keys(self, mock_load):
         """Invalid key in merge-keys raises ValueError."""
         mock_load.return_value = ({'name': 'Parent'}, 'parent.yaml')
-        config = {'inherit': 'parent.yaml', 'merge-keys': ['model']}
+        config = {'inherit': 'parent.yaml', 'merge-keys': ['name']}
         with pytest.raises(ValueError, match='Invalid keys in merge-keys'):
             setup_environment.resolve_config_inheritance(config, 'child.yaml')
 
@@ -7518,16 +7181,182 @@ class TestValidateUserSettings:
             assert key in result[0]
 
 
+class TestValidateUserSettingsKeyPlacement:
+    """Test key-placement validation rules in validate_user_settings()."""
+
+    def test_root_only_key_status_line_rejected(self) -> None:
+        """status-line is a root-level YAML key, not a settings.json key."""
+        result = setup_environment.validate_user_settings({'status-line': {'file': 'x.py'}})
+        assert any('status-line' in e and 'root-level YAML key' in e for e in result)
+
+    def test_root_only_key_os_env_variables_rejected(self) -> None:
+        """os-env-variables is a root-level YAML key, not a settings.json key."""
+        result = setup_environment.validate_user_settings({'os-env-variables': {'FOO': 'bar'}})
+        assert any('os-env-variables' in e and 'root-level YAML key' in e for e in result)
+
+    def test_kebab_effort_level_rejected_with_camel_correction(self) -> None:
+        """effort-level (kebab) is rejected with the effortLevel camelCase correction."""
+        result = setup_environment.validate_user_settings({'effort-level': 'high'})
+        assert any("'effort-level'" in e and "'effortLevel'" in e for e in result)
+
+    def test_kebab_env_variables_rejected_with_env_correction(self) -> None:
+        """env-variables (kebab) is rejected with the env camelCase correction."""
+        result = setup_environment.validate_user_settings({'env-variables': {'FOO': 'bar'}})
+        assert any("'env-variables'" in e and "'env'" in e for e in result)
+
+    def test_kebab_always_thinking_enabled_rejected(self) -> None:
+        """always-thinking-enabled (kebab) is rejected with the camelCase correction."""
+        result = setup_environment.validate_user_settings({'always-thinking-enabled': True})
+        assert any("'always-thinking-enabled'" in e and "'alwaysThinkingEnabled'" in e for e in result)
+
+    def test_kebab_company_announcements_rejected(self) -> None:
+        """company-announcements (kebab) is rejected with the camelCase correction."""
+        result = setup_environment.validate_user_settings({'company-announcements': ['x']})
+        assert any("'company-announcements'" in e and "'companyAnnouncements'" in e for e in result)
+
+    def test_global_only_key_auto_updates_rejected(self) -> None:
+        """autoUpdates belongs in global-config, not user-settings."""
+        result = setup_environment.validate_user_settings({'autoUpdates': False})
+        assert any('autoUpdates' in e and 'global-config' in e for e in result)
+
+    def test_global_only_key_install_method_rejected(self) -> None:
+        """installMethod belongs in global-config, not user-settings."""
+        result = setup_environment.validate_user_settings({'installMethod': 'native'})
+        assert any('installMethod' in e and 'global-config' in e for e in result)
+
+    def test_unknown_key_passes_through(self) -> None:
+        """An unknown camelCase key passes validation (extra='allow' escape hatch)."""
+        result = setup_environment.validate_user_settings({'someFutureSetting': 'value'})
+        assert result == []
+
+
+class TestValidateUserSettingsValues:
+    """Test value-shape validation rules in validate_user_settings()."""
+
+    def test_model_non_empty_string_valid(self) -> None:
+        assert setup_environment.validate_user_settings({'model': 'sonnet'}) == []
+
+    def test_model_null_allowed(self) -> None:
+        """A null model is a deletion request and is allowed."""
+        assert setup_environment.validate_user_settings({'model': None}) == []
+
+    def test_model_empty_string_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'model': '   '})
+        assert any(e == 'user-settings.model must be a non-empty string.' for e in result)
+
+    def test_env_string_value_valid(self) -> None:
+        assert setup_environment.validate_user_settings({'env': {'FOO': 'bar'}}) == []
+
+    def test_env_null_entry_allowed(self) -> None:
+        """A per-key env null is a deletion request and is allowed."""
+        assert setup_environment.validate_user_settings({'env': {'FOO': None}}) == []
+
+    def test_env_non_string_value_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'env': {'FOO': 42}})
+        assert any(
+            e == 'user-settings.env.FOO must be a string '
+            '(quote the value in YAML) or null to delete the variable.'
+            for e in result
+        )
+
+    def test_env_invalid_name_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'env': {'1BAD': 'x'}})
+        assert any('invalid environment variable name' in e for e in result)
+
+    def test_env_not_a_mapping_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'env': ['not', 'a', 'dict']})
+        assert any('user-settings.env must be a mapping' in e for e in result)
+
+    def test_permissions_valid(self) -> None:
+        settings = {'permissions': {'defaultMode': 'acceptEdits', 'allow': ['Read']}}
+        assert setup_environment.validate_user_settings(settings) == []
+
+    def test_permissions_default_mode_enum_rejected(self) -> None:
+        result = setup_environment.validate_user_settings(
+            {'permissions': {'defaultMode': 'bogus'}},
+        )
+        expected_enum = "['acceptEdits', 'auto', 'bypassPermissions', 'default', 'delegate', 'dontAsk', 'plan']"
+        assert any('defaultMode must be one of' in e and expected_enum in e for e in result)
+
+    def test_permissions_kebab_default_mode_rejected(self) -> None:
+        result = setup_environment.validate_user_settings(
+            {'permissions': {'default-mode': 'plan'}},
+        )
+        assert any("'defaultMode' instead of 'default-mode'" in e for e in result)
+
+    def test_permissions_allow_not_list_of_strings_rejected(self) -> None:
+        result = setup_environment.validate_user_settings(
+            {'permissions': {'allow': [1, 2]}},
+        )
+        assert any(e == 'user-settings.permissions.allow must be a list of strings.' for e in result)
+
+    def test_attribution_valid(self) -> None:
+        assert setup_environment.validate_user_settings(
+            {'attribution': {'commit': '', 'pr': 'x'}},
+        ) == []
+
+    def test_attribution_non_string_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'attribution': {'commit': 5}})
+        assert any('user-settings.attribution.commit must be a string' in e for e in result)
+
+    def test_always_thinking_enabled_bool_valid(self) -> None:
+        assert setup_environment.validate_user_settings({'alwaysThinkingEnabled': True}) == []
+
+    def test_always_thinking_enabled_non_bool_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'alwaysThinkingEnabled': 'yes'})
+        assert any(e == 'user-settings.alwaysThinkingEnabled must be a boolean.' for e in result)
+
+    def test_company_announcements_list_of_strings_valid(self) -> None:
+        assert setup_environment.validate_user_settings(
+            {'companyAnnouncements': ['a', 'b']},
+        ) == []
+
+    def test_company_announcements_non_string_item_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'companyAnnouncements': ['a', 3]})
+        assert any(e == 'user-settings.companyAnnouncements must be a list of strings.' for e in result)
+
+    def test_effort_level_enum_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'effortLevel': 'extreme'})
+        expected_enum = "['high', 'low', 'max', 'medium', 'xhigh']"
+        assert any('effortLevel must be one of' in e and expected_enum in e for e in result)
+
+    def test_effort_level_low_needs_no_model(self) -> None:
+        assert setup_environment.validate_user_settings({'effortLevel': 'low'}) == []
+
+    def test_effort_level_xhigh_with_opus_model_valid(self) -> None:
+        assert setup_environment.validate_user_settings(
+            {'effortLevel': 'xhigh', 'model': 'claude-opus-4-8'},
+        ) == []
+
+    def test_effort_level_xhigh_with_best_alias_valid(self) -> None:
+        assert setup_environment.validate_user_settings(
+            {'effortLevel': 'xhigh', 'model': 'best'},
+        ) == []
+
+    def test_effort_level_xhigh_with_sonnet_rejected(self) -> None:
+        """xhigh requires an Opus or Fable model; sonnet is rejected."""
+        result = setup_environment.validate_user_settings(
+            {'effortLevel': 'xhigh', 'model': 'sonnet'},
+        )
+        assert any("effortLevel 'xhigh' is only available for" in e for e in result)
+
+    def test_effort_level_max_with_sonnet_valid(self) -> None:
+        """max additionally accepts a Sonnet model."""
+        assert setup_environment.validate_user_settings(
+            {'effortLevel': 'max', 'model': 'claude-sonnet-4-6'},
+        ) == []
+
+    def test_effort_level_xhigh_without_model_rejected(self) -> None:
+        result = setup_environment.validate_user_settings({'effortLevel': 'xhigh'})
+        assert any("effortLevel 'xhigh' requires user-settings.model" in e for e in result)
+
+
 class TestProfileOwnedKeys:
     """Unit tests for PROFILE_OWNED_KEYS constant."""
 
-    def test_contains_all_nine_profile_keys(self) -> None:
-        """PROFILE_OWNED_KEYS must contain exactly the 9 profile-owned keys."""
-        expected = {
-            'model', 'permissions', 'env', 'attribution',
-            'alwaysThinkingEnabled', 'effortLevel', 'companyAnnouncements',
-            'statusLine', 'hooks',
-        }
+    def test_contains_status_line_and_hooks(self) -> None:
+        """PROFILE_OWNED_KEYS must contain exactly statusLine and hooks."""
+        expected = {'statusLine', 'hooks'}
         assert expected == setup_environment.PROFILE_OWNED_KEYS
 
     def test_is_frozenset(self) -> None:
@@ -7561,105 +7390,12 @@ class TestBuildProfileSettings:
         result = setup_environment._build_profile_settings({}, tmp_path)
         assert result == {}
 
-    def test_model_only(self, tmp_path: Path) -> None:
-        """Only model set -> only 'model' key in result."""
+    def test_non_profile_key_ignored(self, tmp_path: Path) -> None:
+        """Keys outside statusLine/hooks are not emitted by the builder."""
         result = setup_environment._build_profile_settings(
-            {'model': 'sonnet'}, tmp_path,
+            {'model': 'sonnet', 'permissions': {'allow': ['Read']}}, tmp_path,
         )
-        assert result == {'model': 'sonnet'}
-
-    def test_permissions_kebab_to_camel(self, tmp_path: Path) -> None:
-        """'default-mode' translated to 'defaultMode'."""
-        result = setup_environment._build_profile_settings(
-            {'permissions': {'default-mode': 'ask', 'allow': ['Read']}},
-            tmp_path,
-        )
-        assert 'defaultMode' in result['permissions']
-        assert 'default-mode' not in result['permissions']
-        assert result['permissions']['allow'] == ['Read']
-
-    def test_permissions_additional_directories_translation(self, tmp_path: Path) -> None:
-        """'additional-directories' translated to 'additionalDirectories'."""
-        result = setup_environment._build_profile_settings(
-            {'permissions': {'additional-directories': ['/tmp/test']}},
-            tmp_path,
-        )
-        assert 'additionalDirectories' in result['permissions']
-        assert 'additional-directories' not in result['permissions']
-
-    def test_env_values_stringified(self, tmp_path: Path) -> None:
-        """Env values are preserved as strings in the output env dict."""
-        result = setup_environment._build_profile_settings(
-            {'env': {'FOO': 'bar', 'HELLO': 'world'}},
-            tmp_path,
-        )
-        assert result['env']['FOO'] == 'bar'
-        assert result['env']['HELLO'] == 'world'
-
-    def test_env_none_value_preserved_for_null_as_delete(self, tmp_path: Path) -> None:
-        """A per-key env null passes through verbatim while other values stringify.
-
-        The preserved None lets the shared settings.json writer delete the
-        nested key via RFC 7396 null-as-delete and lets the isolated
-        config.json writer omit it from the atomic rebuild.
-        """
-        result = setup_environment._build_profile_settings(
-            {'env': {'DELETE_ME': None, 'KEEP': 'x', 'NUM': 42}},
-            tmp_path,
-        )
-        assert result['env'] == {'DELETE_ME': None, 'KEEP': 'x', 'NUM': '42'}
-        assert result['env']['DELETE_ME'] is None
-
-    def test_env_null_never_becomes_literal_none_string(self, tmp_path: Path) -> None:
-        """The literal string 'None' never appears as an env value for null input."""
-        result = setup_environment._build_profile_settings(
-            {'env': {'A': None, 'B': None}}, tmp_path,
-        )
-        assert 'None' not in result['env'].values()
-
-    def test_attribution_passthrough(self, tmp_path: Path) -> None:
-        """Attribution dict passed through unchanged."""
-        attr = {'commit': 'Test commit', 'pr': 'Test PR'}
-        result = setup_environment._build_profile_settings(
-            {'attribution': attr}, tmp_path,
-        )
-        assert result['attribution'] == attr
-
-    def test_attribution_empty_dict_not_omitted(self, tmp_path: Path) -> None:
-        """Empty attribution dict is kept (not same as None)."""
-        result = setup_environment._build_profile_settings(
-            {'attribution': {}}, tmp_path,
-        )
-        assert 'attribution' in result
-        assert result['attribution'] == {}
-
-    def test_always_thinking_enabled_true(self, tmp_path: Path) -> None:
-        """alwaysThinkingEnabled=True stored under alwaysThinkingEnabled."""
-        result = setup_environment._build_profile_settings(
-            {'alwaysThinkingEnabled': True}, tmp_path,
-        )
-        assert result == {'alwaysThinkingEnabled': True}
-
-    def test_always_thinking_enabled_false_not_omitted(self, tmp_path: Path) -> None:
-        """alwaysThinkingEnabled=False is explicit and kept."""
-        result = setup_environment._build_profile_settings(
-            {'alwaysThinkingEnabled': False}, tmp_path,
-        )
-        assert result == {'alwaysThinkingEnabled': False}
-
-    def test_effort_level(self, tmp_path: Path) -> None:
-        """effortLevel stored under effortLevel."""
-        result = setup_environment._build_profile_settings(
-            {'effortLevel': 'high'}, tmp_path,
-        )
-        assert result == {'effortLevel': 'high'}
-
-    def test_company_announcements_list(self, tmp_path: Path) -> None:
-        """companyAnnouncements list stored under companyAnnouncements."""
-        result = setup_environment._build_profile_settings(
-            {'companyAnnouncements': ['msg1', 'msg2']}, tmp_path,
-        )
-        assert result == {'companyAnnouncements': ['msg1', 'msg2']}
+        assert result == {}
 
     def test_status_line_python_script(self, tmp_path: Path) -> None:
         """statusLine with .py file builds uv run command with absolute path."""
@@ -7722,17 +7458,10 @@ class TestBuildProfileSettings:
         )
         assert 'hooks' not in result
 
-    def test_all_nine_keys_together(self, tmp_path: Path) -> None:
-        """All nine keys provided simultaneously produce full delta."""
+    def test_both_profile_keys_together(self, tmp_path: Path) -> None:
+        """Both profile-owned keys provided simultaneously produce full delta."""
         result = setup_environment._build_profile_settings(
             {
-                'model': 'sonnet',
-                'permissions': {'allow': ['Read']},
-                'env': {'FOO': 'bar'},
-                'attribution': {'commit': 'x', 'pr': 'y'},
-                'alwaysThinkingEnabled': True,
-                'effortLevel': 'high',
-                'companyAnnouncements': ['Welcome'],
                 'statusLine': {'file': 'status.py'},
                 'hooks': {'events': [{'event': 'PreToolUse', 'matcher': 'Bash',
                                       'type': 'command', 'command': 'test.sh'}]},
@@ -7744,16 +7473,17 @@ class TestBuildProfileSettings:
     def test_absent_keys_omitted_from_result(self, tmp_path: Path) -> None:
         """Keys absent from profile_config are absent from result.
 
-        The builder does NOT backfill the 9-key universe with Nones or empty
-        values. Absent means absent. Present-with-value means included.
-        Present-with-None means included-as-None (for downstream null-as-delete).
+        The builder does NOT backfill the profile-owned key universe with
+        Nones or empty values. Absent means absent. Present-with-value means
+        included. Present-with-None means included-as-None (for downstream
+        null-as-delete).
         """
         result = setup_environment._build_profile_settings(
-            {'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+            {'statusLine': {'file': 'status.py'}},
             tmp_path,
         )
-        # Only 'model' and 'permissions' present; none of the other keys
-        assert set(result.keys()) == {'model', 'permissions'}
+        # Only 'statusLine' present; 'hooks' is OMITTED
+        assert set(result.keys()) == {'statusLine'}
 
 
 class TestYamlToCamelProfileKeysParity:
@@ -7782,38 +7512,6 @@ class TestBuildProfileSettingsExplicitNulls:
     ``key: null`` at the root level.
     """
 
-    def test_explicit_null_model_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings({'model': None}, tmp_path)
-        assert result == {'model': None}
-
-    def test_explicit_null_permissions_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings({'permissions': None}, tmp_path)
-        assert result == {'permissions': None}
-
-    def test_explicit_null_env_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings({'env': None}, tmp_path)
-        assert result == {'env': None}
-
-    def test_explicit_null_attribution_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings({'attribution': None}, tmp_path)
-        assert result == {'attribution': None}
-
-    def test_explicit_null_always_thinking_enabled_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings(
-            {'alwaysThinkingEnabled': None}, tmp_path,
-        )
-        assert result == {'alwaysThinkingEnabled': None}
-
-    def test_explicit_null_effort_level_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings({'effortLevel': None}, tmp_path)
-        assert result == {'effortLevel': None}
-
-    def test_explicit_null_company_announcements_emits_none(self, tmp_path: Path) -> None:
-        result = setup_environment._build_profile_settings(
-            {'companyAnnouncements': None}, tmp_path,
-        )
-        assert result == {'companyAnnouncements': None}
-
     def test_explicit_null_status_line_emits_none(self, tmp_path: Path) -> None:
         result = setup_environment._build_profile_settings({'statusLine': None}, tmp_path)
         assert result == {'statusLine': None}
@@ -7825,37 +7523,23 @@ class TestBuildProfileSettingsExplicitNulls:
     def test_absent_key_omitted_even_when_other_key_is_null(self, tmp_path: Path) -> None:
         """Absent keys remain OMITTED even when another key is explicitly null."""
         result = setup_environment._build_profile_settings(
-            {'permissions': None},
+            {'hooks': None},
             tmp_path,
         )
-        # Only 'permissions' is in result (as None); model is OMITTED
-        assert result == {'permissions': None}
-        assert 'model' not in result
+        # Only 'hooks' is in result (as None); statusLine is OMITTED
+        assert result == {'hooks': None}
+        assert 'statusLine' not in result
 
     def test_multiple_explicit_nulls_together(self, tmp_path: Path) -> None:
-        """Multiple keys declared null all emit None simultaneously."""
+        """Both profile-owned keys declared null emit None simultaneously."""
         result = setup_environment._build_profile_settings(
             {
-                'model': None,
-                'permissions': None,
-                'env': None,
-                'attribution': None,
-                'alwaysThinkingEnabled': None,
-                'effortLevel': None,
-                'companyAnnouncements': None,
                 'statusLine': None,
                 'hooks': None,
             },
             tmp_path,
         )
         assert result == {
-            'model': None,
-            'permissions': None,
-            'env': None,
-            'attribution': None,
-            'alwaysThinkingEnabled': None,
-            'effortLevel': None,
-            'companyAnnouncements': None,
             'statusLine': None,
             'hooks': None,
         }
@@ -7879,22 +7563,25 @@ class TestBuildProfileSettingsExplicitNulls:
         assert result == {'hooks': None}
 
     def test_mixed_null_and_value(self, tmp_path: Path) -> None:
-        """Null and non-null keys can coexist in the same profile_config."""
+        """Null and non-null profile-owned keys can coexist in the same profile_config."""
         result = setup_environment._build_profile_settings(
-            {'model': 'sonnet', 'permissions': None},
+            {'statusLine': {'file': 'status.sh'}, 'hooks': None},
             tmp_path,
         )
-        assert result == {'model': 'sonnet', 'permissions': None}
+        assert result['hooks'] is None
+        assert result['statusLine']['type'] == 'command'
+        assert set(result.keys()) == {'statusLine', 'hooks'}
 
 
 class TestWriteProfileSettingsToSettings:
     """Unit tests for write_profile_settings_to_settings().
 
     Verifies the deep-merge + RFC 7396 null-as-delete semantics the
-    writer inherits from ``_write_merged_json()`` when writing the nine
-    profile-owned keys to the shared ~/.claude/settings.json file in
-    non-command-names mode. Keys not present in the delta are
-    preserved; nested dicts are deep-merged; ``permissions.allow/deny/ask``
+    writer inherits from ``_write_merged_json()`` when writing the
+    statusLine/hooks delta to the shared ~/.claude/settings.json file in
+    non-command-names mode. Keys not present in the delta are preserved
+    (including keys other contributors such as Step 14 write_user_settings()
+    placed on disk); nested dicts are deep-merged; ``permissions.allow/deny/ask``
     arrays are unioned; and top-level ``None`` values delete keys.
     """
 
@@ -8000,26 +7687,25 @@ class TestWriteProfileSettingsToSettings:
         assert content['permissions']['deny'] == ['Bash(rm -rf)']
         assert content['permissions']['ask'] == ['Edit']
 
-    def test_env_entry_null_deletes_nested_key(self, tmp_path: Path) -> None:
-        """A per-key env null in the delta deletes that key from settings.json env.
+    def test_nested_null_in_delta_deletes_nested_key(self, tmp_path: Path) -> None:
+        """A nested null in the delta deletes that sub-key from settings.json.
 
-        Builds the delta through _build_profile_settings() so the full
-        base-mode pipeline (builder -> writer -> merge) is exercised: the
-        stale key is removed and never written as the literal string 'None'.
+        The writer inherits RFC 7396 null-as-delete from _write_merged_json()
+        for any nested None value, so a stale sub-key is removed and never
+        written as the literal string 'None'.
         """
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
-            'env': {'STALE_VAR': 'old', 'KEEP_ME': 'yes'},
+            'permissions': {'allow': ['Read'], 'deny': ['Bash']},
         }), encoding='utf-8')
 
-        delta = setup_environment._build_profile_settings(
-            {'env': {'STALE_VAR': None}}, tmp_path / 'hooks',
+        result = setup_environment.write_profile_settings_to_settings(
+            {'permissions': {'deny': None}}, tmp_path,
         )
-        result = setup_environment.write_profile_settings_to_settings(delta, tmp_path)
         assert result is True
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-        assert content['env'] == {'KEEP_ME': 'yes'}
-        assert 'None' not in content['env'].values()
+        assert content['permissions'] == {'allow': ['Read']}
+        assert 'None' not in str(content['permissions'])
 
     def test_deep_merge_preserves_env_subkeys(self, tmp_path: Path) -> None:
         """Deep-merge preserves env sub-keys not declared in the delta."""
@@ -8127,17 +7813,11 @@ class TestWriteProfileSettingsToSettings:
         content = json.loads(settings_file.read_text(encoding='utf-8'))
         assert content == {'model': 'sonnet'}
 
-    def test_top_level_null_all_nine_keys_deletes_all(self, tmp_path: Path) -> None:
-        """All nine profile-owned keys set to None deletes them all."""
+    def test_top_level_null_all_profile_keys_deletes_all(self, tmp_path: Path) -> None:
+        """Both profile-owned keys set to None deletes them, preserving others."""
         settings_file = tmp_path / 'settings.json'
         settings_file.write_text(json.dumps({
             'model': 'sonnet',
-            'permissions': {'allow': ['Read']},
-            'env': {'FOO': 'bar'},
-            'attribution': {'commit': 'x'},
-            'alwaysThinkingEnabled': True,
-            'effortLevel': 'high',
-            'companyAnnouncements': ['msg'],
             'statusLine': {'type': 'command', 'command': 'a'},
             'hooks': {'PreToolUse': []},
         }), encoding='utf-8')
@@ -8146,8 +7826,8 @@ class TestWriteProfileSettingsToSettings:
         result = setup_environment.write_profile_settings_to_settings(delta, tmp_path)
         assert result is True
         content = json.loads(settings_file.read_text(encoding='utf-8'))
-        # All nine keys deleted
-        assert content == {}
+        # Both profile-owned keys deleted; non-profile key preserved
+        assert content == {'model': 'sonnet'}
 
     def test_deep_merge_preserves_unrelated_top_level_keys_via_delegate(
         self, tmp_path: Path,
@@ -8372,8 +8052,11 @@ class TestCreateProfileConfigDelegation:
     """Regression tests verifying create_profile_config() delegates to builder."""
 
     def test_output_matches_builder(self, tmp_path: Path) -> None:
-        """create_profile_config() output matches _build_profile_settings() result."""
-        # Setup
+        """create_profile_config() output matches _build_profile_settings() result.
+
+        With no user-settings, config.json is exactly the null-stripped
+        profile-owned delta (statusLine/hooks).
+        """
         config_dir = tmp_path / 'profile'
         hooks = {
             'events': [
@@ -8382,11 +8065,7 @@ class TestCreateProfileConfigDelegation:
         }
         profile_config = {
             'hooks': hooks,
-            'model': 'sonnet',
-            'permissions': {'allow': ['Read']},
-            'env': {'FOO': 'bar'},
-            'alwaysThinkingEnabled': True,
-            'effortLevel': 'high',
+            'statusLine': {'file': 'status.sh'},
         }
 
         # Call create_profile_config (writes to config.json)
@@ -8401,8 +8080,21 @@ class TestCreateProfileConfigDelegation:
         # Must match
         assert on_disk == expected
 
-    def test_env_null_entries_stripped_from_config_json(self, tmp_path: Path) -> None:
-        """Per-key env nulls are omitted from the atomically rebuilt config.json.
+    def test_user_settings_passed_through_to_config_json(self, tmp_path: Path) -> None:
+        """user-settings content forms the base of config.json alongside the delta."""
+        config_dir = tmp_path / 'profile'
+        setup_environment.create_profile_config(
+            {'statusLine': {'file': 'status.sh'}},
+            config_dir,
+            user_settings={'model': 'sonnet', 'permissions': {'allow': ['Read']}},
+        )
+        on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
+        assert on_disk['model'] == 'sonnet'
+        assert on_disk['permissions'] == {'allow': ['Read']}
+        assert on_disk['statusLine']['type'] == 'command'
+
+    def test_user_settings_env_null_entries_stripped_from_config_json(self, tmp_path: Path) -> None:
+        """Per-key env nulls in user-settings are omitted from the rebuilt config.json.
 
         Under atomic rebuild semantics absence equals deletion, so the
         isolated profile never carries a JSON null (or the literal string
@@ -8410,34 +8102,64 @@ class TestCreateProfileConfigDelegation:
         """
         config_dir = tmp_path / 'profile'
         setup_environment.create_profile_config(
-            {'env': {'DELETE_ME': None, 'KEEP': 'x'}}, config_dir,
+            {},
+            config_dir,
+            user_settings={'env': {'DELETE_ME': None, 'KEEP': 'x'}},
         )
         on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
         assert on_disk['env'] == {'KEEP': 'x'}
         assert 'DELETE_ME' not in on_disk['env']
         assert 'None' not in on_disk['env'].values()
 
-    def test_env_key_dropped_when_all_entries_null(self, tmp_path: Path) -> None:
-        """An env dict whose entries are all nulls produces no env key at all."""
+    def test_whole_env_section_null_stripped(self, tmp_path: Path) -> None:
+        """A whole-section env null in user-settings is stripped, not written as JSON null.
+
+        create_profile_config() applies recursive null stripping to the
+        atomically rebuilt config.json, so a top-level null member is dropped
+        entirely rather than serialized as a literal JSON null.
+        """
         config_dir = tmp_path / 'profile'
         setup_environment.create_profile_config(
-            {'env': {'DELETE_A': None, 'DELETE_B': None}}, config_dir,
+            {}, config_dir, user_settings={'env': None, 'model': 'sonnet'},
         )
         on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
         assert 'env' not in on_disk
+        assert on_disk == {'model': 'sonnet'}
 
-    def test_whole_env_section_null_written_as_json_null(self, tmp_path: Path) -> None:
-        """A whole-section env null serializes as a top-level JSON null.
+    def test_env_section_with_only_null_entries_dropped(self, tmp_path: Path) -> None:
+        """An env section holding only deletion entries is dropped from config.json.
 
-        Top-level nulls are documented as equivalent to absent for Claude
-        Code's priority resolution, so they are kept as-is rather than
-        stripped.
+        A dict whose members are all deletion requests carries no content,
+        so the emptied key is omitted rather than written as an empty
+        object; a dict the user declared empty passes through unchanged.
         """
         config_dir = tmp_path / 'profile'
-        setup_environment.create_profile_config({'env': None}, config_dir)
+        setup_environment.create_profile_config(
+            {},
+            config_dir,
+            user_settings={'env': {'A': None, 'B': None}, 'attribution': {}, 'model': 'sonnet'},
+        )
         on_disk = json.loads((config_dir / 'config.json').read_text(encoding='utf-8'))
-        assert 'env' in on_disk
-        assert on_disk['env'] is None
+        assert 'env' not in on_disk
+        assert on_disk['attribution'] == {}
+        assert on_disk['model'] == 'sonnet'
+
+    def test_non_ascii_user_settings_written_verbatim(self, tmp_path: Path) -> None:
+        """Non-ASCII user-settings content is written unescaped to config.json.
+
+        The isolated writer matches the shared settings.json writer's
+        encoding (ensure_ascii=False), so announcements and attribution
+        strings in any language stay human-readable on disk.
+        """
+        config_dir = tmp_path / 'profile'
+        setup_environment.create_profile_config(
+            {},
+            config_dir,
+            user_settings={'companyAnnouncements': ['Willkommen zurück']},
+        )
+        raw = (config_dir / 'config.json').read_text(encoding='utf-8')
+        assert 'Willkommen zurück' in raw
+        assert '\\u' not in raw
 
 
 class TestWriteMergedJson:
@@ -8624,6 +8346,43 @@ class TestValidateGlobalConfig:
             result = setup_environment.validate_global_config({key: None})
             assert result == []
 
+    def test_settings_only_key_model_rejected(self) -> None:
+        """model is a settings.json key and is not valid in global-config."""
+        result = setup_environment.validate_global_config({'model': 'sonnet'})
+        assert any(
+            'model' in e and 'settings.json key' in e and 'Move it to user-settings' in e
+            for e in result
+        )
+
+    def test_settings_only_key_permissions_rejected(self) -> None:
+        """permissions is a settings.json key and is not valid in global-config."""
+        result = setup_environment.validate_global_config({'permissions': {'allow': ['Read']}})
+        assert any('permissions' in e and 'Move it to user-settings' in e for e in result)
+
+    def test_settings_only_key_env_rejected(self) -> None:
+        """env is a settings.json key and is not valid in global-config."""
+        result = setup_environment.validate_global_config({'env': {'FOO': 'bar'}})
+        assert any('settings.json key' in e for e in result)
+
+    def test_profile_owned_status_line_key_rejected_with_root_hint(self) -> None:
+        """statusLine points the user to the root-level status-line YAML key."""
+        result = setup_environment.validate_global_config({'statusLine': {'type': 'command'}})
+        assert any('statusLine' in e and 'root-level' in e and 'status-line' in e for e in result)
+
+    def test_profile_owned_hooks_key_rejected_with_root_hint(self) -> None:
+        """hooks points the user to the root-level hooks YAML key."""
+        result = setup_environment.validate_global_config({'hooks': {'PreToolUse': []}})
+        assert any('hooks' in e and 'root-level' in e for e in result)
+
+    def test_global_only_key_auto_updates_passes(self) -> None:
+        """A genuine global-config key (autoUpdates) passes validation."""
+        assert setup_environment.validate_global_config({'autoUpdates': False}) == []
+
+    def test_settings_only_key_null_still_rejected(self) -> None:
+        """A settings-only key is a misplacement error even when null-valued."""
+        result = setup_environment.validate_global_config({'effortLevel': None})
+        assert any('effortLevel' in e for e in result)
+
 
 class TestWriteGlobalConfig:
     """Tests for write_global_config function."""
@@ -8801,106 +8560,6 @@ class TestWriteGlobalConfig:
         data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
         assert 'srv1' in data['mcpServers']
         assert 'srv2' in data['mcpServers']
-
-
-class TestDetectSettingsConflicts:
-    """Test the detect_settings_conflicts function."""
-
-    def test_no_conflicts_empty_sections(self) -> None:
-        """Empty sections have no conflicts."""
-        result = setup_environment.detect_settings_conflicts({}, {})
-        assert result == []
-
-    def test_no_conflicts_disjoint_keys(self) -> None:
-        """Different keys in each section have no conflicts."""
-        user_settings = {'language': 'russian'}
-        root_config = {'model': 'claude-opus-4'}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert result == []
-
-    def test_same_key_conflict_detected(self) -> None:
-        """Same key in both sections is detected as conflict."""
-        user_settings = {'model': 'claude-opus-4'}
-        root_config = {'model': 'claude-sonnet-4'}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        assert result[0] == ('model', 'claude-opus-4', 'claude-sonnet-4')
-
-    def test_kebab_to_camel_mapping_conflict(self) -> None:
-        """Kebab-case root key maps to camelCase user-settings key."""
-        user_settings = {'alwaysThinkingEnabled': True}
-        root_config = {'always-thinking-enabled': False}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        assert result[0] == ('alwaysThinkingEnabled', True, False)
-
-    def test_env_variables_mapping_conflict(self) -> None:
-        """env-variables root key maps to env user-settings key."""
-        user_settings = {'env': {'FOO': 'bar'}}
-        root_config = {'env-variables': {'FOO': 'baz'}}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        assert result[0] == ('env', {'FOO': 'bar'}, {'FOO': 'baz'})
-
-    def test_effort_level_mapping_conflict(self) -> None:
-        """effort-level root key maps to effortLevel user-settings key."""
-        user_settings = {'effortLevel': 'high'}
-        root_config = {'effort-level': 'low'}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        assert result[0] == ('effortLevel', 'high', 'low')
-
-    def test_multiple_conflicts_detected(self) -> None:
-        """Multiple conflicts are all detected."""
-        user_settings = {
-            'model': 'claude-opus-4',
-            'alwaysThinkingEnabled': True,
-        }
-        root_config = {
-            'model': 'claude-sonnet-4',
-            'always-thinking-enabled': False,
-        }
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 2
-        conflicts_dict = {r[0]: (r[1], r[2]) for r in result}
-        assert conflicts_dict['model'] == ('claude-opus-4', 'claude-sonnet-4')
-        assert conflicts_dict['alwaysThinkingEnabled'] == (True, False)
-
-    def test_unmapped_key_uses_same_name(self) -> None:
-        """Keys not in mapping use same name for lookup."""
-        user_settings = {'permissions': {'allow': ['Bash']}}
-        root_config = {'permissions': {'deny': ['Web']}}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        assert result[0][0] == 'permissions'
-
-    def test_root_key_without_user_key_no_conflict(self) -> None:
-        """Root key present without corresponding user key is not a conflict."""
-        user_settings = {'language': 'russian'}
-        root_config = {'model': 'claude-opus-4', 'always-thinking-enabled': True}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert result == []
-
-    def test_all_mapped_keys_checked(self) -> None:
-        """All keys in ROOT_TO_USER_SETTINGS_KEY_MAP are properly checked."""
-        for root_key, user_key in setup_environment.ROOT_TO_USER_SETTINGS_KEY_MAP.items():
-            user_settings = {user_key: 'user_value'}
-            root_config = {root_key: 'root_value'}
-            result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-            assert len(result) == 1, f'Failed for mapping {root_key} -> {user_key}'
-            assert result[0][0] == user_key
-
-    def test_conflict_returns_correct_tuple_structure(self) -> None:
-        """Conflict tuple has correct structure (user_key, user_value, root_value)."""
-        user_settings = {'model': 'user_model'}
-        root_config = {'model': 'root_model'}
-        result = setup_environment.detect_settings_conflicts(user_settings, root_config)
-        assert len(result) == 1
-        conflict = result[0]
-        assert len(conflict) == 3
-        assert conflict[0] == 'model'
-        assert conflict[1] == 'user_model'
-        assert conflict[2] == 'root_model'
 
 
 class TestResolveInheritPath:
@@ -9512,12 +9171,12 @@ class TestValidateMergeKeysHelper:
     def test_invalid_key(self):
         """Key not in MERGEABLE_CONFIG_KEYS raises ValueError."""
         with pytest.raises(ValueError, match='Invalid keys'):
-            setup_environment._validate_merge_keys(['model'])
+            setup_environment._validate_merge_keys(['name'])
 
     def test_context_in_error_message(self):
         """Context string appears in error messages."""
         with pytest.raises(ValueError, match=r'inherit\[1\]:'):
-            setup_environment._validate_merge_keys(['model'], context='inherit[1]')
+            setup_environment._validate_merge_keys(['name'], context='inherit[1]')
 
     def test_empty_list_returns_empty_frozenset(self):
         """Empty list returns empty frozenset (no keys to merge)."""
@@ -11473,7 +11132,13 @@ class TestMainFunctionUserSettings:
         mock_load: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Test main with user-settings AND command-names - combined mode."""
+        """Test main with user-settings AND command-names - isolated mode.
+
+        In isolated mode the user-settings section is built into the
+        profile's config.json at Step 18 (via create_profile_config), so
+        Step 14 does NOT call write_user_settings() and instead announces
+        that user settings are built into config.json.
+        """
         # Mocks required by @patch decorators but not directly asserted
         del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
         mock_load.return_value = (
@@ -11482,8 +11147,8 @@ class TestMainFunctionUserSettings:
                 'command-names': ['mydev'],
                 'user-settings': {
                     'language': 'russian',
+                    'model': 'claude-sonnet-4',
                 },
-                'model': 'claude-sonnet-4',  # Profile-level model
             },
             'test.yaml',
         )
@@ -11499,15 +11164,19 @@ class TestMainFunctionUserSettings:
             setup_environment.main()
             mock_exit.assert_not_called()
 
-        # Verify write_user_settings was called
-        mock_write_user_settings.assert_called_once()
-
-        # Verify profile settings were also created
+        # Isolated mode: write_user_settings is NOT called; the user-settings
+        # section is passed to create_profile_config instead.
+        mock_write_user_settings.assert_not_called()
         mock_settings.assert_called_once()
+        assert mock_settings.call_args.kwargs['user_settings'] == {
+            'language': 'russian',
+            'model': 'claude-sonnet-4',
+        }
 
-        # Verify output shows Step 13 and Steps 16-20
+        # Verify output shows the isolated Step 14 skip message and Steps 17-21
         captured = capsys.readouterr()
         assert 'Step 14: Writing user settings' in captured.out
+        assert 'Isolated mode: user settings are built into config.json in Step 18' in captured.out
         assert 'Step 17: Downloading hooks' in captured.out
         assert 'Step 18: Creating profile configuration' in captured.out
         assert 'Step 20: Creating launcher script' in captured.out
@@ -11538,67 +11207,6 @@ class TestMainFunctionUserSettings:
         # Error messages go to stderr via print_error()
         assert 'hooks' in captured.err
         assert 'not allowed' in captured.err
-
-    @patch('setup_environment.load_config_from_source')
-    @patch('setup_environment.validate_all_config_files')
-    @patch('setup_environment.install_claude')
-    @patch('setup_environment.install_dependencies', return_value=[])
-    @patch('setup_environment.process_resources')
-    @patch('setup_environment.process_skills')
-    @patch('setup_environment.configure_all_mcp_servers')
-    @patch('setup_environment.write_user_settings')
-    @patch('setup_environment.create_profile_config')
-    @patch('setup_environment.create_launcher_script')
-    @patch('setup_environment.register_global_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    @patch('pathlib.Path.mkdir')
-    def test_main_user_settings_conflict_warning(
-        self,
-        mock_mkdir: MagicMock,
-        mock_is_admin: MagicMock,
-        mock_register: MagicMock,
-        mock_launcher: MagicMock,
-        mock_settings: MagicMock,
-        mock_write_user_settings: MagicMock,
-        mock_mcp: MagicMock,
-        mock_skills: MagicMock,
-        mock_resources: MagicMock,
-        mock_deps: MagicMock,
-        mock_install: MagicMock,
-        mock_validate: MagicMock,
-        mock_load: MagicMock,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Test main with conflicting keys emits warning."""
-        # Mocks required by @patch decorators but not directly asserted
-        del mock_mkdir, mock_is_admin, mock_skills, mock_resources, mock_deps
-        mock_load.return_value = (
-            {
-                'name': 'Conflict Config',
-                'command-names': ['mydev'],
-                'user-settings': {
-                    'model': 'claude-opus-4',  # Conflict with root level
-                },
-                'model': 'claude-sonnet-4',  # Root level model
-            },
-            'test.yaml',
-        )
-        mock_validate.return_value = (True, [])
-        mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
-        mock_write_user_settings.return_value = True
-        mock_settings.return_value = True
-        mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
-        mock_register.return_value = True
-
-        with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
-            setup_environment.main()
-            mock_exit.assert_not_called()
-
-        captured = capsys.readouterr()
-        # Warning should be emitted about model conflict
-        assert 'model' in captured.out
-        assert 'both root level and user-settings' in captured.out or 'specified in both' in captured.out
 
     @patch('setup_environment.load_config_from_source')
     @patch('setup_environment.validate_all_config_files')
@@ -11760,37 +11368,6 @@ class TestMainFunctionUserSettings:
 # =============================================================================
 # Phase 5: Comprehensive Tests - Edge Cases and Integration Tests
 # =============================================================================
-
-
-class TestDetectSettingsConflictsComplete:
-    """Exhaustive conflict detection tests for all ROOT_TO_USER_SETTINGS_KEY_MAP entries."""
-
-    @pytest.mark.parametrize(
-        ('root_key', 'user_key'),
-        [
-            ('model', 'model'),
-            ('permissions', 'permissions'),
-            ('attribution', 'attribution'),
-            ('always-thinking-enabled', 'alwaysThinkingEnabled'),
-            ('company-announcements', 'companyAnnouncements'),
-            ('env-variables', 'env'),
-            ('effort-level', 'effortLevel'),
-        ],
-    )
-    def test_conflict_all_mapped_keys_exhaustive(
-        self, root_key: str, user_key: str,
-    ) -> None:
-        """Every ROOT_TO_USER_SETTINGS_KEY_MAP entry produces a conflict when both present."""
-        user_settings = {user_key: 'user_value'}
-        root_settings = {root_key: 'root_value'}
-
-        conflicts = setup_environment.detect_settings_conflicts(user_settings, root_settings)
-
-        assert len(conflicts) == 1, f'Expected conflict for {root_key} -> {user_key}'
-        key, user_val, root_val = conflicts[0]
-        assert key == user_key
-        assert user_val == 'user_value'
-        assert root_val == 'root_value'
 
 
 class TestDeepMergeEdgeCases:
@@ -12535,7 +12112,6 @@ class TestCollectInstallationPlan:
                 'events': [{'event': 'PostToolUse', 'type': 'command', 'command': 'hook.py'}],
             },
             'mcp-servers': [{'name': 'srv', 'transport': 'http', 'url': 'http://localhost'}],
-            'model': 'sonnet',
             'dependencies': {
                 'common': ['pip install flask'],
                 'windows': ['winget install Git'],
@@ -12560,7 +12136,6 @@ class TestCollectInstallationPlan:
         assert len(plan.hooks_files) == 1
         assert len(plan.hooks_events) == 1
         assert len(plan.mcp_servers) == 1
-        assert plan.model == 'sonnet'
         assert plan.config_version == '2.0.0'
 
     def test_collect_plan_unknown_keys(self) -> None:
@@ -13282,9 +12857,9 @@ class TestSuggestKnownKey:
     """Test _suggest_known_key() fuzzy matching for unknown config keys."""
 
     def test_suggest_known_key_underscore_to_hyphen(self) -> None:
-        """Underscore variant 'effort_level' suggests 'effort-level'."""
-        result = setup_environment._suggest_known_key('effort_level')
-        assert result == 'effort-level'
+        """Underscore variant 'os_env_variables' suggests 'os-env-variables'."""
+        result = setup_environment._suggest_known_key('os_env_variables')
+        assert result == 'os-env-variables'
 
     def test_suggest_known_key_close_typo(self) -> None:
         """Underscore variant 'mcp_servers' suggests 'mcp-servers'."""
@@ -13304,13 +12879,13 @@ class TestSuggestKnownKey:
             config_source='test',
             config_source_type='repo',
             config_version='1.0',
-            unknown_keys=['effort_level'],
+            unknown_keys=['os_env_variables'],
         )
         buf = io.StringIO()
         setup_environment.display_installation_summary(plan, output=buf)
         output = buf.getvalue()
         assert 'did you mean' in output
-        assert "'effort-level'" in output
+        assert "'os-env-variables'" in output
 
     def test_display_summary_no_suggestion_for_unknown(self) -> None:
         """No suggestion shown for a completely unrelated key."""
@@ -13332,20 +12907,18 @@ class TestSuggestKnownKey:
 class TestApplyAutoUpdateSettings:
     """Tests for apply_auto_update_settings() auto-update management."""
 
-    def test_pinned_version_injects_all_four_targets(self) -> None:
-        gc, us, ev, osev, warns, auto = setup_environment.apply_auto_update_settings(
-            '2.1.85', None, None, None, None,
+    def test_pinned_version_injects_all_three_targets(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None,
         )
         assert gc is not None
         assert gc['autoUpdates'] is False
         assert us is not None
         assert us['env']['DISABLE_AUTOUPDATER'] == '1'
-        assert ev is not None
-        assert ev['DISABLE_AUTOUPDATER'] == '1'
         assert osev is not None
         assert osev['DISABLE_AUTOUPDATER'] == '1'
         assert not warns
-        assert len(auto) == 4
+        assert len(auto) == 3
 
     def test_none_version_preserves_user_declared_controls(self) -> None:
         """Unpinned: every control present comes from the user's YAML and is kept.
@@ -13355,10 +12928,9 @@ class TestApplyAutoUpdateSettings:
         """
         gc = {'autoUpdates': False, 'other': 'keep'}
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER': 'val'}}
-        ev = {'DISABLE_AUTOUPDATER': '1', 'SOME_VAR': 'x'}
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1', 'PATH_VAR': '/usr'}
-        gc_r, us_r, ev_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
-            None, gc, us, ev, osev,
+        gc_r, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
+            None, gc, us, osev,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is False
@@ -13366,8 +12938,6 @@ class TestApplyAutoUpdateSettings:
         assert us_r is not None
         assert us_r['env']['DISABLE_AUTOUPDATER'] == '1'
         assert us_r['env']['OTHER'] == 'val'
-        assert ev_r is not None
-        assert ev_r['DISABLE_AUTOUPDATER'] == '1'
         assert osev_r is not None
         assert osev_r['DISABLE_AUTOUPDATER'] == '1'
         assert osev_r['PATH_VAR'] == '/usr'
@@ -13375,37 +12945,30 @@ class TestApplyAutoUpdateSettings:
         assert not auto
 
     def test_none_global_config_creates_dict(self) -> None:
-        gc, _, _, _, _, _ = setup_environment.apply_auto_update_settings(
-            '1.0.0', None, {'env': {}}, {}, {},
+        gc, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', None, {'env': {}}, {},
         )
         assert gc is not None
         assert gc['autoUpdates'] is False
 
     def test_none_user_settings_creates_dict(self) -> None:
-        _, us, _, _, _, _ = setup_environment.apply_auto_update_settings(
-            '1.0.0', {}, None, {}, {},
+        _, us, _, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', {}, None, {},
         )
         assert us is not None
         assert us['env']['DISABLE_AUTOUPDATER'] == '1'
 
-    def test_none_env_variables_creates_dict(self) -> None:
-        _, _, ev, _, _, _ = setup_environment.apply_auto_update_settings(
-            '1.0.0', {}, {}, None, {},
-        )
-        assert ev is not None
-        assert ev['DISABLE_AUTOUPDATER'] == '1'
-
     def test_none_os_env_variables_creates_dict(self) -> None:
-        _, _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
-            '1.0.0', {}, {}, {}, None,
+        _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            '1.0.0', {}, {}, None,
         )
         assert osev is not None
         assert osev['DISABLE_AUTOUPDATER'] == '1'
 
     def test_conflict_detection_respects_user_autoupdates_true(self) -> None:
         gc = {'autoUpdates': True}
-        gc_r, _, _, _, warns, auto = setup_environment.apply_auto_update_settings(
-            '2.1.85', gc, {}, {}, {},
+        gc_r, _, _, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc, {}, {},
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is True
@@ -13415,8 +12978,8 @@ class TestApplyAutoUpdateSettings:
 
     def test_conflict_detection_respects_user_disable_autoupdater(self) -> None:
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '0'}}
-        _, us_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
-            '2.1.85', {}, us, {}, {},
+        _, us_r, _, warns, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', {}, us, {},
         )
         assert us_r is not None
         assert us_r['env']['DISABLE_AUTOUPDATER'] == '0'
@@ -13424,8 +12987,8 @@ class TestApplyAutoUpdateSettings:
 
     def test_unset_preserves_user_declared_false_autoupdates(self) -> None:
         gc = {'autoUpdates': False}
-        gc_r, _, _, _, warns, _ = setup_environment.apply_auto_update_settings(
-            None, gc, None, None, None,
+        gc_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
+            None, gc, None, None,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is False
@@ -13433,8 +12996,8 @@ class TestApplyAutoUpdateSettings:
 
     def test_unset_leaves_true_autoupdates_alone(self) -> None:
         gc = {'autoUpdates': True}
-        gc_r, _, _, _, warns, _ = setup_environment.apply_auto_update_settings(
-            None, gc, None, None, None,
+        gc_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
+            None, gc, None, None,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is True
@@ -13447,8 +13010,8 @@ class TestApplyAutoUpdateSettings:
         lets set_all_os_env_variables() remove any stale value left by a
         prior pinned run.
         """
-        _, _, _, osev, warns, auto = setup_environment.apply_auto_update_settings(
-            None, None, None, None, None,
+        _, _, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None,
         )
         assert osev is not None
         assert osev == {'DISABLE_AUTOUPDATER': None}
@@ -13457,36 +13020,37 @@ class TestApplyAutoUpdateSettings:
 
     def test_unset_keeps_user_declared_os_variable(self) -> None:
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1'}
-        _, _, _, osev_r, _, _ = setup_environment.apply_auto_update_settings(
-            None, None, None, None, osev,
+        _, _, osev_r, _, _ = setup_environment.apply_auto_update_settings(
+            None, None, None, osev,
         )
         assert osev_r is not None
         assert osev_r['DISABLE_AUTOUPDATER'] == '1'
 
     def test_idempotent_double_injection(self) -> None:
-        gc1, us1, ev1, osev1, _, auto1 = setup_environment.apply_auto_update_settings(
-            '2.1.85', None, None, None, None,
+        gc1, us1, osev1, _, auto1 = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None,
         )
-        gc2, us2, ev2, osev2, _, auto2 = setup_environment.apply_auto_update_settings(
-            '2.1.85', gc1, us1, ev1, osev1,
+        gc2, us2, osev2, _, auto2 = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc1, us1, osev1,
         )
         assert gc1 == gc2
         assert us1 == us2
-        assert ev1 == ev2
         assert osev1 == osev2
         # Second call should not produce new auto-injected items (values already match)
         assert not auto2
 
     def test_auto_injected_items_list(self) -> None:
-        _, _, _, _, _, auto = setup_environment.apply_auto_update_settings(
-            '2.1.85', None, None, None, None,
+        _, _, _, _, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None,
         )
+        # Exactly three targets: global-config, user-settings.env, os-env-variables.
+        # The dropped settings-level env-variables target leaves no fourth entry.
+        assert len(auto) == 3
         assert any('global-config.autoUpdates' in a for a in auto)
         assert any('user-settings.env.DISABLE_AUTOUPDATER' in a for a in auto)
-        assert any('env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
         assert any('os-env-variables.DISABLE_AUTOUPDATER' in a for a in auto)
 
-    def test_pinned_respects_explicit_null_in_all_four_targets(self) -> None:
+    def test_pinned_respects_explicit_null_in_all_three_targets(self) -> None:
         """Explicit null is a user deletion request, never overwritten with controls.
 
         Injection is membership-gated: a key present with None counts as a
@@ -13496,21 +13060,18 @@ class TestApplyAutoUpdateSettings:
         """
         gc: dict[str, Any] = {'autoUpdates': None}
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': None}}
-        ev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': None}
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': None}
-        gc_r, us_r, ev_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
-            '2.1.85', gc, us, ev, osev,
+        gc_r, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', gc, us, osev,
         )
         assert gc_r is not None
         assert 'autoUpdates' in gc_r
         assert gc_r['autoUpdates'] is None
         assert us_r is not None
         assert us_r['env']['DISABLE_AUTOUPDATER'] is None
-        assert ev_r is not None
-        assert ev_r['DISABLE_AUTOUPDATER'] is None
         assert osev_r is not None
         assert osev_r['DISABLE_AUTOUPDATER'] is None
-        assert len(warns) == 4
+        assert len(warns) == 3
         assert all('Respecting user value' in w for w in warns)
         assert not auto
 
@@ -13526,16 +13087,14 @@ class TestApplyAutoUpdateSettings:
 class TestApplyIdeExtensionSettings:
     """Tests for apply_ide_extension_settings() and its helpers."""
 
-    def test_pinned_version_injects_all_four_targets(self) -> None:
-        gc, us, ev, osev, warns, auto = setup_environment.apply_ide_extension_settings(
-            '2.1.85', None, None, None, None,
+    def test_pinned_version_injects_all_three_targets(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            '2.1.85', None, None, None,
         )
         assert gc is not None
         assert gc.get('autoInstallIdeExtension') is False
         assert us is not None
         assert us.get('env', {}).get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
-        assert ev is not None
-        assert ev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
         assert osev is not None
         assert osev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
 
@@ -13547,10 +13106,9 @@ class TestApplyIdeExtensionSettings:
         """
         gc = {'autoInstallIdeExtension': False, 'other': 'keep'}
         us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER': 'val'}}
-        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'SOME_VAR': 'x'}
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'PATH_VAR': '/usr'}
-        gc_out, us_out, ev_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
-            None, gc, us, ev, osev,
+        gc_out, us_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
+            None, gc, us, osev,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is False
@@ -13558,8 +13116,6 @@ class TestApplyIdeExtensionSettings:
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         assert us_out['env']['OTHER'] == 'val'
-        assert ev_out is not None
-        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         assert osev_out is not None
         assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         assert osev_out['PATH_VAR'] == '/usr'
@@ -13567,33 +13123,27 @@ class TestApplyIdeExtensionSettings:
         assert not auto
 
     def test_none_global_config_creates_dict(self) -> None:
-        gc, _, _, _, _, _ = setup_environment.apply_ide_extension_settings(
-            '1.0.0', None, None, None, None,
+        gc, _, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None,
         )
         assert gc is not None
 
     def test_none_user_settings_creates_dict(self) -> None:
-        _, us, _, _, _, _ = setup_environment.apply_ide_extension_settings(
-            '1.0.0', None, None, None, None,
+        _, us, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None,
         )
         assert us is not None
 
-    def test_none_env_variables_creates_dict(self) -> None:
-        _, _, ev, _, _, _ = setup_environment.apply_ide_extension_settings(
-            '1.0.0', None, None, None, None,
-        )
-        assert ev is not None
-
     def test_none_os_env_variables_creates_dict(self) -> None:
-        _, _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
-            '1.0.0', None, None, None, None,
+        _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            '1.0.0', None, None, None,
         )
         assert osev is not None
 
     def test_conflict_detection_respects_user_autoinstall_true(self) -> None:
         gc = {'autoInstallIdeExtension': True}
-        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
-            '2.0.0', gc, None, None, None,
+        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, None, None,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
@@ -13601,8 +13151,8 @@ class TestApplyIdeExtensionSettings:
 
     def test_conflict_detection_respects_user_skip_env(self) -> None:
         us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '0'}}
-        _, us_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
-            '2.0.0', None, us, None, None,
+        _, us_out, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, us, None,
         )
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '0'
@@ -13610,14 +13160,14 @@ class TestApplyIdeExtensionSettings:
 
     def test_unset_preserves_user_declared_false_autoinstall(self) -> None:
         gc = {'autoInstallIdeExtension': False}
-        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
+        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None)
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is False
         assert not warns
 
     def test_unset_leaves_true_autoinstall_alone(self) -> None:
         gc = {'autoInstallIdeExtension': True}
-        gc_out, _, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None, None)
+        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None)
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
         assert not warns
@@ -13629,8 +13179,8 @@ class TestApplyIdeExtensionSettings:
         lets set_all_os_env_variables() remove any stale value left by a
         prior pinned run.
         """
-        _, _, _, osev, warns, auto = setup_environment.apply_ide_extension_settings(
-            None, None, None, None, None,
+        _, _, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None,
         )
         assert osev is not None
         assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
@@ -13639,33 +13189,34 @@ class TestApplyIdeExtensionSettings:
 
     def test_unset_keeps_user_declared_os_variable(self) -> None:
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
-        _, _, _, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
-            None, None, None, None, osev,
+        _, _, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
+            None, None, None, osev,
         )
         assert osev_out is not None
         assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
     def test_idempotent_double_injection(self) -> None:
-        gc, us, ev, osev, _, auto1 = setup_environment.apply_ide_extension_settings(
-            '2.0.0', None, None, None, None,
+        gc, us, osev, _, auto1 = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, None, None,
         )
-        gc2, us2, ev2, osev2, _, auto2 = setup_environment.apply_ide_extension_settings(
-            '2.0.0', gc, us, ev, osev,
+        gc2, us2, osev2, _, auto2 = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, us, osev,
         )
-        assert len(auto1) == 4
+        assert len(auto1) == 3
         assert len(auto2) == 0  # Already injected, no new items
 
     def test_auto_injected_items_list(self) -> None:
-        _, _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
-            '2.0.0', None, None, None, None,
+        _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
+            '2.0.0', None, None, None,
         )
-        assert len(auto) == 4
+        # Exactly three targets: global-config, user-settings.env, os-env-variables.
+        # The dropped settings-level env-variables target leaves no fourth entry.
+        assert len(auto) == 3
         assert any('global-config.autoInstallIdeExtension' in a for a in auto)
         assert any('user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
-        assert any('env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
         assert any('os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in a for a in auto)
 
-    def test_pinned_respects_explicit_null_in_all_four_targets(self) -> None:
+    def test_pinned_respects_explicit_null_in_all_three_targets(self) -> None:
         """Explicit null is a user deletion request, never overwritten with controls.
 
         Injection is membership-gated: a key present with None counts as a
@@ -13675,21 +13226,18 @@ class TestApplyIdeExtensionSettings:
         """
         gc: dict[str, Any] = {'autoInstallIdeExtension': None}
         us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}}
-        ev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
-        gc_out, us_out, ev_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
-            '2.0.0', gc, us, ev, osev,
+        gc_out, us_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
+            '2.0.0', gc, us, osev,
         )
         assert gc_out is not None
         assert 'autoInstallIdeExtension' in gc_out
         assert gc_out['autoInstallIdeExtension'] is None
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
-        assert ev_out is not None
-        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
         assert osev_out is not None
         assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] is None
-        assert len(warns) == 4
+        assert len(warns) == 3
         assert all('Respecting user value' in w for w in warns)
         assert not auto
 
@@ -13702,15 +13250,9 @@ class TestApplyIdeExtensionSettings:
 
     def test_unset_keeps_user_declared_env_section_value(self) -> None:
         us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
-        _, us_out, _, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None, None)
+        _, us_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None)
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
-
-    def test_unset_keeps_user_declared_env_variables_value(self) -> None:
-        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
-        _, _, ev_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, None, ev, None)
-        assert ev_out is not None
-        assert ev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
 
 class TestCleanupStaleIdeExtensionControls:
@@ -13963,35 +13505,35 @@ class TestCollectUserDeclaredControlKeys:
     """Tests for _collect_user_declared_control_keys()."""
 
     def test_empty_inputs_return_empty_set(self) -> None:
-        assert setup_environment._collect_user_declared_control_keys(None, None) == frozenset()
-        assert setup_environment._collect_user_declared_control_keys({}, {}) == frozenset()
+        assert setup_environment._collect_user_declared_control_keys(None) == frozenset()
+        assert setup_environment._collect_user_declared_control_keys({}) == frozenset()
 
-    def test_detects_keys_in_user_settings_env(self) -> None:
+    def test_detects_disable_autoupdater_in_user_settings_env(self) -> None:
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '1'}}
-        result = setup_environment._collect_user_declared_control_keys(us, None)
+        result = setup_environment._collect_user_declared_control_keys(us)
         assert result == frozenset({'DISABLE_AUTOUPDATER'})
 
-    def test_detects_keys_in_env_variables(self) -> None:
-        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
-        result = setup_environment._collect_user_declared_control_keys(None, ev)
+    def test_detects_ide_skip_in_user_settings_env(self) -> None:
+        us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
+        result = setup_environment._collect_user_declared_control_keys(us)
         assert result == frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'})
 
-    def test_detects_keys_in_both_sources(self) -> None:
-        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '0'}}
-        ev = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true'}
-        result = setup_environment._collect_user_declared_control_keys(us, ev)
+    def test_detects_both_controls_in_user_settings_env(self) -> None:
+        us: dict[str, Any] = {
+            'env': {'DISABLE_AUTOUPDATER': '0', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true'},
+        }
+        result = setup_environment._collect_user_declared_control_keys(us)
         assert result == frozenset({
             'DISABLE_AUTOUPDATER', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
         })
 
     def test_ignores_non_dict_env_section(self) -> None:
         us: dict[str, Any] = {'env': 'not-a-dict'}
-        assert setup_environment._collect_user_declared_control_keys(us, None) == frozenset()
+        assert setup_environment._collect_user_declared_control_keys(us) == frozenset()
 
     def test_ignores_unrelated_keys(self) -> None:
         us: dict[str, Any] = {'env': {'OTHER': 'x'}}
-        ev = {'ANOTHER': 'y'}
-        assert setup_environment._collect_user_declared_control_keys(us, ev) == frozenset()
+        assert setup_environment._collect_user_declared_control_keys(us) == frozenset()
 
 
 class TestPropagateInstallMethod:

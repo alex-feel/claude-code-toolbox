@@ -1,7 +1,7 @@
 """E2E tests for automatic auto-update management.
 
 Validates that version pinning correctly injects auto-update disable controls
-across all four targets, and that latest/absent versions do not inject controls.
+across all three targets, and that latest/absent versions do not inject controls.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ class TestPinnedVersionInjectsControls:
         # Extract config sections
         global_config = config.get('global-config')
         user_settings = config.get('user-settings')
-        env_variables = config.get('env-variables')
         os_env_variables = config.get('os-env-variables')
 
         # Normalize version
@@ -45,18 +44,16 @@ class TestPinnedVersionInjectsControls:
         claude_code_version_normalized = None if version_str.lower() == 'latest' else version_str
 
         # Apply auto-update settings
-        gc, us, ev, osev, warns, auto = setup_environment.apply_auto_update_settings(
+        gc, us, osev, warns, auto = setup_environment.apply_auto_update_settings(
             claude_code_version_normalized,
-            global_config, user_settings, env_variables, os_env_variables,
+            global_config, user_settings, os_env_variables,
         )
 
-        # Verify all 4 targets injected
+        # Verify all 3 targets injected
         assert gc is not None
         assert gc.get('autoUpdates') is False
         assert us is not None
         assert us.get('env', {}).get('DISABLE_AUTOUPDATER') == '1'
-        assert ev is not None
-        assert ev.get('DISABLE_AUTOUPDATER') == '1'
         assert osev is not None
         assert osev.get('DISABLE_AUTOUPDATER') == '1'
 
@@ -81,15 +78,14 @@ class TestPinnedVersionInjectsControls:
         version_str = str(config.get('claude-code-version', '')).strip()
         claude_code_version_normalized = None if version_str.lower() == 'latest' else version_str
 
-        _, _, _, _, _, auto = setup_environment.apply_auto_update_settings(
+        _, _, _, _, auto = setup_environment.apply_auto_update_settings(
             claude_code_version_normalized,
             config.get('global-config'), config.get('user-settings'),
-            config.get('env-variables'), config.get('os-env-variables'),
+            config.get('os-env-variables'),
         )
-        assert len(auto) == 4
+        assert len(auto) == 3
         assert any('global-config' in item for item in auto)
         assert any('user-settings' in item for item in auto)
-        assert any('env-variables' in item for item in auto)
         assert any('os-env-variables' in item for item in auto)
 
 
@@ -103,11 +99,10 @@ class TestLatestVersionNoControls:
         version_str = str(version).strip() if version else ''
         normalized = None if not version_str or version_str.lower() == 'latest' else version_str
 
-        gc, us, ev, osev, _, auto = setup_environment.apply_auto_update_settings(
+        gc, us, osev, _, auto = setup_environment.apply_auto_update_settings(
             normalized,
             golden_config.get('global-config'),
             golden_config.get('user-settings'),
-            golden_config.get('env-variables'),
             golden_config.get('os-env-variables'),
         )
 
@@ -117,8 +112,8 @@ class TestLatestVersionNoControls:
             assert gc.get('autoUpdates') is not False
 
     def test_absent_version_does_not_inject(self) -> None:
-        gc, us, ev, osev, _, auto = setup_environment.apply_auto_update_settings(
-            None, None, None, None, None,
+        gc, us, osev, _, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None,
         )
         assert not auto
 
@@ -137,7 +132,6 @@ class TestAutoMarkerInDryRun:
             auto_injected_items=[
                 'global-config.autoUpdates: false',
                 'user-settings.env.DISABLE_AUTOUPDATER: "1"',
-                'env-variables.DISABLE_AUTOUPDATER: "1"',
                 'os-env-variables.DISABLE_AUTOUPDATER: "1"',
             ],
         )
@@ -172,8 +166,8 @@ class TestUserConflictRespected:
         home = e2e_isolated_home['home']
         global_config: dict[str, Any] = {'autoUpdates': True, 'editorMode': 'vim'}
 
-        gc, _, _, _, warns, _ = setup_environment.apply_auto_update_settings(
-            '2.1.85', global_config, {}, {}, {},
+        gc, _, _, warns, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', global_config, {}, {},
         )
         assert gc is not None
         assert gc['autoUpdates'] is True
@@ -188,25 +182,25 @@ class TestUserConflictRespected:
 
 
 class TestPinnedVersionProfileConfig:
-    """Verify that env_variables injection flows to create_profile_config."""
+    """Verify that injected user-settings.env flows to create_profile_config."""
 
-    def test_env_variables_flow_to_profile_config(
+    def test_user_settings_env_flows_to_profile_config(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
         home = e2e_isolated_home['home']
         config_dir = home / '.claude' / 'auto-update-test'
         config_dir.mkdir(parents=True, exist_ok=True)
 
-        env_variables: dict[str, str] = {'TEST_VAR': 'value'}
+        user_settings: dict[str, Any] = {'env': {'TEST_VAR': 'value'}}
 
-        # Apply auto-update injection
-        _, _, ev, _, _, _ = setup_environment.apply_auto_update_settings(
-            '2.1.85', {}, {}, env_variables, {},
+        # Apply auto-update injection into user-settings.env
+        _, us, _, _, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', {}, user_settings, {},
         )
 
-        # Create profile config with injected env_variables
-        assert ev is not None
-        setup_environment.create_profile_config({'env': ev}, config_dir)
+        # In isolated mode, the user-settings section is built into config.json
+        assert us is not None
+        setup_environment.create_profile_config({}, config_dir, user_settings=us)
 
         config_json = config_dir / 'config.json'
         assert config_json.exists()
@@ -232,8 +226,8 @@ class TestUnpinnedRemovalSemantics:
         }))
 
         # Apply with no version pin: user-declared controls are preserved
-        gc, us, ev, osev, warns, _ = setup_environment.apply_auto_update_settings(
-            None, {}, {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER_VAR': 'keep'}}, {}, {},
+        gc, us, osev, warns, _ = setup_environment.apply_auto_update_settings(
+            None, {}, {'env': {'DISABLE_AUTOUPDATER': '1', 'OTHER_VAR': 'keep'}}, {},
         )
         assert us is not None
         assert us['env']['DISABLE_AUTOUPDATER'] == '1', \
@@ -250,8 +244,8 @@ class TestUnpinnedRemovalSemantics:
 
     def test_unpinned_schedules_os_level_deletion_when_not_declared(self) -> None:
         """The OS-level variable gets a deletion entry because it has no disk sweep."""
-        _, _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
-            None, {}, {}, {}, {},
+        _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            None, {}, {}, {},
         )
         assert osev is not None
         assert osev == {'DISABLE_AUTOUPDATER': None}, \
@@ -304,25 +298,29 @@ class TestPinnedBaseFlowSequence:
     def test_pinned_non_isolated_sequence_keeps_env_controls(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Step 14 write -> Step 16 cleanup (non-isolated) -> Step 18 keeps both keys."""
+        """Step 14 write -> Step 16 cleanup (non-isolated) -> Step 18 keeps both keys.
+
+        In non-isolated mode the injected controls live in user-settings.env
+        and reach ~/.claude/settings.json via the Step 14 write. Step 18 writes
+        only the statusLine/hooks delta, so it never touches the env block.
+        """
         home = e2e_isolated_home['home']
         claude_dir = home / '.claude'
 
-        # YAML with a pinned version and NO env-variables section
+        # YAML with a pinned version and NO user-settings section
         config: dict[str, Any] = {'claude-code-version': '2.1.85'}
-        env_variables = config.get('env-variables')
 
-        gc, us, ev, osev, _, _ = setup_environment.apply_auto_update_settings(
+        gc, us, osev, _, _ = setup_environment.apply_auto_update_settings(
             '2.1.85', config.get('global-config'), config.get('user-settings'),
-            env_variables, config.get('os-env-variables'),
+            config.get('os-env-variables'),
         )
-        gc, us, ev, osev, _, _ = setup_environment.apply_ide_extension_settings(
-            '2.1.85', gc, us, ev, osev,
+        gc, us, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            '2.1.85', gc, us, osev,
         )
 
-        # main() writes the injected env-variables dict back into config
-        if ev is not None:
-            config['env-variables'] = ev
+        # main() writes the injected user-settings dict back into config
+        if us is not None:
+            config['user-settings'] = us
 
         # Step 14: write user settings to the base ~/.claude/settings.json
         assert us is not None
@@ -342,6 +340,7 @@ class TestPinnedBaseFlowSequence:
             'Pinned non-isolated Step 16 must not delete the run-written control'
 
         # Step 18: profile settings delta built from config the way main() does
+        # (statusLine/hooks only; no env in the profile-owned key map)
         profile_config: dict[str, Any] = {
             camel_key: config[yaml_key]
             for yaml_key, camel_key in setup_environment._YAML_TO_CAMEL_PROFILE_KEYS.items()
@@ -356,42 +355,44 @@ class TestPinnedBaseFlowSequence:
         assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
 
-class TestEnvVariablesWriteBack:
-    """Verify the injected env-variables dict reaches the Step 18 builders."""
+class TestIsolatedInjectedEnvReachesConfigJson:
+    """Verify injected user-settings.env reaches the isolated config.json."""
 
     def test_isolated_pinned_profile_config_includes_injected_env(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Isolated config.json env carries injected keys when YAML lacks env-variables."""
+        """Isolated config.json env carries injected keys when YAML lacks user-settings."""
         home = e2e_isolated_home['home']
         config_dir = home / '.claude' / 'test-cmd'
         config_dir.mkdir(parents=True, exist_ok=True)
 
-        # YAML with command-names, a pinned version, and NO env-variables
+        # YAML with command-names, a pinned version, and NO user-settings
         config: dict[str, Any] = {
             'command-names': ['test-cmd'],
             'claude-code-version': '2.1.85',
         }
-        env_variables = config.get('env-variables')
 
-        _, _, ev, _, _, _ = setup_environment.apply_auto_update_settings(
-            '2.1.85', None, None, env_variables, None,
+        _, us, _, _, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, config.get('user-settings'), None,
         )
-        _, _, ev, _, _, _ = setup_environment.apply_ide_extension_settings(
-            '2.1.85', None, None, ev, None,
+        _, us, _, _, _ = setup_environment.apply_ide_extension_settings(
+            '2.1.85', None, us, None,
         )
 
-        # main() writes the injected dict back into config
-        if ev is not None:
-            config['env-variables'] = ev
+        # main() writes the injected user-settings dict back into config
+        if us is not None:
+            config['user-settings'] = us
 
-        # Step 18 isolated: profile dict built from config the way main() does
+        # Step 18 isolated: user-settings is built into config.json; the
+        # profile-owned keys (statusLine/hooks) are empty here.
         profile_config: dict[str, Any] = {
             camel_key: config[yaml_key]
             for yaml_key, camel_key in setup_environment._YAML_TO_CAMEL_PROFILE_KEYS.items()
             if yaml_key in config
         }
-        setup_environment.create_profile_config(profile_config, config_dir)
+        setup_environment.create_profile_config(
+            profile_config, config_dir, user_settings=config.get('user-settings'),
+        )
 
         data = json.loads((config_dir / 'config.json').read_text())
         assert data['env']['DISABLE_AUTOUPDATER'] == '1'
@@ -536,8 +537,8 @@ class TestGlobalConfigDualWrite:
         artifact_dir = home / '.claude' / 'test-cmd'
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        gc, _, _, _, _, _ = setup_environment.apply_auto_update_settings(
-            '2.1.85', {'editorMode': 'vim'}, {}, {}, {},
+        gc, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', {'editorMode': 'vim'}, {}, {},
         )
         assert gc is not None
         setup_environment.write_global_config(gc, artifact_base_dir=artifact_dir)
