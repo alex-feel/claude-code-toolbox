@@ -1,5 +1,16 @@
 # Changelog
 
+## [6.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.3...v6.0.0) (2026-07-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* the root YAML keys model, permissions, attribution, always-thinking-enabled, company-announcements, env-variables, and effort-level are no longer supported and are reported as unknown keys. Migrate them into the user-settings section using camelCase settings.json names: model, permissions (defaultMode, additionalDirectories, allow, deny, ask), attribution, alwaysThinkingEnabled, companyAnnouncements, effortLevel, and env replacing env-variables (values must be strings, or null to delete). env-variables is no longer a valid merge-keys entry; list user-settings instead to deep-merge env across inherited configs. A CLAUDE_CONFIG_DIR isolation-directory override belongs in user-settings.env.
+
+### Features
+
+* move all Claude Code settings to user-settings and global-config ([2d53d5e](https://github.com/alex-feel/claude-code-toolbox/commit/2d53d5e657ba5c1cabd41be2c5035eb537ea73be))
+
 ## [5.17.3](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.2...v5.17.3) (2026-06-30)
 
 
