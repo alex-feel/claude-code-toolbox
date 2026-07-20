@@ -1,10 +1,15 @@
 """Tests for file download functionality in setup_environment.py."""
 
 import os
+import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
+from scripts.setup_environment import _write_file_atomic
 from scripts.setup_environment import process_file_downloads
 
 
@@ -184,6 +189,23 @@ class TestProcessFileDownloads:
         # Filename should be 'file.txt', not 'file.txt?raw=true'
         assert dest_path.name == 'file.txt'
 
+    @patch('scripts.setup_environment.handle_resource')
+    def test_process_file_downloads_gitlab_api_source_real_filename(
+        self, mock_handle: MagicMock,
+    ) -> None:
+        """A GitLab API raw-file source deploys under its decoded filename, not 'raw'."""
+        mock_handle.return_value = True
+
+        file_specs = [{
+            'source': 'https://gitlab.com/api/v4/projects/123/repository/files/configs%2Fsettings.json/raw?ref=main',
+            'dest': '~/dest/',
+        }]
+        process_file_downloads(file_specs, 'config.yaml')
+
+        call_args = mock_handle.call_args[0]
+        dest_path = call_args[1]
+        assert dest_path.name == 'settings.json'
+
     @patch('scripts.setup_environment.success')
     @patch('scripts.setup_environment.handle_resource')
     def test_process_file_downloads_multiple_files(
@@ -322,3 +344,150 @@ class TestProcessFileDownloads:
         process_file_downloads(file_specs, 'config.yaml')
 
         mock_normalize.assert_called_once_with('~/test.txt')
+
+
+class TestProcessFileDownloadsSameDestDedupe:
+    """Entries resolving to the same final file are deduplicated before the parallel phase."""
+
+    @patch('scripts.setup_environment.warning')
+    @patch('scripts.setup_environment.handle_resource')
+    def test_same_explicit_dest_downloads_last_only(
+        self, mock_handle: MagicMock, mock_warning: MagicMock,
+    ) -> None:
+        """Two entries with the same explicit dest download only the last source."""
+        mock_handle.return_value = True
+
+        file_specs = [
+            {'source': 'v1/file.txt', 'dest': '~/file.txt'},
+            {'source': 'v2/file.txt', 'dest': '~/file.txt'},
+        ]
+        result = process_file_downloads(file_specs, 'config.yaml')
+
+        assert result is True
+        assert mock_handle.call_count == 1
+        assert mock_handle.call_args[0][0] == 'v2/file.txt'
+        assert mock_warning.call_count == 1
+        warning_text = mock_warning.call_args[0][0]
+        assert 'same destination' in warning_text
+        assert 'v1/file.txt' in warning_text
+
+    @patch('scripts.setup_environment.warning')
+    @patch('scripts.setup_environment.handle_resource')
+    def test_directory_and_explicit_dest_resolving_same_path_deduped(
+        self, mock_handle: MagicMock, mock_warning: MagicMock,
+    ) -> None:
+        """A directory-form dest and an explicit file dest resolving to one path race no more."""
+        mock_handle.return_value = True
+
+        file_specs = [
+            {'source': 'v1/file.txt', 'dest': '~/target/'},
+            {'source': 'v2/file.txt', 'dest': '~/target/file.txt'},
+        ]
+        result = process_file_downloads(file_specs, 'config.yaml')
+
+        assert result is True
+        assert mock_handle.call_count == 1
+        assert mock_handle.call_args[0][0] == 'v2/file.txt'
+        assert mock_handle.call_args[0][1].name == 'file.txt'
+        assert mock_warning.call_count == 1
+
+    @patch('scripts.setup_environment.warning')
+    @patch('scripts.setup_environment.handle_resource')
+    def test_distinct_dests_not_deduped(
+        self, mock_handle: MagicMock, mock_warning: MagicMock,
+    ) -> None:
+        """Entries with distinct final paths all download without warnings."""
+        mock_handle.return_value = True
+
+        file_specs = [
+            {'source': 'hooks/hook_config_loader.py', 'dest': '~/hooks/'},
+            {'source': 'hooks/hook_json_output.py', 'dest': '~/hooks/'},
+            {'source': 'hooks/hook_bypass_detection.py', 'dest': '~/hooks/'},
+        ]
+        result = process_file_downloads(file_specs, 'config.yaml')
+
+        assert result is True
+        assert mock_handle.call_count == 3
+        mock_warning.assert_not_called()
+
+
+class TestWriteFileAtomic:
+    """Test the temp-file-plus-rename atomic write helper."""
+
+    def test_writes_content_and_leaves_no_temp_files(self) -> None:
+        """Content lands at the destination with no temp file left behind."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+            _write_file_atomic(dest, lambda p: p.write_text('payload', encoding='utf-8'))
+
+            assert dest.read_text(encoding='utf-8') == 'payload'
+            assert [f.name for f in Path(tmpdir).iterdir()] == ['out.txt']
+
+    def test_overwrites_existing_destination(self) -> None:
+        """An existing destination is replaced with the new content."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+            dest.write_text('old', encoding='utf-8')
+
+            _write_file_atomic(dest, lambda p: p.write_text('new', encoding='utf-8'))
+
+            assert dest.read_text(encoding='utf-8') == 'new'
+
+    def test_failed_write_preserves_existing_destination(self) -> None:
+        """A writer failure leaves the previous content intact and cleans up the temp file."""
+        def failing_writer(path: Path) -> None:
+            path.write_text('partial', encoding='utf-8')
+            raise OSError('simulated mid-write failure')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+            dest.write_text('old', encoding='utf-8')
+
+            with pytest.raises(OSError, match='simulated mid-write failure'):
+                _write_file_atomic(dest, failing_writer)
+
+            assert dest.read_text(encoding='utf-8') == 'old'
+            assert [f.name for f in Path(tmpdir).iterdir()] == ['out.txt']
+
+    def test_failed_write_creates_no_destination(self) -> None:
+        """A writer failure for a new file leaves no destination and no temp file."""
+        def failing_writer(_path: Path) -> None:
+            raise OSError('simulated failure')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+
+            with pytest.raises(OSError, match='simulated failure'):
+                _write_file_atomic(dest, failing_writer)
+
+            assert not dest.exists()
+            assert list(Path(tmpdir).iterdir()) == []
+
+    def test_writes_bytes(self) -> None:
+        """Binary content is written intact."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.bin'
+            _write_file_atomic(dest, lambda p: p.write_bytes(b'\x00\x01\x02'))
+
+            assert dest.read_bytes() == b'\x00\x01\x02'
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file mode semantics')
+    def test_new_file_gets_default_mode(self) -> None:
+        """A newly created destination receives the conventional 0o644 mode."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+            _write_file_atomic(dest, lambda p: p.write_text('x', encoding='utf-8'))
+
+            assert dest.stat().st_mode & 0o777 == 0o644
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file mode semantics')
+    def test_existing_file_mode_preserved(self) -> None:
+        """An existing destination keeps its mode across an atomic overwrite."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dest = Path(tmpdir) / 'out.txt'
+            dest.write_text('old', encoding='utf-8')
+            os.chmod(dest, 0o600)
+
+            _write_file_atomic(dest, lambda p: p.write_text('new', encoding='utf-8'))
+
+            assert dest.stat().st_mode & 0o777 == 0o600

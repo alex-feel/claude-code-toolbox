@@ -5855,37 +5855,171 @@ class TestMergeKeys:
         """Named list: child replaces parent item at parent's position."""
         parent = [{'name': 'srv1', 'url': 'old'}, {'name': 'srv2', 'url': 'keep'}]
         child = [{'name': 'srv1', 'url': 'new'}]
-        result = setup_environment._merge_named_list(parent, child, 'name')
+        result = setup_environment._merge_named_list(parent, child, setup_environment._name_identity, 'mcp-servers')
         assert result == [{'name': 'srv1', 'url': 'new'}, {'name': 'srv2', 'url': 'keep'}]
 
     def test_merge_named_list_new_items_appended(self):
         """Named list: new child items are appended at the end."""
         parent = [{'name': 'srv1'}]
         child = [{'name': 'srv2'}]
-        result = setup_environment._merge_named_list(parent, child, 'name')
+        result = setup_environment._merge_named_list(parent, child, setup_environment._name_identity, 'mcp-servers')
         assert result == [{'name': 'srv1'}, {'name': 'srv2'}]
 
     def test_merge_named_list_mixed_replace_and_append(self):
         """Named list: some replaced in-position, some appended."""
         parent = [{'name': 'A', 'v': 1}, {'name': 'B', 'v': 2}]
         child = [{'name': 'B', 'v': 20}, {'name': 'C', 'v': 3}]
-        result = setup_environment._merge_named_list(parent, child, 'name')
+        result = setup_environment._merge_named_list(parent, child, setup_environment._name_identity, 'mcp-servers')
         assert result == [{'name': 'A', 'v': 1}, {'name': 'B', 'v': 20}, {'name': 'C', 'v': 3}]
 
     def test_merge_named_list_empty_lists(self):
         """Named list: empty parent and child."""
-        result = setup_environment._merge_named_list([], [], 'name')
+        result = setup_environment._merge_named_list([], [], setup_environment._name_identity, 'mcp-servers')
         assert result == []
 
     def test_merge_named_list_missing_identity_key(self):
         """Named list: items missing identity key are kept and appended independently."""
         parent = [{'v': 1}]
         child = [{'v': 2}]
-        result = setup_environment._merge_named_list(parent, child, 'name')
+        result = setup_environment._merge_named_list(parent, child, setup_environment._name_identity, 'mcp-servers')
         # Items without identity key are not matched; both are kept
         assert len(result) == 2
         assert result[0] == {'v': 1}
         assert result[1] == {'v': 2}
+
+    def test_merge_named_list_duplicate_identity_in_child_warns_keeps_last(self):
+        """Named list: duplicate identities within the child list collapse to the last with a warning."""
+        parent = [{'name': 'A', 'v': 1}]
+        child = [{'name': 'A', 'v': 2}, {'name': 'A', 'v': 3}]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._merge_named_list(
+                parent, child, setup_environment._name_identity, 'mcp-servers',
+            )
+        assert result == [{'name': 'A', 'v': 3}]
+        assert mock_warning.call_count == 1
+        assert "Duplicate identity 'A' in mcp-servers" in mock_warning.call_args[0][0]
+
+    def test_merge_named_list_duplicate_identity_in_parent_warns_keeps_last(self):
+        """Named list: duplicate identities within the parent list collapse to the last with a warning."""
+        parent = [{'name': 'A', 'v': 1}, {'name': 'A', 'v': 2}]
+        child = [{'name': 'B', 'v': 3}]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._merge_named_list(
+                parent, child, setup_environment._name_identity, 'skills',
+            )
+        assert result == [{'name': 'A', 'v': 2}, {'name': 'B', 'v': 3}]
+        assert mock_warning.call_count == 1
+        assert "Duplicate identity 'A' in skills" in mock_warning.call_args[0][0]
+
+    # === Identity function tests ===
+
+    def test_name_identity_returns_name(self):
+        """_name_identity returns the name as a string."""
+        assert setup_environment._name_identity({'name': 'srv1'}) == 'srv1'
+
+    def test_name_identity_missing_name_returns_none(self):
+        """_name_identity returns None when no name is present."""
+        assert setup_environment._name_identity({'url': 'x'}) is None
+
+    def test_files_download_identity_file_dest_passthrough(self):
+        """File-form dest (no trailing separator) is the identity as-is."""
+        item = {'source': 'configs/a.txt', 'dest': '~/.claude/a.txt'}
+        assert setup_environment._files_download_identity(item) == '~/.claude/a.txt'
+
+    def test_files_download_identity_directory_dest_appends_basename(self):
+        """Directory-form dest (trailing slash) appends the source basename."""
+        item = {'source': 'hooks/hook_config_loader.py', 'dest': '~/.claude/hooks/'}
+        assert setup_environment._files_download_identity(item) == '~/.claude/hooks/hook_config_loader.py'
+
+    def test_files_download_identity_backslash_directory_dest(self):
+        """Directory-form dest (trailing backslash) appends the source basename."""
+        item = {'source': 'hooks/loader.py', 'dest': '~\\.claude\\hooks\\'}
+        assert setup_environment._files_download_identity(item) == '~\\.claude\\hooks\\loader.py'
+
+    def test_files_download_identity_strips_query_params(self):
+        """Query parameters are stripped from the source before taking the basename."""
+        item = {'source': 'https://example.com/hooks/loader.py?ref=main&raw=true', 'dest': '~/.claude/hooks/'}
+        assert setup_environment._files_download_identity(item) == '~/.claude/hooks/loader.py'
+
+    def test_files_download_identity_missing_dest_returns_none(self):
+        """Entries without dest have no identity."""
+        assert setup_environment._files_download_identity({'source': 'a.txt'}) is None
+
+    def test_files_download_identity_matches_download_resolution(self):
+        """Merge identity mirrors the download-time destination resolution for URL sources."""
+        item = {'source': 'https://raw.githubusercontent.com/org/repo/main/libs/util.py', 'dest': '~/.claude/libs/'}
+        assert setup_environment._files_download_identity(item) == '~/.claude/libs/util.py'
+
+    # === _source_filename tests ===
+
+    def test_source_filename_plain_path(self):
+        """A plain relative path yields its basename."""
+        assert setup_environment._source_filename('configs/settings.json') == 'settings.json'
+
+    def test_source_filename_strips_query_params(self):
+        """Query parameters are stripped before taking the basename."""
+        assert setup_environment._source_filename('libs/util.py?raw=true&token=x') == 'util.py'
+
+    def test_source_filename_gitlab_api_url_decodes_encoded_path(self):
+        """GitLab API raw-file URLs yield the decoded real filename, not the literal 'raw'."""
+        url = 'https://gitlab.com/api/v4/projects/123/repository/files/configs%2Fsettings.json/raw?ref=main'
+        assert setup_environment._source_filename(url) == 'settings.json'
+
+    def test_source_filename_gitlab_api_url_unencoded_path(self):
+        """GitLab API URLs with an unencoded path segment also yield the real filename."""
+        url = 'https://gitlab.com/api/v4/projects/123/repository/files/configs/settings.json/raw?ref=main'
+        assert setup_environment._source_filename(url) == 'settings.json'
+
+    def test_source_filename_non_gitlab_raw_suffix_kept(self):
+        """A non-GitLab source whose last segment is 'raw' keeps that basename."""
+        assert setup_environment._source_filename('https://example.com/data/raw') == 'raw'
+
+    def test_files_download_identity_stable_across_gitlab_resolution(self):
+        """A raw relative source and its GitLab-API-resolved form produce the same identity."""
+        raw_entry = {'source': 'configs/settings.json', 'dest': '~/.claude/'}
+        resolved_entry = {
+            'source': 'https://gitlab.com/api/v4/projects/123/repository/files/configs%2Fsettings.json/raw?ref=main',
+            'dest': '~/.claude/',
+        }
+        raw_identity = setup_environment._files_download_identity(raw_entry)
+        resolved_identity = setup_environment._files_download_identity(resolved_entry)
+        assert raw_identity == resolved_identity == '~/.claude/settings.json'
+
+    def test_merge_config_key_files_to_download_gitlab_resolved_parent_overridden(self):
+        """A child raw-source entry overrides a parent whose source was resolved to a GitLab API URL."""
+        parent = [{
+            'source': 'https://gitlab.com/api/v4/projects/123/repository/files/configs%2Fsettings.json/raw?ref=main',
+            'dest': '~/.claude/',
+        }]
+        child = [{'source': 'configs/settings.json', 'dest': '~/.claude/'}]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [{'source': 'configs/settings.json', 'dest': '~/.claude/'}]
+
+    # === _dedupe_by_identity tests ===
+
+    def test_dedupe_by_identity_no_duplicates_unchanged(self):
+        """Lists without duplicate identities pass through unchanged and silently."""
+        items = [{'name': 'A'}, {'name': 'B'}]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._dedupe_by_identity(items, setup_environment._name_identity, 'skills')
+        assert result == items
+        mock_warning.assert_not_called()
+
+    def test_dedupe_by_identity_keeps_last_and_warns_per_dropped_entry(self):
+        """Each dropped earlier duplicate produces one warning; the last entry wins."""
+        items = [{'name': 'A', 'v': 1}, {'name': 'A', 'v': 2}, {'name': 'A', 'v': 3}]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._dedupe_by_identity(items, setup_environment._name_identity, 'skills')
+        assert result == [{'name': 'A', 'v': 3}]
+        assert mock_warning.call_count == 2
+
+    def test_dedupe_by_identity_none_identities_always_survive(self):
+        """Entries without an identity are never treated as duplicates."""
+        items = [{'v': 1}, {'v': 2}]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._dedupe_by_identity(items, setup_environment._name_identity, 'skills')
+        assert result == items
+        mock_warning.assert_not_called()
 
     def test_merge_hooks_files_dedup_events_concat(self):
         """Hooks merge: files deduped, events concatenated."""
@@ -5942,11 +6076,70 @@ class TestMergeKeys:
         assert result == [{'name': 'sk1', 'base': '/a'}, {'name': 'sk2', 'base': '/b'}]
 
     def test_merge_config_key_files_to_download(self):
-        """Dispatch: files-to-download uses named list merge by 'dest'."""
+        """Dispatch: files-to-download uses named list merge by final file path."""
         parent = [{'source': 'a', 'dest': '~/.claude/a.txt'}]
         child = [{'source': 'b', 'dest': '~/.claude/a.txt'}]
         result = setup_environment._merge_config_key('files-to-download', parent, child)
         assert result == [{'source': 'b', 'dest': '~/.claude/a.txt'}]
+
+    def test_merge_config_key_files_to_download_directory_dest_all_survive(self):
+        """Distinct files sharing a directory-form dest keep distinct identities and all survive."""
+        parent = [{'source': 'hooks/hook_config_loader.py', 'dest': '~/.claude/hooks/'}]
+        child = [
+            {'source': 'hooks/hook_json_output.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'hooks/hook_bypass_detection.py', 'dest': '~/.claude/hooks/'},
+        ]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [
+            {'source': 'hooks/hook_config_loader.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'hooks/hook_json_output.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'hooks/hook_bypass_detection.py', 'dest': '~/.claude/hooks/'},
+        ]
+
+    def test_merge_config_key_files_to_download_directory_dest_same_basename_overrides(self):
+        """A child directory-form entry with the same source basename replaces the parent in-position."""
+        parent = [
+            {'source': 'hooks/hook_config_loader.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'configs/other.txt', 'dest': '~/.claude/other.txt'},
+        ]
+        child = [{'source': 'patched/hook_config_loader.py', 'dest': '~/.claude/hooks/'}]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [
+            {'source': 'patched/hook_config_loader.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'configs/other.txt', 'dest': '~/.claude/other.txt'},
+        ]
+
+    def test_merge_config_key_files_to_download_directory_vs_explicit_dest_match(self):
+        """A parent directory-form dest and a child explicit file dest resolving to the same path match."""
+        parent = [{'source': 'hooks/hook_config_loader.py', 'dest': '~/.claude/hooks/'}]
+        child = [{'source': 'patched/hook_config_loader.py', 'dest': '~/.claude/hooks/hook_config_loader.py'}]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [
+            {'source': 'patched/hook_config_loader.py', 'dest': '~/.claude/hooks/hook_config_loader.py'},
+        ]
+
+    def test_merge_config_key_files_to_download_query_param_source_matches(self):
+        """Query-param sources normalize to the same identity as the clean source."""
+        parent = [{'source': 'hooks/loader.py', 'dest': '~/.claude/hooks/'}]
+        child = [{'source': 'https://example.com/hooks/loader.py?token=x', 'dest': '~/.claude/hooks/'}]
+        result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [
+            {'source': 'https://example.com/hooks/loader.py?token=x', 'dest': '~/.claude/hooks/'},
+        ]
+
+    def test_merge_config_key_files_to_download_duplicate_directory_dest_in_one_list_warns(self):
+        """Two same-final-path entries within one list collapse to the last with a warning."""
+        parent = []
+        child = [
+            {'source': 'v1/hook_config_loader.py', 'dest': '~/.claude/hooks/'},
+            {'source': 'v2/hook_config_loader.py', 'dest': '~/.claude/hooks/'},
+        ]
+        with patch('setup_environment.warning') as mock_warning:
+            result = setup_environment._merge_config_key('files-to-download', parent, child)
+        assert result == [{'source': 'v2/hook_config_loader.py', 'dest': '~/.claude/hooks/'}]
+        assert mock_warning.call_count == 1
+        warning_text = mock_warning.call_args[0][0]
+        assert "Duplicate identity '~/.claude/hooks/hook_config_loader.py' in files-to-download" in warning_text
 
     def test_merge_config_key_dependencies(self):
         """Dispatch: dependencies uses per-platform merge."""

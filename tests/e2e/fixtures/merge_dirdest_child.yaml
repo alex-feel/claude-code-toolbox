@@ -1,0 +1,14 @@
+# Child config composing shared libraries into a directory-form dest
+name: "DirDest Child"
+
+inherit: merge_dirdest_parent.yaml
+merge-keys:
+  - files-to-download
+
+files-to-download:
+  - source: "configs/hook_json_output.py"
+    dest: "~/.claude/hooks/"
+  - source: "configs/hook_bypass_detection.py?raw=true"
+    dest: "~/.claude/hooks/"
+  - source: "configs/patched/hook_config_loader.py"
+    dest: "~/.claude/hooks/hook_config_loader.py"
