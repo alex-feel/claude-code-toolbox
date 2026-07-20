@@ -288,3 +288,47 @@ class TestMixedMergeAndReplace:
         assert len(resolved['agents']) == 2
         # Replaced key (name is not in merge-keys)
         assert resolved['name'] == 'Merge Child'
+
+
+class TestFilesToDownloadDirectoryDestMerge:
+    """Test files-to-download merge identity for directory-form destinations.
+
+    Merge identity is the normalized final file path: a dest ending with a
+    path separator is combined with the source basename (query parameters
+    stripped), so distinct files sharing a directory dest keep distinct
+    identities and all survive composition.
+    """
+
+    def _resolved_files(self, fixtures_dir: Path) -> list[dict[str, Any]]:
+        child_path = fixtures_dir / 'merge_dirdest_child.yaml'
+        config = _load_yaml(child_path)
+        resolved, _ = _resolve(config, str(child_path))
+        return resolved['files-to-download']
+
+    def test_all_directory_dest_entries_survive(self, fixtures_dir):
+        """Distinct libraries sharing a directory-form dest all survive the merge."""
+        files = self._resolved_files(fixtures_dir)
+        identities = [setup_environment._files_download_identity(f) for f in files]
+        assert '~/.claude/hooks/hook_json_output.py' in identities
+        assert '~/.claude/hooks/hook_bypass_detection.py' in identities
+        assert '~/.claude/hooks/hook_config_loader.py' in identities
+        assert len(files) == 4
+
+    def test_explicit_child_dest_replaces_parent_directory_entry_in_position(self, fixtures_dir):
+        """A child explicit file dest replaces the parent's matching directory-form entry in-position."""
+        files = self._resolved_files(fixtures_dir)
+        assert files[0]['dest'] == '~/.claude/hooks/hook_config_loader.py'
+        assert files[0]['source'].replace('\\', '/').endswith('configs/patched/hook_config_loader.py')
+
+    def test_parent_explicit_entry_preserved(self, fixtures_dir):
+        """The parent's unrelated explicit-file entry is preserved at its position."""
+        files = self._resolved_files(fixtures_dir)
+        assert files[1]['dest'] == '~/.claude/parent-only.txt'
+
+    def test_query_param_source_keeps_own_identity(self, fixtures_dir):
+        """A query-param source contributes its clean basename to the identity."""
+        files = self._resolved_files(fixtures_dir)
+        query_entries = [f for f in files if '?' in f['source']]
+        assert len(query_entries) == 1
+        identity = setup_environment._files_download_identity(query_entries[0])
+        assert identity == '~/.claude/hooks/hook_bypass_detection.py'

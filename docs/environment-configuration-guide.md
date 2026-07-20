@@ -461,7 +461,7 @@ Skill configurations. Each skill is a set of files placed in `~/.claude/skills/{
 
 - **Type:** `list[Skill] | None`
 - **Default:** `[]`
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child skills with the same name replace the parent skill in-position (at the parent's original index). New child skills are appended at the end.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child skills with the same name replace the parent skill in-position (at the parent's original index). New child skills are appended at the end. Duplicate names within one list are collapsed to the last entry with a warning.
 - **Skill fields:**
   - `name` (str, required): Skill identifier
   - `base` (str, required): Base URL or local path for skill files
@@ -488,7 +488,8 @@ Arbitrary files to download during setup. Each entry specifies a source and a de
   - `dest` (str, required): Destination path (supports `~` expansion)
 - **Validation:** Paths cannot be empty or contain null bytes
 - **Security:** Destinations matching sensitive path prefixes (for example, `~/.ssh/`, `~/.bashrc`) are flagged with `[!]` in the installation summary
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `dest` field. Child entries with the same destination replace the parent entry in-position. New child entries are appended at the end.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by the normalized final file path. A `dest` ending with `/` or `\` is a directory destination, so its identity is `dest` plus the source filename (query parameters stripped; for GitLab API raw-file URLs the real filename is decoded from the URL-encoded path segment) -- the trailing-separator form is the only directory form the merge identity recognizes, and the normalization is purely lexical (no filesystem checks). The filename derivation is stable across source resolution, so a parent whose sources were already resolved to absolute URLs matches a child entry written with a relative source. Distinct files sharing a directory dest therefore keep distinct identities and all survive the merge. Child entries whose final file path matches a parent entry replace it in-position; new child entries are appended at the end. Duplicate identities within one list are collapsed to the last entry with a warning.
+- **Download deduplication:** After merging, entries that still resolve to the same final file (for example, a directory-form dest and an explicit file dest naming the same path) are deduplicated before the parallel download phase: the last entry wins and each skipped entry is reported with a warning. Files are written atomically (temp file plus rename), so an interrupted or concurrent write never leaves a partially-written destination.
 - **Example:**
 
 ```yaml
@@ -504,7 +505,7 @@ MCP (Model Context Protocol) servers extend Claude Code with additional capabili
 - **Type:** `list[dict] | None`
 - **Default:** `[]`
 - **Note:** Each server must have a `name` field
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child servers with the same name replace the parent server in-position (at the parent's original index). New child servers are appended at the end.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: identity-based merge by `name` field. Child servers with the same name replace the parent server in-position (at the parent's original index). New child servers are appended at the end. Duplicate names within one list are collapsed to the last entry with a warning.
 
 #### HTTP Transport
 
@@ -1391,16 +1392,18 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 
 #### Merge Strategies by Key Type
 
-| Type                   | Keys                                | Strategy                                                                              |
-|------------------------|-------------------------------------|---------------------------------------------------------------------------------------|
-| String list            | `agents`, `slash-commands`, `rules` | Concatenate parent + child; deduplicate by string equality; parent items first        |
-| Named list (by `name`) | `mcp-servers`, `skills`             | Identity-based: child overrides parent in-position; new items appended                |
-| Named list (by `dest`) | `files-to-download`                 | Identity-based: child overrides parent in-position; new items appended                |
-| Per-platform dict      | `dependencies`                      | Per-platform sub-key list concatenation with deduplication                            |
-| Composite              | `hooks`                             | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
-| Deep dict              | `global-config`                     | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)   |
-| Deep dict              | `user-settings`                     | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only) |
-| Shallow dict           | `os-env-variables`                  | Shallow merge; child overrides; `null` deletes (RFC 7396)                             |
+| Type                            | Keys                                | Strategy                                                                               |
+|---------------------------------|-------------------------------------|----------------------------------------------------------------------------------------|
+| String list                     | `agents`, `slash-commands`, `rules` | Concatenate parent + child; deduplicate by string equality; parent items first         |
+| Named list (by `name`)          | `mcp-servers`, `skills`             | Identity-based: child overrides parent in-position; new items appended                 |
+| Named list (by final file path) | `files-to-download`                 | Identity-based: child overrides parent in-position; new items appended                 |
+| Per-platform dict               | `dependencies`                      | Per-platform sub-key list concatenation with deduplication                             |
+| Composite                       | `hooks`                             | `files`: concat + dedup by full path; `events`: concat (no dedup)                      |
+| Deep dict                       | `global-config`                     | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)    |
+| Deep dict                       | `user-settings`                     | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only)  |
+| Shallow dict                    | `os-env-variables`                  | Shallow merge; child overrides; `null` deletes (RFC 7396)                              |
+
+The `files-to-download` identity is the normalized final file path: a `dest` ending with `/` or `\` is combined with the source filename (query parameters stripped) before matching, so distinct files sharing a directory dest keep distinct identities. See [`files-to-download`](#files-to-download) for details.
 
 > **Note:** The `global-config` and `user-settings` rows above describe the YAML inheritance layer only -- how `merge-keys` composes parent and child configurations before the writer touches disk. The `user-settings` deep merge covers its nested `env` block (Claude-session environment variables). The on-disk writers (`write_global_config()`, `write_user_settings()`, `write_profile_settings_to_settings()`) use the universal array-union contract: every list at every depth is unioned with structural dedupe, independent of `DEFAULT_ARRAY_UNION_KEYS`. See [Profile-Level Settings Routing](#profile-level-settings-routing) for the on-disk write contract.
 

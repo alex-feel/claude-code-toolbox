@@ -5301,44 +5301,163 @@ def _merge_string_list(
     return result
 
 
+def _name_identity(item: dict[str, Any]) -> str | None:
+    """Compute the merge identity of a named entry (mcp-servers, skills).
+
+    Args:
+        item: An entry dict with a 'name' key.
+
+    Returns:
+        The name as a string, or None when the entry has no name.
+    """
+    name = item.get('name')
+    return None if name is None else str(name)
+
+
+def _source_filename(source: str) -> str:
+    """Derive the deployed filename a directory-form dest receives for a source.
+
+    Strips query parameters and takes the last path segment. GitLab API
+    raw-file URLs ({base}/api/v4/projects/{id}/repository/files/{encoded
+    path}/raw?ref=...) carry the real filename inside the URL-encoded path
+    segment while their last path segment is the literal 'raw', so for them
+    the encoded segment is decoded and its basename used instead. Purely
+    lexical (no filesystem or network access), so the result is identical
+    whether the source is still relative or already resolved to a URL.
+
+    Args:
+        source: Source path or URL from a files-to-download entry.
+
+    Returns:
+        The filename to append to a directory-form dest.
+    """
+    clean_source = source.split('?')[0]
+    if (
+        clean_source.endswith('/raw')
+        and '/api/v4/projects/' in clean_source
+        and '/repository/files/' in clean_source
+    ):
+        encoded_path = clean_source.split('/repository/files/')[-1].removesuffix('/raw')
+        return Path(urllib.parse.unquote(encoded_path)).name
+    return Path(clean_source).name
+
+
+def _files_download_identity(item: dict[str, Any]) -> str | None:
+    """Compute the merge identity of a files-to-download entry.
+
+    The identity is the final deployed file path in lexical form. A dest
+    ending with a path separator ('/' or '\\') is a directory destination,
+    so the filename from _source_filename() is appended, mirroring the
+    destination resolution in process_file_downloads(), which uses the same
+    helper. The check is purely lexical (no filesystem access) so that
+    inheritance resolution behaves identically on machines whose filesystem
+    does not match the target: a dest without a trailing separator is
+    treated as a file path even if a directory exists at that path at
+    download time.
+
+    Args:
+        item: An entry dict with 'source' and 'dest' keys.
+
+    Returns:
+        The identity string, or None when the entry has no dest.
+    """
+    dest = item.get('dest')
+    if dest is None:
+        return None
+    dest_str = str(dest)
+    if dest_str.endswith(('/', '\\')):
+        return dest_str + _source_filename(str(item.get('source', '')))
+    return dest_str
+
+
+def _dedupe_by_identity(
+    items: list[dict[str, Any]],
+    identity_fn: Callable[[dict[str, Any]], str | None],
+    section: str,
+) -> list[dict[str, Any]]:
+    """Drop entries sharing an identity, keeping only the last occurrence.
+
+    Entries with the same identity resolve to the same final artifact, so
+    only one can take effect; the last one is kept to match the
+    later-overrides-earlier merge semantics, and every dropped entry is
+    reported with a warning instead of disappearing silently.
+
+    Args:
+        items: List of entry dicts.
+        identity_fn: Callable computing an entry's identity (None means the
+            entry has no identity and always survives).
+        section: Configuration section name used in warning messages.
+
+    Returns:
+        The list with earlier duplicate-identity entries removed.
+    """
+    last_index: dict[str, int] = {}
+    for idx, item in enumerate(items):
+        key = identity_fn(item)
+        if key is not None:
+            last_index[key] = idx
+
+    result: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        key = identity_fn(item)
+        if key is not None and last_index[key] != idx:
+            warning(
+                f"Duplicate identity '{key}' in {section}: "
+                f'ignoring an earlier entry in favor of the last one',
+            )
+            continue
+        result.append(item)
+    return result
+
+
 def _merge_named_list(
     parent_list: list[dict[str, Any]],
     child_list: list[dict[str, Any]],
-    identity_key: str,
+    identity_fn: Callable[[dict[str, Any]], str | None],
+    section: str,
 ) -> list[dict[str, Any]]:
     """Merge named lists with in-position replacement for matching identities.
 
-    Child items sharing a parent item's identity replace it at the parent's
+    Identities are computed by identity_fn (the 'name' field for mcp-servers
+    and skills, the normalized final file path for files-to-download). Child
+    items sharing a parent item's identity replace it at the parent's
     original position. New child items (no matching parent) are appended.
+    Duplicate identities within either input list are collapsed to the last
+    occurrence with a warning before merging.
 
     Args:
         parent_list: Base list of dicts.
         child_list: Override list of dicts.
-        identity_key: Dict key used as the identity for matching.
+        identity_fn: Callable computing an entry's identity (None means the
+            entry has no identity, never matches, and is always kept).
+        section: Configuration section name used in duplicate warnings.
 
     Returns:
         Merged list preserving parent ordering with child overrides and appends.
     """
+    parent_list = _dedupe_by_identity(parent_list, identity_fn, section)
+    child_list = _dedupe_by_identity(child_list, identity_fn, section)
+
     child_by_id: dict[str, dict[str, Any]] = {}
     for item in child_list:
-        key = item.get(identity_key)
+        key = identity_fn(item)
         if key is not None:
-            child_by_id[str(key)] = item
+            child_by_id[key] = item
 
     consumed: set[str] = set()
     result: list[dict[str, Any]] = []
 
     for parent_item in parent_list:
-        parent_key = str(parent_item.get(identity_key, ''))
-        if parent_key in child_by_id:
+        parent_key = identity_fn(parent_item)
+        if parent_key is not None and parent_key in child_by_id:
             result.append(child_by_id[parent_key])
             consumed.add(parent_key)
         else:
             result.append(parent_item)
 
     for item in child_list:
-        key = str(item.get(identity_key, ''))
-        if key not in consumed:
+        key = identity_fn(item)
+        if key is None or key not in consumed:
             result.append(item)
 
     return result
@@ -5424,13 +5543,13 @@ def _merge_config_key(
     if key in ('mcp-servers', 'skills'):
         p_named = cast(list[dict[str, object]], parent_value) if isinstance(parent_value, list) else []
         c_named = cast(list[dict[str, object]], child_value) if isinstance(child_value, list) else []
-        return _merge_named_list(p_named, c_named, 'name')
+        return _merge_named_list(p_named, c_named, _name_identity, key)
 
-    # Named list key with identity by 'dest'
+    # Named list key with identity by the normalized final file path
     if key == 'files-to-download':
         p_files = cast(list[dict[str, object]], parent_value) if isinstance(parent_value, list) else []
         c_files = cast(list[dict[str, object]], child_value) if isinstance(child_value, list) else []
-        return _merge_named_list(p_files, c_files, 'dest')
+        return _merge_named_list(p_files, c_files, _files_download_identity, key)
 
     # Dependencies: per-platform merge
     if key == 'dependencies':
@@ -8089,6 +8208,36 @@ def extract_front_matter(file_path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _write_file_atomic(destination: Path, write_to: Callable[[Path], object]) -> None:
+    """Write a file atomically via a same-directory temp file and os.replace().
+
+    The content is written to a uniquely-named temporary file in the
+    destination's directory and then moved into place with os.replace(), so
+    a reader (or a concurrent writer targeting the same path) can never
+    observe a partially-written destination: it sees either the old file or
+    the complete new one.
+
+    Args:
+        destination: Final file path; its parent directory must exist.
+        write_to: Callable that writes the content to the given temp path.
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=str(destination.parent), prefix=f'.{destination.name}.', suffix='.tmp')
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        # mkstemp creates the file with restrictive 0o600 permissions; align
+        # with the destination's existing mode (or the conventional 0o644 for
+        # new files) before writing. shutil.copy2 writers subsequently apply
+        # the source file's mode on top, matching a direct copy's semantics.
+        if os.name != 'nt':
+            mode = destination.stat().st_mode & 0o777 if destination.exists() else 0o644
+            os.chmod(tmp_path, mode)
+        write_to(tmp_path)
+        os.replace(tmp_path, destination)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
 def handle_resource(
     resource_path: str,
     destination: Path,
@@ -8130,13 +8279,13 @@ def handle_resource(
                 content_bytes = fetch_url_bytes_with_auth(
                     resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
                 )
-                destination.write_bytes(content_bytes)
+                _write_file_atomic(destination, lambda p: p.write_bytes(content_bytes))
             else:
                 # Text file - fetch as text and write text
                 content = fetch_url_with_auth(
                     resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
                 )
-                destination.write_text(content, encoding='utf-8')
+                _write_file_atomic(destination, lambda p: p.write_text(content, encoding='utf-8'))
             success(f'Downloaded: {filename}')
         else:
             # Copy from local path
@@ -8146,7 +8295,7 @@ def handle_resource(
                 return False
 
             # Copy the file
-            shutil.copy2(source_path, destination)
+            _write_file_atomic(destination, lambda p: shutil.copy2(source_path, p))
             success(f'Copied: {filename} from {source_path}')
 
         return True
@@ -8280,12 +8429,27 @@ def process_file_downloads(
         # If dest ends with separator or is existing directory, append source filename
         dest_str = str(dest)
         if dest_str.endswith(('/', '\\')) or (dest_path.exists() and dest_path.is_dir()):
-            # Extract filename from source (remove query params if present)
-            clean_source = str(source).split('?')[0]
-            filename = Path(clean_source).name
-            dest_path = dest_path / filename
+            dest_path = dest_path / _source_filename(str(source))
 
         valid_downloads.append((str(source), dest_path))
+
+    # Entries resolving to the same final file would race in the parallel
+    # download phase; keep only the last one (later-overrides-earlier
+    # semantics) and warn about each skipped entry.
+    last_by_dest: dict[Path, int] = {}
+    for idx, (_, dest_path) in enumerate(valid_downloads):
+        last_by_dest[dest_path] = idx
+    if len(last_by_dest) < len(valid_downloads):
+        deduped_downloads: list[tuple[str, Path]] = []
+        for idx, (source_str, dest_path) in enumerate(valid_downloads):
+            if last_by_dest[dest_path] != idx:
+                warning(
+                    f"Multiple entries resolve to the same destination '{dest_path}': "
+                    f"skipping earlier source '{source_str}'",
+                )
+                continue
+            deduped_downloads.append((source_str, dest_path))
+        valid_downloads = deduped_downloads
 
     # Per-batch coordinator shares rate-limit state across download threads
     rate_limiter = RateLimitCoordinator()

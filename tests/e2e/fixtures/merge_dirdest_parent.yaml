@@ -1,0 +1,8 @@
+# Base config for directory-form dest merge E2E testing
+name: "DirDest Parent"
+
+files-to-download:
+  - source: "configs/hook_config_loader.py"
+    dest: "~/.claude/hooks/"
+  - source: "configs/parent-only.txt"
+    dest: "~/.claude/parent-only.txt"
