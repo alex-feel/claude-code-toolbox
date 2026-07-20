@@ -1,5 +1,12 @@
 # Changelog
 
+## [6.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v6.0.0...v6.0.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* merge files-to-download by final file path and make downloads atomic ([bf124b8](https://github.com/alex-feel/claude-code-toolbox/commit/bf124b88de5143864ab840a149fb94c301db4db1))
+
 ## [6.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v5.17.3...v6.0.0) (2026-07-03)
 
 
