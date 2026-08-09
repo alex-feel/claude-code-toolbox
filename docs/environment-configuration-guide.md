@@ -2190,7 +2190,7 @@ The interactive picker runs only when the configuration defines `components`, no
 
 ### Numbered picker instead of the checkbox
 
-When the `questionary` library is not installed (for example, when running the standalone script without `uv`) or the console cannot render the interactive checkbox (for example, older mintty terminals on Windows), the setup falls back to a numbered toggle prompt with the same semantics. Enter a number to toggle a component, `a` to select all, `n` to select none, and press Enter to confirm.
+When the `questionary` library is not installed (for example, when running the standalone script without `uv`) or the console cannot render the interactive checkbox (for example, older mintty terminals on Windows), the setup falls back to a numbered toggle prompt with the same semantics. Enter a number to toggle a component, `a` to select all, `n` to select none, and press Enter to confirm. Ctrl-C cancels the setup without installing anything, exactly as in the checkbox picker.
 
 ### Invalid platform keys in dependencies
 

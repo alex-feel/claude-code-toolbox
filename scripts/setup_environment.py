@@ -2863,8 +2863,10 @@ def _prompt_component_selection_numbered(
 ) -> list[str] | None:
     """Numbered toggle-loop fallback picker (Tier 2).
 
-    Uses _get_user_confirmation, which itself falls back to /dev/tty for
-    piped stdin on Unix.
+    Uses _read_user_input, which falls back to /dev/tty for piped stdin
+    on Unix. Ctrl-C exits the setup with code 0, mirroring the questionary
+    tier; a confirmation-style swallow would silently install the partial
+    selection the user was abandoning.
 
     Args:
         names: Component names in registry order.
@@ -2883,9 +2885,13 @@ def _prompt_component_selection_numbered(
             mark = '[x]' if name in selected else '[ ]'
             print(f'  {number}. {mark} {labels.get(name, name)}')
         try:
-            response = _get_user_confirmation(
+            response = _read_user_input(
                 "Toggle by number, 'a' = all, 'n' = none, Enter = confirm: ",
             ).strip().lower()
+        except KeyboardInterrupt:
+            print()
+            info('Selection cancelled.')
+            sys.exit(0)
         except (EOFError, OSError):
             return None
         if not response:
@@ -7196,24 +7202,27 @@ def _dev_tty_available() -> bool:
     return False
 
 
-def _get_user_confirmation(prompt: str) -> str:
-    """Get user input with /dev/tty fallback for piped stdin.
+def _read_user_input(prompt: str) -> str:
+    """Read one line of user input with /dev/tty fallback for piped stdin.
 
     On Unix systems, when stdin is not a TTY (e.g., curl | bash),
     attempts to read from /dev/tty as a best-effort fallback. This is
-    a standard pattern used by sudo, ssh, and gpg.
+    a standard pattern used by sudo, ssh, and gpg. A Ctrl-C
+    KeyboardInterrupt deliberately propagates to the caller so
+    interactive flows can distinguish cancellation from an empty answer.
 
     Args:
         prompt: The prompt string to display.
 
     Returns:
-        User's input string (stripped), or empty string on EOF/error.
+        User's input string (stripped), or empty string when no
+        interactive input is available.
     """
     # Try stdin first if it's a TTY
     if sys.stdin.isatty():
         try:
             return input(prompt).strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             return ''
 
     # Best-effort /dev/tty fallback (Unix only)
@@ -7229,6 +7238,24 @@ def _get_user_confirmation(prompt: str) -> str:
 
     # No interactive input available
     return ''
+
+
+def _get_user_confirmation(prompt: str) -> str:
+    """Get user input with /dev/tty fallback for piped stdin.
+
+    Wraps _read_user_input(), converting Ctrl-C into an empty string so
+    confirmation prompts treat cancellation as a denial.
+
+    Args:
+        prompt: The prompt string to display.
+
+    Returns:
+        User's input string (stripped), or empty string on EOF/error/Ctrl-C.
+    """
+    try:
+        return _read_user_input(prompt)
+    except KeyboardInterrupt:
+        return ''
 
 
 def confirm_installation(

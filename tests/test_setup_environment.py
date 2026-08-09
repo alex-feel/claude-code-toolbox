@@ -15984,7 +15984,7 @@ class TestPromptComponentSelection:
         """A missing questionary module falls back to the numbered picker."""
         with (
             patch.dict(sys.modules, {'questionary': None}),
-            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+            patch.object(setup_environment, '_read_user_input', return_value=''),
         ):
             result = setup_environment.prompt_component_selection(
                 self._components(), ['core'], 'Test Env', 'test.yaml',
@@ -15997,7 +15997,7 @@ class TestPromptComponentSelection:
         mock_questionary.checkbox.side_effect = RuntimeError('NoConsoleScreenBufferError')
         with (
             patch.dict(sys.modules, {'questionary': mock_questionary}),
-            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+            patch.object(setup_environment, '_read_user_input', return_value=''),
         ):
             result = setup_environment.prompt_component_selection(
                 self._components(), ['core'], 'Test Env', 'test.yaml',
@@ -16009,7 +16009,7 @@ class TestPromptComponentSelection:
         responses = iter(['2', 'bogus', 'a', 'n', '1', ''])
         with patch.object(
             setup_environment,
-            '_get_user_confirmation',
+            '_read_user_input',
             side_effect=lambda _prompt: next(responses),
         ):
             result = setup_environment._prompt_component_selection_numbered(
@@ -16023,13 +16023,37 @@ class TestPromptComponentSelection:
         """Unavailable input (EOF) returns None so the caller keeps the seed."""
         with patch.object(
             setup_environment,
-            '_get_user_confirmation',
+            '_read_user_input',
             side_effect=EOFError,
         ):
             result = setup_environment._prompt_component_selection_numbered(
                 ['core'], {'core': 'Core'}, ['core'],
             )
         assert result is None
+
+    def test_numbered_ctrl_c_exits_zero(self) -> None:
+        """Ctrl-C in the numbered picker cancels the setup, mirroring Tier 1."""
+        with (
+            patch.object(
+                setup_environment,
+                '_read_user_input',
+                side_effect=KeyboardInterrupt,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment._prompt_component_selection_numbered(
+                ['core'], {'core': 'Core'}, ['core'],
+            )
+        assert exc_info.value.code == 0
+
+    def test_confirmation_wrapper_converts_ctrl_c_to_denial(self) -> None:
+        """_get_user_confirmation keeps its deny-on-Ctrl-C contract."""
+        with patch.object(
+            setup_environment,
+            '_read_user_input',
+            side_effect=KeyboardInterrupt,
+        ):
+            assert setup_environment._get_user_confirmation('proceed? ') == ''
 
 
 class TestDisplayComponentRegistry:
