@@ -131,6 +131,7 @@ class TestExecuteDeselectionCleanup:
         ):
             setup_environment.execute_deselection_cleanup(
                 deselected,
+                {},
                 agents_dir=dirs['agents'],
                 commands_dir=dirs['commands'],
                 rules_dir=dirs['rules'],
@@ -158,6 +159,7 @@ class TestExecuteDeselectionCleanup:
         with patch.object(setup_environment, 'success') as mock_success:
             setup_environment.execute_deselection_cleanup(
                 deselected,
+                {},
                 agents_dir=dirs['agents'],
                 commands_dir=dirs['commands'],
                 rules_dir=dirs['rules'],
@@ -166,6 +168,111 @@ class TestExecuteDeselectionCleanup:
                 is_isolated=True,
             )
         assert not mock_success.called
+
+    def test_basename_collision_with_surviving_item_is_skipped(self, tmp_path: Path) -> None:
+        """A deselected item sharing its basename with a kept item is never deleted."""
+        dirs = self._dirs(tmp_path)
+        (dirs['agents'] / 'reviewer.md').write_text('kept content')
+        deselected: dict[str, list[Any]] = {
+            'agents': ['team-a/reviewer.md'], 'slash-commands': [], 'rules': [],
+            'skills': [], 'mcp-servers': [], 'files-to-download': [],
+            'hooks-files': [], 'hooks-events': [],
+        }
+        surviving = {'agents': ['team-b/reviewer.md']}
+        setup_environment.execute_deselection_cleanup(
+            deselected, surviving,
+            agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+            rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+            hooks_dir=dirs['hookfiles'], is_isolated=True,
+        )
+        assert (dirs['agents'] / 'reviewer.md').read_text() == 'kept content'
+
+    def test_removal_name_mirrors_installer_not_source_filename(self, tmp_path: Path) -> None:
+        """GitLab API raw URLs remove the literal installed basename, like the installer."""
+        dirs = self._dirs(tmp_path)
+        url = 'https://gitlab.com/api/v4/projects/1/repository/files/agents%2Ffoo%2Emd/raw?ref=main'
+        (dirs['agents'] / 'raw').write_text('x')
+        deselected: dict[str, list[Any]] = {
+            'agents': [url], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [], 'files-to-download': [], 'hooks-files': [], 'hooks-events': [],
+        }
+        setup_environment.execute_deselection_cleanup(
+            deselected, {},
+            agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+            rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+            hooks_dir=dirs['hookfiles'], is_isolated=True,
+        )
+        assert not (dirs['agents'] / 'raw').exists()
+
+    def test_existing_directory_dest_removes_the_contained_file(self, tmp_path: Path) -> None:
+        """An is-dir dest without a trailing separator mirrors the installer's append."""
+        dirs = self._dirs(tmp_path)
+        dest_dir = tmp_path / 'dropzone'
+        dest_dir.mkdir()
+        (dest_dir / 'report.txt').write_text('x')
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [],
+            'files-to-download': [{'source': 'files/report.txt', 'dest': str(dest_dir)}],
+            'hooks-files': [], 'hooks-events': [],
+        }
+        with patch.object(setup_environment, 'normalize_tilde_path', side_effect=lambda p, **_: p):
+            setup_environment.execute_deselection_cleanup(
+                deselected, {},
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=True,
+            )
+        assert not (dest_dir / 'report.txt').exists()
+        assert dest_dir.is_dir()
+
+    def test_failed_mcp_remove_warns(self, tmp_path: Path) -> None:
+        """A non-zero claude mcp remove exit surfaces as a warning."""
+        dirs = self._dirs(tmp_path)
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [{'name': 'srv', 'scope': 'user'}],
+            'files-to-download': [], 'hooks-files': [], 'hooks-events': [],
+        }
+        with (
+            patch.object(setup_environment, 'find_command', return_value='claude'),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', 'permission denied'),
+            ),
+            patch.object(setup_environment, 'warning') as mock_warning,
+        ):
+            setup_environment.execute_deselection_cleanup(
+                deselected, {},
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=True,
+            )
+        assert any('permission denied' in str(c.args[0]) for c in mock_warning.call_args_list)
+
+    def test_non_isolated_run_strips_hooks_from_shared_settings(self, tmp_path: Path) -> None:
+        """The is_isolated gate routes hook reconciliation to the shared settings.json."""
+        dirs = self._dirs(tmp_path)
+        events = [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt', 'prompt': 'g', 'id': 'x'}]
+        fake_home = tmp_path / 'home'
+        cl_dir = fake_home / ('.cla' + 'ude')
+        cl_dir.mkdir(parents=True)
+        hooks_json = setup_environment._build_hooks_json({'events': events}, dirs['hookfiles'])
+        (cl_dir / 'settings.json').write_text(json.dumps({'hooks': hooks_json}))
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [], 'files-to-download': [], 'hooks-files': [],
+            'hooks-events': events,
+        }
+        with patch.object(setup_environment, 'get_real_user_home', return_value=fake_home):
+            setup_environment.execute_deselection_cleanup(
+                deselected, {},
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=False,
+            )
+        final = json.loads((cl_dir / 'settings.json').read_text())
+        assert final.get('hooks') in (None, {})
 
     def test_profile_scope_needs_no_explicit_removal(self, tmp_path: Path) -> None:
         """Profile-scoped servers are reconciled by the mcp.json rebuild."""
@@ -181,6 +288,7 @@ class TestExecuteDeselectionCleanup:
         ):
             setup_environment.execute_deselection_cleanup(
                 deselected,
+                {},
                 agents_dir=dirs['agents'],
                 commands_dir=dirs['commands'],
                 rules_dir=dirs['rules'],

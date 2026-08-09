@@ -2987,8 +2987,21 @@ def _strip_hooks_from_settings(
     return removed
 
 
+def _installed_resource_name(item: object) -> str:
+    """Compute the on-disk filename process_resources() installs an item under.
+
+    Args:
+        item: Resource path or URL as declared in the configuration.
+
+    Returns:
+        The plain query-stripped basename, exactly as the installer names it.
+    """
+    return Path(str(item).split('?')[0]).name
+
+
 def execute_deselection_cleanup(
     deselected: dict[str, list[Any]],
+    surviving_config: dict[str, Any],
     *,
     agents_dir: Path,
     commands_dir: Path,
@@ -3000,12 +3013,17 @@ def execute_deselection_cleanup(
     """Remove previously installed artifacts of deselected components.
 
     Mirrors each installer's target-path resolution so a re-run that
-    deselects a component uninstalls what an earlier run installed. Every
-    removal is tolerant: absent targets are skipped silently (a first run
-    has nothing to remove) and failures degrade to warnings.
+    deselects a component uninstalls what an earlier run installed. A
+    removal target that a surviving item of the same section also installs
+    to (a basename collision) is skipped with a notice, so cleanup never
+    deletes a file the current run keeps. Every removal is tolerant:
+    absent targets are skipped silently (a first run has nothing to
+    remove) and failures degrade to warnings.
 
     Args:
         deselected: Removal plan from collect_deselected_items().
+        surviving_config: The filtered configuration (after
+            apply_component_selection), used to protect surviving targets.
         agents_dir: Directory agent files install into.
         commands_dir: Directory slash-command files install into.
         rules_dir: Directory rule files install into.
@@ -3026,22 +3044,39 @@ def execute_deselection_cleanup(
         except OSError as e:
             warning(f'Cannot remove {path}: {e}')
 
+    def _surviving_names(section: str) -> set[str]:
+        if section == 'hooks-files':
+            hooks_raw = surviving_config.get('hooks')
+            items = cast(dict[str, Any], hooks_raw).get('files') or [] if isinstance(hooks_raw, dict) else []
+        else:
+            items = surviving_config.get(section) or []
+        return {_installed_resource_name(item) for item in cast(list[object], items)}
+
     for section, target_dir, description in (
         ('agents', agents_dir, 'agent'),
         ('slash-commands', commands_dir, 'slash command'),
         ('rules', rules_dir, 'rule'),
+        ('hooks-files', hooks_dir, 'hook file'),
     ):
+        surviving = _surviving_names(section)
         for item in deselected[section]:
-            _remove_file(target_dir / _source_filename(str(item)), description)
-
-    for file_path in deselected['hooks-files']:
-        _remove_file(hooks_dir / _source_filename(str(file_path)), 'hook file')
+            name = _installed_resource_name(item)
+            if name in surviving:
+                info(f"Keeping {description} '{name}': a selected item installs the same file")
+                continue
+            _remove_file(target_dir / name, description)
 
     for entry in deselected['files-to-download']:
         if isinstance(entry, dict):
-            identity = _files_download_identity(cast(dict[str, Any], entry))
+            entry_dict = cast(dict[str, Any], entry)
+            identity = _files_download_identity(entry_dict)
             if identity:
-                _remove_file(Path(normalize_tilde_path(identity.strip())), 'file')
+                target = Path(normalize_tilde_path(identity.strip()))
+                # process_file_downloads() also treats an EXISTING directory
+                # as a directory-form dest even without a trailing separator
+                if target.is_dir():
+                    target = target / _source_filename(str(entry_dict.get('source', '')))
+                _remove_file(target, 'file')
 
     for skill in deselected['skills']:
         if isinstance(skill, dict):
@@ -3081,6 +3116,15 @@ def execute_deselection_cleanup(
             )
             if result.returncode == 0:
                 success(f'Removed deselected MCP server: {name} (scope: {scope})')
+            else:
+                stderr = (result.stderr or '').strip()
+                # 'not found' is the healthy first-run case: nothing was installed
+                if 'not found' not in stderr.lower():
+                    warning(
+                        f"Cannot remove MCP server '{name}' (scope: {scope}): "
+                        f'exit code {result.returncode}'
+                        + (f' -- {stderr}' if stderr else ''),
+                    )
 
     if not is_isolated and deselected['hooks-events']:
         settings_path = get_real_user_home() / '.claude' / 'settings.json'
@@ -13333,6 +13377,7 @@ def main() -> None:
                 print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
                 execute_deselection_cleanup(
                     deselected,
+                    config,
                     agents_dir=agents_dir,
                     commands_dir=commands_dir,
                     rules_dir=rules_dir,
@@ -13433,6 +13478,7 @@ def main() -> None:
                 print(f'{Colors.CYAN}Step 22: Removing deselected components...{Colors.NC}')
                 execute_deselection_cleanup(
                     deselected,
+                    config,
                     agents_dir=agents_dir,
                     commands_dir=commands_dir,
                     rules_dir=rules_dir,
