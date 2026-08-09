@@ -589,6 +589,9 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
             'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL',
             'CLAUDE_CODE_TOOLBOX_NO_ADMIN',
             'CLAUDE_CODE_TOOLBOX_ENV_AUTH',
+            'CLAUDE_CODE_TOOLBOX_SELECT',
+            'CLAUDE_CODE_TOOLBOX_WITH',
+            'CLAUDE_CODE_TOOLBOX_WITHOUT',
         ]
 
         for var_name in critical_env_vars:
