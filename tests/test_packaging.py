@@ -1,7 +1,7 @@
 """
 Tests for the PyPI packaging configuration in pyproject.toml.
 
-The wheel maps scripts/ into the claude_code_toolbox package in place, so these
+The wheel maps scripts/ into the cc_toolbox package in place, so these
 assertions pin the exact file set, the path rewrite, the console entry point,
 and the pyyaml-only runtime dependency closure.
 """
@@ -46,14 +46,14 @@ class TestBuildSystem:
 
     def test_wheel_sources_remap_scripts_to_package_name(self, pyproject: dict) -> None:
         sources = pyproject['tool']['hatch']['build']['targets']['wheel']['sources']
-        assert sources == {'scripts': 'claude_code_toolbox'}
+        assert sources == {'scripts': 'cc_toolbox'}
 
 
 class TestProjectMetadata:
     """Pin the entry point and the runtime dependency closure."""
 
     def test_console_script_points_at_cli_main(self, pyproject: dict) -> None:
-        assert pyproject['project']['scripts']['claude-code-toolbox'] == 'claude_code_toolbox.cli:main'
+        assert pyproject['project']['scripts']['cc-toolbox'] == 'cc_toolbox.cli:main'
 
     def test_runtime_dependencies_exclude_pydantic(self, pyproject: dict) -> None:
         dependencies = pyproject['project']['dependencies']

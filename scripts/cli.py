@@ -1,18 +1,18 @@
 """
-Subcommand dispatcher for the claude-code-toolbox distribution.
+Subcommand dispatcher for the cc-toolbox distribution.
 
-Exposes the console-script entry point that routes ``claude-code-toolbox setup``
-to setup_environment.main() and ``claude-code-toolbox install`` to
+Exposes the console-script entry point that routes ``cc-toolbox setup``
+to setup_environment.main() and ``cc-toolbox install`` to
 install_claude.main(). This is the ONLY module permitted to import both
 standalone scripts; neither standalone script may import this module (see the
 Standalone Script Policy in CLAUDE.md). Relative imports let the same file
-serve as ``scripts.cli`` in the repository and ``claude_code_toolbox.cli``
+serve as ``scripts.cli`` in the repository and ``cc_toolbox.cli``
 inside the built wheel.
 """
 
 import sys
 
-USAGE = '''usage: claude-code-toolbox <command> [args...]
+USAGE = '''usage: cc-toolbox <command> [args...]
 
 commands:
   setup      Configure a Claude Code environment from a YAML configuration

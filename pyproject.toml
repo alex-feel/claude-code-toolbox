@@ -1,5 +1,5 @@
 [project]
-name = "claude-code-toolbox"
+name = "cc-toolbox"
 version = "6.0.1"
 description = "Claude Code Toolbox — automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
 readme = "README.md"
@@ -27,7 +27,7 @@ Issues = "https://github.com/alex-feel/claude-code-toolbox/issues"
 Changelog = "https://github.com/alex-feel/claude-code-toolbox/blob/main/CHANGELOG.md"
 
 [project.scripts]
-claude-code-toolbox = "claude_code_toolbox.cli:main"
+cc-toolbox = "cc_toolbox.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.27"]
@@ -42,13 +42,13 @@ only-include = [
 ]
 
 [tool.hatch.build.targets.wheel.sources]
-"scripts" = "claude_code_toolbox"
+"scripts" = "cc_toolbox"
 
 [tool.hatch.build.targets.sdist]
 include = ["/scripts", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 [tool.uv]
-# The wheel's `sources` prefix rewrite (scripts -> claude_code_toolbox) is
+# The wheel's `sources` prefix rewrite (scripts -> cc_toolbox) is
 # unsupported by hatchling's editable dev-mode installs, so the dev venv does
 # not install the project; tests import via pytest's pythonpath instead, and
 # the packaged import path is exercised by `uv build` plus the uvx smoke run.
