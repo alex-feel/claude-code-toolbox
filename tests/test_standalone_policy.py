@@ -321,13 +321,55 @@ class TestNoCliImports:
 
     @staticmethod
     def _imported_module_names(source: str) -> set[str]:
+        # ImportFrom records both the module path and the full dotted path of
+        # every imported alias, so 'from scripts import cli' yields
+        # 'scripts.cli' and 'from . import cli' yields '.cli' -- recording
+        # only node.module would miss both forms of importing the dispatcher
         names: set[str] = set()
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Import):
                 names.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names.add(node.module)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = '.' * node.level + (node.module or '')
+                if node.module:
+                    names.add(prefix)
+                names.update(
+                    f'{prefix}.{alias.name}' if node.module else f'{prefix}{alias.name}'
+                    for alias in node.names
+                )
         return names
+
+    @pytest.mark.parametrize(
+        'snippet',
+        [
+            'import cli',
+            'import scripts.cli',
+            'from cli import main',
+            'from scripts import cli',
+            'from scripts.cli import main',
+            'from . import cli',
+            'from .cli import main',
+        ],
+    )
+    def test_helper_flags_every_cli_import_form(self, snippet: str) -> None:
+        imported = self._imported_module_names(snippet)
+        assert any(name == 'cli' or name.endswith('.cli') for name in imported), (
+            f'helper missed the cli import in {snippet!r}: {sorted(imported)}'
+        )
+
+    @pytest.mark.parametrize(
+        'snippet',
+        [
+            "module_path = f'{package}.cli'",
+            'import client',
+            'from scripts import client',
+        ],
+    )
+    def test_helper_ignores_non_cli_forms(self, snippet: str) -> None:
+        imported = self._imported_module_names(snippet)
+        assert not any(name == 'cli' or name.endswith('.cli') for name in imported), (
+            f'helper false-positived on {snippet!r}: {sorted(imported)}'
+        )
 
     @pytest.mark.parametrize('script_path', [INSTALL_CLAUDE, SETUP_ENVIRONMENT])
     def test_standalone_script_does_not_import_cli(self, script_path: Path) -> None:

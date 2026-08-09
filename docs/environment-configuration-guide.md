@@ -310,7 +310,7 @@ List of top-level keys that should be merged (extended from parent) rather than 
 
 - **Type:** `list[str] | None`
 - **Default:** `None`
-- **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`
+- **Valid values:** `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`, `components`
 - **Validation:** Non-eligible keys produce an error. Non-empty `merge-keys` without `inherit` produces a validation error because `merge-keys` controls merge semantics during inheritance resolution and has no effect without a parent configuration to merge from. An empty `merge-keys` list without `inherit` is permitted (treated as a no-op).
 - **Stripped from output:** Yes (like `inherit`)
 - **Inheritance:** Not applicable. Evaluated at each inheritance level independently; not inherited or accumulated across levels.
@@ -1194,7 +1194,7 @@ Validation fails fast on duplicate component names, dangling `requires`/`bundles
 3. The interactive picker (a questionary checkbox, falling back to a numbered toggle prompt when questionary is unavailable or the console cannot render it) runs only when no selector flag was given, neither `--yes` nor `--dry-run` is set, and an interactive terminal is available. Non-interactive runs silently use the author defaults.
 4. The hard `requires` closure runs last: deselecting a component that a selected component requires brings it back with a warning and an `[auto: required by '...']` marker in the summary.
 
-The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto-include causes, and a copy-pasteable `Replay: --select ...` line reproducing the selection non-interactively. `--list-components` prints the registry (names, labels, defaults, edges, and per-section item counts) and exits without installing.
+The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto-include causes, and a copy-pasteable `Replay:` selector line (`--select ...`, plus `--without ...` for the skipped components so bundle edges do not re-add them) reproducing the selection non-interactively. `--list-components` prints the registry (names, labels, defaults, edges, and per-section item counts) and exits without installing.
 
 Selection resolves before the Windows admin-elevation check and before remote file validation, so deselected items never trigger UAC prompts, network fetches, or authentication prompts.
 
@@ -1340,7 +1340,7 @@ Structured entries have the following fields:
 | `config`     | `str`        | Yes      | Configuration source (URL, path, or repo name)            |
 | `merge-keys` | `list[str]`  | No       | Keys to merge instead of replace at this composition step |
 
-The `merge-keys` in a structured entry accepts the same values as the top-level `merge-keys` directive: `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`.
+The `merge-keys` in a structured entry accepts the same values as the top-level `merge-keys` directive: `dependencies`, `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `hooks`, `mcp-servers`, `global-config`, `user-settings`, `os-env-variables`, `components`.
 
 Plain strings and structured entries can be mixed in the same list:
 
@@ -2100,20 +2100,20 @@ hooks:
 
 ### Workflow Control and Behavior
 
-| Variable                               | Purpose                                            | Accepted Values                        |
-|----------------------------------------|----------------------------------------------------|----------------------------------------|
-| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)                | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)            | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`)   | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)        | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS               | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                       | `1`, `true`, or `yes`                  |
-| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers               | Integer (default: 2)                   |
-| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                         | `1`, `true`, or `yes`                  |
-| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)        | Path to `bash.exe`                     |
-| `CLAUDE_CODE_TOOLBOX_SELECT`           | Install exactly these components (`--select`)      | Comma-separated names, or `all`/`none` |
-| `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)          | Comma-separated names                  |
-| `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`) | Comma-separated names                  |
+| Variable                               | Purpose                                                                | Accepted Values                        |
+|----------------------------------------|------------------------------------------------------------------------|----------------------------------------|
+| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)                                    | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)                                | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`)                       | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)                            | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS                                   | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                                           | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers                                   | Integer (default: 2)                   |
+| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                                             | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)                            | Path to `bash.exe`                     |
+| `CLAUDE_CODE_TOOLBOX_SELECT`           | Install these components plus bundled/required components (`--select`) | Comma-separated names, or `all`/`none` |
+| `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)                              | Comma-separated names                  |
+| `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`)                     | Comma-separated names                  |
 
 ### Authentication
 
@@ -2126,17 +2126,17 @@ hooks:
 
 ### CLI Flags and Environment Variable Equivalents
 
-| Flag                | Environment Variable                  | Purpose                                                          |
-|---------------------|---------------------------------------|------------------------------------------------------------------|
-| `--yes` / `-y`      | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)              |
-| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing               |
-| `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                    |
-| `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                        |
-| `--auth`            | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`        | Authentication parameter: `"token"` or `"header:value"`          |
-| `--select`          | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install exactly these components (sentinels: `all`, `none`)      |
-| `--with`            | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                          |
-| `--without`         | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win) |
-| `--list-components` | --                                    | List the configuration's components and exit                     |
+| Flag                | Environment Variable                  | Purpose                                                                              |
+|---------------------|---------------------------------------|--------------------------------------------------------------------------------------|
+| `--yes` / `-y`      | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)                                  |
+| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing                                   |
+| `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                                        |
+| `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                                            |
+| `--auth`            | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`        | Authentication parameter: `"token"` or `"header:value"`                              |
+| `--select`          | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install these components plus bundled/required components (sentinels: `all`, `none`) |
+| `--with`            | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                                              |
+| `--without`         | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win)                     |
+| `--list-components` | --                                    | List the configuration's components and exit                                         |
 
 CLI flags take precedence over environment variables. For piped invocations (`curl | bash`, `iex(irm ...)`), use environment variables since CLI flags cannot be passed.
 

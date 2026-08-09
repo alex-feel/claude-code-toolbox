@@ -56,6 +56,8 @@ Every GCS download is verified against the release manifest (`{version}/manifest
 
 ## Environment Variables
 
+The installer takes no command-line arguments; behavior is controlled entirely by the environment variables below. Running `install_claude.py` with `-h` or `--help` prints a usage summary of these variables and exits without installing anything (the same applies to `cc-toolbox install --help`).
+
 ### `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD`
 
 Controls which installation method the installer uses.

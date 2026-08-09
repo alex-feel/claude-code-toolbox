@@ -73,15 +73,16 @@ class TestCliDispatcher:
             main()
         install_main.assert_called_once()
 
-    def test_install_help_exits_0_without_delegating(
+    def test_install_help_exits_0_without_installing(
         self,
         capsys: pytest.CaptureFixture[str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """install --help prints usage and never starts an installation."""
+        """install --help reaches the installer's own help handler, which never installs."""
         monkeypatch.setattr(sys, 'argv', ['cc-toolbox', 'install', '--help'])
-        with patch('scripts.install_claude.main') as install_main, pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 0
-        install_main.assert_not_called()
-        assert USAGE in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert 'usage: install_claude.py' in out
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in out

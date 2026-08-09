@@ -1371,6 +1371,19 @@ class TestEnsureClaudeSourceAwareUpgrade:
 class TestMainFunction:
     """Test the main installation flow."""
 
+    @pytest.mark.parametrize('flag', ['-h', '--help'])
+    def test_help_prints_usage_without_installing(self, flag, capsys, monkeypatch):
+        """A help request prints the env-var usage and exits 0 before any step."""
+        monkeypatch.setattr(sys, 'argv', ['install_claude.py', flag])
+        with patch('install_claude.banner') as mock_banner, pytest.raises(SystemExit) as exc_info:
+            install_claude.main()
+        assert exc_info.value.code == 0
+        mock_banner.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'usage: install_claude.py' in out
+        assert 'CLAUDE_CODE_TOOLBOX_INSTALL_METHOD' in out
+        assert 'CLAUDE_CODE_TOOLBOX_VERSION' in out
+
     @patch('platform.system', return_value='Windows')
     @patch('install_claude.ensure_git_bash_windows', return_value='C:\\Git\\bash.exe')
     @patch('install_claude.ensure_nodejs', return_value=True)
