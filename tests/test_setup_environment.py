@@ -6075,6 +6075,19 @@ class TestMergeKeys:
         result = setup_environment._merge_config_key('skills', parent, child)
         assert result == [{'name': 'sk1', 'base': '/a'}, {'name': 'sk2', 'base': '/b'}]
 
+    def test_merge_config_key_components(self):
+        """Dispatch: components uses named list merge by 'name'."""
+        parent = [{'name': 'core', 'includes': {'agents': ['a.md']}}]
+        child = [
+            {'name': 'core', 'includes': {'agents': ['b.md']}},
+            {'name': 'extra', 'includes': {'rules': ['r.md']}},
+        ]
+        result = setup_environment._merge_config_key('components', parent, child)
+        assert result == [
+            {'name': 'core', 'includes': {'agents': ['b.md']}},
+            {'name': 'extra', 'includes': {'rules': ['r.md']}},
+        ]
+
     def test_merge_config_key_files_to_download(self):
         """Dispatch: files-to-download uses named list merge by final file path."""
         parent = [{'source': 'a', 'dest': '~/.claude/a.txt'}]
