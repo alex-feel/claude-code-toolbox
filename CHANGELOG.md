@@ -1,5 +1,21 @@
 # Changelog
 
+## [7.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v6.1.0...v7.0.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* setup_environment.py no longer accepts the --auth flag; authentication is provided via GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN, or CLAUDE_CODE_TOOLBOX_ENV_AUTH, directly or via --env, and the bootstrap wrappers no longer translate CLAUDE_CODE_TOOLBOX_ENV_AUTH or REPO_TOKEN into command-line arguments.
+
+### Features
+
+* expose one identical interface across the CLI, scripts, and wrappers ([8aa87cf](https://github.com/alex-feel/claude-code-toolbox/commit/8aa87cf20a69051106f69e0c6d5eeae2d8f3c4ed))
+
+
+### Bug Fixes
+
+* resolve confirmed findings of the single-interface review ([94355ff](https://github.com/alex-feel/claude-code-toolbox/commit/94355ffe8d11da845e2d76206015ad401ec6ade4))
+
 ## [6.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v6.0.1...v6.1.0) (2026-08-09)
 
 
