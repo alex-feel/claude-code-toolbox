@@ -1224,6 +1224,8 @@ The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto
 
 Selection resolves before the Windows admin-elevation check and before remote file validation, so deselected items never trigger UAC prompts, network fetches, or authentication prompts.
 
+Deselection also uninstalls. A re-run that deselects a component removes what an earlier run installed for it: deselected `scope: user` MCP servers are removed via `claude mcp remove`, toolbox-written hook entries of deselected events are stripped from the shared `settings.json`, and deselected skill directories, agent/command/rule files, hook files, and downloaded files are deleted from their install locations. The removal plan derives entirely from the current configuration (every claimed item is named there), so no on-disk state is required; removals appear in the installation summary as `[REMOVE]` rows and are previewed without acting under `--dry-run`. Dependencies are never uninstalled: arbitrary install commands cannot be reversed.
+
 ## Advanced Topics
 
 ### Configuration Inheritance

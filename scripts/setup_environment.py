@@ -862,6 +862,9 @@ class InstallationPlan:
     # Component selection (inactive when the config defines no components)
     component_selection: ComponentSelection | None = None
 
+    # Removal plan for deselected components (empty lists when nothing is dropped)
+    deselected_items: dict[str, list[Any]] | None = None
+
     @property
     def total_resources(self) -> int:
         """Total count of downloadable resources."""
@@ -2800,20 +2803,20 @@ def resolve_component_selection(
     )
 
 
-def apply_component_selection(
+def _component_claim_sets(
     config: dict[str, Any],
     selection: ComponentSelection,
-) -> None:
-    """Filter the resolved config in place according to the selection.
-
-    Per section: an item is dropped iff at least one component claims it
-    and no selected component claims it. Items claimed by no component are
-    mandatory and always survive, as do items without an identity. Section
-    keys are never deleted; emptied lists stay in place preserving shape.
+) -> tuple[dict[str, set[str]], dict[str, set[str]]] | None:
+    """Compute per-section claimed and kept selector sets for a selection.
 
     Args:
-        config: Fully resolved configuration dictionary (mutated in place).
+        config: Fully resolved configuration dictionary.
         selection: The resolved component selection.
+
+    Returns:
+        Tuple of (claimed, kept) selector sets keyed by selectable section,
+        or None when the configuration defines no components or the
+        selection is inactive.
     """
     components = [
         cast(dict[str, Any], c)
@@ -2821,7 +2824,7 @@ def apply_component_selection(
         if isinstance(c, dict)
     ]
     if not components or not selection.is_active:
-        return
+        return None
 
     selected = set(selection.selected)
     claimed: dict[str, set[str]] = {section: set() for section in SELECTABLE_SECTIONS}
@@ -2838,6 +2841,275 @@ def apply_component_selection(
             claimed[section] |= selector_set
             if is_selected:
                 kept[section] |= selector_set
+    return claimed, kept
+
+
+def collect_deselected_items(
+    config: dict[str, Any],
+    selection: ComponentSelection,
+) -> dict[str, list[Any]]:
+    """Collect the concrete items a selection drops, per section.
+
+    Runs on the UNFILTERED configuration (before apply_component_selection
+    mutates it in place), so the removal plan is derived entirely from the
+    current configuration and needs no on-disk state: the config itself
+    names every claimed item, and an item is deselected when it is claimed
+    by at least one component and kept by none of the selected ones.
+    Dependencies are excluded by design: arbitrary install commands cannot
+    be reversed.
+
+    Args:
+        config: Fully resolved, unfiltered configuration dictionary.
+        selection: The resolved component selection.
+
+    Returns:
+        Mapping of section name to dropped item list, with the composite
+        hooks section split into 'hooks-files' and 'hooks-events'. All
+        lists are empty when nothing is deselected.
+    """
+    result: dict[str, list[Any]] = {
+        'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+        'mcp-servers': [], 'files-to-download': [],
+        'hooks-files': [], 'hooks-events': [],
+    }
+    claim_sets = _component_claim_sets(config, selection)
+    if claim_sets is None:
+        return result
+    claimed, kept = claim_sets
+
+    def _dropped(section: str, keys: set[str]) -> bool:
+        return bool(keys) and bool(keys & claimed[section]) and not (keys & kept[section])
+
+    for section in ('agents', 'slash-commands', 'rules', 'skills', 'mcp-servers', 'files-to-download'):
+        section_raw = config.get(section)
+        if isinstance(section_raw, list):
+            result[section] = [
+                item for item in cast(list[object], section_raw)
+                if _dropped(section, _component_item_keys(section, item))
+            ]
+
+    hooks_raw = config.get('hooks')
+    if isinstance(hooks_raw, dict):
+        hooks_dict = cast(dict[str, Any], hooks_raw)
+        result['hooks-files'] = [
+            file_path for file_path in cast(list[object], hooks_dict.get('files') or [])
+            if _dropped('hooks', {str(file_path).strip()})
+        ]
+        for event in cast(list[object], hooks_dict.get('events') or []):
+            if isinstance(event, dict):
+                event_id = cast(dict[str, Any], event).get('id')
+                if event_id is not None and _dropped('hooks', {str(event_id).strip()}):
+                    result['hooks-events'].append(event)
+    return result
+
+
+def has_deselected_items(deselected: dict[str, list[Any]]) -> bool:
+    """Report whether a removal plan contains any item.
+
+    Args:
+        deselected: Mapping produced by collect_deselected_items().
+
+    Returns:
+        True when at least one section lists a dropped item.
+    """
+    return any(items for items in deselected.values())
+
+
+def _strip_hooks_from_settings(
+    settings_path: Path,
+    deselected_events: list[dict[str, Any]],
+    hooks_dir: Path,
+) -> int:
+    """Remove deselected hook entries from a shared settings.json file.
+
+    The shared-settings merge is a list union that never drops an existing
+    entry, so hook events written by an earlier run survive deselection
+    there. This builds the exact JSON the deselected events generate (via
+    the same builder the writer uses) and removes matching entries from the
+    file: hook dicts are matched by equality inside same-matcher groups,
+    emptied groups and event keys are dropped.
+
+    Args:
+        settings_path: Path to the shared settings.json file.
+        deselected_events: Raw hook event dicts dropped by the selection.
+        hooks_dir: Directory hook file references resolve against.
+
+    Returns:
+        Number of hook entries removed; 0 when the file or matches are absent.
+    """
+    if not deselected_events or not settings_path.exists():
+        return 0
+    try:
+        settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as e:
+        warning(f'Cannot reconcile hooks in {settings_path.name}: {e}')
+        return 0
+    hooks_json = settings.get('hooks')
+    if not isinstance(hooks_json, dict):
+        return 0
+
+    to_remove = _build_hooks_json({'events': deselected_events}, hooks_dir)
+    removed = 0
+    for event_name, remove_groups in to_remove.items():
+        existing_groups = hooks_json.get(event_name)
+        if not isinstance(existing_groups, list):
+            continue
+        for remove_group in cast(list[dict[str, Any]], remove_groups):
+            for existing_group in cast(list[Any], existing_groups):
+                if not isinstance(existing_group, dict):
+                    continue
+                group = cast(dict[str, Any], existing_group)
+                if group.get('matcher', '') != remove_group.get('matcher', ''):
+                    continue
+                group_hooks = group.get('hooks')
+                if not isinstance(group_hooks, list):
+                    continue
+                for hook_entry in cast(list[Any], remove_group.get('hooks') or []):
+                    if hook_entry in group_hooks:
+                        group_hooks.remove(hook_entry)
+                        removed += 1
+        hooks_json[event_name] = [
+            g for g in cast(list[Any], existing_groups)
+            if not isinstance(g, dict) or cast(dict[str, Any], g).get('hooks')
+        ]
+        if not hooks_json[event_name]:
+            hooks_json.pop(event_name)
+
+    if removed:
+        try:
+            settings_path.write_text(
+                json.dumps(settings, indent=2, ensure_ascii=False) + '\n',
+                encoding='utf-8',
+            )
+        except OSError as e:
+            warning(f'Cannot write reconciled {settings_path.name}: {e}')
+            return 0
+    return removed
+
+
+def execute_deselection_cleanup(
+    deselected: dict[str, list[Any]],
+    *,
+    agents_dir: Path,
+    commands_dir: Path,
+    rules_dir: Path,
+    skills_dir: Path,
+    hooks_dir: Path,
+    is_isolated: bool,
+) -> None:
+    """Remove previously installed artifacts of deselected components.
+
+    Mirrors each installer's target-path resolution so a re-run that
+    deselects a component uninstalls what an earlier run installed. Every
+    removal is tolerant: absent targets are skipped silently (a first run
+    has nothing to remove) and failures degrade to warnings.
+
+    Args:
+        deselected: Removal plan from collect_deselected_items().
+        agents_dir: Directory agent files install into.
+        commands_dir: Directory slash-command files install into.
+        rules_dir: Directory rule files install into.
+        skills_dir: Directory skill directories install into.
+        hooks_dir: Directory hook files install into.
+        is_isolated: Whether the run targets an isolated command profile.
+            The isolated config.json is rebuilt atomically each run, so
+            hook reconciliation applies only to the shared settings.json
+            of non-isolated runs.
+    """
+    import shutil as _shutil
+
+    def _remove_file(path: Path, description: str) -> None:
+        try:
+            if path.is_file():
+                path.unlink()
+                success(f'Removed deselected {description}: {path.name}')
+        except OSError as e:
+            warning(f'Cannot remove {path}: {e}')
+
+    for section, target_dir, description in (
+        ('agents', agents_dir, 'agent'),
+        ('slash-commands', commands_dir, 'slash command'),
+        ('rules', rules_dir, 'rule'),
+    ):
+        for item in deselected[section]:
+            _remove_file(target_dir / _source_filename(str(item)), description)
+
+    for file_path in deselected['hooks-files']:
+        _remove_file(hooks_dir / _source_filename(str(file_path)), 'hook file')
+
+    for entry in deselected['files-to-download']:
+        if isinstance(entry, dict):
+            identity = _files_download_identity(cast(dict[str, Any], entry))
+            if identity:
+                _remove_file(Path(normalize_tilde_path(identity.strip())), 'file')
+
+    for skill in deselected['skills']:
+        if isinstance(skill, dict):
+            name = str(cast(dict[str, Any], skill).get('name') or '').strip()
+            if name:
+                skill_dir = skills_dir / name
+                try:
+                    if skill_dir.is_dir():
+                        _shutil.rmtree(skill_dir)
+                        success(f'Removed deselected skill: {name}')
+                except OSError as e:
+                    warning(f'Cannot remove skill directory {skill_dir}: {e}')
+
+    claude_cmd = find_command('claude') if deselected['mcp-servers'] else None
+    for server in deselected['mcp-servers']:
+        if not isinstance(server, dict):
+            continue
+        server_dict = cast(dict[str, Any], server)
+        name = str(server_dict.get('name') or '').strip()
+        if not name:
+            continue
+        try:
+            scopes = normalize_scope(server_dict.get('scope', 'user'))
+        except ValueError:
+            scopes = ['user']
+        for scope in scopes:
+            if scope == 'profile':
+                # The profile mcp.json is rebuilt from the filtered list
+                # every run, so a deselected profile server is already gone
+                continue
+            if not claude_cmd:
+                warning(f"Cannot remove MCP server '{name}': claude command not found")
+                break
+            result = run_command(
+                [claude_cmd, 'mcp', 'remove', name, '--scope', scope],
+                capture_output=True,
+            )
+            if result.returncode == 0:
+                success(f'Removed deselected MCP server: {name} (scope: {scope})')
+
+    if not is_isolated and deselected['hooks-events']:
+        settings_path = get_real_user_home() / '.claude' / 'settings.json'
+        removed = _strip_hooks_from_settings(
+            settings_path, deselected['hooks-events'], hooks_dir,
+        )
+        if removed:
+            success(f'Removed {removed} deselected hook entr{"y" if removed == 1 else "ies"} from settings.json')
+
+
+def apply_component_selection(
+    config: dict[str, Any],
+    selection: ComponentSelection,
+) -> None:
+    """Filter the resolved config in place according to the selection.
+
+    Per section: an item is dropped iff at least one component claims it
+    and no selected component claims it. Items claimed by no component are
+    mandatory and always survive, as do items without an identity. Section
+    keys are never deleted; emptied lists stay in place preserving shape.
+
+    Args:
+        config: Fully resolved configuration dictionary (mutated in place).
+        selection: The resolved component selection.
+    """
+    claim_sets = _component_claim_sets(config, selection)
+    if claim_sets is None:
+        return
+    claimed, kept = claim_sets
 
     def _survives(section: str, keys: set[str]) -> bool:
         return not keys or not (keys & claimed[section]) or bool(keys & kept[section])
@@ -6963,6 +7235,7 @@ def collect_installation_plan(
     inheritance_chain: list[InheritanceChainEntry],
     args: argparse.Namespace,
     selection: ComponentSelection | None = None,
+    deselected: dict[str, list[Any]] | None = None,
 ) -> InstallationPlan:
     """Collect all installation artifacts into a structured plan.
 
@@ -6980,6 +7253,8 @@ def collect_installation_plan(
         args: Parsed CLI arguments.
         selection: Resolved component selection, or None when the config
             defines no components.
+        deselected: Removal plan from collect_deselected_items(), or None
+            when the config defines no components.
 
     Returns:
         InstallationPlan containing all artifacts to be installed.
@@ -7079,6 +7354,7 @@ def collect_installation_plan(
         unknown_keys=unknown_keys,
         sensitive_paths=sensitive_paths,
         component_selection=selection,
+        deselected_items=deselected,
     )
 
 
@@ -7176,6 +7452,31 @@ def display_installation_summary(
             cause_str = f' {Colors.GREEN}[auto: {cause}]{Colors.NC}' if cause else ''
             _print(f'  {mark} {label}{suffix}{cause_str}')
         _print(f'  Replay: {component_selection.replay}')
+
+    deselected = plan.deselected_items
+    if deselected and has_deselected_items(deselected):
+        _print()
+        _print(f'{Colors.BOLD}Removals (deselected components):{Colors.NC}')
+        removal_labels = {
+            'agents': 'agent', 'slash-commands': 'slash command', 'rules': 'rule',
+            'skills': 'skill', 'mcp-servers': 'MCP server',
+            'files-to-download': 'file', 'hooks-files': 'hook file',
+            'hooks-events': 'hook event',
+        }
+        for section, items in deselected.items():
+            for item in items:
+                if isinstance(item, dict):
+                    item_dict = cast(dict[str, Any], item)
+                    name = str(
+                        item_dict.get('name')
+                        or item_dict.get('dest')
+                        or item_dict.get('id')
+                        or item_dict.get('event')
+                        or item,
+                    )
+                else:
+                    name = str(item)
+                _print(f'  {Colors.RED}[REMOVE]{Colors.NC} {removal_labels[section]}: {name}')
 
     # Claude Code installation
     _print()
@@ -12362,6 +12663,7 @@ def main() -> None:
 
             picker = _run_picker
         selection = resolve_component_selection(components_list, args, picker=picker)
+        deselected = collect_deselected_items(config, selection)
         if selection.is_active:
             apply_component_selection(config, selection)
 
@@ -12629,6 +12931,7 @@ def main() -> None:
             config=config,
             config_source=config_source,
             config_name=config_name,
+            deselected=deselected,
             config_version=config_version,
             inheritance_chain=inheritance_chain,
             args=args,
@@ -13021,6 +13324,22 @@ def main() -> None:
                 print()
                 print(f'{Colors.CYAN}Step 22: Linking projects directory to base...{Colors.NC}')
                 link_projects_directory(artifact_base_dir)
+
+            # Step 23: Remove previously installed artifacts of deselected
+            # components (the removal plan derives from the unfiltered
+            # config, so no on-disk state is needed)
+            if has_deselected_items(deselected):
+                print()
+                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
+                execute_deselection_cleanup(
+                    deselected,
+                    agents_dir=agents_dir,
+                    commands_dir=commands_dir,
+                    rules_dir=rules_dir,
+                    skills_dir=skills_dir,
+                    hooks_dir=hooks_dir,
+                    is_isolated=True,
+                )
         else:
             # No command-names: route the profile-owned YAML keys
             # (status-line, hooks) to the shared ~/.claude/settings.json via
@@ -13104,6 +13423,23 @@ def main() -> None:
             # Steps 19-21: Skip command creation
             print()
             print(f'{Colors.CYAN}Steps 19-21: Skipping command creation (no command-names specified)...{Colors.NC}')
+
+            # Step 22: Remove previously installed artifacts of deselected
+            # components (the removal plan derives from the unfiltered
+            # config, so no on-disk state is needed). Runs after the Step 18
+            # settings merge so the union-written file is reconciled last.
+            if has_deselected_items(deselected):
+                print()
+                print(f'{Colors.CYAN}Step 22: Removing deselected components...{Colors.NC}')
+                execute_deselection_cleanup(
+                    deselected,
+                    agents_dir=agents_dir,
+                    commands_dir=commands_dir,
+                    rules_dir=rules_dir,
+                    skills_dir=skills_dir,
+                    hooks_dir=hooks_dir,
+                    is_isolated=False,
+                )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
