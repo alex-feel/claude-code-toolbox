@@ -1,5 +1,27 @@
 # Changelog
 
+## [6.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v6.0.1...v6.1.0) (2026-08-09)
+
+
+### Features
+
+* add components registry schema and inheritance merge support ([955d2ad](https://github.com/alex-feel/claude-code-toolbox/commit/955d2ad2355c9ec34807119b3cf474e43f1c4ebf))
+* add interactive component picker with golden E2E coverage and docs ([11bb3c0](https://github.com/alex-feel/claude-code-toolbox/commit/11bb3c0f2c672ca277f3e85cc1c4fa5c41ca8a75))
+* distribute the toolbox as a PyPI package runnable via uvx ([3231383](https://github.com/alex-feel/claude-code-toolbox/commit/3231383e7e2f2bbb4ea760ce880f5deb8741ec96))
+* rename the PyPI distribution to cc-toolbox ([7de9e34](https://github.com/alex-feel/claude-code-toolbox/commit/7de9e34e3af7ae5bef35af727648b9534c50893c))
+* resolve and apply component selection with CLI selectors and summary ([79a9997](https://github.com/alex-feel/claude-code-toolbox/commit/79a999746e4bf341031fc69e29e39b3ec52ce57f))
+
+
+### Bug Fixes
+
+* answer install_claude.py --help without starting an installation ([070023d](https://github.com/alex-feel/claude-code-toolbox/commit/070023d5e3bccdca02ce834814f7be273a62c491))
+* build UAC relaunch command from module context instead of sys.argv[0] alone ([9107289](https://github.com/alex-feel/claude-code-toolbox/commit/910728920bcfc08e823d9cbd36c99b3c78b2dd48))
+* cancel setup on Ctrl-C in the numbered component picker ([701349f](https://github.com/alex-feel/claude-code-toolbox/commit/701349f9314c3b4c70a64eb5190786b50d2f91ea))
+* forward component selection env vars through Windows UAC elevation ([6b9a026](https://github.com/alex-feel/claude-code-toolbox/commit/6b9a026f2769d73bb794c0421aaafc43420dda72))
+* harden component selection per adversarial review ([5298a91](https://github.com/alex-feel/claude-code-toolbox/commit/5298a9154946fdd1eb00cc6c7cb4e9240effe01b))
+* resolve confirmed findings of the v6.1.0 release audit ([6ecf244](https://github.com/alex-feel/claude-code-toolbox/commit/6ecf244d2d75f3c653c5a6a17c44d35f040e6945))
+* strip component selector whitespace and mirror runtime source-filename semantics ([e5f759c](https://github.com/alex-feel/claude-code-toolbox/commit/e5f759ce41b9021b145766a58b603bca6c721087))
+
 ## [6.0.1](https://github.com/alex-feel/claude-code-toolbox/compare/v6.0.0...v6.0.1) (2026-07-20)
 
 
