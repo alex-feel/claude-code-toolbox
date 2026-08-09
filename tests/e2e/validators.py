@@ -1658,3 +1658,54 @@ def validate_hooks_in_settings_json(path: Path, config: dict[str, Any]) -> list[
         return errors
     errors.extend(_validate_hooks_structure(hooks_data, config))
     return errors
+
+
+def validate_selected_artifacts(
+    config: dict[str, Any],
+    components: list[dict[str, Any]],
+    selected: list[str],
+) -> list[str]:
+    """Validate a component-filtered config against its selection.
+
+    For every selector any component claims, the referenced item must be
+    present in the filtered config iff at least one SELECTED component
+    claims it. Presence is checked through the runtime identity computation
+    so directory dests, hook ids, and hook file paths all resolve the same
+    way the filter resolved them.
+
+    Args:
+        config: The config dict AFTER apply_component_selection().
+        components: The component entries the selection was resolved from.
+        selected: The selected component names.
+
+    Returns:
+        List of errors; empty when the filtered config matches the selection.
+    """
+    from scripts import setup_environment
+
+    errors: list[str] = []
+    selected_set = set(selected)
+    claim_map: dict[tuple[str, str], set[str]] = {}
+    for comp in components:
+        name = str(comp.get('name', '')).strip()
+        includes = comp.get('includes') or {}
+        if not isinstance(includes, dict):
+            continue
+        for section, selectors in includes.items():
+            for selector in selectors or []:
+                claim_map.setdefault((section, str(selector).strip()), set()).add(name)
+
+    for (section, selector), claimers in sorted(claim_map.items()):
+        present = selector in setup_environment._component_section_identities(config, section)
+        should_be_present = bool(claimers & selected_set)
+        if should_be_present and not present:
+            errors.append(
+                f'{section}: selected item {selector!r} missing from filtered config '
+                f'(claimed by {sorted(claimers)})',
+            )
+        elif not should_be_present and present:
+            errors.append(
+                f'{section}: deselected item {selector!r} still present in filtered config '
+                f'(claimed by {sorted(claimers)})',
+            )
+    return errors

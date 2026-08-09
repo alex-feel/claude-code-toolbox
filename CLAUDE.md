@@ -60,7 +60,7 @@ In `auto` mode, `native` and `unknown` sources attempt native first with npm fal
 
 ### PyPI Distribution
 
-The repository publishes to PyPI as `cc-toolbox` via an in-place hatchling remap: `[tool.hatch.build.targets.wheel]` `only-include`s exactly four files (`scripts/{__init__,cli,setup_environment,install_claude}.py`) and `[tool.hatch.build.targets.wheel.sources]` rewrites `scripts` → `cc_toolbox`, so the wheel ships `cc_toolbox/` while not one byte moves on disk and the curl|bash bootstrap path stays untouched. `scripts/models` is excluded from the wheel, keeping the runtime dependency closure to `pyyaml` alone (`pydantic` lives in the dev group). The single console script `cc-toolbox = "cc_toolbox.cli:main"` dispatches `setup`/`install` subcommands (`uvx cc-toolbox setup <config>`). The PEP 723 headers are inert comment blocks when the files are imported as modules, so identical bytes serve both `uv run --no-project` and the wheel.
+The repository publishes to PyPI as `cc-toolbox` via an in-place hatchling remap: `[tool.hatch.build.targets.wheel]` `only-include`s exactly four files (`scripts/{__init__,cli,setup_environment,install_claude}.py`) and `[tool.hatch.build.targets.wheel.sources]` rewrites `scripts` → `cc_toolbox`, so the wheel ships `cc_toolbox/` while not one byte moves on disk and the curl|bash bootstrap path stays untouched. `scripts/models` is excluded from the wheel, keeping the runtime dependency closure to `pyyaml` plus `questionary` (`pydantic` lives in the dev group). The single console script `cc-toolbox = "cc_toolbox.cli:main"` dispatches `setup`/`install` subcommands (`uvx cc-toolbox setup <config>`). The PEP 723 headers are inert comment blocks when the files are imported as modules, so identical bytes serve both `uv run --no-project` and the wheel.
 
 **Editable-install limitation:** hatchling refuses dev-mode installs when `sources` changes a path prefix, so `[tool.uv] package = false` keeps `uv sync` from installing the project; the dev venv imports via pytest's `pythonpath = ["."]` (`scripts.cli`), and the packaged import path is exercised by `uv build` plus the `package-smoke` CI job (`uvx --from dist/*.whl` on all three OSes, deliberately NOT skipped on release-please branches).
 
@@ -109,6 +109,16 @@ YAML configs define complete environments: dependencies, agents, MCP servers, sl
 
 **WM_SETTINGCHANGE Broadcast:** `_broadcast_wm_settingchange()` in `setup_environment.py` uses the dummy `setx CLAUDE_CODE_TOOLBOX_TEMP temp` + `reg delete` pattern to trigger `WM_SETTINGCHANGE`. Called from `add_directory_to_windows_path()`, `cleanup_temp_paths_from_registry()`, `set_os_env_variable_windows()` (after `reg delete` for deletions), and `set_all_os_env_variables()` (batch broadcast after all operations). `install_claude.py` has its own independent copy at `ensure_local_bin_in_path_windows()` (standalone script policy).
 
+### Component Selection (`components`)
+
+The top-level `components:` key defines author-controlled selectable groups of items from `SELECTABLE_SECTIONS = {agents, slash-commands, rules, skills, files-to-download, mcp-servers, dependencies, hooks}` (byte-identical frozensets in `setup_environment.py` and `environment_config.py`; parity enforced by `tests/scripts/models/test_selectable_sections_parity.py`, which also locks the model's `_download_selector_identity` to the runtime's `_files_download_identity`). An item claimed by at least one component installs only when a selected component claims it; unclaimed items are mandatory and never appear in any picker. `components` is a `KNOWN_CONFIG_KEYS` member and the 12th `MERGEABLE_CONFIG_KEYS` entry (merged by `name` via `_merge_named_list`/`_name_identity`).
+
+**Selector identities** mirror each section's merge identity: exact string (agents/slash-commands/rules/dependencies across all platform lists), entry `name` (skills/mcp-servers), dual key `dest` OR normalized final path (files-to-download; distinct entries sharing a final path are a fail-fast error because they make selectors ambiguous), and `hooks.events[].id` or a `hooks.files` path (hooks). `hooks.events[].id` exists solely as a selector identity; `_build_hooks_json()` is a whitelist builder, so the id never reaches generated JSON (regression: `TestHookIdNotInGeneratedJson`). Both validation layers strip whitespace on both sides of the comparison.
+
+**Resolution** happens ONCE at the single choke point in `main()`: after inheritance resolution, BEFORE `check_admin_needed()` and remote file validation, so deselected items never trigger UAC elevation, network fetches, or auth prompts. Sequence: `validate_components()` (runtime twin of the Pydantic validation; emits the hook-claim asymmetry warning) → `_validate_component_selector_args()` → `--list-components` exit → `resolve_component_selection()` → `apply_component_selection()` (in-place filter; section keys never deleted). The algorithm: author defaults (`default: true` when omitted) → `--select` (sentinels `all`/`none`) → `--with` → soft `_bundle_closure` → `--without` → interactive picker → hard `_requires_closure` (BFS over registry-ordered seeds so `[auto: required by '...']` cause attribution is deterministic; wins over `--without` with a warning). CLI flags `--select`/`--with`/`--without`/`--list-components` have `CLAUDE_CODE_TOOLBOX_SELECT`/`_WITH`/`_WITHOUT` env fallbacks in `resolve_args()`. The resolved `ComponentSelection` threads into `collect_installation_plan(selection=...)` and renders a summary Components block with `[x]`/`[ ]` rows and a copy-pasteable `--select` replay line.
+
+**Picker** (`prompt_component_selection()`): Tier 1 questionary checkbox (lazy import), Tier 2 numbered toggle loop via `_get_user_confirmation()` on ImportError OR any console exception (mintty's `NoConsoleScreenBufferError` is not an `OSError` — the catch is deliberately broad), Tier 3 returns `None` keeping the non-interactive set. Runs only when no selector flag is given, neither `--yes` nor `--dry-run` is set, and a TTY (or `/dev/tty`) is available; prints its own two-line context banner because `header()` renders later. `questionary` is declared in THREE places: the PEP 723 block of `setup_environment.py` (standalone `uv run` path), `[project].dependencies` (wheel/`uvx` path), and `[dependency-groups].dev` (`uv run pytest` provisions from pyproject, not the PEP 723 header).
+
 ### Global Config (`global-config`)
 
 Writes to `~/.claude.json`. When `command-names` is present, dual-writes to BOTH `~/.claude.json` (machine baseline for bare `claude` sessions) AND `~/.claude/{cmd}/.claude.json` (for isolated sessions, since Claude Code CLI resolves `getGlobalClaudeFile()` via `CLAUDE_CONFIG_DIR` with no fallback). Content is identical in both files. Merge: `deep_merge_settings()` with `array_union_keys=set()` (arrays replaced, not unioned -- differs from `user-settings` which unions `permissions.allow/deny/ask`). Only `oauthAccount` blocked from non-null values (`GLOBAL_CONFIG_EXCLUDED_KEYS`); `null` allowed for clearing OAuth. `install_claude.py`'s `update_install_method_config()` also writes to `~/.claude.json` via the same pattern (values `'native'`/`'global'`/`'winget'` -- see Native Claude Code Installation Support). Both `write_user_settings()` and `write_global_config()` delegate to `_write_merged_json()`.
@@ -154,7 +164,7 @@ Global commands (e.g., `claude-python`) work across all Windows shells: shared P
 
 Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` defines the complete structure for environment YAML configurations. This repository is the canonical source; changes are synced to downstream repos.
 
-**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_link_projects_dir_requires_command_names` (link-projects-dir requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_hooks_files_consistency` (hooks files/events cross-references).
+**Cross-field model validators** (`@model_validator(mode='after')`): `validate_command_names_and_defaults` (command-names + command-defaults co-dependency), `validate_version_requires_command_names` (version requires non-empty command-names), `validate_link_projects_dir_requires_command_names` (link-projects-dir requires non-empty command-names), `validate_merge_keys_requires_inherit` (non-empty merge-keys requires inherit), `validate_profile_mcp_requires_command_names` (profile-scoped MCP servers require command-names), `validate_components_graph` (components registry: name uniqueness, requires/bundles references, selector resolution, hook id uniqueness, duplicate final-path detection), `validate_hooks_files_consistency` (hooks files/events cross-references).
 
 **Field validators**: `validate_os_env_variables` accepts `null` values as deletion requests (`dict[str, str | None]`), enforces key format `^[A-Za-z_][A-Za-z0-9_]*$`, and rejects null bytes in non-null values.
 
@@ -166,7 +176,7 @@ Pydantic schema `EnvironmentConfig` in `scripts/models/environment_config.py` de
 
 **KNOWN_CONFIG_KEYS parity rule:** When adding new config keys to `setup_environment.py` (extending `KNOWN_CONFIG_KEYS`), the `EnvironmentConfig` model MUST be updated simultaneously (and vice versa). `tests/scripts/models/test_known_config_keys_parity.py` enforces STRICT BIDIRECTIONAL match with ZERO exceptions. Deprecated keys must be DELETED from both, not kept with backward compatibility shims.
 
-**Tests:** `tests/scripts/models/` -- `test_environment_config.py`, `test_mcp_server_scope.py`, `test_known_config_keys_parity.py`, `test_mergeable_config_keys_parity.py`, `test_settings_validation_parity.py`.
+**Tests:** `tests/scripts/models/` -- `test_environment_config.py`, `test_mcp_server_scope.py`, `test_known_config_keys_parity.py`, `test_mergeable_config_keys_parity.py`, `test_selectable_sections_parity.py`, `test_settings_validation_parity.py`.
 
 **Sync & Runtime:** `.github/workflows/sync-to-repos.yml` syncs model changes to `alex-feel/claude-code-artifacts{,-public}` at `.github/environment_config.py`. The model is NOT imported at runtime -- `KNOWN_CONFIG_KEYS` is the active runtime mechanism.
 
@@ -259,6 +269,9 @@ When `command-names` creates an isolated environment, `configure_mcp_server()` p
 - `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`: `1` only -- skip Claude Code installation (env var for `--skip-install`)
 - `CLAUDE_CODE_TOOLBOX_NO_ADMIN`: `1` only -- skip Windows admin elevation (env var for `--no-admin`)
 - `CLAUDE_CODE_TOOLBOX_ENV_AUTH`: string -- authentication for private repos, `header:value` format (env var for `--auth`)
+- `CLAUDE_CODE_TOOLBOX_SELECT`: comma-separated component names or `all`/`none` -- install exactly these components (env var for `--select`)
+- `CLAUDE_CODE_TOOLBOX_WITH`: comma-separated component names -- add components to the default selection (env var for `--with`)
+- `CLAUDE_CODE_TOOLBOX_WITHOUT`: comma-separated component names -- remove components from the selection (env var for `--without`)
 - `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`: `1` only -- allow root on Linux/macOS (see Root Detection Guard)
 - `CLAUDE_CODE_TOOLBOX_DEBUG`: `1`/`true`/`yes` -- verbose debug logging
 - `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`: Override Git Bash executable path
@@ -380,7 +393,7 @@ Recurring patterns that cause CI failures. Every item below has caused at least 
 
 ## Script Dependencies
 
-Python 3.12 required. **uv** installed by bootstrap scripts. Published runtime dependency: PyYAML only. Dev-only: Pydantic (consumed by `scripts/models` and its tests), pytest, ruff, pre-commit.
+Python 3.12 required. **uv** installed by bootstrap scripts. Published runtime dependencies: PyYAML and questionary. Dev-only: Pydantic (consumed by `scripts/models` and its tests), pytest, ruff, pre-commit.
 
 ## Version Management
 

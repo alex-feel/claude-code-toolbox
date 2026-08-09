@@ -88,12 +88,13 @@ hooks:
     - "hooks/e2e_test_hook_cjs.cjs"
     - "configs/e2e-js-hook-config.json"
   events:
-    # Python command hook with config
+    # Python command hook with config (id makes it claimable by components)
     - event: "PostToolUse"
       matcher: "Edit|MultiEdit|Write"
       type: "command"
       command: "e2e_test_hook.py"
       config: "e2e-hook-config.yaml"
+      id: "e2e-post-edit"
     # JavaScript command hook (.js)
     - event: "PostToolUse"
       matcher: "Read"
@@ -137,7 +138,7 @@ hooks:
       timeout: 60
       if: "Bash(rm *)"
       once: true
-    # Command hook with async and shell
+    # Command hook with async and shell (id makes it claimable by components)
     - event: "Notification"
       matcher: ""
       type: "command"
@@ -145,6 +146,7 @@ hooks:
       async: true
       shell: "bash"
       status-message: "Running notification handler..."
+      id: "e2e-notify"
 
 # MCP Servers - all transport types
 mcp-servers:
@@ -267,3 +269,47 @@ status-line:
   file: "hooks/e2e_statusline.py"
   config: "configs/e2e-statusline-config.yaml"
   padding: 0
+
+# Author-defined selectable component groups. Every component defaults to
+# true so the default selection equals the full config and all expected
+# outputs stay byte-identical. The JS hooks and their events, the
+# stdio/npx/combined MCP servers, and the OS-specific dependencies stay
+# unclaimed to exercise the mandatory (never-selectable) path.
+components:
+  - name: "core"
+    label: "Core tooling"
+    description: "Base agent, command, rule, and the Python hook"
+    includes:
+      agents:
+        - "agents/e2e-test-agent.md"
+      slash-commands:
+        - "commands/e2e-test-command.md"
+      rules:
+        - "rules/e2e-test-rule.md"
+      hooks:
+        - "e2e-post-edit"
+        - "e2e-notify"
+        - "hooks/e2e_test_hook.py"
+        - "configs/e2e-hook-config.yaml"
+  - name: "mcp-http"
+    label: "HTTP MCP servers"
+    description: "HTTP and SSE MCP servers"
+    requires:
+      - "core"
+    includes:
+      mcp-servers:
+        - "e2e-http-server"
+        - "e2e-http-profile-server"
+        - "e2e-sse-server"
+  - name: "extras"
+    label: "Optional extras"
+    description: "Extra file, skill, and the common dependency"
+    bundles:
+      - "mcp-http"
+    includes:
+      files-to-download:
+        - "~/.claude/e2e-extra-file.txt"
+      skills:
+        - "e2e-test-skill"
+      dependencies:
+        - "echo 'common-dependency-installed'"

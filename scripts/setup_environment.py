@@ -6,6 +6,7 @@ Downloads and configures development tools for Claude Code based on YAML configu
 # /// script
 # dependencies = [
 #   "pyyaml",
+#   "questionary",
 # ]
 # ///
 
@@ -2646,19 +2647,29 @@ def _requires_closure(
 def resolve_component_selection(
     components: list[dict[str, Any]],
     args: argparse.Namespace,
+    picker: Callable[[list[str]], list[str] | None] | None = None,
 ) -> ComponentSelection:
     """Resolve which components are selected for this run.
 
     Selection inputs in precedence order: author defaults, then the
     --select/--with/--without selectors (env var equivalents already merged
-    by resolve_args). --select replaces the default set entirely (with the
-    sentinels all/none); --with adds to it; bundle edges softly expand the
-    seeded set; --without then removes names; the hard requires closure
-    runs last and wins over --without with a warning.
+    by resolve_args), then the interactive picker. --select replaces the
+    default set entirely (with the sentinels all/none); --with adds to it;
+    bundle edges softly expand the seeded set; --without then removes
+    names; the picker (when supplied) lets the user edit that set; the hard
+    requires closure runs last and wins over --without with a warning.
+
+    The picker runs only when no selector was supplied and neither --yes
+    nor --dry-run is set (explicit selectors and non-interactive modes make
+    the run deterministic); a picker returning None keeps the
+    non-interactive set.
 
     Args:
         components: Component entries from the validated configuration.
         args: Parsed CLI arguments (after resolve_args env merging).
+        picker: Optional callable receiving the pre-selected names in
+            registry order and returning the user's selection, or None
+            when no interaction was possible.
 
     Returns:
         ComponentSelection describing the final selection; inactive when
@@ -2698,6 +2709,16 @@ def resolve_component_selection(
     base |= set(with_tokens)
     expanded = _bundle_closure([name for name in names if name in base], bundles_map)
     trimmed = expanded - without_set
+
+    selectors_given = any(
+        value is not None for value in (args.select, args.with_, args.without)
+    )
+    if picker is not None and not selectors_given and not args.yes and not args.dry_run:
+        picked = picker([name for name in names if name in trimmed])
+        if picked is not None:
+            known_names = set(names)
+            trimmed = {name for name in picked if name in known_names}
+
     final, causes = _requires_closure([name for name in names if name in trimmed], requires_map)
 
     for name in sorted(final & without_set):
@@ -2833,6 +2854,128 @@ def display_component_registry(components: list[dict[str, Any]]) -> None:
             )
             if counts:
                 print(f'      includes: {counts}')
+
+
+def _prompt_component_selection_numbered(
+    names: list[str],
+    labels: dict[str, str],
+    seed: list[str],
+) -> list[str] | None:
+    """Numbered toggle-loop fallback picker (Tier 2).
+
+    Uses _get_user_confirmation, which itself falls back to /dev/tty for
+    piped stdin on Unix.
+
+    Args:
+        names: Component names in registry order.
+        labels: Display label per component name.
+        seed: Pre-checked component names.
+
+    Returns:
+        Selected names in registry order, or None when input is unavailable
+        (the caller keeps the non-interactive selection).
+    """
+    selected = set(seed)
+    while True:
+        print()
+        print(f'{Colors.BOLD}Components:{Colors.NC}')
+        for number, name in enumerate(names, 1):
+            mark = '[x]' if name in selected else '[ ]'
+            print(f'  {number}. {mark} {labels.get(name, name)}')
+        try:
+            response = _get_user_confirmation(
+                "Toggle by number, 'a' = all, 'n' = none, Enter = confirm: ",
+            ).strip().lower()
+        except (EOFError, OSError):
+            return None
+        if not response:
+            return [name for name in names if name in selected]
+        if response == 'a':
+            selected = set(names)
+        elif response == 'n':
+            selected = set()
+        elif response.isdigit() and 1 <= int(response) <= len(names):
+            name = names[int(response) - 1]
+            if name in selected:
+                selected.discard(name)
+            else:
+                selected.add(name)
+        else:
+            warning(f"Invalid input '{response}'. Enter a number, 'a', 'n', or press Enter.")
+
+
+def prompt_component_selection(
+    components: list[dict[str, Any]],
+    seed: list[str],
+    environment_name: str,
+    config_source: str,
+) -> list[str] | None:
+    """Interactively pick components, degrading gracefully across three tiers.
+
+    Tier 1 uses a questionary checkbox (lazy import so the standalone
+    script works without the dependency); any failure to import or drive
+    the interactive console falls back to Tier 2, the numbered toggle loop
+    (the catch is deliberately broad because mintty's
+    NoConsoleScreenBufferError is not an OSError). Tier 3 is the numbered
+    picker returning None when input is unavailable, which keeps the
+    non-interactive selection. Prints a two-line context banner first
+    because the main header() renders later in the flow.
+
+    Args:
+        components: Component entries from the validated configuration.
+        seed: Pre-checked component names in registry order.
+        environment_name: Environment display name for the context banner.
+        config_source: Config source path or URL for the context banner.
+
+    Returns:
+        Selected component names in registry order, or None when no
+        interaction was possible.
+    """
+    names = [str(c.get('name', '')).strip() for c in components]
+    labels = {
+        name: str(c.get('label') or '').strip() or name
+        for name, c in zip(names, components, strict=True)
+    }
+    descriptions = {
+        name: str(c.get('description') or '').strip()
+        for name, c in zip(names, components, strict=True)
+    }
+
+    print()
+    print(f'{Colors.BOLD}Environment:{Colors.NC} {environment_name}')
+    print(f'{Colors.BOLD}Source:{Colors.NC} {config_source}')
+
+    try:
+        import questionary
+
+        seed_set = set(seed)
+        choices = [
+            questionary.Choice(
+                title=labels[name],
+                value=name,
+                checked=name in seed_set,
+                description=descriptions[name] or None,
+            )
+            for name in names
+        ]
+        result = questionary.checkbox(
+            'Select components to install (space toggles, enter confirms)',
+            choices=choices,
+        ).ask()
+        if result is None:
+            info('Selection cancelled.')
+            sys.exit(0)
+        picked = {str(name) for name in cast(list[object], result)}
+        return [name for name in names if name in picked]
+    except ImportError:
+        info('questionary is not installed; using the numbered fallback picker.')
+    except Exception as exc:
+        warning(
+            f'Interactive picker unavailable ({exc.__class__.__name__}); '
+            f'using the numbered fallback picker.',
+        )
+
+    return _prompt_component_selection_numbered(names, labels, seed)
 
 
 def write_global_config(
@@ -12069,7 +12212,17 @@ def main() -> None:
         if args.list_components:
             display_component_registry(components_list)
             sys.exit(0)
-        selection = resolve_component_selection(components_list, args)
+        picker: Callable[[list[str]], list[str] | None] | None = None
+        if components_list and (sys.stdin.isatty() or _dev_tty_available()):
+            picker_environment_name = str(config.get('name', config_name))
+
+            def _run_picker(seed: list[str]) -> list[str] | None:
+                return prompt_component_selection(
+                    components_list, seed, picker_environment_name, config_source,
+                )
+
+            picker = _run_picker
+        selection = resolve_component_selection(components_list, args, picker=picker)
         if selection.is_active:
             apply_component_selection(config, selection)
 

@@ -22,6 +22,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **User and global settings** -- `user-settings` is raw `settings.json` content (camelCase keys) and `global-config` is raw `~/.claude.json` content, covering model selection, permissions, effort levels, thinking mode, environment variables, and every other Claude Code setting
 - **Status line** -- custom status bar scripts for real-time session information
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
+- **Component selection** -- author-defined component groups the end user picks at setup time, interactively (checkbox picker) or via `--select`/`--with`/`--without`; unclaimed items stay mandatory
 - **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
 - **File downloads** -- arbitrary files downloaded to specified destinations during setup

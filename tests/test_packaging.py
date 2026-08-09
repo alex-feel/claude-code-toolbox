@@ -3,7 +3,7 @@ Tests for the PyPI packaging configuration in pyproject.toml.
 
 The wheel maps scripts/ into the cc_toolbox package in place, so these
 assertions pin the exact file set, the path rewrite, the console entry point,
-and the pyyaml-only runtime dependency closure.
+and the pyyaml + questionary runtime dependency closure.
 """
 
 import tomllib
@@ -58,7 +58,19 @@ class TestProjectMetadata:
     def test_runtime_dependencies_exclude_pydantic(self, pyproject: dict) -> None:
         dependencies = pyproject['project']['dependencies']
         assert not any('pydantic' in dep for dep in dependencies), (
-            'pydantic is a dev-only dependency (scripts/models and its tests); the published wheel needs pyyaml alone'
+            'pydantic is a dev-only dependency (scripts/models and its tests); '
+            'the published wheel needs only pyyaml and questionary'
+        )
+
+    def test_runtime_dependency_closure(self, pyproject: dict) -> None:
+        names = sorted(
+            dep.split('>=')[0].split('==')[0].strip()
+            for dep in pyproject['project']['dependencies']
+        )
+        assert names == ['pyyaml', 'questionary'], (
+            'The runtime closure is exactly pyyaml (config parsing) plus '
+            'questionary (interactive component picker; the numbered fallback '
+            'covers environments where it cannot run)'
         )
 
     def test_requires_python_has_no_upper_bound(self, pyproject: dict) -> None:

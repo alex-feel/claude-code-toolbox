@@ -94,6 +94,7 @@ hooks:
       type: "command"
       command: "e2e_test_hook.py"
       config: "e2e-hook-config.yaml"
+      id: "e2e-post-edit"
     - event: "PostToolUse"
       matcher: "Read"
       type: "command"
@@ -138,6 +139,7 @@ hooks:
       async: true
       shell: "bash"
       status-message: "Running notification handler..."
+      id: "e2e-notify"
 
 # MCP Servers - NO profile scopes (those require command-names)
 mcp-servers:
@@ -232,3 +234,47 @@ status-line:
   file: "hooks/e2e_statusline.py"
   config: "configs/e2e-statusline-config.yaml"
   padding: 0
+
+# Author-defined selectable component groups. DERIVED from
+# golden_config.yaml, not copied verbatim: this variant declares only
+# three MCP servers, so the mcp-http component claims only those that
+# exist here (a verbatim copy would trip the fail-fast selector
+# validation). Every component defaults to true so expected outputs stay
+# byte-identical.
+components:
+  - name: "core"
+    label: "Core tooling"
+    description: "Base agent, command, rule, and the Python hook"
+    includes:
+      agents:
+        - "agents/e2e-test-agent.md"
+      slash-commands:
+        - "commands/e2e-test-command.md"
+      rules:
+        - "rules/e2e-test-rule.md"
+      hooks:
+        - "e2e-post-edit"
+        - "e2e-notify"
+        - "hooks/e2e_test_hook.py"
+        - "configs/e2e-hook-config.yaml"
+  - name: "mcp-http"
+    label: "HTTP MCP servers"
+    description: "HTTP and SSE MCP servers"
+    requires:
+      - "core"
+    includes:
+      mcp-servers:
+        - "e2e-http-server"
+        - "e2e-sse-server"
+  - name: "extras"
+    label: "Optional extras"
+    description: "Extra file, skill, and the common dependency"
+    bundles:
+      - "mcp-http"
+    includes:
+      files-to-download:
+        - "~/.claude/e2e-extra-file.txt"
+      skills:
+        - "e2e-test-skill"
+      dependencies:
+        - "echo 'common-dependency-installed'"

@@ -15683,6 +15683,49 @@ class TestResolveComponentSelection:
             'bundle-pack': 'bundle-pack',
         }
 
+    def test_picker_skipped_when_selectors_given(self) -> None:
+        """Explicit selectors suppress the interactive picker."""
+        picker = MagicMock()
+        setup_environment.resolve_component_selection(
+            self._components(), _component_args(select='core'), picker=picker,
+        )
+        setup_environment.resolve_component_selection(
+            self._components(), _component_args(with_='extra'), picker=picker,
+        )
+        setup_environment.resolve_component_selection(
+            self._components(), _component_args(without='core'), picker=picker,
+        )
+        picker.assert_not_called()
+
+    def test_picker_skipped_with_yes_and_dry_run(self) -> None:
+        """--yes and --dry-run suppress the interactive picker."""
+        picker = MagicMock()
+        args = _component_args()
+        args.yes = True
+        setup_environment.resolve_component_selection(self._components(), args, picker=picker)
+        args = _component_args()
+        args.dry_run = True
+        setup_environment.resolve_component_selection(self._components(), args, picker=picker)
+        picker.assert_not_called()
+
+    def test_picker_receives_seed_and_result_feeds_requires_closure(self) -> None:
+        """The picker sees the seeded set; its result still gets hard requires."""
+        picker = MagicMock(return_value=['extra'])
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(), picker=picker,
+        )
+        picker.assert_called_once_with(['core'])
+        assert selection.selected == ['core', 'extra']
+        assert selection.auto_included == {'core': "required by 'extra'"}
+
+    def test_picker_none_keeps_non_interactive_set(self) -> None:
+        """A picker returning None keeps the default selection."""
+        picker = MagicMock(return_value=None)
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(), picker=picker,
+        )
+        assert selection.selected == ['core']
+
     def test_requires_cause_attribution_is_deterministic(self) -> None:
         """When several requesters pull the same target, the earliest in registry order is the cause."""
         components: list[dict[str, Any]] = [
@@ -15888,6 +15931,105 @@ class TestComponentSelectionMainWiring:
         assert 'Components:' in combined
         assert '[x] Core (core)' in combined
         assert 'Replay: --select core' in combined
+
+
+class TestPromptComponentSelection:
+    """Test the three-tier interactive component picker."""
+
+    @staticmethod
+    def _components() -> list[dict[str, Any]]:
+        return list(_components_config()['components'])
+
+    def test_questionary_happy_path(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Tier 1 returns the picked names in registry order with a banner."""
+        mock_questionary = MagicMock()
+        mock_questionary.checkbox.return_value.ask.return_value = ['extra', 'core']
+        with patch.dict(sys.modules, {'questionary': mock_questionary}):
+            result = setup_environment.prompt_component_selection(
+                self._components(), ['core'], 'Test Env', 'test.yaml',
+            )
+        assert result == ['core', 'extra']
+        output = capsys.readouterr().out
+        assert 'Test Env' in output
+        assert 'test.yaml' in output
+
+    def test_questionary_seed_pre_checks_choices(self) -> None:
+        """The seed determines which choices start checked."""
+        mock_questionary = MagicMock()
+        mock_questionary.checkbox.return_value.ask.return_value = []
+        with patch.dict(sys.modules, {'questionary': mock_questionary}):
+            setup_environment.prompt_component_selection(
+                self._components(), ['core'], 'Test Env', 'test.yaml',
+            )
+        checked_by_name = {
+            call.kwargs['value']: call.kwargs['checked']
+            for call in mock_questionary.Choice.call_args_list
+        }
+        assert checked_by_name == {'core': True, 'extra': False, 'bundle-pack': False}
+
+    def test_questionary_cancel_exits_zero(self) -> None:
+        """Ctrl-C (ask() returning None) exits the setup with code 0."""
+        mock_questionary = MagicMock()
+        mock_questionary.checkbox.return_value.ask.return_value = None
+        with (
+            patch.dict(sys.modules, {'questionary': mock_questionary}),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.prompt_component_selection(
+                self._components(), ['core'], 'Test Env', 'test.yaml',
+            )
+        assert exc_info.value.code == 0
+
+    def test_import_error_falls_back_to_numbered(self) -> None:
+        """A missing questionary module falls back to the numbered picker."""
+        with (
+            patch.dict(sys.modules, {'questionary': None}),
+            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+        ):
+            result = setup_environment.prompt_component_selection(
+                self._components(), ['core'], 'Test Env', 'test.yaml',
+            )
+        assert result == ['core']
+
+    def test_console_exception_falls_back_to_numbered(self) -> None:
+        """Console failures (mintty is not an OSError) fall back broadly."""
+        mock_questionary = MagicMock()
+        mock_questionary.checkbox.side_effect = RuntimeError('NoConsoleScreenBufferError')
+        with (
+            patch.dict(sys.modules, {'questionary': mock_questionary}),
+            patch.object(setup_environment, '_get_user_confirmation', return_value=''),
+        ):
+            result = setup_environment.prompt_component_selection(
+                self._components(), ['core'], 'Test Env', 'test.yaml',
+            )
+        assert result == ['core']
+
+    def test_numbered_toggle_flow(self) -> None:
+        """The numbered fallback toggles by number and supports a/n."""
+        responses = iter(['2', 'bogus', 'a', 'n', '1', ''])
+        with patch.object(
+            setup_environment,
+            '_get_user_confirmation',
+            side_effect=lambda _prompt: next(responses),
+        ):
+            result = setup_environment._prompt_component_selection_numbered(
+                ['core', 'extra', 'bundle-pack'],
+                {'core': 'Core', 'extra': 'extra', 'bundle-pack': 'bundle-pack'},
+                ['core'],
+            )
+        assert result == ['core']
+
+    def test_numbered_eof_returns_none(self) -> None:
+        """Unavailable input (EOF) returns None so the caller keeps the seed."""
+        with patch.object(
+            setup_environment,
+            '_get_user_confirmation',
+            side_effect=EOFError,
+        ):
+            result = setup_environment._prompt_component_selection_numbered(
+                ['core'], {'core': 'Core'}, ['core'],
+            )
+        assert result is None
 
 
 class TestDisplayComponentRegistry:

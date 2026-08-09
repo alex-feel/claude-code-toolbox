@@ -153,6 +153,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Raw `~/.claude.json` content (camelCase keys)              |
 | [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)                     |
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
+| [`components`](#components)                           | `list[Component]`      | No       | `[]`    | Author-defined selectable component groups                 |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
 | [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                                     |
 | [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Raw `settings.json` content (camelCase keys)               |
@@ -900,15 +901,16 @@ Event-driven hooks that run automatically during Claude Code sessions. Four hook
 
 These fields apply to all four hook types:
 
-| Field            | YAML Key         | Type   | Required | Description                                                                              |
-|------------------|------------------|--------|----------|------------------------------------------------------------------------------------------|
-| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                    |
-| `matcher`        | `matcher`        | `str`  | No       | Regex pattern for matching (default: `""`)                                               |
-| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                  |
-| `if`             | `if`             | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)             |
-| `status-message` | `status-message` | `str`  | No       | Custom spinner message displayed while the hook runs                                     |
-| `once`           | `once`           | `bool` | No       | If true, runs only once per session then is removed (skills only)                        |
-| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent) |
+| Field            | YAML Key         | Type   | Required | Description                                                                                                                                                          |
+|------------------|------------------|--------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                                                                                                |
+| `matcher`        | `matcher`        | `str`  | No       | Regex pattern for matching (default: `""`)                                                                                                                           |
+| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                                                                                              |
+| `if`             | `if`             | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)                                                                                         |
+| `status-message` | `status-message` | `str`  | No       | Custom spinner message displayed while the hook runs                                                                                                                 |
+| `once`           | `once`           | `bool` | No       | If true, runs only once per session then is removed (skills only)                                                                                                    |
+| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)                                                                             |
+| `id`             | `id`             | `str`  | No       | Stable identifier used solely as a [`components`](#components) selector for this event; unique across events when present, never written to the generated hooks JSON |
 
 #### Type-Specific Fields
 
@@ -1131,6 +1133,70 @@ The installation summary distinguishes between the two routing targets:
 
 - With `command-names`: `Hooks: N configured (in config.json)`
 - Without `command-names`: `Hooks: N configured (in settings.json)`
+
+### components
+
+Author-defined selectable component groups. Components let a configuration author group items from the eight selectable sections -- `agents`, `slash-commands`, `rules`, `skills`, `files-to-download`, `mcp-servers`, `dependencies`, and `hooks` -- into named units the end user can pick at setup time (interactively via the checkbox picker, or non-interactively via `--select`/`--with`/`--without`). An item claimed by at least one component installs only when a selected component claims it; an item claimed by no component is mandatory, never appears in any picker, and always installs. A configuration without a `components:` key behaves exactly as before -- the feature is entirely opt-in.
+
+```yaml
+components:
+  - name: core
+    label: "Core tooling"
+    description: "Base agent, rules, and the linter hook"
+    includes:
+      agents: ["agents/my-agent.md"]
+      rules: ["rules/style.md"]
+      hooks: ["post-edit-lint", "hooks/linter.py"]
+  - name: mcp
+    label: "MCP servers"
+    requires: [core]
+    includes:
+      mcp-servers: ["context-server"]
+  - name: extras
+    label: "Optional extras"
+    default: false
+    bundles: [mcp]
+    includes:
+      files-to-download: ["~/.claude/extra.txt"]
+      dependencies: ["npm install -g some-tool"]
+```
+
+#### Component Fields
+
+| Field         | Type              | Required | Default | Description                                                                                                                                                                                                               |
+|---------------|-------------------|----------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `name`        | `str`             | **Yes**  | --      | Unique identifier used with `--select`/`--with`/`--without`. Lowercase letters, digits, dots, underscores, hyphens; must start with a letter or digit. The literals `all` and `none` are reserved as `--select` sentinels |
+| `label`       | `str`             | No       | `None`  | Human-readable name shown in the picker and the installation summary (falls back to `name`)                                                                                                                               |
+| `description` | `str`             | No       | `None`  | Hint line shown in the picker and in `--list-components` output                                                                                                                                                           |
+| `default`     | `bool`            | No       | `true`  | Whether the component is pre-selected (checked in the picker; included in `--yes` and non-interactive runs)                                                                                                               |
+| `requires`    | `list[str]`       | No       | `[]`    | Hard edges: components transitively auto-included whenever this component is selected (wins over `--without` with a warning; cycles are tolerated)                                                                        |
+| `bundles`     | `list[str]`       | No       | `[]`    | Soft edges: components pre-selected together with this component; the user may still deselect them, and `--without` removes them                                                                                          |
+| `includes`    | `dict[str, list]` | **Yes**  | --      | Mapping of selectable section name to the item selectors this component claims (must claim at least one item)                                                                                                             |
+
+#### Selector Identities
+
+Each section's selectors use its existing merge identity, so a selector is written exactly the way the item appears in the YAML:
+
+| Section                             | Selector                                                                                                                                  |
+|-------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
+| `agents`, `slash-commands`, `rules` | The exact path string as written in the list                                                                                              |
+| `skills`, `mcp-servers`             | The entry's `name`                                                                                                                        |
+| `files-to-download`                 | The entry's `dest`; a directory dest (trailing `/` or `\`) is also matchable by its normalized final file path (`dest` + source filename) |
+| `dependencies`                      | The exact command string, matched across every platform list                                                                              |
+| `hooks`                             | A `hooks.events[].id` (see the `id` common field) or a path string present in `hooks.files`                                               |
+
+Validation fails fast on duplicate component names, dangling `requires`/`bundles` references, `includes` keys outside the selectable sections, selectors matching no item, duplicate hook event ids, and distinct `files-to-download` entries sharing a final path (which would make selectors ambiguous).
+
+#### Selection Flow
+
+1. The base set is the author defaults, unless `--select` replaces it entirely (`--select all` selects every component; `--select none` selects none).
+2. `--with` adds names to the set; `bundles` edges then softly expand it; `--without` removes names.
+3. The interactive picker (a questionary checkbox, falling back to a numbered toggle prompt when questionary is unavailable or the console cannot render it) runs only when no selector flag was given, neither `--yes` nor `--dry-run` is set, and an interactive terminal is available. Non-interactive runs silently use the author defaults.
+4. The hard `requires` closure runs last: deselecting a component that a selected component requires brings it back with a warning and an `[auto: required by '...']` marker in the summary.
+
+The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto-include causes, and a copy-pasteable `Replay: --select ...` line reproducing the selection non-interactively. `--list-components` prints the registry (names, labels, defaults, edges, and per-section item counts) and exits without installing.
+
+Selection resolves before the Windows admin-elevation check and before remote file validation, so deselected items never trigger UAC prompts, network fetches, or authentication prompts.
 
 ## Advanced Topics
 
@@ -1392,16 +1458,16 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 
 #### Merge Strategies by Key Type
 
-| Type                            | Keys                                | Strategy                                                                               |
-|---------------------------------|-------------------------------------|----------------------------------------------------------------------------------------|
-| String list                     | `agents`, `slash-commands`, `rules` | Concatenate parent + child; deduplicate by string equality; parent items first         |
-| Named list (by `name`)          | `mcp-servers`, `skills`             | Identity-based: child overrides parent in-position; new items appended                 |
-| Named list (by final file path) | `files-to-download`                 | Identity-based: child overrides parent in-position; new items appended                 |
-| Per-platform dict               | `dependencies`                      | Per-platform sub-key list concatenation with deduplication                             |
-| Composite                       | `hooks`                             | `files`: concat + dedup by full path; `events`: concat (no dedup)                      |
-| Deep dict                       | `global-config`                     | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)    |
-| Deep dict                       | `user-settings`                     | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only)  |
-| Shallow dict                    | `os-env-variables`                  | Shallow merge; child overrides; `null` deletes (RFC 7396)                              |
+| Type                            | Keys                                  | Strategy                                                                              |
+|---------------------------------|---------------------------------------|---------------------------------------------------------------------------------------|
+| String list                     | `agents`, `slash-commands`, `rules`   | Concatenate parent + child; deduplicate by string equality; parent items first        |
+| Named list (by `name`)          | `mcp-servers`, `skills`, `components` | Identity-based: child overrides parent in-position; new items appended                |
+| Named list (by final file path) | `files-to-download`                   | Identity-based: child overrides parent in-position; new items appended                |
+| Per-platform dict               | `dependencies`                        | Per-platform sub-key list concatenation with deduplication                            |
+| Composite                       | `hooks`                               | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
+| Deep dict                       | `global-config`                       | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)   |
+| Deep dict                       | `user-settings`                       | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only) |
+| Shallow dict                    | `os-env-variables`                    | Shallow merge; child overrides; `null` deletes (RFC 7396)                             |
 
 The `files-to-download` identity is the normalized final file path: a `dest` ending with `/` or `\` is combined with the source filename (query parameters stripped) before matching, so distinct files sharing a directory dest keep distinct identities. See [`files-to-download`](#files-to-download) for details.
 
@@ -1409,7 +1475,7 @@ The `files-to-download` identity is the normalized final file path: a `dest` end
 
 #### Non-Mergeable Keys
 
-Keys not listed in the 11 mergeable keys (such as `name`, `command-defaults`, `status-line`) always use replace semantics, regardless of `merge-keys`.
+Keys not listed in the 12 mergeable keys (such as `name`, `command-defaults`, `status-line`) always use replace semantics, regardless of `merge-keys`.
 
 #### Complete Merge Example
 
@@ -2034,17 +2100,20 @@ hooks:
 
 ### Workflow Control and Behavior
 
-| Variable                               | Purpose                                          | Accepted Values       |
-|----------------------------------------|--------------------------------------------------|-----------------------|
-| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)              | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)          | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`) | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)      | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS             | Exact value `1` only  |
-| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                     | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers             | Integer (default: 2)  |
-| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                       | `1`, `true`, or `yes` |
-| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)      | Path to `bash.exe`    |
+| Variable                               | Purpose                                            | Accepted Values                        |
+|----------------------------------------|----------------------------------------------------|----------------------------------------|
+| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)                | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)            | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`)   | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)        | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS               | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                       | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers               | Integer (default: 2)                   |
+| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                         | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)        | Path to `bash.exe`                     |
+| `CLAUDE_CODE_TOOLBOX_SELECT`           | Install exactly these components (`--select`)      | Comma-separated names, or `all`/`none` |
+| `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)          | Comma-separated names                  |
+| `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`) | Comma-separated names                  |
 
 ### Authentication
 
@@ -2057,13 +2126,17 @@ hooks:
 
 ### CLI Flags and Environment Variable Equivalents
 
-| Flag             | Environment Variable                   | Purpose                                                 |
-|------------------|----------------------------------------|---------------------------------------------------------|
-| `--yes` / `-y`   | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (skip interactive prompt)     |
-| `--dry-run`      | `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Show installation plan and exit without installing      |
-| `--skip-install` | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation                           |
-| `--no-admin`     | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Do not request admin elevation on Windows               |
-| `--auth`         | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`         | Authentication parameter: `"token"` or `"header:value"` |
+| Flag                | Environment Variable                  | Purpose                                                          |
+|---------------------|---------------------------------------|------------------------------------------------------------------|
+| `--yes` / `-y`      | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)              |
+| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing               |
+| `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                    |
+| `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                        |
+| `--auth`            | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`        | Authentication parameter: `"token"` or `"header:value"`          |
+| `--select`          | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install exactly these components (sentinels: `all`, `none`)      |
+| `--with`            | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                          |
+| `--without`         | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win) |
+| `--list-components` | --                                    | List the configuration's components and exit                     |
 
 CLI flags take precedence over environment variables. For piped invocations (`curl | bash`, `iex(irm ...)`), use environment variables since CLI flags cannot be passed.
 
@@ -2102,6 +2175,22 @@ user-settings:
   model: "claude-fable-5"   # or "opus", "fable", "best"; "sonnet" also works for max
   effortLevel: "max"        # or "xhigh"
 ```
+
+### Component selector matches no item
+
+Every `includes` selector must resolve to an item that exists in the same configuration, using the section's identity from the [Selector Identities](#selector-identities) table. The most common causes are a renamed item whose selector was not updated, a `files-to-download` selector that does not match the entry's `dest`, and a `hooks` selector naming an event without an `id`. The error message names the component, the section, and the unmatched selector.
+
+### --without ignored for a required component
+
+Hard `requires` edges win over `--without`: when a selected component requires the one you excluded, the setup re-adds it, prints a warning naming the requester, and marks it `[auto: required by '...']` in the summary. To drop it, also drop every selected component that requires it.
+
+### Component picker does not appear
+
+The interactive picker runs only when the configuration defines `components`, no selector flag or its environment variable was given (`--select`/`--with`/`--without`, `CLAUDE_CODE_TOOLBOX_SELECT`/`_WITH`/`_WITHOUT`), neither `--yes` nor `--dry-run` is set, and an interactive terminal (or `/dev/tty`) is available. Piped invocations without a terminal silently use the author defaults; use `--select` to choose components in that mode.
+
+### Numbered picker instead of the checkbox
+
+When the `questionary` library is not installed (for example, when running the standalone script without `uv`) or the console cannot render the interactive checkbox (for example, older mintty terminals on Windows), the setup falls back to a numbered toggle prompt with the same semantics. Enter a number to toggle a component, `a` to select all, `n` to select none, and press Enter to confirm.
 
 ### Invalid platform keys in dependencies
 
