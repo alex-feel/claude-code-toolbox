@@ -1739,18 +1739,23 @@ class EnvironmentConfig(BaseModel):
         Returns:
             Mapping of section name to the set of accepted selector strings.
         """
+        # Every identity is whitespace-stripped: nested submodels (HookEvent,
+        # FileToDownload, Skill) and raw mcp-servers dicts do not inherit
+        # str_strip_whitespace, while Component selectors are stripped, so
+        # stripping here keeps selector matching symmetric with the runtime
+        # twin in setup_environment.py.
         identities: dict[str, set[str]] = {
-            'agents': set(self.agents or []),
-            'slash-commands': set(self.slash_commands or []),
-            'rules': set(self.rules or []),
-            'skills': {skill.name for skill in self.skills or []},
+            'agents': {item.strip() for item in self.agents or []},
+            'slash-commands': {item.strip() for item in self.slash_commands or []},
+            'rules': {item.strip() for item in self.rules or []},
+            'skills': {skill.name.strip() for skill in self.skills or []},
             'mcp-servers': {
-                str(server['name'])
+                str(server['name']).strip()
                 for server in self.mcp_servers or []
                 if server.get('name') is not None
             },
             'dependencies': {
-                command
+                command.strip()
                 for commands in (self.dependencies or {}).values()
                 for command in commands
             },
@@ -1758,14 +1763,16 @@ class EnvironmentConfig(BaseModel):
 
         file_keys: set[str] = set()
         for entry in self.files_to_download or []:
-            file_keys.add(entry.dest)
-            file_keys.add(_download_selector_identity(entry.source, entry.dest))
+            file_keys.add(entry.dest.strip())
+            file_keys.add(_download_selector_identity(entry.source.strip(), entry.dest.strip()))
         identities['files-to-download'] = file_keys
 
         hook_keys: set[str] = set()
         if self.hooks:
-            hook_keys.update(self.hooks.files)
-            hook_keys.update(event.id for event in self.hooks.events if event.id is not None)
+            hook_keys.update(file_path.strip() for file_path in self.hooks.files)
+            hook_keys.update(
+                event.id.strip() for event in self.hooks.events if event.id is not None
+            )
         identities['hooks'] = hook_keys
 
         return identities
@@ -1793,11 +1800,12 @@ class EnvironmentConfig(BaseModel):
             for event in self.hooks.events:
                 if event.id is None:
                     continue
-                if event.id in seen_hook_ids:
+                id_str = event.id.strip()
+                if id_str in seen_hook_ids:
                     errors.append(
-                        f"Duplicate hook event id '{event.id}'. Hook ids must be unique across events.",
+                        f"Duplicate hook event id '{id_str}'. Hook ids must be unique across events.",
                     )
-                seen_hook_ids.add(event.id)
+                seen_hook_ids.add(id_str)
 
         components = self.components or []
         if components:
@@ -1808,6 +1816,21 @@ class EnvironmentConfig(BaseModel):
                         f"Duplicate component name '{component.name}'. Component names must be unique.",
                     )
                 seen_names.add(component.name)
+
+            # Distinct files-to-download entries deploying to the same final
+            # path make component selectors ambiguous (one selector would
+            # claim both), silently defeating deselection.
+            identity_owners: dict[str, int] = {}
+            for entry_index, entry in enumerate(self.files_to_download or []):
+                identity = _download_selector_identity(entry.source.strip(), entry.dest.strip())
+                if identity in identity_owners:
+                    errors.append(
+                        f'files-to-download entries {identity_owners[identity]} and '
+                        f"{entry_index} share the final path '{identity}', making component "
+                        f'selectors ambiguous. Give them distinct destinations.',
+                    )
+                else:
+                    identity_owners[identity] = entry_index
 
             known_names = {component.name for component in components}
             identities = self._selectable_item_identities()

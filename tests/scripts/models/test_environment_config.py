@@ -2555,3 +2555,36 @@ class TestComponentsGraphValidation:
         message = str(exc_info.value)
         assert "requires unknown component 'nope'" in message
         assert 'matches no item in agents' in message
+
+    def test_duplicate_final_path_rejected_with_components(self):
+        """Entries sharing a final path are ambiguous once components exist."""
+        with pytest.raises(ValidationError, match='share the final path'):
+            EnvironmentConfig.model_validate(self._config(
+                **{'files-to-download': [
+                    {'source': 'files/f.txt', 'dest': '~/.claude/gdir/f.txt'},
+                    {'source': 'files/f.txt', 'dest': '~/.claude/gdir/'},
+                ]},
+                components=[
+                    {'name': 'core', 'includes': {'files-to-download': ['~/.claude/gdir/f.txt']}},
+                ],
+            ))
+
+    def test_whitespace_hook_id_matches_stripped_selector(self):
+        """Identities are stripped so padded ids match stripped selectors."""
+        config = EnvironmentConfig.model_validate(self._config(
+            hooks={
+                'files': ['hooks/h.py'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'type': 'command',
+                        'command': 'h.py',
+                        'id': ' post-edit ',
+                    },
+                ],
+            },
+            components=[
+                {'name': 'core', 'includes': {'hooks': ['post-edit']}},
+            ],
+        ))
+        assert config.components is not None

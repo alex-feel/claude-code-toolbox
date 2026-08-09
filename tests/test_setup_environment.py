@@ -14975,6 +14975,9 @@ class TestResolveArgs:
         skip_install: bool = False,
         no_admin: bool = False,
         auth: str | None = None,
+        select: str | None = None,
+        with_: str | None = None,
+        without: str | None = None,
     ) -> argparse.Namespace:
         return argparse.Namespace(
             yes=yes,
@@ -14982,7 +14985,47 @@ class TestResolveArgs:
             skip_install=skip_install,
             no_admin=no_admin,
             auth=auth,
+            select=select,
+            with_=with_,
+            without=without,
+            list_components=False,
         )
+
+    def test_component_selectors_from_env_vars(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_SELECT/_WITH/_WITHOUT provide fallbacks."""
+        env = {
+            'CLAUDE_CODE_TOOLBOX_SELECT': 'core,extra',
+            'CLAUDE_CODE_TOOLBOX_WITH': 'docs',
+            'CLAUDE_CODE_TOOLBOX_WITHOUT': 'mcp',
+        }
+        with patch.dict(os.environ, env):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.select == 'core,extra'
+            assert args.with_ == 'docs'
+            assert args.without == 'mcp'
+
+    def test_component_selectors_cli_takes_precedence(self) -> None:
+        """CLI selector values win over their env var equivalents."""
+        env = {
+            'CLAUDE_CODE_TOOLBOX_SELECT': 'env-value',
+            'CLAUDE_CODE_TOOLBOX_WITH': 'env-value',
+            'CLAUDE_CODE_TOOLBOX_WITHOUT': 'env-value',
+        }
+        with patch.dict(os.environ, env):
+            args = self._make_args(select='cli-a', with_='cli-b', without='cli-c')
+            setup_environment.resolve_args(args)
+            assert args.select == 'cli-a'
+            assert args.with_ == 'cli-b'
+            assert args.without == 'cli-c'
+
+    def test_component_selectors_default_to_none(self) -> None:
+        """Without CLI values or env vars the selectors stay None."""
+        args = self._make_args()
+        setup_environment.resolve_args(args)
+        assert args.select is None
+        assert args.with_ is None
+        assert args.without is None
 
     def test_cli_flags_unchanged_when_no_env_vars(self) -> None:
         """CLI flags pass through without env vars."""
@@ -15162,3 +15205,732 @@ class TestElevationLaunchArgs:
             'SETUP_ENVIRONMENT.PY',
         )
         assert result == ['SETUP_ENVIRONMENT.PY']
+
+
+def _component_args(
+    select: str | None = None,
+    with_: str | None = None,
+    without: str | None = None,
+) -> argparse.Namespace:
+    """Build a Namespace carrying the component selector flags."""
+    return argparse.Namespace(
+        yes=False,
+        dry_run=False,
+        skip_install=False,
+        no_admin=False,
+        auth=None,
+        select=select,
+        with_=with_,
+        without=without,
+        list_components=False,
+    )
+
+
+def _components_config() -> dict[str, Any]:
+    """Build a config with items in every selectable section and 3 components.
+
+    Unclaimed (mandatory) items: agents/b.md, commands/c.md, skill sk,
+    server srv, the windows dependency, ~/.claude/f.txt, hooks/k.py and
+    its id-less event.
+
+    Returns:
+        Config dict with a components registry covering all sections.
+    """
+    return {
+        'name': 'Test',
+        'agents': ['agents/a.md', 'agents/b.md'],
+        'slash-commands': ['commands/c.md'],
+        'rules': ['rules/r.md'],
+        'skills': [{'name': 'sk', 'base': 'skills/sk', 'files': ['SKILL.md']}],
+        'mcp-servers': [
+            {'name': 'srv', 'scope': 'user', 'command': 'python -m x'},
+            {'name': 'srv2', 'scope': 'user', 'command': 'python -m y'},
+        ],
+        'dependencies': {'common': ['echo hi'], 'windows': ['winget install x']},
+        'files-to-download': [
+            {'source': 'files/f.txt', 'dest': '~/.claude/f.txt'},
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/'},
+        ],
+        'hooks': {
+            'files': ['hooks/h.py', 'hooks/k.py'],
+            'events': [
+                {
+                    'event': 'PostToolUse',
+                    'matcher': 'Edit',
+                    'type': 'command',
+                    'command': 'h.py',
+                    'id': 'post-edit',
+                },
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'command', 'command': 'k.py'},
+            ],
+        },
+        'components': [
+            {
+                'name': 'core',
+                'label': 'Core',
+                'includes': {
+                    'agents': ['agents/a.md'],
+                    'hooks': ['post-edit', 'hooks/h.py'],
+                },
+            },
+            {
+                'name': 'extra',
+                'default': False,
+                'requires': ['core'],
+                'includes': {
+                    'mcp-servers': ['srv2'],
+                    'dependencies': ['echo hi'],
+                    'files-to-download': ['~/.claude/gdir/'],
+                },
+            },
+            {
+                'name': 'bundle-pack',
+                'default': False,
+                'bundles': ['extra'],
+                'includes': {'rules': ['rules/r.md']},
+            },
+        ],
+    }
+
+
+class TestValidateComponents:
+    """Test validate_components() runtime validation."""
+
+    def test_valid_config_no_errors(self) -> None:
+        """A fully valid components registry produces no errors."""
+        assert setup_environment.validate_components(_components_config()) == []
+
+    def test_absent_components_no_errors(self) -> None:
+        """A config without components validates trivially."""
+        assert setup_environment.validate_components({'name': 'Test'}) == []
+
+    def test_non_list_components_rejected(self) -> None:
+        """A non-list components value is a single error."""
+        errors = setup_environment.validate_components({'components': 'oops'})
+        assert errors == ["'components' must be a list of component entries"]
+
+    def test_non_dict_entry_rejected(self) -> None:
+        """A non-mapping component entry is rejected by index."""
+        errors = setup_environment.validate_components({'components': ['oops']})
+        assert any('components[0] must be a mapping' in e for e in errors)
+
+    def test_missing_name_rejected(self) -> None:
+        """A component without a name is rejected."""
+        config = _components_config()
+        config['components'][0].pop('name')
+        errors = setup_environment.validate_components(config)
+        assert any('requires a name' in e for e in errors)
+
+    def test_reserved_name_rejected(self) -> None:
+        """Reserved sentinel names are rejected."""
+        config = _components_config()
+        config['components'][0]['name'] = 'all'
+        errors = setup_environment.validate_components(config)
+        assert any('reserved' in e for e in errors)
+
+    def test_invalid_name_pattern_rejected(self) -> None:
+        """Names outside the allowed pattern are rejected."""
+        config = _components_config()
+        config['components'][0]['name'] = 'Core Stuff'
+        errors = setup_environment.validate_components(config)
+        assert any('invalid' in e for e in errors)
+
+    def test_duplicate_names_rejected(self) -> None:
+        """Duplicate component names are rejected."""
+        config = _components_config()
+        config['components'][1]['name'] = 'core'
+        config['components'][1].pop('requires')
+        errors = setup_environment.validate_components(config)
+        assert any('Duplicate component name' in e for e in errors)
+
+    def test_unknown_field_rejected(self) -> None:
+        """Unknown component fields are rejected."""
+        config = _components_config()
+        config['components'][0]['unexpected'] = True
+        errors = setup_environment.validate_components(config)
+        assert any('unknown field' in e for e in errors)
+
+    def test_field_type_errors(self) -> None:
+        """label/description/default type mismatches are rejected."""
+        config = _components_config()
+        config['components'][0]['label'] = 5
+        config['components'][0]['description'] = ['x']
+        config['components'][0]['default'] = 'yes'
+        errors = setup_environment.validate_components(config)
+        assert any('label must be a string' in e for e in errors)
+        assert any('description must be a string' in e for e in errors)
+        assert any('default must be a boolean' in e for e in errors)
+
+    def test_missing_includes_rejected(self) -> None:
+        """A component without includes is rejected."""
+        config = _components_config()
+        config['components'][0].pop('includes')
+        errors = setup_environment.validate_components(config)
+        assert any('includes must claim at least one item' in e for e in errors)
+
+    def test_unknown_includes_key_rejected_with_hint(self) -> None:
+        """Non-selectable includes keys are rejected with a difflib hint."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'slash-comands': ['commands/c.md']}
+        errors = setup_environment.validate_components(config)
+        assert any("includes key 'slash-comands' is not selectable" in e for e in errors)
+        assert any("did you mean 'slash-commands'" in e for e in errors)
+
+    def test_empty_selector_list_rejected(self) -> None:
+        """An empty selector list is rejected."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'agents': []}
+        errors = setup_environment.validate_components(config)
+        assert any('must list at least one selector' in e for e in errors)
+
+    def test_empty_selector_string_rejected(self) -> None:
+        """An empty selector string is rejected."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'agents': ['  ']}
+        errors = setup_environment.validate_components(config)
+        assert any('contains an empty selector' in e for e in errors)
+
+    def test_selector_matching_no_item_rejected(self) -> None:
+        """Selectors that match no item are rejected per section."""
+        config = _components_config()
+        config['components'][0]['includes'] = {
+            'agents': ['agents/missing.md'],
+            'skills': ['nope'],
+            'hooks': ['ghost'],
+        }
+        errors = setup_environment.validate_components(config)
+        assert any("'agents/missing.md' matches no item in agents" in e for e in errors)
+        assert any("'nope' matches no item in skills" in e for e in errors)
+        assert any("'ghost' matches no item in hooks" in e for e in errors)
+
+    def test_directory_dest_selector_by_identity_accepted(self) -> None:
+        """A directory dest is claimable by its normalized final file path."""
+        config = _components_config()
+        config['components'][1]['includes']['files-to-download'] = ['~/.claude/gdir/g.txt']
+        assert setup_environment.validate_components(config) == []
+
+    def test_selector_whitespace_tolerated(self) -> None:
+        """Selectors and section values are compared whitespace-stripped."""
+        config = _components_config()
+        config['components'][1]['includes']['dependencies'] = [' echo hi ']
+        assert setup_environment.validate_components(config) == []
+
+    def test_dangling_requires_rejected(self) -> None:
+        """requires naming an unknown component is rejected."""
+        config = _components_config()
+        config['components'][0]['requires'] = ['ghost']
+        errors = setup_environment.validate_components(config)
+        assert any("requires unknown component 'ghost'" in e for e in errors)
+
+    def test_dangling_bundles_rejected(self) -> None:
+        """bundles naming an unknown component is rejected."""
+        config = _components_config()
+        config['components'][0]['bundles'] = ['ghost']
+        errors = setup_environment.validate_components(config)
+        assert any("bundles unknown component 'ghost'" in e for e in errors)
+
+    def test_duplicate_hook_ids_rejected_without_components(self) -> None:
+        """Duplicate hook event ids are rejected even without components."""
+        config: dict[str, Any] = {
+            'hooks': {
+                'files': ['h.py'],
+                'events': [
+                    {'event': 'PostToolUse', 'type': 'command', 'command': 'h.py', 'id': 'dup'},
+                    {'event': 'PreToolUse', 'type': 'command', 'command': 'h.py', 'id': 'dup'},
+                ],
+            },
+        }
+        errors = setup_environment.validate_components(config)
+        assert any("Duplicate hook event id 'dup'" in e for e in errors)
+
+    def test_non_string_name_rejected(self) -> None:
+        """A non-string component name is rejected, matching the model twin."""
+        config = _components_config()
+        config['components'][0]['name'] = 123
+        errors = setup_environment.validate_components(config)
+        assert any('name must be a string' in e for e in errors)
+
+    def test_non_string_edge_refs_rejected(self) -> None:
+        """Non-string requires/bundles entries are rejected."""
+        config = _components_config()
+        config['components'][0]['requires'] = [123]
+        config['components'][0]['bundles'] = [None]
+        errors = setup_environment.validate_components(config)
+        assert any('requires entries must be strings' in e for e in errors)
+        assert any('bundles entries must be strings' in e for e in errors)
+
+    def test_non_string_selector_rejected(self) -> None:
+        """Non-string selectors are rejected."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'agents': [123]}
+        errors = setup_environment.validate_components(config)
+        assert any('selectors must be strings' in e for e in errors)
+
+    def test_duplicate_final_path_rejected(self) -> None:
+        """Entries sharing a final path are ambiguous once components exist."""
+        config = _components_config()
+        config['files-to-download'] = [
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/g.txt'},
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/'},
+        ]
+        config['components'][1]['includes']['files-to-download'] = ['~/.claude/gdir/g.txt']
+        errors = setup_environment.validate_components(config)
+        assert any('share the final path' in e for e in errors)
+
+    def test_whitespace_hook_id_matches_stripped_selector(self) -> None:
+        """Padded event ids match stripped selectors (both sides stripped)."""
+        config = _components_config()
+        config['hooks']['events'][0]['id'] = ' post-edit '
+        assert setup_environment.validate_components(config) == []
+
+    def test_hook_claim_asymmetry_warns(self) -> None:
+        """Claiming a hooks file without covering its events warns."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'hooks': ['hooks/h.py']}
+        with patch.object(setup_environment, 'warning') as mock_warning:
+            errors = setup_environment.validate_components(config)
+        assert errors == []
+        assert mock_warning.called
+        assert 'hooks/h.py' in mock_warning.call_args[0][0]
+
+    def test_no_asymmetry_warning_when_covered(self) -> None:
+        """Claiming a file and its events together does not warn."""
+        with patch.object(setup_environment, 'warning') as mock_warning:
+            errors = setup_environment.validate_components(_components_config())
+        assert errors == []
+        assert not mock_warning.called
+
+
+class TestParseComponentCsv:
+    """Test _parse_component_csv() absent/empty distinction."""
+
+    def test_none_stays_none(self) -> None:
+        """Absent input returns None."""
+        assert setup_environment._parse_component_csv(None) is None
+
+    def test_simple_split(self) -> None:
+        """Comma-separated names split into tokens."""
+        assert setup_environment._parse_component_csv('a,b') == ['a', 'b']
+
+    def test_whitespace_stripped(self) -> None:
+        """Tokens are whitespace-stripped."""
+        assert setup_environment._parse_component_csv(' a , b ') == ['a', 'b']
+
+    def test_empty_string_is_empty_list(self) -> None:
+        """An empty string parses to an empty list, not None."""
+        assert setup_environment._parse_component_csv('') == []
+
+    def test_only_commas_is_empty_list(self) -> None:
+        """Separators without tokens parse to an empty list."""
+        assert setup_environment._parse_component_csv(',,') == []
+
+
+class TestValidateComponentSelectorArgs:
+    """Test _validate_component_selector_args() against the registry."""
+
+    _NAMES = ['core', 'extra', 'bundle-pack']
+
+    def test_valid_selectors_pass(self) -> None:
+        """Known names in every flag produce no errors."""
+        args = _component_args(select='core', with_='extra', without='bundle-pack')
+        assert setup_environment._validate_component_selector_args(self._NAMES, args) == []
+
+    def test_sentinels_valid_in_select(self) -> None:
+        """The all/none sentinels are accepted in --select alone."""
+        for sentinel in ('all', 'none'):
+            args = _component_args(select=sentinel)
+            assert setup_environment._validate_component_selector_args(self._NAMES, args) == []
+
+    def test_unknown_name_rejected_with_hint(self) -> None:
+        """Unknown component names are rejected with a difflib hint."""
+        args = _component_args(select='cor')
+        errors = setup_environment._validate_component_selector_args(self._NAMES, args)
+        assert any("unknown component 'cor'" in e for e in errors)
+        assert any("did you mean 'core'" in e for e in errors)
+
+    def test_sentinel_rejected_in_with_and_without(self) -> None:
+        """Sentinels are only valid in --select."""
+        args = _component_args(with_='all', without='none')
+        errors = setup_environment._validate_component_selector_args(self._NAMES, args)
+        assert any("--with does not accept the sentinel 'all'" in e for e in errors)
+        assert any("--without does not accept the sentinel 'none'" in e for e in errors)
+
+    def test_sentinel_combined_with_names_rejected(self) -> None:
+        """--select sentinels cannot be combined with other names."""
+        args = _component_args(select='all,core')
+        errors = setup_environment._validate_component_selector_args(self._NAMES, args)
+        assert any('cannot be combined' in e for e in errors)
+
+    def test_empty_select_rejected(self) -> None:
+        """An empty --select value is rejected."""
+        args = _component_args(select='')
+        errors = setup_environment._validate_component_selector_args(self._NAMES, args)
+        assert any('--select requires at least one component name' in e for e in errors)
+
+
+class TestResolveComponentSelection:
+    """Test resolve_component_selection() algorithm."""
+
+    @staticmethod
+    def _components() -> list[dict[str, Any]]:
+        return list(_components_config()['components'])
+
+    def test_empty_components_inactive(self) -> None:
+        """No components produces an inactive selection."""
+        selection = setup_environment.resolve_component_selection([], _component_args())
+        assert selection.is_active is False
+        assert selection.available == []
+        assert selection.selected == []
+
+    def test_defaults_selected(self) -> None:
+        """Author defaults seed the selection when no selectors are given."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(),
+        )
+        assert selection.is_active is True
+        assert selection.available == ['core', 'extra', 'bundle-pack']
+        assert selection.selected == ['core']
+        assert selection.skipped == ['extra', 'bundle-pack']
+        assert selection.replay == '--select core'
+
+    def test_select_replaces_defaults_and_requires_pulls(self) -> None:
+        """--select replaces the default set; requires auto-includes."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(select='extra'),
+        )
+        assert selection.selected == ['core', 'extra']
+        assert selection.auto_included == {'core': "required by 'extra'"}
+        assert selection.replay == '--select core,extra'
+
+    def test_select_all(self) -> None:
+        """--select all selects every component."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(select='all'),
+        )
+        assert selection.selected == ['core', 'extra', 'bundle-pack']
+
+    def test_select_none(self) -> None:
+        """--select none selects no component."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(select='none'),
+        )
+        assert selection.selected == []
+        assert selection.replay == '--select none'
+
+    def test_with_adds_and_bundles_expand(self) -> None:
+        """--with adds to the defaults; bundle edges softly expand."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(with_='bundle-pack'),
+        )
+        assert selection.selected == ['core', 'extra', 'bundle-pack']
+
+    def test_without_beats_defaults(self) -> None:
+        """--without removes a defaulted component."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(without='core'),
+        )
+        assert selection.selected == []
+        assert selection.replay == '--select none'
+
+    def test_without_beats_bundles(self) -> None:
+        """--without removes a bundled component."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(with_='bundle-pack', without='extra'),
+        )
+        assert selection.selected == ['core', 'bundle-pack']
+
+    def test_hard_requires_overrides_without_with_warning(self) -> None:
+        """The requires closure wins over --without and warns."""
+        with patch.object(setup_environment, 'warning') as mock_warning:
+            selection = setup_environment.resolve_component_selection(
+                self._components(), _component_args(select='extra', without='core'),
+            )
+        assert selection.selected == ['core', 'extra']
+        assert 'core' in selection.auto_included
+        assert mock_warning.called
+        assert "--without 'core' overridden" in mock_warning.call_args[0][0]
+
+    def test_bundle_cycle_tolerated(self) -> None:
+        """Mutually bundled components resolve without infinite loops."""
+        components: list[dict[str, Any]] = [
+            {'name': 'a', 'default': False, 'bundles': ['b'], 'includes': {'agents': ['x']}},
+            {'name': 'b', 'default': False, 'bundles': ['a'], 'includes': {'agents': ['y']}},
+        ]
+        selection = setup_environment.resolve_component_selection(
+            components, _component_args(with_='a'),
+        )
+        assert selection.selected == ['a', 'b']
+
+    def test_requires_cycle_tolerated(self) -> None:
+        """Mutually requiring components resolve without infinite loops."""
+        components: list[dict[str, Any]] = [
+            {'name': 'a', 'default': False, 'requires': ['b'], 'includes': {'agents': ['x']}},
+            {'name': 'b', 'default': False, 'requires': ['a'], 'includes': {'agents': ['y']}},
+        ]
+        selection = setup_environment.resolve_component_selection(
+            components, _component_args(select='a'),
+        )
+        assert selection.selected == ['a', 'b']
+
+    def test_labels_fall_back_to_name(self) -> None:
+        """Missing labels fall back to the component name."""
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(),
+        )
+        assert selection.labels == {
+            'core': 'Core',
+            'extra': 'extra',
+            'bundle-pack': 'bundle-pack',
+        }
+
+    def test_requires_cause_attribution_is_deterministic(self) -> None:
+        """When several requesters pull the same target, the earliest in registry order is the cause."""
+        components: list[dict[str, Any]] = [
+            {'name': 'a', 'default': False, 'requires': ['c'], 'includes': {'agents': ['x']}},
+            {'name': 'b', 'default': False, 'requires': ['c'], 'includes': {'agents': ['y']}},
+            {'name': 'c', 'default': False, 'includes': {'agents': ['z']}},
+        ]
+        for _ in range(20):
+            selection = setup_environment.resolve_component_selection(
+                components, _component_args(select='a,b'),
+            )
+            assert selection.auto_included == {'c': "required by 'a'"}
+
+
+class TestApplyComponentSelection:
+    """Test apply_component_selection() in-place filtering."""
+
+    @staticmethod
+    def _apply(config: dict[str, Any], selected: list[str]) -> dict[str, Any]:
+        selection = setup_environment.ComponentSelection(
+            is_active=True,
+            available=['core', 'extra', 'bundle-pack'],
+            selected=selected,
+        )
+        setup_environment.apply_component_selection(config, selection)
+        return config
+
+    def test_default_selection_drops_unselected_claims(self) -> None:
+        """Only items claimed exclusively by unselected components drop."""
+        config = self._apply(_components_config(), ['core'])
+        assert config['agents'] == ['agents/a.md', 'agents/b.md']
+        assert config['slash-commands'] == ['commands/c.md']
+        assert config['rules'] == []
+        assert [s['name'] for s in config['mcp-servers']] == ['srv']
+        assert config['dependencies'] == {'common': [], 'windows': ['winget install x']}
+        assert [f['dest'] for f in config['files-to-download']] == ['~/.claude/f.txt']
+        assert config['hooks']['files'] == ['hooks/h.py', 'hooks/k.py']
+        assert [e.get('id') for e in config['hooks']['events']] == ['post-edit', None]
+
+    def test_all_selected_drops_nothing(self) -> None:
+        """Selecting every component keeps the config intact."""
+        expected = _components_config()
+        config = self._apply(_components_config(), ['core', 'extra', 'bundle-pack'])
+        assert config == expected
+
+    def test_none_selected_drops_all_claimed(self) -> None:
+        """An empty selection drops every claimed item, keeping mandatory ones."""
+        config = self._apply(_components_config(), [])
+        assert config['agents'] == ['agents/b.md']
+        assert config['rules'] == []
+        assert [s['name'] for s in config['mcp-servers']] == ['srv']
+        assert config['dependencies']['common'] == []
+        assert config['hooks']['files'] == ['hooks/k.py']
+        assert [e.get('id') for e in config['hooks']['events']] == [None]
+
+    def test_multi_claim_survives_if_any_claimer_selected(self) -> None:
+        """An item claimed by several components survives when one is selected."""
+        config = _components_config()
+        config['components'][2]['includes']['agents'] = ['agents/a.md']
+        selection = setup_environment.ComponentSelection(
+            is_active=True,
+            available=['core', 'extra', 'bundle-pack'],
+            selected=['bundle-pack'],
+        )
+        setup_environment.apply_component_selection(config, selection)
+        assert 'agents/a.md' in config['agents']
+
+    def test_directory_dest_claim_by_identity(self) -> None:
+        """A selector using the normalized identity claims the directory dest."""
+        config = _components_config()
+        config['components'][1]['includes']['files-to-download'] = ['~/.claude/gdir/g.txt']
+        config = self._apply(config, [])
+        assert [f['dest'] for f in config['files-to-download']] == ['~/.claude/f.txt']
+
+    def test_selector_whitespace_tolerated(self) -> None:
+        """Selectors and item identities are compared whitespace-stripped."""
+        config = _components_config()
+        config['components'][1]['includes']['dependencies'] = [' echo hi ']
+        config = self._apply(config, [])
+        assert config['dependencies']['common'] == []
+
+    def test_inactive_selection_is_noop(self) -> None:
+        """An inactive selection leaves the config untouched."""
+        expected = _components_config()
+        config = _components_config()
+        setup_environment.apply_component_selection(
+            config, setup_environment.ComponentSelection(),
+        )
+        assert config == expected
+
+    def test_shape_preserved_section_keys_survive(self) -> None:
+        """Filtering empties lists but never deletes section keys."""
+        config = self._apply(_components_config(), [])
+        assert 'rules' in config
+        assert config['rules'] == []
+        assert 'events' in config['hooks']
+
+
+class TestComponentSelectionInPlan:
+    """Test component selection threading into the installation plan."""
+
+    def test_collect_plan_threads_selection(self) -> None:
+        """collect_installation_plan stores the selection on the plan."""
+        config = _components_config()
+        selection = setup_environment.resolve_component_selection(
+            config['components'], _component_args(),
+        )
+        plan = setup_environment.collect_installation_plan(
+            config=config,
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=[],
+            args=_component_args(),
+            selection=selection,
+        )
+        assert plan.component_selection is selection
+
+    def test_collect_plan_selection_defaults_to_none(self) -> None:
+        """Without the selection kwarg the plan carries None."""
+        plan = setup_environment.collect_installation_plan(
+            config={'name': 'Test'},
+            config_source='test',
+            config_name='test',
+            config_version=None,
+            inheritance_chain=[],
+            args=_component_args(),
+        )
+        assert plan.component_selection is None
+
+    def test_summary_renders_components_block(self) -> None:
+        """The summary renders selection marks, causes, and the replay line."""
+        import io
+        selection = setup_environment.ComponentSelection(
+            is_active=True,
+            available=['core', 'extra', 'bundle-pack'],
+            labels={'core': 'Core', 'extra': 'extra', 'bundle-pack': 'bundle-pack'},
+            selected=['core', 'extra'],
+            auto_included={'core': "required by 'extra'"},
+            replay='--select core,extra',
+        )
+        plan = setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version=None,
+            component_selection=selection,
+        )
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Components:' in output
+        assert '[x] Core (core)' in output
+        assert '[x] extra' in output
+        assert '[ ] bundle-pack' in output
+        assert "[auto: required by 'extra']" in output
+        assert 'Replay: --select core,extra' in output
+
+    def test_summary_omits_components_block_when_inactive(self) -> None:
+        """No components block renders for component-free configs."""
+        import io
+        plan = setup_environment.InstallationPlan(
+            config_name='test-env',
+            config_source='test',
+            config_source_type='repo',
+            config_version=None,
+        )
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        assert 'Components:' not in buf.getvalue()
+
+
+class TestComponentSelectionMainWiring:
+    """Regression: main() threads the resolved selection into the plan summary."""
+
+    def test_dry_run_summary_renders_components_block(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dry run of main() with components renders the Components block."""
+        config = _components_config()
+        monkeypatch.setattr(
+            setup_environment,
+            'load_config_from_source',
+            lambda *_a, **_k: (config, 'https://example.com/test.yaml'),
+        )
+        monkeypatch.setattr(
+            setup_environment,
+            'validate_all_config_files',
+            lambda *_a, **_k: (True, []),
+        )
+        monkeypatch.setattr(
+            sys,
+            'argv',
+            ['setup_environment.py', 'test', '--dry-run', '--skip-install', '--no-admin'],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            setup_environment.main()
+        assert exc_info.value.code == 0
+        output = capsys.readouterr()
+        combined = output.out + output.err
+        assert 'Components:' in combined
+        assert '[x] Core (core)' in combined
+        assert 'Replay: --select core' in combined
+
+
+class TestDisplayComponentRegistry:
+    """Test display_component_registry() output for --list-components."""
+
+    def test_registry_lists_components(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Every component renders with markers, edges, and counts."""
+        components = _components_config()['components']
+        setup_environment.display_component_registry(components)
+        output = capsys.readouterr().out
+        assert 'core -- Core [default]' in output
+        assert 'extra' in output
+        assert 'requires: core' in output
+        assert 'bundles: extra' in output
+        assert 'includes: 1 agents, 2 hooks' in output
+
+    def test_empty_registry_message(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """An empty registry prints the no-components message."""
+        setup_environment.display_component_registry([])
+        output = capsys.readouterr().out
+        assert 'defines no components' in output
+
+
+class TestHookIdNotInGeneratedJson:
+    """Regression: hooks.events[].id never reaches the generated hooks JSON."""
+
+    def test_id_stripped_from_hooks_json(self, tmp_path: Path) -> None:
+        """The whitelist builder drops the id field for every hook type."""
+        hooks = {
+            'files': ['h.py'],
+            'events': [
+                {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                 'command': 'h.py', 'id': 'cmd-id'},
+                {'event': 'PostToolUse', 'matcher': 'Write', 'type': 'http',
+                 'url': 'http://localhost:8080/x', 'id': 'http-id'},
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                 'prompt': 'Check', 'id': 'prompt-id'},
+                {'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'agent',
+                 'prompt': 'Verify', 'id': 'agent-id'},
+            ],
+        }
+        result = setup_environment._build_hooks_json(hooks, tmp_path)
+        serialized = json.dumps(result)
+        assert '"id"' not in serialized
+        assert 'cmd-id' not in serialized
+        assert 'http-id' not in serialized
