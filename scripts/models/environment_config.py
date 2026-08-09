@@ -4,9 +4,11 @@ Defines the schema for Claude Code environment YAML files.
 """
 
 import re
+from pathlib import PurePath
 from typing import Any
 from typing import Literal
 from typing import cast
+from urllib.parse import unquote
 from urllib.parse import urlparse
 
 from pydantic import BaseModel
@@ -109,6 +111,30 @@ GLOBAL_CONFIG_SETTINGS_ONLY_KEYS: frozenset[str] = frozenset({
 
 # Environment variable names: letters, digits, underscores; no leading digit
 ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+# Sections whose items may be claimed by entries in the top-level
+# `components:` registry. Any other key inside a component's `includes`
+# mapping is rejected. Inline copy of SELECTABLE_SECTIONS in
+# setup_environment.py (standalone script policy prevents cross-import);
+# parity enforced by tests/scripts/models/test_selectable_sections_parity.py.
+SELECTABLE_SECTIONS: frozenset[str] = frozenset({
+    'agents',
+    'slash-commands',
+    'rules',
+    'skills',
+    'files-to-download',
+    'mcp-servers',
+    'dependencies',
+    'hooks',
+})
+
+# Component names reserved as --select sentinels ('--select all' selects
+# every component, '--select none' selects no component)
+RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
+
+# Component names: lowercase letters, digits, dots, underscores, hyphens;
+# must start with a letter or digit
+COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
 
 def _extract_basename(path_or_url: str) -> str:
@@ -639,6 +665,11 @@ class HookEvent(BaseModel):
         None,
         description='Timeout in seconds (default varies by type: 600 for command, 30 for prompt, 60 for agent)',
     )
+    id: str | None = Field(
+        None,
+        description='Optional stable identifier used solely as a component selector for this event; '
+        'unique across events when present and never written to the generated hooks JSON',
+    )
 
     # Command hook fields
     command: str | None = Field(
@@ -942,6 +973,164 @@ class Hooks(BaseModel):
     events: list[HookEvent] = Field(default_factory=lambda: [], description='Hook event configurations')
 
 
+def _download_selector_filename(source: str) -> str:
+    """Derive the deployed filename a directory-form dest receives for a source.
+
+    Exact mirror of _source_filename() in setup_environment.py (standalone
+    script policy prevents cross-import; parity enforced by
+    tests/scripts/models/test_selectable_sections_parity.py): strips query
+    parameters and takes PurePath(...).name, which matches the runtime's
+    Path(...).name semantics on every host. GitLab API raw-file URLs carry
+    the real filename inside the URL-encoded path segment while their last
+    path segment is the literal 'raw', so for them the encoded segment is
+    decoded and its basename used instead.
+
+    Args:
+        source: Source path or URL from a files-to-download entry.
+
+    Returns:
+        The filename appended to a directory-form dest.
+    """
+    clean_source = source.split('?')[0]
+    if (
+        clean_source.endswith('/raw')
+        and '/api/v4/projects/' in clean_source
+        and '/repository/files/' in clean_source
+    ):
+        encoded_path = clean_source.split('/repository/files/')[-1].removesuffix('/raw')
+        return PurePath(unquote(encoded_path)).name
+    return PurePath(clean_source).name
+
+
+def _download_selector_identity(source: str, dest: str) -> str:
+    """Compute the normalized final-path identity of a files-to-download entry.
+
+    Mirror of _files_download_identity() in setup_environment.py: a dest
+    ending with a path separator is a directory destination, so the source
+    filename is appended; any other dest is the identity as written.
+
+    Args:
+        source: Source path or URL of the entry.
+        dest: Destination path of the entry.
+
+    Returns:
+        The identity string used to match component selectors.
+    """
+    if dest.endswith(('/', '\\')):
+        return dest + _download_selector_filename(source)
+    return dest
+
+
+class Component(BaseModel):
+    """Named, user-selectable group of configuration items.
+
+    Components let a config author group items from the selectable sections
+    into units the end user can pick at setup time. An item claimed by at
+    least one component installs only when a selected component claims it;
+    an item claimed by no component is mandatory and never appears in any
+    selection prompt.
+    """
+
+    # str_strip_whitespace matches EnvironmentConfig so includes selectors
+    # receive the same stripping as the section values they must match
+    model_config = ConfigDict(populate_by_name=True, extra='forbid', str_strip_whitespace=True)
+
+    name: str = Field(
+        ...,
+        description='Unique component identifier used with --select/--with/--without',
+    )
+    label: str | None = Field(
+        None,
+        description='Human-readable name shown in the picker and installation summary (falls back to name)',
+    )
+    description: str | None = Field(
+        None,
+        description='Hint line shown in the picker and in --list-components output',
+    )
+    default: bool = Field(
+        True,
+        description='Whether the component is selected by default (pre-checked in the picker, '
+        'included in --yes and non-interactive runs)',
+    )
+    requires: list[str] = Field(
+        default_factory=lambda: [],
+        description='Hard dependencies: component names transitively auto-included whenever this component is selected',
+    )
+    bundles: list[str] = Field(
+        default_factory=lambda: [],
+        description='Soft preset: component names pre-selected together with this component; '
+        'the user may still deselect them',
+    )
+    includes: dict[str, list[str]] = Field(
+        ...,
+        description='Mapping of selectable section name to the item selectors this component claims',
+    )
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate the component name format and reserved literals.
+
+        Args:
+            v: Component name to validate.
+
+        Returns:
+            The validated component name.
+
+        Raises:
+            ValueError: If the name is reserved or does not match the allowed pattern.
+        """
+        if v in RESERVED_COMPONENT_NAMES:
+            raise ValueError(
+                f"Component name '{v}' is reserved (used as a --select sentinel). Choose another name.",
+            )
+        if not COMPONENT_NAME_PATTERN.match(v):
+            raise ValueError(
+                f"Component name '{v}' is invalid. Names must use lowercase letters, digits, "
+                'dots, underscores, and hyphens, and start with a letter or digit.',
+            )
+        return v
+
+    @field_validator('includes')
+    @classmethod
+    def validate_includes(cls, v: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Validate the includes mapping keys and selector lists.
+
+        Args:
+            v: Mapping of section name to selector strings.
+
+        Returns:
+            The validated mapping.
+
+        Raises:
+            ValueError: If the mapping is empty, references a non-selectable
+                section, or contains an empty selector list or selector string.
+        """
+        if not v:
+            raise ValueError(
+                'includes must claim at least one item. '
+                f'Selectable sections: {sorted(SELECTABLE_SECTIONS)}',
+            )
+        errors: list[str] = []
+        for section, selectors in v.items():
+            if section not in SELECTABLE_SECTIONS:
+                errors.append(
+                    f"includes key '{section}' is not selectable. "
+                    f'Selectable sections: {sorted(SELECTABLE_SECTIONS)}',
+                )
+            if not selectors:
+                errors.append(f'includes.{section} must list at least one selector')
+            else:
+                errors.extend(
+                    f'includes.{section}[{i}] cannot be empty'
+                    for i, selector in enumerate(selectors)
+                    if not selector or not selector.strip()
+                )
+        if errors:
+            raise ValueError('; '.join(errors))
+        return v
+
+
 class CommandDefaults(BaseModel):
     """Command launch configuration."""
 
@@ -1003,7 +1192,7 @@ class InheritEntry(BaseModel):
         # Inline definition avoids circular import from setup_environment.py
         mergeable: frozenset[str] = frozenset({
             'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
-            'files-to-download', 'hooks', 'mcp-servers',
+            'files-to-download', 'hooks', 'mcp-servers', 'components',
             'global-config', 'user-settings', 'os-env-variables',
         })
         invalid = [k for k in v if k not in mergeable]
@@ -1071,6 +1260,12 @@ class EnvironmentConfig(BaseModel):
         description='Files to download during environment setup',
     )
     hooks: Hooks | None = Field(None, description='Hook configurations')
+    components: list[Component] | None = Field(
+        default_factory=lambda: [],
+        description='Author-defined selectable component groups. Items claimed by '
+        'at least one component install only when a selected component claims them; '
+        'unclaimed items are mandatory and never appear in any selection prompt.',
+    )
     command_defaults: CommandDefaults | None = Field(
         None,
         alias='command-defaults',
@@ -1357,7 +1552,7 @@ class EnvironmentConfig(BaseModel):
         # Inline definition avoids circular import from setup_environment.py
         mergeable: frozenset[str] = frozenset({
             'dependencies', 'agents', 'slash-commands', 'rules', 'skills',
-            'files-to-download', 'hooks', 'mcp-servers',
+            'files-to-download', 'hooks', 'mcp-servers', 'components',
             'global-config', 'user-settings', 'os-env-variables',
         })
         invalid = [k for k in v if k not in mergeable]
@@ -1527,6 +1722,118 @@ class EnvironmentConfig(BaseModel):
                 'Profile-scoped servers need a launcher script with --mcp-config flag, '
                 'which is only created when command-names is present. '
                 'Either add command-names or change the server scope to user/local/project.',
+            )
+        return self
+
+    def _selectable_item_identities(self) -> dict[str, set[str]]:
+        """Compute the set of claimable item identities for each selectable section.
+
+        Identities mirror each section's merge identity in
+        setup_environment.py: the exact path string for agents,
+        slash-commands, and rules; the entry name for skills and
+        mcp-servers; the dest (with directory dests also matchable by their
+        normalized final file path) for files-to-download; the exact command
+        string across all platform lists for dependencies; and the event id
+        or hooks.files path for hooks.
+
+        Returns:
+            Mapping of section name to the set of accepted selector strings.
+        """
+        identities: dict[str, set[str]] = {
+            'agents': set(self.agents or []),
+            'slash-commands': set(self.slash_commands or []),
+            'rules': set(self.rules or []),
+            'skills': {skill.name for skill in self.skills or []},
+            'mcp-servers': {
+                str(server['name'])
+                for server in self.mcp_servers or []
+                if server.get('name') is not None
+            },
+            'dependencies': {
+                command
+                for commands in (self.dependencies or {}).values()
+                for command in commands
+            },
+        }
+
+        file_keys: set[str] = set()
+        for entry in self.files_to_download or []:
+            file_keys.add(entry.dest)
+            file_keys.add(_download_selector_identity(entry.source, entry.dest))
+        identities['files-to-download'] = file_keys
+
+        hook_keys: set[str] = set()
+        if self.hooks:
+            hook_keys.update(self.hooks.files)
+            hook_keys.update(event.id for event in self.hooks.events if event.id is not None)
+        identities['hooks'] = hook_keys
+
+        return identities
+
+    @model_validator(mode='after')
+    def validate_components_graph(self) -> 'EnvironmentConfig':
+        """Validate the components registry against the rest of the config.
+
+        Checks, aggregated into a single error so authors see every problem
+        at once: hooks.events ids are unique when present (ids exist solely
+        as component selectors for hook events), component names are unique,
+        requires/bundles reference existing component names, and every
+        includes selector matches at least one item in its section.
+
+        Returns:
+            The validated EnvironmentConfig instance.
+
+        Raises:
+            ValueError: If any components-graph rule is violated.
+        """
+        errors: list[str] = []
+
+        seen_hook_ids: set[str] = set()
+        if self.hooks:
+            for event in self.hooks.events:
+                if event.id is None:
+                    continue
+                if event.id in seen_hook_ids:
+                    errors.append(
+                        f"Duplicate hook event id '{event.id}'. Hook ids must be unique across events.",
+                    )
+                seen_hook_ids.add(event.id)
+
+        components = self.components or []
+        if components:
+            seen_names: set[str] = set()
+            for component in components:
+                if component.name in seen_names:
+                    errors.append(
+                        f"Duplicate component name '{component.name}'. Component names must be unique.",
+                    )
+                seen_names.add(component.name)
+
+            known_names = {component.name for component in components}
+            identities = self._selectable_item_identities()
+            for component in components:
+                errors.extend(
+                    f"Component '{component.name}': requires unknown component '{ref}'"
+                    for ref in component.requires
+                    if ref not in known_names
+                )
+                errors.extend(
+                    f"Component '{component.name}': bundles unknown component '{ref}'"
+                    for ref in component.bundles
+                    if ref not in known_names
+                )
+                for section, selectors in component.includes.items():
+                    available = identities.get(section, set())
+                    errors.extend(
+                        f"Component '{component.name}': includes.{section} selector "
+                        f"'{selector}' matches no item in {section}"
+                        for selector in selectors
+                        if selector not in available
+                    )
+
+        if errors:
+            raise ValueError(
+                'components validation failed:\n' + '\n'.join(f'  - {e}' for e in errors),
             )
         return self
 

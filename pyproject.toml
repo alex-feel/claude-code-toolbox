@@ -155,7 +155,6 @@ exclude = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-norecursedirs = ["scripts"]
 pythonpath = ["."]
 timeout = 120
 filterwarnings = [

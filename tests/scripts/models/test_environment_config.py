@@ -14,7 +14,9 @@ properly with static type checkers while testing runtime validation.
 import pytest
 from pydantic import ValidationError
 
+from scripts.models.environment_config import Component
 from scripts.models.environment_config import EnvironmentConfig
+from scripts.models.environment_config import HookEvent
 from scripts.models.environment_config import InheritEntry
 from scripts.models.environment_config import MCPServerStdio
 
@@ -318,7 +320,6 @@ class TestHookEventValidation:
     # Valid command hooks
     def test_command_hook_with_command(self) -> None:
         """Command hook with command field is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'matcher': 'Task',
@@ -330,7 +331,6 @@ class TestHookEventValidation:
 
     def test_command_hook_with_config(self) -> None:
         """Command hook with command and config is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'matcher': 'Task',
@@ -343,7 +343,6 @@ class TestHookEventValidation:
     # Valid prompt hooks
     def test_prompt_hook_with_prompt(self) -> None:
         """Prompt hook with prompt field is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'matcher': 'Search|Grep',
@@ -355,7 +354,6 @@ class TestHookEventValidation:
 
     def test_prompt_hook_with_timeout(self) -> None:
         """Prompt hook with timeout is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'matcher': 'Search|Grep',
@@ -368,7 +366,6 @@ class TestHookEventValidation:
     # Invalid: command hook without command
     def test_command_hook_without_command_raises(self) -> None:
         """Command hook without command raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -379,7 +376,6 @@ class TestHookEventValidation:
     # Invalid: command hook with prompt
     def test_command_hook_with_prompt_raises(self) -> None:
         """Command hook with prompt field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -392,7 +388,6 @@ class TestHookEventValidation:
     # Invalid: prompt hook without prompt
     def test_prompt_hook_without_prompt_raises(self) -> None:
         """Prompt hook without prompt raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -403,7 +398,6 @@ class TestHookEventValidation:
     # Invalid: prompt hook with command
     def test_prompt_hook_with_command_raises(self) -> None:
         """Prompt hook with command field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -416,7 +410,6 @@ class TestHookEventValidation:
     # Invalid: prompt hook with config
     def test_prompt_hook_with_config_raises(self) -> None:
         """Prompt hook with config field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -429,7 +422,6 @@ class TestHookEventValidation:
     # Backward compatibility: default type is command
     def test_default_type_is_command(self) -> None:
         """Default type should be 'command' for backward compatibility."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'command': 'test.py',
@@ -443,7 +435,6 @@ class TestHookEventAllTypes:
     # --- HTTP hook valid cases ---
     def test_http_hook_with_url(self) -> None:
         """HTTP hook with url field is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PostToolUse',
             'matcher': 'Write',
@@ -455,7 +446,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_headers_and_allowed_env_vars(self) -> None:
         """HTTP hook with all optional fields is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PostToolUse',
             'type': 'http',
@@ -469,7 +459,6 @@ class TestHookEventAllTypes:
     # --- Agent hook valid cases ---
     def test_agent_hook_with_prompt(self) -> None:
         """Agent hook with prompt field is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'matcher': 'Bash',
@@ -481,7 +470,6 @@ class TestHookEventAllTypes:
 
     def test_agent_hook_with_model(self) -> None:
         """Agent hook with model field is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'type': 'agent',
@@ -493,7 +481,6 @@ class TestHookEventAllTypes:
     # --- Command hook with new fields ---
     def test_command_hook_with_async_and_shell(self) -> None:
         """Command hook with async and shell fields is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'Notification',
             'type': 'command',
@@ -506,7 +493,6 @@ class TestHookEventAllTypes:
 
     def test_command_hook_shell_powershell(self) -> None:
         """Command hook with shell=powershell is valid."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'Notification',
             'type': 'command',
@@ -518,7 +504,6 @@ class TestHookEventAllTypes:
     # --- Alias tests (populate_by_name) ---
     def test_hook_with_if_condition_alias(self) -> None:
         """The 'if' alias maps to if_condition field."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'type': 'command',
@@ -529,7 +514,6 @@ class TestHookEventAllTypes:
 
     def test_hook_with_status_message_alias(self) -> None:
         """The 'status-message' alias maps to status_message field."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'type': 'command',
@@ -540,7 +524,6 @@ class TestHookEventAllTypes:
 
     def test_hook_with_async_alias(self) -> None:
         """The 'async' alias maps to async_execution field."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'Notification',
             'type': 'command',
@@ -551,7 +534,6 @@ class TestHookEventAllTypes:
 
     def test_hook_with_allowed_env_vars_alias(self) -> None:
         """The 'allowed-env-vars' alias maps to allowed_env_vars field."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PostToolUse',
             'type': 'http',
@@ -562,7 +544,6 @@ class TestHookEventAllTypes:
 
     def test_hook_with_once_field(self) -> None:
         """The once field is accepted on all types."""
-        from scripts.models.environment_config import HookEvent
         event = HookEvent.model_validate({
             'event': 'PreToolUse',
             'type': 'agent',
@@ -573,7 +554,6 @@ class TestHookEventAllTypes:
 
     def test_common_fields_on_all_types(self) -> None:
         """Common fields (if, status-message, once, timeout) work on all types."""
-        from scripts.models.environment_config import HookEvent
         common = {'if': 'Bash(*)', 'status-message': 'Working...', 'once': True, 'timeout': 30}
 
         for hook_data in [
@@ -591,7 +571,6 @@ class TestHookEventAllTypes:
     # --- HTTP hook forbidden cases ---
     def test_http_hook_without_url_raises(self) -> None:
         """HTTP hook without url raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -601,7 +580,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_command_raises(self) -> None:
         """HTTP hook with command field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -613,7 +591,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_config_raises(self) -> None:
         """HTTP hook with config field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -625,7 +602,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_async_raises(self) -> None:
         """HTTP hook with async field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -637,7 +613,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_shell_raises(self) -> None:
         """HTTP hook with shell field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -649,7 +624,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_prompt_raises(self) -> None:
         """HTTP hook with prompt field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -661,7 +635,6 @@ class TestHookEventAllTypes:
 
     def test_http_hook_with_model_raises(self) -> None:
         """HTTP hook with model field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PostToolUse',
@@ -674,7 +647,6 @@ class TestHookEventAllTypes:
     # --- Agent hook forbidden cases ---
     def test_agent_hook_without_prompt_raises(self) -> None:
         """Agent hook without prompt raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -684,7 +656,6 @@ class TestHookEventAllTypes:
 
     def test_agent_hook_with_command_raises(self) -> None:
         """Agent hook with command field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -696,7 +667,6 @@ class TestHookEventAllTypes:
 
     def test_agent_hook_with_url_raises(self) -> None:
         """Agent hook with url field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -709,7 +679,6 @@ class TestHookEventAllTypes:
     # --- Command hook forbidden cases ---
     def test_command_hook_with_url_raises(self) -> None:
         """Command hook with url field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -721,7 +690,6 @@ class TestHookEventAllTypes:
 
     def test_command_hook_with_headers_raises(self) -> None:
         """Command hook with headers field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -733,7 +701,6 @@ class TestHookEventAllTypes:
 
     def test_command_hook_with_model_raises(self) -> None:
         """Command hook with model field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -746,7 +713,6 @@ class TestHookEventAllTypes:
     # --- Prompt hook forbidden cases (new fields) ---
     def test_prompt_hook_with_url_raises(self) -> None:
         """Prompt hook with url field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -758,7 +724,6 @@ class TestHookEventAllTypes:
 
     def test_prompt_hook_with_async_raises(self) -> None:
         """Prompt hook with async field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -770,7 +735,6 @@ class TestHookEventAllTypes:
 
     def test_prompt_hook_with_shell_raises(self) -> None:
         """Prompt hook with shell field raises ValueError."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError) as exc_info:
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -783,7 +747,6 @@ class TestHookEventAllTypes:
     # --- Literal validation ---
     def test_shell_literal_validation(self) -> None:
         """Invalid shell value is rejected by Pydantic Literal."""
-        from scripts.models.environment_config import HookEvent
         with pytest.raises(ValidationError):
             HookEvent.model_validate({
                 'event': 'PreToolUse',
@@ -2313,3 +2276,282 @@ class TestSettingsValidationValueFunctions:
         from scripts.models.environment_config import validate_global_config_values
         errors = validate_global_config_values({'model': 'opus', 'hooks': {}})
         assert len(errors) == 2
+
+
+class TestHookEventIdField:
+    """Tests for the optional HookEvent id field (component selector identity)."""
+
+    def test_id_defaults_to_none(self):
+        """HookEvent without id defaults to None."""
+        event = HookEvent.model_validate({'event': 'PostToolUse', 'type': 'command', 'command': 'h.py'})
+        assert event.id is None
+
+    def test_id_accepted_on_all_hook_types(self):
+        """The id field is a common field accepted on every hook type."""
+        payloads: list[dict[str, str]] = [
+            {'event': 'PostToolUse', 'type': 'command', 'command': 'h.py', 'id': 'cmd-hook'},
+            {'event': 'PostToolUse', 'type': 'http', 'url': 'http://localhost:8080/x', 'id': 'web-hook'},
+            {'event': 'PreToolUse', 'type': 'prompt', 'prompt': 'Check safety', 'id': 'llm-hook'},
+            {'event': 'PreToolUse', 'type': 'agent', 'prompt': 'Verify: $ARGUMENTS', 'id': 'agent-hook'},
+        ]
+        for payload in payloads:
+            event = HookEvent.model_validate(payload)
+            assert event.id == payload['id']
+
+
+class TestComponentModel:
+    """Tests for the Component Pydantic model field-level validation."""
+
+    def test_minimal_component_defaults(self):
+        """Component with only name and includes gets documented defaults."""
+        component = Component.model_validate({'name': 'core', 'includes': {'agents': ['a.md']}})
+        assert component.name == 'core'
+        assert component.label is None
+        assert component.description is None
+        assert component.default is True
+        assert component.requires == []
+        assert component.bundles == []
+
+    def test_full_component_valid(self):
+        """Component with every field populated validates."""
+        component = Component.model_validate({
+            'name': 'mcp-http',
+            'label': 'HTTP MCP servers',
+            'description': 'Optional HTTP servers',
+            'default': False,
+            'requires': ['core'],
+            'bundles': ['extras'],
+            'includes': {'mcp-servers': ['srv']},
+        })
+        assert component.default is False
+        assert component.requires == ['core']
+        assert component.bundles == ['extras']
+
+    def test_name_pattern_accepts_valid_names(self):
+        """Lowercase names with digits, dots, underscores, and hyphens pass."""
+        for name in ('core', 'mcp-http', 'a.b_c-1', '0start'):
+            component = Component.model_validate({'name': name, 'includes': {'agents': ['a.md']}})
+            assert component.name == name
+
+    def test_name_rejects_uppercase(self):
+        """Uppercase letters in the name are rejected."""
+        with pytest.raises(ValidationError, match='invalid'):
+            Component.model_validate({'name': 'Core', 'includes': {'agents': ['a.md']}})
+
+    def test_name_rejects_leading_hyphen(self):
+        """Names must start with a letter or digit."""
+        with pytest.raises(ValidationError, match='invalid'):
+            Component.model_validate({'name': '-core', 'includes': {'agents': ['a.md']}})
+
+    def test_name_rejects_spaces(self):
+        """Names with spaces are rejected."""
+        with pytest.raises(ValidationError, match='invalid'):
+            Component.model_validate({'name': 'my core', 'includes': {'agents': ['a.md']}})
+
+    def test_name_rejects_reserved_all(self):
+        """The literal 'all' is reserved as a --select sentinel."""
+        with pytest.raises(ValidationError, match='reserved'):
+            Component.model_validate({'name': 'all', 'includes': {'agents': ['a.md']}})
+
+    def test_name_rejects_reserved_none(self):
+        """The literal 'none' is reserved as a --select sentinel."""
+        with pytest.raises(ValidationError, match='reserved'):
+            Component.model_validate({'name': 'none', 'includes': {'agents': ['a.md']}})
+
+    def test_extra_fields_forbidden(self):
+        """Unknown component fields are rejected (extra='forbid')."""
+        with pytest.raises(ValidationError):
+            Component.model_validate({'name': 'core', 'includes': {'agents': ['a.md']}, 'unknown': True})
+
+    def test_includes_required(self):
+        """A component without includes is rejected."""
+        with pytest.raises(ValidationError):
+            Component.model_validate({'name': 'core'})
+
+    def test_includes_empty_dict_rejected(self):
+        """An empty includes mapping is rejected."""
+        with pytest.raises(ValidationError, match='at least one item'):
+            Component.model_validate({'name': 'core', 'includes': {}})
+
+    def test_includes_unknown_section_rejected(self):
+        """Keys outside SELECTABLE_SECTIONS are rejected."""
+        with pytest.raises(ValidationError, match='not selectable'):
+            Component.model_validate({'name': 'core', 'includes': {'command-names': ['x']}})
+
+    def test_includes_components_section_rejected(self):
+        """The components registry itself is never claimable."""
+        with pytest.raises(ValidationError, match='not selectable'):
+            Component.model_validate({'name': 'core', 'includes': {'components': ['other']}})
+
+    def test_includes_empty_selector_list_rejected(self):
+        """An empty selector list for a section is rejected."""
+        with pytest.raises(ValidationError, match='at least one selector'):
+            Component.model_validate({'name': 'core', 'includes': {'agents': []}})
+
+    def test_includes_empty_selector_string_rejected(self):
+        """An empty selector string is rejected."""
+        with pytest.raises(ValidationError, match='cannot be empty'):
+            Component.model_validate({'name': 'core', 'includes': {'agents': ['']}})
+
+
+class TestComponentsGraphValidation:
+    """Tests for the EnvironmentConfig components cross-field graph validator."""
+
+    @staticmethod
+    def _config(**overrides: object) -> dict[str, object]:
+        """Build a valid config dict with items in every selectable section.
+
+        Args:
+            overrides: Top-level keys to add or replace in the base config.
+
+        Returns:
+            A config dict suitable for EnvironmentConfig.model_validate().
+        """
+        base: dict[str, object] = {
+            'name': 'Test',
+            'agents': ['agents/a.md'],
+            'slash-commands': ['commands/c.md'],
+            'rules': ['rules/r.md'],
+            'skills': [{'name': 'sk', 'base': 'skills/sk', 'files': ['SKILL.md']}],
+            'mcp-servers': [{'name': 'srv', 'scope': 'user', 'command': 'python -m x'}],
+            'dependencies': {'common': ['echo hi']},
+            'files-to-download': [
+                {'source': 'files/f.txt', 'dest': '~/.claude/f.txt'},
+                {'source': 'files/g.txt', 'dest': '~/.claude/gdir/'},
+            ],
+            'hooks': {
+                'files': ['hooks/h.py'],
+                'events': [
+                    {
+                        'event': 'PostToolUse',
+                        'matcher': 'Edit',
+                        'type': 'command',
+                        'command': 'h.py',
+                        'id': 'post-edit',
+                    },
+                ],
+            },
+        }
+        base.update(overrides)
+        return base
+
+    def test_components_absent_is_inert(self):
+        """A config without components validates and defaults to an empty list."""
+        config = EnvironmentConfig.model_validate(self._config())
+        assert config.components == []
+
+    def test_valid_components_all_sections(self):
+        """Components claiming items in every selectable section validate."""
+        config = EnvironmentConfig.model_validate(self._config(components=[
+            {
+                'name': 'core',
+                'includes': {
+                    'agents': ['agents/a.md'],
+                    'slash-commands': ['commands/c.md'],
+                    'rules': ['rules/r.md'],
+                    'skills': ['sk'],
+                    'mcp-servers': ['srv'],
+                    'dependencies': ['echo hi'],
+                    'files-to-download': ['~/.claude/f.txt'],
+                    'hooks': ['post-edit', 'hooks/h.py'],
+                },
+            },
+            {
+                'name': 'extra',
+                'default': False,
+                'requires': ['core'],
+                'bundles': ['core'],
+                'includes': {'files-to-download': ['~/.claude/gdir/']},
+            },
+        ]))
+        assert config.components is not None
+        assert len(config.components) == 2
+
+    def test_directory_dest_matches_by_normalized_identity(self):
+        """A directory dest is claimable by its normalized final file path."""
+        config = EnvironmentConfig.model_validate(self._config(components=[
+            {'name': 'core', 'includes': {'files-to-download': ['~/.claude/gdir/g.txt']}},
+        ]))
+        assert config.components is not None
+
+    def test_selector_whitespace_stripped_like_section_values(self):
+        """Selectors receive the same whitespace stripping as section values."""
+        config = EnvironmentConfig.model_validate(self._config(components=[
+            {'name': 'core', 'includes': {'dependencies': [' echo hi ']}},
+        ]))
+        assert config.components is not None
+
+    def test_duplicate_component_names_rejected(self):
+        """Two components with the same name are rejected."""
+        with pytest.raises(ValidationError, match='Duplicate component name'):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'includes': {'agents': ['agents/a.md']}},
+                {'name': 'core', 'includes': {'rules': ['rules/r.md']}},
+            ]))
+
+    def test_dangling_requires_rejected(self):
+        """A requires edge naming an unknown component is rejected."""
+        with pytest.raises(ValidationError, match="requires unknown component 'nope'"):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'requires': ['nope'], 'includes': {'agents': ['agents/a.md']}},
+            ]))
+
+    def test_dangling_bundles_rejected(self):
+        """A bundles edge naming an unknown component is rejected."""
+        with pytest.raises(ValidationError, match="bundles unknown component 'nope'"):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'bundles': ['nope'], 'includes': {'agents': ['agents/a.md']}},
+            ]))
+
+    def test_agents_selector_matching_no_item_rejected(self):
+        """A selector matching no agents entry is rejected."""
+        with pytest.raises(ValidationError, match='matches no item in agents'):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'includes': {'agents': ['agents/missing.md']}},
+            ]))
+
+    def test_skills_selector_matching_no_item_rejected(self):
+        """A selector matching no skill name is rejected."""
+        with pytest.raises(ValidationError, match='matches no item in skills'):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'includes': {'skills': ['unknown']}},
+            ]))
+
+    def test_dependencies_selector_matching_no_item_rejected(self):
+        """A selector matching no dependency command is rejected."""
+        with pytest.raises(ValidationError, match='matches no item in dependencies'):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'includes': {'dependencies': ['echo other']}},
+            ]))
+
+    def test_hooks_selector_matching_no_item_rejected(self):
+        """A selector matching no hook id and no hooks.files path is rejected."""
+        with pytest.raises(ValidationError, match='matches no item in hooks'):
+            EnvironmentConfig.model_validate(self._config(components=[
+                {'name': 'core', 'includes': {'hooks': ['nope']}},
+            ]))
+
+    def test_duplicate_hook_ids_rejected_without_components(self):
+        """Duplicate hook event ids are rejected even when no components exist."""
+        with pytest.raises(ValidationError, match='Duplicate hook event id'):
+            EnvironmentConfig.model_validate(self._config(hooks={
+                'files': ['hooks/h.py'],
+                'events': [
+                    {'event': 'PostToolUse', 'type': 'command', 'command': 'h.py', 'id': 'dup'},
+                    {'event': 'PreToolUse', 'type': 'command', 'command': 'h.py', 'id': 'dup'},
+                ],
+            }))
+
+    def test_multiple_errors_aggregated(self):
+        """Every graph error is reported in a single aggregated message."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate(self._config(components=[
+                {
+                    'name': 'core',
+                    'requires': ['nope'],
+                    'includes': {'agents': ['agents/missing.md']},
+                },
+            ]))
+        message = str(exc_info.value)
+        assert "requires unknown component 'nope'" in message
+        assert 'matches no item in agents' in message

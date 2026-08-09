@@ -72,6 +72,7 @@ MERGEABLE_CONFIG_KEYS: frozenset[str] = frozenset({
     'files-to-download',
     'hooks',
     'mcp-servers',
+    'components',
     'global-config',
     'user-settings',
     'os-env-variables',
@@ -124,11 +125,29 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'global-config',
     'hooks',
     'mcp-servers',
+    'components',
     'post-install-notes',
     'os-env-variables',
     'command-defaults',
     'user-settings',
     'status-line',
+})
+
+# Sections whose items may be claimed by entries in the top-level
+# `components:` registry. Any other key inside a component's `includes`
+# mapping is rejected. Inline copy of SELECTABLE_SECTIONS in
+# scripts/models/environment_config.py (standalone script policy prevents
+# cross-import); parity enforced by
+# tests/scripts/models/test_selectable_sections_parity.py.
+SELECTABLE_SECTIONS: frozenset[str] = frozenset({
+    'agents',
+    'slash-commands',
+    'rules',
+    'skills',
+    'files-to-download',
+    'mcp-servers',
+    'dependencies',
+    'hooks',
 })
 
 # Path prefixes indicating sensitive filesystem destinations
@@ -5558,7 +5577,7 @@ def _merge_config_key(
         return _merge_string_list(p_list, c_list)
 
     # Named list keys with identity by 'name'
-    if key in ('mcp-servers', 'skills'):
+    if key in ('mcp-servers', 'skills', 'components'):
         p_named = cast(list[dict[str, object]], parent_value) if isinstance(parent_value, list) else []
         c_named = cast(list[dict[str, object]], child_value) if isinstance(child_value, list) else []
         return _merge_named_list(p_named, c_named, _name_identity, key)
