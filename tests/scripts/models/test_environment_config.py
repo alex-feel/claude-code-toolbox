@@ -2333,6 +2333,16 @@ class TestComponentModel:
             component = Component.model_validate({'name': name, 'includes': {'agents': ['a.md']}})
             assert component.name == name
 
+    @pytest.mark.parametrize('value', [1, 0, 'yes', 'true', 'false', None])
+    def test_default_rejects_non_bool_values(self, value):
+        """default is strict: values the runtime's isinstance(bool) check rejects fail here too."""
+        with pytest.raises(ValidationError):
+            Component.model_validate({
+                'name': 'core',
+                'default': value,
+                'includes': {'agents': ['a.md']},
+            })
+
     def test_name_rejects_uppercase(self):
         """Uppercase letters in the name are rejected."""
         with pytest.raises(ValidationError, match='invalid'):

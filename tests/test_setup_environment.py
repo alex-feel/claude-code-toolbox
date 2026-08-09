@@ -4552,6 +4552,16 @@ class TestArtifactIsolation:
             # Empty files list returns True
             assert result is True
 
+    def test_download_hook_files_accepts_none_hooks(self):
+        """hooks: null (a model-valid null-as-delete request) is a no-op, not a crash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = setup_environment.download_hook_files(
+                None,
+                Path(tmpdir),
+                'test-source',
+            )
+            assert result is True
+
     def test_create_profile_config_claude_config_dir_injection(self):
         """Test that CLAUDE_CONFIG_DIR from user-settings.env lands in config.json."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -15027,6 +15037,20 @@ class TestResolveArgs:
         assert args.with_ is None
         assert args.without is None
 
+    def test_empty_selector_env_vars_treated_as_absent(self) -> None:
+        """Empty-string selector exports (a common CI default) stay inactive."""
+        env = {
+            'CLAUDE_CODE_TOOLBOX_SELECT': '',
+            'CLAUDE_CODE_TOOLBOX_WITH': '',
+            'CLAUDE_CODE_TOOLBOX_WITHOUT': '',
+        }
+        with patch.dict(os.environ, env):
+            args = self._make_args()
+            setup_environment.resolve_args(args)
+            assert args.select is None
+            assert args.with_ is None
+            assert args.without is None
+
     def test_cli_flags_unchanged_when_no_env_vars(self) -> None:
         """CLI flags pass through without env vars."""
         args = self._make_args(yes=True, skip_install=True)
@@ -15503,6 +15527,51 @@ class TestValidateComponents:
         assert errors == []
         assert not mock_warning.called
 
+    def test_bare_null_default_rejected(self) -> None:
+        """An explicit null default is rejected instead of silently flipping to not-default."""
+        config = _components_config()
+        config['components'][0]['default'] = None
+        errors = setup_environment.validate_components(config)
+        assert any('default must be a boolean' in e for e in errors)
+
+    def test_bare_null_edge_lists_rejected(self) -> None:
+        """Explicit null requires/bundles are rejected, matching the model twin."""
+        config = _components_config()
+        config['components'][0]['requires'] = None
+        config['components'][0]['bundles'] = None
+        errors = setup_environment.validate_components(config)
+        assert any('requires must be a list of component names' in e for e in errors)
+        assert any('bundles must be a list of component names' in e for e in errors)
+
+    def test_non_string_hook_event_id_rejected(self) -> None:
+        """A non-string hook event id is rejected, matching the model twin."""
+        config = _components_config()
+        config['hooks']['events'][0]['id'] = 123
+        errors = setup_environment.validate_components(config)
+        assert any('id 123 must be a string' in e for e in errors)
+
+    def test_status_line_reference_asymmetry_warns(self) -> None:
+        """Claiming a hooks file the status line references warns."""
+        config = _components_config()
+        config['status-line'] = {'file': 'hooks/h.py'}
+        with patch.object(setup_environment, 'warning') as mock_warning:
+            errors = setup_environment.validate_components(config)
+        assert errors == []
+        warning_texts = [call.args[0] for call in mock_warning.call_args_list]
+        assert any('status line' in text for text in warning_texts)
+
+    def test_event_config_reference_asymmetry_warns(self) -> None:
+        """Claiming only an event's config file warns about the uncovered event."""
+        config = _components_config()
+        config['hooks']['files'].append('hooks/h-config.json')
+        config['hooks']['events'][0]['config'] = 'h-config.json'
+        config['components'][0]['includes']['hooks'] = ['hooks/h-config.json']
+        with patch.object(setup_environment, 'warning') as mock_warning:
+            errors = setup_environment.validate_components(config)
+        assert errors == []
+        warning_texts = [call.args[0] for call in mock_warning.call_args_list]
+        assert any('hooks/h-config.json' in text for text in warning_texts)
+
 
 class TestParseComponentCsv:
     """Test _parse_component_csv() absent/empty distinction."""
@@ -15594,7 +15663,7 @@ class TestResolveComponentSelection:
         assert selection.available == ['core', 'extra', 'bundle-pack']
         assert selection.selected == ['core']
         assert selection.skipped == ['extra', 'bundle-pack']
-        assert selection.replay == '--select core'
+        assert selection.replay == '--select core --without extra,bundle-pack'
 
     def test_select_replaces_defaults_and_requires_pulls(self) -> None:
         """--select replaces the default set; requires auto-includes."""
@@ -15603,7 +15672,7 @@ class TestResolveComponentSelection:
         )
         assert selection.selected == ['core', 'extra']
         assert selection.auto_included == {'core': "required by 'extra'"}
-        assert selection.replay == '--select core,extra'
+        assert selection.replay == '--select core,extra --without bundle-pack'
 
     def test_select_all(self) -> None:
         """--select all selects every component."""
@@ -15641,6 +15710,21 @@ class TestResolveComponentSelection:
             self._components(), _component_args(with_='bundle-pack', without='extra'),
         )
         assert selection.selected == ['core', 'bundle-pack']
+
+    def test_replay_round_trips_when_bundle_target_deselected(self) -> None:
+        """The replay selectors reproduce the exact selection despite bundle edges."""
+        picker = MagicMock(return_value=['bundle-pack'])
+        selection = setup_environment.resolve_component_selection(
+            self._components(), _component_args(), picker=picker,
+        )
+        assert selection.selected == ['bundle-pack']
+        assert selection.replay == '--select bundle-pack --without core,extra'
+        select_value, without_value = selection.replay.removeprefix('--select ').split(' --without ')
+        replayed = setup_environment.resolve_component_selection(
+            self._components(), _component_args(select=select_value, without=without_value),
+        )
+        assert replayed.selected == selection.selected
+        assert replayed.replay == selection.replay
 
     def test_hard_requires_overrides_without_with_warning(self) -> None:
         """The requires closure wins over --without and warns."""

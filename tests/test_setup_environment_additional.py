@@ -4592,6 +4592,27 @@ class TestBuildPlatformAwareCommand:
 class TestConfigureAllMcpServersStats:
     """Test configure_all_mcp_servers stats tracking (Bug 2 fix)."""
 
+    def test_empty_server_list_removes_stale_profile_config(self) -> None:
+        """An emptied server list still removes a prior run's profile mcp.json.
+
+        The generated launcher enables --strict-mcp-config --mcp-config via a
+        runtime file-existence test, so a surviving stale file would keep
+        deselected or removed profile servers active in every profile session.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_config = Path(tmpdir) / 'mcp.json'
+            profile_config.write_text('{"mcpServers": {"deselected-server": {}}}')
+
+            success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                [],
+                profile_mcp_config_path=profile_config,
+            )
+
+            assert success is True
+            assert profile_servers == []
+            assert stats == {'global_count': 0, 'profile_count': 0, 'combined_count': 0}
+            assert not profile_config.exists()
+
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')

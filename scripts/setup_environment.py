@@ -2329,15 +2329,37 @@ def _warn_hook_claim_asymmetry(
             if event_id is not None and str(event_id).strip() in selectors:
                 event_claims.setdefault(str(event_id).strip(), set()).add(comp_name)
 
+    status_line_refs: set[str] = set()
+    status_line_raw = config.get('status-line')
+    if isinstance(status_line_raw, dict):
+        for ref_key in ('file', 'config'):
+            ref = cast(dict[str, Any], status_line_raw).get(ref_key)
+            if ref:
+                status_line_refs.add(Path(str(ref).split('?')[0]).name)
+
     for file_path, file_claimers in file_claims.items():
         if not file_claimers:
             continue
         file_basename = Path(file_path.split('?')[0]).name
+        if file_basename in status_line_refs:
+            warning(
+                f"hooks file '{file_path}' is claimed by component(s) "
+                f'{sorted(file_claimers)} but the status line references it, and '
+                f'status-line is not selectable; deselecting the file would break '
+                f'the status line. Leave the file unclaimed (mandatory) instead.',
+            )
         for event in events:
             if event.get('type', 'command') != 'command':
                 continue
+            # An event references a hooks file through its command (skipped
+            # for compound command strings) and through its config file;
+            # deselecting either file breaks the generated command line
             command = str(event.get('command') or '').split('?')[0]
-            if not command or ' ' in command or Path(command).name != file_basename:
+            referenced = {Path(command).name} if command and ' ' not in command else set()
+            config_file = str(event.get('config') or '').split('?')[0]
+            if config_file:
+                referenced.add(Path(config_file).name)
+            if file_basename not in referenced:
                 continue
             event_id = event.get('id')
             claimers = event_claims.get(str(event_id).strip(), set()) if event_id is not None else set()
@@ -2381,7 +2403,10 @@ def validate_components(config: dict[str, Any]) -> list[str]:
             event_id = cast(dict[str, Any], event).get('id')
             if event_id is None:
                 continue
-            id_str = str(event_id).strip()
+            if not isinstance(event_id, str):
+                errors.append(f'hooks.events id {event_id!r} must be a string')
+                continue
+            id_str = event_id.strip()
             if id_str in seen_ids:
                 errors.append(
                     f"Duplicate hook event id '{id_str}'. Hook ids must be unique across events.",
@@ -2436,8 +2461,11 @@ def validate_components(config: dict[str, Any]) -> list[str]:
         description_raw = entry.get('description')
         if description_raw is not None and not isinstance(description_raw, str):
             errors.append(f"Component '{display}': description must be a string")
-        default_raw = entry.get('default')
-        if default_raw is not None and not isinstance(default_raw, bool):
+        # Key-presence (not None-ness) distinguishes an omitted default
+        # (allowed, means true) from an explicit bare 'default:' (rejected,
+        # matching the model; a tolerated null would silently read as
+        # not-default at resolution time)
+        if 'default' in entry and not isinstance(entry.get('default'), bool):
             errors.append(f"Component '{display}': default must be a boolean")
 
         includes_raw = entry.get('includes')
@@ -2484,9 +2512,12 @@ def validate_components(config: dict[str, Any]) -> list[str]:
     for entry in component_entries:
         display = str(entry.get('name') or '').strip() or '<unnamed>'
         for edge_key, verb in (('requires', 'requires'), ('bundles', 'bundles')):
-            edges_raw = entry.get(edge_key)
-            if edges_raw is None:
+            if edge_key not in entry:
                 continue
+            # An explicit bare 'requires:'/'bundles:' parses to None and
+            # falls through to the list check, matching the model's
+            # rejection of null edge lists
+            edges_raw = entry.get(edge_key)
             if not isinstance(edges_raw, list):
                 errors.append(f"Component '{display}': {edge_key} must be a list of component names")
                 continue
@@ -2731,7 +2762,16 @@ def resolve_component_selection(
         )
 
     selected = [name for name in names if name in final]
+    skipped = [name for name in names if name not in final]
+    # --select alone does not round-trip: feeding the final selection back
+    # re-runs the bundle closure, re-adding bundle targets the user
+    # deselected. Appending --without for every skipped component pins the
+    # exact set: bundle re-expansions are stripped again and the requires
+    # closure is idempotent on the already-closed selection, so no
+    # override warning fires on replay.
     replay = '--select ' + (','.join(selected) if selected else 'none')
+    if selected and skipped:
+        replay += ' --without ' + ','.join(skipped)
     return ComponentSelection(
         is_active=True,
         available=names,
@@ -10197,11 +10237,15 @@ def configure_all_mcp_servers(
             - profile_count: Number of servers with profile scope
             - combined_count: Number of servers with BOTH global AND profile scopes
     """
+    # No early return on an empty list: the stale profile-config cleanup at
+    # the end must still run, because the generated launcher enables
+    # --strict-mcp-config --mcp-config via a runtime file-existence test and
+    # a leftover mcp.json from a prior run would keep deselected or removed
+    # profile servers active in every profile session
     if not servers:
         info('No MCP servers to configure')
-        return True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0}
-
-    info('Configuring MCP servers...')
+    else:
+        info('Configuring MCP servers...')
 
     # Collect servers for profile config
     profile_servers: list[dict[str, Any]] = []
@@ -10394,7 +10438,7 @@ def validate_command_name_for_path(name: str) -> bool:
 
 
 def download_hook_files(
-    hooks: dict[str, Any],
+    hooks: dict[str, Any] | None,
     claude_user_dir: Path,
     config_source: str,
     base_url: str | None = None,
@@ -10408,7 +10452,10 @@ def download_hook_files(
     download/parallel logic to process_resources().
 
     Args:
-        hooks: Hooks configuration dictionary with 'files' key
+        hooks: Hooks configuration dictionary with 'files' key. None is
+            accepted and means no hooks: 'hooks:' with no value is a
+            model-valid null-as-delete request, and config.get('hooks', {})
+            returns that None for a present-with-null key.
         claude_user_dir: Path to Claude user directory
         config_source: Config source for resolving resource paths
         base_url: Optional base URL for resolving resources
@@ -10421,7 +10468,7 @@ def download_hook_files(
     Returns:
         bool: True if all downloads successful, False otherwise.
     """
-    hook_files = hooks.get('files', [])
+    hook_files = (hooks or {}).get('files', [])
 
     if not hook_files:
         info('No hook files to download')
@@ -12063,12 +12110,16 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
     if not args.auth:
         args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH')
+    # 'or None' treats an empty-string export (a common CI-template
+    # default) as absent, matching every other toolbox env var, instead of
+    # aborting the run with an error about a flag the user never passed;
+    # an explicit CLI --select '' still errors through argparse
     if args.select is None:
-        args.select = os.environ.get('CLAUDE_CODE_TOOLBOX_SELECT')
+        args.select = os.environ.get('CLAUDE_CODE_TOOLBOX_SELECT') or None
     if args.with_ is None:
-        args.with_ = os.environ.get('CLAUDE_CODE_TOOLBOX_WITH')
+        args.with_ = os.environ.get('CLAUDE_CODE_TOOLBOX_WITH') or None
     if args.without is None:
-        args.without = os.environ.get('CLAUDE_CODE_TOOLBOX_WITHOUT')
+        args.without = os.environ.get('CLAUDE_CODE_TOOLBOX_WITHOUT') or None
     return args
 
 
@@ -12134,7 +12185,8 @@ def main() -> None:
     parser.add_argument(
         '--select',
         type=str,
-        help='Install exactly these components (comma-separated; sentinels: all, none)',
+        help='Install these components plus their bundled and required components '
+        '(comma-separated; sentinels: all, none)',
     )
     parser.add_argument(
         '--with',

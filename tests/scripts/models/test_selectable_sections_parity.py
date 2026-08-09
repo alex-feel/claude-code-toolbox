@@ -15,10 +15,12 @@ from pydantic import ValidationError
 
 from scripts.models.environment_config import SELECTABLE_SECTIONS as MODEL_SELECTABLE_SECTIONS
 from scripts.models.environment_config import Component
+from scripts.models.environment_config import EnvironmentConfig
 from scripts.models.environment_config import _download_selector_identity
 from scripts.setup_environment import KNOWN_CONFIG_KEYS
 from scripts.setup_environment import MERGEABLE_CONFIG_KEYS
 from scripts.setup_environment import SELECTABLE_SECTIONS
+from scripts.setup_environment import _component_section_identities
 from scripts.setup_environment import _files_download_identity
 
 
@@ -78,3 +80,23 @@ def test_download_selector_identity_matches_runtime(source: str, dest: str) -> N
     assert _download_selector_identity(source, dest) == _files_download_identity(
         {'source': source, 'dest': dest},
     )
+
+
+def test_identity_sets_match_runtime_for_trailing_whitespace_dest() -> None:
+    """Model and runtime compute identical files-to-download identity sets.
+
+    Both layers must strip the computed identity, never the dest before the
+    directory-separator check: stripping first would reclassify a quoted
+    trailing-whitespace dest as a directory in one layer only, so a selector
+    could pass CI model validation and fail at runtime.
+    """
+    files = [
+        {'source': 'files/foo.md', 'dest': 'agents/ '},
+        {'source': 'files/bar.md', 'dest': '~/.claude/dir/'},
+    ]
+    runtime_keys = _component_section_identities(
+        {'files-to-download': files}, 'files-to-download',
+    )
+    model = EnvironmentConfig.model_validate({'name': 'parity', 'files-to-download': files})
+    model_keys = model._selectable_item_identities()['files-to-download']
+    assert model_keys == runtime_keys

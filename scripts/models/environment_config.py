@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
+from pydantic import StrictBool
 from pydantic import field_validator
 from pydantic import model_validator
 
@@ -1047,7 +1048,9 @@ class Component(BaseModel):
         None,
         description='Hint line shown in the picker and in --list-components output',
     )
-    default: bool = Field(
+    # StrictBool matches the runtime twin's isinstance(bool) check: a lax
+    # bool coercion here would validate configs the runtime fatally rejects
+    default: StrictBool = Field(
         True,
         description='Whether the component is selected by default (pre-checked in the picker, '
         'included in --yes and non-interactive runs)',
@@ -1761,10 +1764,16 @@ class EnvironmentConfig(BaseModel):
             },
         }
 
+        # Raw source/dest go into the identity and only the RESULT is
+        # stripped, mirroring the runtime (_files_download_identity checks
+        # the directory separator on the raw dest; _component_item_keys
+        # strips the computed identity): stripping the dest first would
+        # reclassify a quoted trailing-whitespace dest as a directory and
+        # diverge from the runtime's identity set.
         file_keys: set[str] = set()
         for entry in self.files_to_download or []:
             file_keys.add(entry.dest.strip())
-            file_keys.add(_download_selector_identity(entry.source.strip(), entry.dest.strip()))
+            file_keys.add(_download_selector_identity(entry.source, entry.dest).strip())
         identities['files-to-download'] = file_keys
 
         hook_keys: set[str] = set()
@@ -1822,7 +1831,7 @@ class EnvironmentConfig(BaseModel):
             # claim both), silently defeating deselection.
             identity_owners: dict[str, int] = {}
             for entry_index, entry in enumerate(self.files_to_download or []):
-                identity = _download_selector_identity(entry.source.strip(), entry.dest.strip())
+                identity = _download_selector_identity(entry.source, entry.dest).strip()
                 if identity in identity_owners:
                     errors.append(
                         f'files-to-download entries {identity_owners[identity]} and '
