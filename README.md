@@ -1,7 +1,7 @@
 # Claude Code Toolbox
 
 <p align="center">
-  <img src=".github/images/banner.png" alt="Claude Code Toolbox - automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux" width="100%">
+  <img src="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner.png" alt="Claude Code Toolbox - automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux" width="100%">
 </p>
 
 [![GitHub License](https://img.shields.io/github/license/alex-feel/claude-code-toolbox)](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-toolbox)
@@ -79,7 +79,7 @@ hooks:
       command: "linter.py"
 ```
 
-This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all configuration keys.
+This creates a global `my-env` command that launches Claude Code with your custom agents, MCP servers, and hooks. See the [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for all configuration keys.
 
 ### Install Your Environment
 
@@ -111,24 +111,24 @@ uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/
 
 For a persistent `cc-toolbox` command, install it once with `uv tool install cc-toolbox` (or `pipx install cc-toolbox`).
 
-You can also use a local file (`./my-config.yaml`) or a configuration from a private repository. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all options including authentication.
+You can also use a local file (`./my-config.yaml`) or a configuration from a private repository. See the [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) for all options including authentication.
 
 ### Ready-Made Configurations
 
 Browse the [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository for ready-made environment configurations. Find a configuration you like, copy its raw URL, and use it as the `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` value in the commands above.
 
-See [Ready-Made Configurations](docs/environment-configuration-guide.md#ready-made-configurations) for installation examples.
+See [Ready-Made Configurations](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md#ready-made-configurations) for installation examples.
 
 ## Installing Claude Code
 
 If you just need the Claude Code CLI without a custom environment configuration, the toolbox includes standalone installers that use the official Anthropic native installer with automatic npm fallback. With uv present, `uvx cc-toolbox install` runs the same installer from PyPI.
 
-See the [Installing Claude Code](docs/installing-claude-code.md) guide for platform-specific commands and options.
+See the [Installing Claude Code](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/installing-claude-code.md) guide for platform-specific commands and options.
 
 ## Documentation
 
-- [Environment Configuration Guide](docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all keys, authentication, inheritance, and more
-- [Installing Claude Code](docs/installing-claude-code.md) -- standalone Claude Code installation, methods, and troubleshooting
+- [Environment Configuration Guide](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md) -- complete reference for YAML configuration files with all keys, authentication, inheritance, and more
+- [Installing Claude Code](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/installing-claude-code.md) -- standalone Claude Code installation, methods, and troubleshooting
 
 ## Security
 
@@ -136,15 +136,15 @@ Environment configurations can execute commands on your system, download files, 
 
 Local files are under your control. Remote URLs should be verified before use. The setup script displays a confirmation prompt and flags sensitive paths before proceeding.
 
-See the [Security Considerations](docs/environment-configuration-guide.md#security-considerations) section for details.
+See the [Security Considerations](https://github.com/alex-feel/claude-code-toolbox/blob/main/docs/environment-configuration-guide.md#security-considerations) section for details.
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please see [CONTRIBUTING.md](https://github.com/alex-feel/claude-code-toolbox/blob/main/CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License -- see [LICENSE](LICENSE) for details.
+MIT License -- see [LICENSE](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) for details.
 
 ## Disclaimer
 

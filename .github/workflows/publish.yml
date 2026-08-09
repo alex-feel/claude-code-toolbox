@@ -29,12 +29,15 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          # env indirection keeps the tag out of the script text, so a crafted
+          # tag name cannot inject shell into this run block.
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           # Try release tag first, fall back to pyproject.toml
-          if [ -n '${{ github.event.release.tag_name }}' ]; then
-            tag='${{ github.event.release.tag_name }}'
-            version="${tag#v}"  # strip leading 'v' if present
+          if [ -n "$RELEASE_TAG" ]; then
+            version="${RELEASE_TAG#v}"  # strip leading 'v' if present
             echo "Using release tag version: ${version}"
           else
             version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
@@ -49,15 +52,16 @@ jobs:
         run: uv build
 
       - name: Assert distributions carry the release version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version='${{ steps.version.outputs.version }}'
-          if [ -z "$version" ]; then
+          if [ -z "$VERSION" ]; then
             echo "ERROR: Version not determined" >&2
             exit 1
           fi
-          test -f "dist/cc_toolbox-${version}-py3-none-any.whl"
-          test -f "dist/cc_toolbox-${version}.tar.gz"
+          test -f "dist/cc_toolbox-${VERSION}-py3-none-any.whl"
+          test -f "dist/cc_toolbox-${VERSION}.tar.gz"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
