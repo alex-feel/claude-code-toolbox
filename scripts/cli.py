@@ -48,11 +48,8 @@ def main() -> None:
 
         setup_main()
         return
-    if any(arg in ('-h', '--help') for arg in argv[1:]):
-        # install_claude.main() builds no ArgumentParser, so a help request
-        # must be answered here instead of silently starting an installation.
-        print(USAGE)
-        raise SystemExit(0)
+    # install_claude.main() answers -h/--help itself with its own usage text
+    # (its env-var contract), so the request is delegated, not intercepted.
     from .install_claude import main as install_main
 
     install_main()

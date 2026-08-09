@@ -4359,8 +4359,30 @@ def ensure_local_bin_in_path_windows() -> bool:
     return success
 
 
+USAGE = '''usage: install_claude.py
+
+Installs Git Bash (Windows), checks Node.js compatibility, and installs
+Claude Code via the native installer with npm fallback.
+
+The installer takes no command-line arguments; behavior is controlled by
+environment variables:
+
+  CLAUDE_CODE_TOOLBOX_INSTALL_METHOD  auto (default) | native | npm
+  CLAUDE_CODE_TOOLBOX_VERSION         install a specific Claude Code version
+  CLAUDE_CODE_TOOLBOX_ALLOW_ROOT     1 allows running as root on Linux/macOS
+  CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH   override the Git Bash executable path
+  GITHUB_TOKEN                        raises GitHub API rate limits
+'''
+
+
 def main() -> None:
     """Main installation flow."""
+    # Answer -h/--help with the usage text before anything else: the script
+    # builds no ArgumentParser, and silently starting an installation on a
+    # help request would modify the system
+    if any(arg in ('-h', '--help') for arg in sys.argv[1:]):
+        print(USAGE)
+        sys.exit(0)
     banner()
 
     # Refuse to run as root on Unix unless explicitly allowed
