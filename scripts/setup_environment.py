@@ -513,6 +513,29 @@ def is_admin() -> bool:
         return False
 
 
+def _elevation_launch_args(module_name: str, argv0: str) -> list[str]:
+    """Build the program-launch portion of the UAC relaunch command line.
+
+    Direct invocations (the curl | bash bootstrap, ``uv run setup_environment.py``,
+    ``python setup_environment.py``) leave ``argv0`` pointing at this file, so the
+    elevated process can re-run that path directly. When this module runs from an
+    installed package behind a console-script entry point, ``argv0`` is a launcher
+    executable that ``python.exe`` cannot execute, so the relaunch goes through the
+    package's CLI module with the ``setup`` subcommand instead.
+
+    Args:
+        module_name: The ``__name__`` of this module at the call site.
+        argv0: The process's ``sys.argv[0]``.
+
+    Returns:
+        Program-launch arguments that precede the forwarded flags.
+    """
+    module_package = module_name.rpartition('.')[0]
+    if module_package and Path(argv0).suffix.lower() != '.py':
+        return ['-m', f'{module_package}.cli', 'setup']
+    return [argv0]
+
+
 def request_admin_elevation(script_args: list[str] | None = None) -> None:
     """Re-launch script with UAC elevation on Windows.
 
@@ -546,16 +569,11 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
                 # Don't escape here - we'll handle escaping when building the params string
                 env_vars_to_pass.append(f'--env-{var_name}={var_value}')
 
-        # Build command line with script path, environment variables, then original arguments
-        # Important: sys.argv[0] is the script path, sys.argv[1:] are the actual arguments
+        # Build command line with the program launch, environment variables, then original arguments
         # Add special flag to indicate UAC elevation created a new window
         uac_flag = ['--elevated-via-uac']
-        if script_args:
-            # When script_args is provided, use it instead of sys.argv[1:]
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + script_args
-        else:
-            # Use original arguments (excluding script path)
-            all_args = [sys.argv[0]] + env_vars_to_pass + uac_flag + sys.argv[1:]
+        forwarded_args = script_args or sys.argv[1:]
+        all_args = _elevation_launch_args(__name__, sys.argv[0]) + env_vars_to_pass + uac_flag + forwarded_args
 
         # Build parameters string with proper quoting for Windows
         # Quote each argument that contains spaces or special characters
