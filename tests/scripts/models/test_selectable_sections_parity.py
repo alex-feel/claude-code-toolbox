@@ -1,8 +1,10 @@
-"""Parity test: SELECTABLE_SECTIONS must be identical in both scripts.
+"""Parity tests: components schema duplicates in both scripts must match.
 
-The Component model in environment_config.py necessarily duplicates the
-SELECTABLE_SECTIONS frozenset from setup_environment.py (standalone script
-policy prevents cross-import). This test enforces strict parity and the
+The components schema in environment_config.py necessarily duplicates two
+pieces of setup_environment.py (standalone script policy prevents
+cross-import): the SELECTABLE_SECTIONS frozenset and the files-to-download
+selector identity computation (_download_selector_identity mirrors
+_files_download_identity). These tests enforce strict parity and the
 structural invariants the components registry relies on.
 """
 
@@ -13,9 +15,11 @@ from pydantic import ValidationError
 
 from scripts.models.environment_config import SELECTABLE_SECTIONS as MODEL_SELECTABLE_SECTIONS
 from scripts.models.environment_config import Component
+from scripts.models.environment_config import _download_selector_identity
 from scripts.setup_environment import KNOWN_CONFIG_KEYS
 from scripts.setup_environment import MERGEABLE_CONFIG_KEYS
 from scripts.setup_environment import SELECTABLE_SECTIONS
+from scripts.setup_environment import _files_download_identity
 
 
 def test_selectable_sections_match_between_scripts() -> None:
@@ -53,3 +57,24 @@ def test_component_includes_rejects_non_selectable_key() -> None:
     """The Component includes validator must reject keys outside the allowlist."""
     with pytest.raises(ValidationError, match='not selectable'):
         Component.model_validate({'name': 'probe', 'includes': {'command-names': ['x']}})
+
+
+@pytest.mark.parametrize(
+    ('source', 'dest'),
+    [
+        ('files/f.txt', '~/.claude/f.txt'),
+        ('files/f.txt', '~/.claude/dir/'),
+        ('files/f.txt', '~/.claude/dir\\'),
+        ('https://example.com/a/b.txt?x=1', '~/.claude/dir/'),
+        ('some\\path\\file.py', '~/.claude/dir/'),
+        (
+            'https://gitlab.com/api/v4/projects/123/repository/files/sub%2Ffile.py/raw?ref=main',
+            '~/.claude/dir/',
+        ),
+    ],
+)
+def test_download_selector_identity_matches_runtime(source: str, dest: str) -> None:
+    """The model's selector identity must equal the runtime merge identity."""
+    assert _download_selector_identity(source, dest) == _files_download_identity(
+        {'source': source, 'dest': dest},
+    )

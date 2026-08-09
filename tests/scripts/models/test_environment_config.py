@@ -2474,6 +2474,13 @@ class TestComponentsGraphValidation:
         ]))
         assert config.components is not None
 
+    def test_selector_whitespace_stripped_like_section_values(self):
+        """Selectors receive the same whitespace stripping as section values."""
+        config = EnvironmentConfig.model_validate(self._config(components=[
+            {'name': 'core', 'includes': {'dependencies': [' echo hi ']}},
+        ]))
+        assert config.components is not None
+
     def test_duplicate_component_names_rejected(self):
         """Two components with the same name are rejected."""
         with pytest.raises(ValidationError, match='Duplicate component name'):

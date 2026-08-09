@@ -4,6 +4,7 @@ Defines the schema for Claude Code environment YAML files.
 """
 
 import re
+from pathlib import PurePath
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -975,12 +976,14 @@ class Hooks(BaseModel):
 def _download_selector_filename(source: str) -> str:
     """Derive the deployed filename a directory-form dest receives for a source.
 
-    Lexical mirror of _source_filename() in setup_environment.py (standalone
-    script policy prevents cross-import): strips query parameters and takes
-    the last path segment. GitLab API raw-file URLs carry the real filename
-    inside the URL-encoded path segment while their last path segment is the
-    literal 'raw', so for them the encoded segment is decoded and its
-    basename used instead.
+    Exact mirror of _source_filename() in setup_environment.py (standalone
+    script policy prevents cross-import; parity enforced by
+    tests/scripts/models/test_selectable_sections_parity.py): strips query
+    parameters and takes PurePath(...).name, which matches the runtime's
+    Path(...).name semantics on every host. GitLab API raw-file URLs carry
+    the real filename inside the URL-encoded path segment while their last
+    path segment is the literal 'raw', so for them the encoded segment is
+    decoded and its basename used instead.
 
     Args:
         source: Source path or URL from a files-to-download entry.
@@ -995,8 +998,8 @@ def _download_selector_filename(source: str) -> str:
         and '/repository/files/' in clean_source
     ):
         encoded_path = clean_source.split('/repository/files/')[-1].removesuffix('/raw')
-        return _extract_basename(unquote(encoded_path))
-    return _extract_basename(clean_source)
+        return PurePath(unquote(encoded_path)).name
+    return PurePath(clean_source).name
 
 
 def _download_selector_identity(source: str, dest: str) -> str:
@@ -1028,7 +1031,9 @@ class Component(BaseModel):
     selection prompt.
     """
 
-    model_config = ConfigDict(populate_by_name=True, extra='forbid')
+    # str_strip_whitespace matches EnvironmentConfig so includes selectors
+    # receive the same stripping as the section values they must match
+    model_config = ConfigDict(populate_by_name=True, extra='forbid', str_strip_whitespace=True)
 
     name: str = Field(
         ...,
