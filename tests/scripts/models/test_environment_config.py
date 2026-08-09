@@ -2445,6 +2445,57 @@ class TestComponentsGraphValidation:
         base.update(overrides)
         return base
 
+    def test_inherit_config_skips_selector_resolution(self):
+        """A config declaring inherit may reference items its parents contribute."""
+        config = self._config(
+            inherit='parent.yaml',
+            components=[{
+                'name': 'corp',
+                'includes': {'mcp-servers': ['inherited-server']},
+                'requires': ['inherited-component'],
+            }],
+        )
+        validated = EnvironmentConfig.model_validate(config)
+        assert validated.components is not None
+
+    def test_inherit_config_skips_duplicate_final_path_check(self):
+        """Final-path ambiguity is decided on the resolved config, not the leaf."""
+        config = self._config(
+            inherit='parent.yaml',
+            components=[{'name': 'c', 'includes': {'agents': ['agents/a.md']}}],
+        )
+        config['files-to-download'] = [
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/g.txt'},
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/'},
+        ]
+        EnvironmentConfig.model_validate(config)
+
+    def test_inherit_config_still_rejects_duplicate_component_names(self):
+        """Within-file invariants stay enforced for inherit-declaring configs."""
+        config = self._config(
+            inherit='parent.yaml',
+            components=[
+                {'name': 'c', 'includes': {'agents': ['x.md']}},
+                {'name': 'c', 'includes': {'rules': ['y.md']}},
+            ],
+        )
+        with pytest.raises(ValidationError, match='Duplicate component name'):
+            EnvironmentConfig.model_validate(config)
+
+    def test_inherit_config_still_rejects_duplicate_hook_ids(self):
+        """Duplicate hook event ids stay rejected for inherit-declaring configs."""
+        config = self._config(inherit='parent.yaml')
+        hooks = {
+            'files': ['hooks/h.py'],
+            'events': [
+                {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'h.py', 'id': 'dup'},
+                {'event': 'PreToolUse', 'matcher': 'Edit', 'type': 'prompt', 'prompt': 'p', 'id': 'dup'},
+            ],
+        }
+        config['hooks'] = hooks
+        with pytest.raises(ValidationError, match='Duplicate hook event id'):
+            EnvironmentConfig.model_validate(config)
+
     def test_components_absent_is_inert(self):
         """A config without components validates and defaults to an empty list."""
         config = EnvironmentConfig.model_validate(self._config())

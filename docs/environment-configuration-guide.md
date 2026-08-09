@@ -1224,6 +1224,8 @@ The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto
 
 Selection resolves before the Windows admin-elevation check and before remote file validation, so deselected items never trigger UAC prompts, network fetches, or authentication prompts.
 
+CI model validation of a config that declares `inherit` skips the cross-reference checks (selector resolution, `requires`/`bundles` references, and the duplicate final-path check): the full item and component sets exist only after inheritance resolution, so those checks run at setup time against the resolved configuration instead. Within-file invariants (duplicate component names, duplicate hook event ids) stay enforced on every file.
+
 Deselection also uninstalls. A re-run that deselects a component removes what an earlier run installed for it: deselected MCP servers are removed via `claude mcp remove` for every non-profile scope (`user`, `local`, `project`; the profile `mcp.json` is rebuilt from the filtered configuration each run), toolbox-written hook entries of deselected events are stripped from the shared `settings.json`, and deselected skill directories, agent/command/rule files, hook files, and downloaded files are deleted from their install locations. The removal plan derives entirely from the current configuration (every claimed item is named there), so no on-disk state is required; removals appear in the installation summary as `[REMOVE]` rows and are previewed without acting under `--dry-run`. Dependencies are never uninstalled: arbitrary install commands cannot be reversed.
 
 ## Advanced Topics
