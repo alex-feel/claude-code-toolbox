@@ -1201,7 +1201,7 @@ class TestMainFlowWithValidation:
         mock_args.return_value = MagicMock(
             config='test',
             skip_install=True,
-            auth=None,
+            env_vars=None,
             yes=True,
             dry_run=False,
             no_admin=False,
@@ -1274,7 +1274,7 @@ class TestMainFlowWithValidation:
         mock_args.return_value = MagicMock(
             config='test',
             skip_install=True,
-            auth=None,
+            env_vars=None,
             yes=True,
             dry_run=False,
             no_admin=False,

@@ -4,8 +4,8 @@
 
 | Version | Supported          |
 |---------|--------------------|
-| 6.x     | :white_check_mark: |
-| < 6.0   | :x:                |
+| 7.x     | :white_check_mark: |
+| < 7.0   | :x:                |
 
 > **Policy:** Only the latest major version receives security updates. When a new major version is released, prior major versions are immediately unsupported.
 

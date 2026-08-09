@@ -76,8 +76,14 @@ echo ""
 SETUP_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
-# Check if configuration is specified
-CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-${1:-}}"
+# Resolve the config with the same precedence as the Python script:
+# a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+    CONFIG="$1"
+    shift
+else
+    CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}"
+fi
 
 if [ -z "$CONFIG" ]; then
     echo -e "${RED}[ERROR]${NC} No configuration specified!"
@@ -86,36 +92,10 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
-# Build auth arguments
-# GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-# Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
-AUTH_ARGS=""
-if [ -n "${CLAUDE_CODE_TOOLBOX_ENV_AUTH:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} Using provided authentication"
-    AUTH_ARGS="--auth $CLAUDE_CODE_TOOLBOX_ENV_AUTH"
-elif [ -n "${REPO_TOKEN:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} Generic repo token found, will use for authentication"
-    AUTH_ARGS="--auth $REPO_TOKEN"
-fi
-
-# Collect extra flags to forward to Python script
-EXTRA_ARGS=""
-for arg in "$@"; do
-    case "$arg" in
-        --yes|-y)
-            EXTRA_ARGS="$EXTRA_ARGS --yes"
-            ;;
-        --dry-run)
-            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
-            ;;
-        --skip-install)
-            EXTRA_ARGS="$EXTRA_ARGS --skip-install"
-            ;;
-        --no-admin)
-            EXTRA_ARGS="$EXTRA_ARGS --no-admin"
-            ;;
-    esac
-done
+# All remaining user arguments pass through to the Python script verbatim,
+# so the wrapper and the Python interface stay identical. Authentication env
+# vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH)
+# are read directly by the Python script.
 
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)
@@ -127,11 +107,7 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
    curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
-    if [ -n "$AUTH_ARGS" ]; then
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS $EXTRA_ARGS
-    else
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $EXTRA_ARGS
-    fi
+    uv run --no-project --python 3.12 setup_environment.py "$CONFIG" "$@"
     EXIT_CODE=$?
 else
     echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"

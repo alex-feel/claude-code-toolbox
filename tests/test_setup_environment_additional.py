@@ -1953,7 +1953,10 @@ class TestMainFunctionErrorPaths:
         mock_launcher.return_value = (Path('/tmp/launcher'), Path('/tmp/launcher'))
 
         with (
-            patch('sys.argv', ['setup_environment.py', 'full-test', '--auth', 'token123', '--yes']),
+            patch(
+                'sys.argv',
+                ['setup_environment.py', 'full-test', '--env', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH=token123', '--yes'],
+            ),
             patch('sys.exit') as mock_exit,
         ):
             setup_environment.main()

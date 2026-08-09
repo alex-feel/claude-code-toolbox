@@ -48,7 +48,7 @@ def _args(
         dry_run=False,
         skip_install=True,
         no_admin=True,
-        auth=None,
+        env_vars=None,
         select=select,
         with_=with_,
         without=without,

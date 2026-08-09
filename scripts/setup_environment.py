@@ -383,9 +383,31 @@ R = TypeVar('R')
 type JsonValue = str | int | float | bool | None | list['JsonValue'] | dict[str, 'JsonValue']
 
 
-# Default number of parallel workers - can be overridden via CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS env var
-# Reduced from 5 to 2 to decrease likelihood of hitting GitHub secondary rate limits
-DEFAULT_PARALLEL_WORKERS = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
+# Default number of parallel workers; 2 keeps GitHub secondary rate limits at bay
+DEFAULT_PARALLEL_WORKERS = 2
+
+
+def _parallel_workers_from_env() -> int:
+    """Resolve the worker count from CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS.
+
+    Read at call time (not import time) so --env overrides applied in
+    resolve_args take effect. An invalid value falls back to the default
+    with a warning.
+
+    Returns:
+        The configured worker count, or DEFAULT_PARALLEL_WORKERS.
+    """
+    raw = os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS')
+    if not raw:
+        return DEFAULT_PARALLEL_WORKERS
+    try:
+        return int(raw)
+    except ValueError:
+        warning(
+            f"Invalid CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS value '{raw}'; "
+            f'using {DEFAULT_PARALLEL_WORKERS}',
+        )
+        return DEFAULT_PARALLEL_WORKERS
 
 
 def is_parallel_mode_enabled() -> bool:
@@ -401,7 +423,7 @@ def is_parallel_mode_enabled() -> bool:
 def execute_parallel(
     items: list[T],
     func: Callable[[T], R],
-    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+    max_workers: int | None = None,
     stagger_delay: float = 0.0,
 ) -> list[R]:
     """Execute a function on items in parallel with error isolation.
@@ -412,7 +434,8 @@ def execute_parallel(
     Args:
         items: List of items to process
         func: Function to apply to each item
-        max_workers: Maximum number of parallel workers (default: 2)
+        max_workers: Maximum number of parallel workers; None resolves
+            CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS at call time (default: 2)
         stagger_delay: Delay in seconds between task submissions to prevent
             thundering herd on rate-limited APIs (default: 0.0)
 
@@ -422,6 +445,9 @@ def execute_parallel(
         and re-raised after all items are processed.
     """
     import operator
+
+    if max_workers is None:
+        max_workers = _parallel_workers_from_env()
 
     if not items:
         return []
@@ -479,7 +505,7 @@ def execute_parallel_safe(
     items: list[T],
     func: Callable[[T], R],
     default_on_error: R,
-    max_workers: int = DEFAULT_PARALLEL_WORKERS,
+    max_workers: int | None = None,
     stagger_delay: float = 0.0,
 ) -> list[R]:
     """Execute a function on items in parallel with error handling.
@@ -491,7 +517,8 @@ def execute_parallel_safe(
         items: List of items to process
         func: Function to apply to each item
         default_on_error: Value to return for items that raise exceptions
-        max_workers: Maximum number of parallel workers (default: 2)
+        max_workers: Maximum number of parallel workers; None resolves
+            CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS at call time (default: 2)
         stagger_delay: Delay in seconds between task submissions to prevent
             thundering herd on rate-limited APIs (default: 0.0)
 
@@ -606,20 +633,11 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         forwarded_args = script_args or sys.argv[1:]
         all_args = _elevation_launch_args(__name__, sys.argv[0]) + env_vars_to_pass + uac_flag + forwarded_args
 
-        # Build parameters string with proper quoting for Windows
-        # Quote each argument that contains spaces or special characters
-        params_list: list[str] = []
-        for arg in all_args:
-            # Always quote arguments with = to ensure proper parsing
-            if ' ' in arg or '"' in arg or '=' in arg or arg.startswith('--env-'):
-                # For Windows command line, we need to escape quotes properly
-                # Use \" for quotes inside quoted strings
-                escaped_arg = arg.replace('"', '\\"')
-                quoted_arg = f'"{escaped_arg}"'
-                params_list.append(quoted_arg)
-            else:
-                params_list.append(arg)
-        params = ' '.join(params_list)
+        # subprocess.list2cmdline implements the MSVCRT/CommandLineToArgvW
+        # quoting rules (backslash doubling before quotes and at the end of
+        # a quoted token), so every argument -- including --env values with
+        # trailing backslashes -- round-trips into the elevated process intact
+        params = subprocess.list2cmdline(all_args)
 
         # Use getattr to access Windows-specific attributes dynamically
         windll = getattr(ctypes, 'windll', None)
@@ -5597,7 +5615,8 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
     """Resolve authentication headers for a URL from non-interactive sources.
 
     Checks two sources in order:
-        1. Command-line auth_param (format "header:value", "header=value", or bare token)
+        1. auth_param from CLAUDE_CODE_TOOLBOX_ENV_AUTH (format "header:value",
+           "header=value", or bare token)
         2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
 
     This function is pure and non-interactive: it never prompts the user, never
@@ -5606,7 +5625,7 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
 
     Args:
         url: URL being authenticated (used only for repo type detection).
-        auth_param: Optional auth parameter from command-line (format "header:value",
+        auth_param: Optional auth value from CLAUDE_CODE_TOOLBOX_ENV_AUTH (format "header:value",
             "header=value", or a bare token).
 
     Returns:
@@ -5621,26 +5640,30 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
         auth_value = token if token.startswith('Bearer ') else f'Bearer {token}'
         return {'Authorization': auth_value}
 
-    # Method 1: Command-line parameter (highest priority).
+    # Method 1: CLAUDE_CODE_TOOLBOX_ENV_AUTH explicit override (highest priority).
     if auth_param:
         # Support both : and = as separators
         if ':' in auth_param:
             header_name, token = auth_param.split(':', 1)
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {header_name: token}
         if '=' in auth_param:
             header_name, token = auth_param.split('=', 1)
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {header_name: token}
         # Bare token: use default header based on repo type.
         token = auth_param
         if repo_type == 'gitlab':
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {'PRIVATE-TOKEN': token}
         if repo_type == 'github':
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return build_github_headers(token)
-        error('Cannot determine auth header type. Use format: --auth "header:value"')
+        error(
+            'Cannot determine auth header type. '
+            'Set CLAUDE_CODE_TOOLBOX_ENV_AUTH="Header-Name:value" '
+            '(e.g. --env CLAUDE_CODE_TOOLBOX_ENV_AUTH=Header-Name:value)',
+        )
         return {}
 
     # Method 2: Environment variables.
@@ -5696,7 +5719,7 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
         info('You can provide authentication by:')
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
-        info('  2. Using --auth parameter: --auth "token_here"')
+        info(f'  2. Passing it on the command line: --env {tokens_checked[0]}=token_here')
 
         # Ask if they want to enter it now
         try:
@@ -5724,7 +5747,7 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
     """Resolve authentication headers for a URL, with interactive fallback.
 
     Orchestrates two-stage credential resolution:
-        1. resolve_credentials() -- pure, non-interactive (CLI param, env vars)
+        1. resolve_credentials() -- pure, non-interactive (env vars incl. CLAUDE_CODE_TOOLBOX_ENV_AUTH)
         2. prompt_for_credentials() -- interactive, guarded by sys.stdin.isatty()
 
     Preserves the public-API signature used by callers and test mocks. Callers
@@ -12087,13 +12110,37 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
     return remaining_args, was_elevated_via_uac
 
 
+def _apply_env_overrides(env_pairs: list[str] | None) -> None:
+    """Apply --env KEY=VALUE pairs to the process environment.
+
+    Explicit --env values override inherited environment variables,
+    matching shell semantics (VAR=x command). Exits with an error on a
+    malformed pair, mirroring argparse's fail-fast handling of bad input.
+
+    Args:
+        env_pairs: Raw KEY=VALUE strings from the repeatable --env flag,
+            or None when the flag was not used.
+    """
+    for pair in env_pairs or []:
+        key, separator, value = pair.partition('=')
+        if not separator or not ENV_VAR_NAME_PATTERN.match(key):
+            error(f"Invalid --env value '{pair}': expected KEY=VALUE with a valid variable name")
+            sys.exit(1)
+        os.environ[key] = value
+
+
 def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     """Merge CLI flags with environment variable equivalents.
 
-    CLI flags take precedence over environment variables. For boolean
-    flags (store_true), argparse defaults to False when the flag is
-    absent, so the env var acts as a fallback for piped invocations
-    where CLI flags cannot be passed.
+    Applies --env KEY=VALUE overrides to the process environment FIRST,
+    so every env-var read below (and every later consumer, including
+    child processes) sees them. CLI flags take precedence over
+    environment variables. For boolean flags (store_true), argparse
+    defaults to False when the flag is absent, so the env var acts as a
+    fallback for piped invocations where CLI flags cannot be passed.
+
+    args.auth carries the CLAUDE_CODE_TOOLBOX_ENV_AUTH value (settable
+    via --env), or None when the variable is empty or unset.
 
     Called immediately after parse_args() and before any flag-dependent
     logic (admin checks, confirmation gates, installation flow).
@@ -12104,12 +12151,12 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     Returns:
         Modified args namespace with environment variables merged.
     """
+    _apply_env_overrides(getattr(args, 'env_vars', None))
     args.yes = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
     args.dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
     args.skip_install = args.skip_install or os.environ.get('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL') == '1'
     args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
-    if not args.auth:
-        args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH')
+    args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH') or None
     # 'or None' treats an empty-string export (a common CI-template
     # default) as absent, matching every other toolbox env var, instead of
     # aborting the run with an error about a flag the user never passed;
@@ -12150,28 +12197,19 @@ def main() -> None:
             print(f'{Colors.GREEN}========================================================================{Colors.NC}')
             print()
 
-    # Refuse to run as root on Unix unless explicitly allowed
-    if platform.system() != 'Windows':
-        geteuid = getattr(os, 'geteuid', None)
-        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
-            error('This script should NOT be run as root or with sudo')
-            print()
-            warning('Running as root creates configuration under /root/,')
-            warning('not for the regular user you intend to configure.')
-            print()
-            info('Instead, run as your regular user:')
-            info('  curl -fsSL https://raw.githubusercontent.com/alex-feel/'
-                 'claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash')
-            print()
-            info('The installer will request sudo only when needed (e.g., npm).')
-            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
-            sys.exit(1)
-
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
-    parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
     parser.add_argument('--no-admin', action='store_true', help='Do not request admin elevation even if needed')
+    parser.add_argument(
+        '--env',
+        dest='env_vars',
+        action='append',
+        metavar='KEY=VALUE',
+        help='Set an environment variable for this run (repeatable; identical in every '
+        'shell and forwarded through Windows UAC elevation). Covers every documented '
+        'variable, e.g. --env GITHUB_TOKEN=... --env GITLAB_TOKEN=...',
+    )
     parser.add_argument(
         '--yes', '-y',
         action='store_true',
@@ -12206,6 +12244,25 @@ def main() -> None:
     )
     args = parser.parse_args()
     resolve_args(args)
+
+    # Refuse to run as root on Unix unless explicitly allowed. Runs after
+    # resolve_args so --env CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 takes effect
+    # (argument parsing performs no work), and before anything else does.
+    if platform.system() != 'Windows':
+        geteuid = getattr(os, 'geteuid', None)
+        if geteuid is not None and geteuid() == 0 and os.environ.get('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT') != '1':
+            error('This script should NOT be run as root or with sudo')
+            print()
+            warning('Running as root creates configuration under /root/,')
+            warning('not for the regular user you intend to configure.')
+            print()
+            info('Instead, run as your regular user:')
+            info('  curl -fsSL https://raw.githubusercontent.com/alex-feel/'
+                 'claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash')
+            print()
+            info('The installer will request sudo only when needed (e.g., npm).')
+            info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
+            sys.exit(1)
 
     # Get configuration from args or environment
     config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')

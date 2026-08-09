@@ -70,8 +70,15 @@ try {
     Invoke-WebRequest -Uri $setupScriptUrl -OutFile $setupScript -UseBasicParsing
     Invoke-WebRequest -Uri $installScriptUrl -OutFile $installScript -UseBasicParsing
 
-    # Check if configuration is specified
-    $config = if ($env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG) { $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
+    # Resolve the config with the same precedence as the Python script:
+    # a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    $forwardArgs = @($args)
+    if ($forwardArgs.Count -gt 0 -and -not ([string]$forwardArgs[0]).StartsWith('-')) {
+        $config = [string]$forwardArgs[0]
+        $forwardArgs = @($forwardArgs | Select-Object -Skip 1)
+    } else {
+        $config = $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    }
 
     if (-not $config) {
         Write-Host "[ERROR] No configuration specified!" -ForegroundColor Red
@@ -86,37 +93,16 @@ try {
 
     Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
 
-    # Build auth arguments
-    # GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-    # Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
-    $authArgs = @()
-    if ($env:CLAUDE_CODE_TOOLBOX_ENV_AUTH) {
-        Write-Host "[INFO] Using provided authentication" -ForegroundColor Cyan
-        $authArgs = @('--auth', $env:CLAUDE_CODE_TOOLBOX_ENV_AUTH)
-    } elseif ($env:REPO_TOKEN) {
-        Write-Host "[INFO] Generic repo token found, will use for authentication" -ForegroundColor Cyan
-        $authArgs = @('--auth', $env:REPO_TOKEN)
-    }
-
-    # Collect extra flags to forward to Python script
-    $extraArgs = @()
-    foreach ($arg in $args) {
-        if ($arg -eq '--yes' -or $arg -eq '-y') {
-            $extraArgs += '--yes'
-        } elseif ($arg -eq '--dry-run') {
-            $extraArgs += '--dry-run'
-        } elseif ($arg -eq '--skip-install') {
-            $extraArgs += '--skip-install'
-        } elseif ($arg -eq '--no-admin') {
-            $extraArgs += '--no-admin'
-        }
-    }
+    # All remaining user arguments pass through to the Python script
+    # verbatim, so the wrapper and the Python interface stay identical.
+    # Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN,
+    # CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python script.
 
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location so Python can resolve module imports
     Push-Location $toolboxDir
     try {
-        $allArgs = @($config) + $authArgs + $extraArgs
+        $allArgs = @($config) + $forwardArgs
         & uv run --no-project --python 3.12 setup_environment.py @allArgs
         $exitCode = $LASTEXITCODE
     } finally {

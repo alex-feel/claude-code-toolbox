@@ -78,13 +78,19 @@ The repository publishes to PyPI as `cc-toolbox` via an in-place hatchling remap
 
 All Linux/macOS scripts refuse to run as root/sudo by default (`id -u == 0` in shell, `os.geteuid() == 0` in Python). Applies to all 6 entry points. Override: `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1` (only exact value `1`; `true`/`yes` do NOT work). Rationale: root creates config under `/root/` instead of user's home. Use override for Docker/CI environments.
 
+### Single Interface Invariant (Scripts, CLI, Wrappers)
+
+The standalone Python scripts, the `cc-toolbox` CLI, and the platform bootstrap wrappers expose ONE interface: identical flags, identical environment variables, identical behavior. The wrappers forward ALL user arguments to `setup_environment.py` verbatim -- no allowlists, no wrapper-built flags -- consuming the first argument as the config when it is not a flag (a non-flag first argument wins over `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`, the same precedence argparse applies). Anything expressible in one entry path MUST be expressible identically in every other, and any interface change lands in all entry paths (Python scripts, `cli.py`, all three wrappers, docs) in the same PR.
+
+**Present-tense only, no backward compatibility:** code, comments, docstrings, and docs describe ONLY the current interface -- never prior behavior, removed elements, migrations, or compatibility notes. Superseded interface elements are deleted outright, never kept as shims, aliases, or deprecated fallbacks. The conventional commit message is the only record of change.
+
 ### Installation Confirmation
 
-The setup script requires explicit user confirmation before installing. CLI flags: `--yes`/`-y` (auto-confirm), `--dry-run` (preview and exit), `--skip-install` (skip Claude Code installation), `--no-admin` (skip Windows admin elevation). Env vars: `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1` (auto-confirm), `CLAUDE_CODE_TOOLBOX_DRY_RUN=1` (preview), `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1` (skip installation), `CLAUDE_CODE_TOOLBOX_NO_ADMIN=1` (skip elevation). All accept only exact value `'1'`. Auth: `CLAUDE_CODE_TOOLBOX_ENV_AUTH` (string, `header:value` format).
+The setup script requires explicit user confirmation before installing. CLI flags: `--yes`/`-y` (auto-confirm), `--dry-run` (preview and exit), `--skip-install` (skip Claude Code installation), `--no-admin` (skip Windows admin elevation), `--env KEY=VALUE` (repeatable; sets an environment variable for the run before any env read, identically in every shell, and is forwarded through UAC elevation). Env vars: `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1` (auto-confirm), `CLAUDE_CODE_TOOLBOX_DRY_RUN=1` (preview), `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1` (skip installation), `CLAUDE_CODE_TOOLBOX_NO_ADMIN=1` (skip elevation). All accept only exact value `'1'`. Auth is environment-driven with no dedicated flag: `GITHUB_TOKEN`/`GITLAB_TOKEN` (per-host), `REPO_TOKEN` (generic), `CLAUDE_CODE_TOOLBOX_ENV_AUTH` (string, `header:value` format) -- all settable via `--env`.
 
-**Environment Variable Resolution:** All CLI flags and their env var equivalents are merged in `resolve_args()`, called immediately after `parse_args()`. CLI flags take precedence over env vars. The going-forward naming convention is: `--flag-name` becomes `CLAUDE_CODE_TOOLBOX_FLAG_NAME` (direct mechanical mapping). `CONFIRM_INSTALL` is a preserved historical exception.
+**Environment Variable Resolution:** All CLI flags and their env var equivalents are merged in `resolve_args()`, called immediately after `parse_args()`. `--env` overrides are applied to `os.environ` first (explicit beats ambient, matching `VAR=x command` shell semantics), then CLI flags take precedence over env vars. The going-forward naming convention is: `--flag-name` becomes `CLAUDE_CODE_TOOLBOX_FLAG_NAME` (direct mechanical mapping). `CONFIRM_INSTALL` is a preserved historical exception.
 
-**Default:** Interactive → `[y/N]` prompt (deny default). Piped with `/dev/tty` → prompts via tty. Non-interactive → refuses (exit 1). Exit `0` for success/dry-run/cancellation, `1` for errors (including download and dependency-installation failures). Bootstrap scripts forward `--yes`, `--dry-run`, `--skip-install`, `--no-admin` to Python.
+**Default:** Interactive → `[y/N]` prompt (deny default). Piped with `/dev/tty` → prompts via tty. Non-interactive → refuses (exit 1). Exit `0` for success/dry-run/cancellation, `1` for errors (including download and dependency-installation failures).
 
 **Known Config Keys:** The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
 
@@ -268,7 +274,7 @@ When `command-names` creates an isolated environment, `configure_mcp_server()` p
 - `CLAUDE_CODE_TOOLBOX_DRY_RUN`: `1` only -- preview installation plan without changes (env var for `--dry-run`)
 - `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`: `1` only -- skip Claude Code installation (env var for `--skip-install`)
 - `CLAUDE_CODE_TOOLBOX_NO_ADMIN`: `1` only -- skip Windows admin elevation (env var for `--no-admin`)
-- `CLAUDE_CODE_TOOLBOX_ENV_AUTH`: string -- authentication for private repos, `header:value` format (env var for `--auth`)
+- `CLAUDE_CODE_TOOLBOX_ENV_AUTH`: string -- authentication for private repos, `header:value` format (explicit override; `GITHUB_TOKEN`/`GITLAB_TOKEN`/`REPO_TOKEN` cover the per-host and generic cases)
 - `CLAUDE_CODE_TOOLBOX_SELECT`: comma-separated component names or `all`/`none` -- install these components plus their bundled and required components (env var for `--select`)
 - `CLAUDE_CODE_TOOLBOX_WITH`: comma-separated component names -- add components to the default selection (env var for `--with`)
 - `CLAUDE_CODE_TOOLBOX_WITHOUT`: comma-separated component names -- remove components from the selection (env var for `--without`)
