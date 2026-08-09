@@ -2277,7 +2277,7 @@ For automated environments where no interactive prompt is available:
 export CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1
 ```
 
-**CLI flag (direct invocation only, not piped):**
+**CLI flag (direct invocation or CLI; piped on Linux/macOS via `bash -s -- <config> <flag>`):**
 
 ```bash
 ./setup-environment.sh python --yes
@@ -2300,7 +2300,7 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 Alternatively, on Linux/macOS you can pass flags through `bash -s --`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash -s -- --yes
+curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash -s -- <config> --yes
 ```
 
 ### Dry-run mode
@@ -2313,7 +2313,7 @@ To preview the installation plan without making any changes:
 export CLAUDE_CODE_TOOLBOX_DRY_RUN=1
 ```
 
-**CLI flag (direct invocation only, not piped):**
+**CLI flag (direct invocation or CLI; piped on Linux/macOS via `bash -s -- <config> <flag>`):**
 
 ```bash
 ./setup-environment.sh python --dry-run
@@ -2335,7 +2335,7 @@ To skip the Claude Code installation step (useful when Claude Code is already in
 export CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1
 ```
 
-**CLI flag (direct invocation only, not piped):**
+**CLI flag (direct invocation or CLI; piped on Linux/macOS via `bash -s -- <config> <flag>`):**
 
 ```bash
 ./setup-environment.sh python --skip-install
@@ -2351,7 +2351,7 @@ To prevent the setup from requesting Windows admin elevation:
 export CLAUDE_CODE_TOOLBOX_NO_ADMIN=1
 ```
 
-**CLI flag (direct invocation only, not piped):**
+**CLI flag (direct invocation or CLI; piped on Linux/macOS via `bash -s -- <config> <flag>`):**
 
 ```bash
 ./setup-environment.sh python --no-admin

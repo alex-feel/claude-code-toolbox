@@ -138,6 +138,7 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
@@ -164,6 +165,7 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit),
         ):
             setup_environment.main()
@@ -180,17 +182,15 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
 
         assert exc_info.value.code == 1
 
-    def test_root_guard_runs_before_argument_parsing(self) -> None:
-        """Verify root guard triggers even without valid CLI arguments.
-
-        The root guard MUST run before argparse to catch all invocations.
-        """
+    def test_root_guard_fires_before_any_work_even_without_config(self) -> None:
+        """As root with no arguments at all, the refusal (exit 1) precedes any work."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
@@ -201,7 +201,7 @@ class TestRootGuardSetupEnvironment:
         ):
             setup_environment.main()
 
-        # Should exit from root guard (code 1), NOT from argparse error (code 2)
+        # Exits from the root guard (code 1), not a later missing-config error
         assert exc_info.value.code == 1
 
     def test_root_guard_skipped_on_windows(self) -> None:
@@ -223,6 +223,7 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': ''}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
@@ -235,6 +236,7 @@ class TestRootGuardSetupEnvironment:
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
             patch.dict('os.environ', {'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT': 'yes'}, clear=False),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()

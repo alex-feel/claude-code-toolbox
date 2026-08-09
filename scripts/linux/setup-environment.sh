@@ -76,8 +76,14 @@ echo ""
 SETUP_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
-# Check if configuration is specified
-CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-${1:-}}"
+# Resolve the config with the same precedence as the Python script:
+# a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+    CONFIG="$1"
+    shift
+else
+    CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}"
+fi
 
 if [ -z "$CONFIG" ]; then
     echo -e "${RED}[ERROR]${NC} No configuration specified!"
@@ -86,14 +92,10 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
-# Forward all user arguments to the Python script verbatim. When the config
-# comes from the first positional argument, consume it; everything else passes
-# through unchanged so the wrapper and the Python interface stay identical.
-# Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN,
-# CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python script.
-if [ -z "${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}" ] && [ "$#" -gt 0 ]; then
-    shift
-fi
+# All remaining user arguments pass through to the Python script verbatim,
+# so the wrapper and the Python interface stay identical. Authentication env
+# vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH)
+# are read directly by the Python script.
 
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)

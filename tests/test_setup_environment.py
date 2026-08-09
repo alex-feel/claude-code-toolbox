@@ -10942,27 +10942,27 @@ class TestParallelWorkersConfiguration:
         # Verify the module has the expected default
         assert setup_environment.DEFAULT_PARALLEL_WORKERS == 2
 
-    def test_parallel_workers_env_parsing_logic(self) -> None:
-        """Test that CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS parsing logic works correctly."""
-        # Test the parsing logic that the module uses at load time
-        # The module uses: int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
+    def test_parallel_workers_resolved_from_env_at_call_time(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS is read when workers are resolved, so --env overrides apply."""
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS': '10'}):
+            assert setup_environment._parallel_workers_from_env() == 10
 
-        # Test with env var set
-        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '2'
-        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
-        assert value == 2
+    def test_parallel_workers_default_when_unset_or_empty(self) -> None:
+        """Absent or empty variable resolves to the default worker count."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', None)
+            assert setup_environment._parallel_workers_from_env() == 2
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS': ''}):
+            assert setup_environment._parallel_workers_from_env() == 2
 
-        # Test with higher value
-        os.environ['CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS'] = '10'
-        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
-        assert value == 10
-
-        # Clean up
-        os.environ.pop('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', None)
-
-        # Test fallback to default
-        value = int(os.environ.get('CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS', '2'))
-        assert value == 2
+    def test_parallel_workers_invalid_value_warns_and_falls_back(self) -> None:
+        """A non-integer value falls back to the default with a warning."""
+        with (
+            patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS': 'many'}),
+            patch.object(setup_environment, 'warning') as mock_warning,
+        ):
+            assert setup_environment._parallel_workers_from_env() == 2
+        assert mock_warning.called
 
 
 class TestRunBashCommandMsysPathConversion:
@@ -12210,6 +12210,7 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
@@ -12248,6 +12249,7 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Linux'),
             patch('os.geteuid', create=True, return_value=0),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit),
         ):
             setup_environment.main()
@@ -12262,16 +12264,14 @@ class TestRootGuard:
         with (
             patch('platform.system', return_value='Darwin'),
             patch('os.geteuid', create=True, return_value=0),
+            patch('sys.argv', ['setup_environment.py']),
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
         assert exc_info.value.code == 1
 
-    def test_root_guard_runs_before_argument_parsing(self) -> None:
-        """Root guard triggers even without valid CLI arguments.
-
-        The root guard MUST run before argparse to catch all invocations.
-        """
+    def test_root_guard_fires_before_any_work_even_without_config(self) -> None:
+        """As root with no arguments at all, the refusal (exit 1) precedes any work."""
         os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
         with (
             patch('platform.system', return_value='Linux'),
@@ -12281,8 +12281,27 @@ class TestRootGuard:
             pytest.raises(SystemExit) as exc_info,
         ):
             setup_environment.main()
-        # Should exit from root guard (code 1), NOT from argparse error (code 2)
+        # Exits from the root guard (code 1), not a later missing-config error
         assert exc_info.value.code == 1
+
+    def test_root_guard_env_flag_override_allows_root(self) -> None:
+        """--env CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 is applied before the guard fires."""
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_ALLOW_ROOT', None)
+        argv = ['setup_environment.py', 'python', '--env', 'CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1', '--yes']
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch('os.geteuid', create=True, return_value=0),
+            patch.dict('os.environ', {}, clear=False),
+            patch('sys.argv', argv),
+            patch.object(
+                setup_environment, 'load_config_from_source',
+                side_effect=Exception('Config loading stopped by test'),
+            ) as mock_load,
+        ):
+            with contextlib.suppress(SystemExit, Exception):
+                setup_environment.main()
+            # Reaching config loading proves the guard let the run through
+            mock_load.assert_called_once()
 
 
 class TestCollectInstallationPlan:
@@ -15252,6 +15271,27 @@ class TestRequestAdminElevationEnvVars:
             'CLAUDE_CODE_TOOLBOX_WITHOUT',
         }
         assert set(critical_vars) == expected_vars
+
+    def test_backslash_ending_value_round_trips_msvcrt_quoting(self) -> None:
+        """A value ending in a backslash keeps later flags as separate tokens.
+
+        The params string uses subprocess.list2cmdline, which doubles
+        backslashes before the closing quote, so CommandLineToArgvW in the
+        elevated process cannot merge the following flag into the value.
+        """
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch('ctypes.windll', create=True) as mock_windll,
+            patch('time.sleep'),
+        ):
+            mock_windll.shell32.ShellExecuteW.return_value = 33
+            with pytest.raises(SystemExit):
+                setup_environment.request_admin_elevation(
+                    ['python', '--env', 'MY_DIR=C:\\Program Files\\Tool\\', '--yes'],
+                )
+            params = mock_windll.shell32.ShellExecuteW.call_args[0][3]
+        assert '--yes' in params.split()
+        assert 'Tool\\\\"' in params
 
 
 class TestElevationLaunchArgs:

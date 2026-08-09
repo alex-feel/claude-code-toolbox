@@ -70,8 +70,15 @@ try {
     Invoke-WebRequest -Uri $setupScriptUrl -OutFile $setupScript -UseBasicParsing
     Invoke-WebRequest -Uri $installScriptUrl -OutFile $installScript -UseBasicParsing
 
-    # Check if configuration is specified
-    $config = if ($env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG) { $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG } elseif ($args.Count -gt 0) { $args[0] } else { $null }
+    # Resolve the config with the same precedence as the Python script:
+    # a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    $forwardArgs = @($args)
+    if ($forwardArgs.Count -gt 0 -and -not ([string]$forwardArgs[0]).StartsWith('-')) {
+        $config = [string]$forwardArgs[0]
+        $forwardArgs = @($forwardArgs | Select-Object -Skip 1)
+    } else {
+        $config = $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    }
 
     if (-not $config) {
         Write-Host "[ERROR] No configuration specified!" -ForegroundColor Red
@@ -86,16 +93,10 @@ try {
 
     Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
 
-    # Forward all user arguments to the Python script verbatim. When the
-    # config comes from the first positional argument, consume it; everything
-    # else passes through unchanged so the wrapper and the Python interface
-    # stay identical. Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN,
-    # REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the
-    # Python script.
-    $forwardArgs = @($args)
-    if (-not $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG -and $forwardArgs.Count -gt 0) {
-        $forwardArgs = @($forwardArgs | Select-Object -Skip 1)
-    }
+    # All remaining user arguments pass through to the Python script
+    # verbatim, so the wrapper and the Python interface stay identical.
+    # Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN,
+    # CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python script.
 
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location so Python can resolve module imports
