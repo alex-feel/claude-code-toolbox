@@ -372,7 +372,7 @@ Python 3.12 required. **uv** installed by bootstrap scripts. Dependencies: PyYAM
 
 ## Version Management
 
-DO NOT manually edit `CHANGELOG.md`, `version.txt`, or `.release-please-manifest.json`. Release Please manages versioning from conventional commits; bumps happen when release PRs are merged.
+DO NOT manually edit `CHANGELOG.md`, the `version` field in `pyproject.toml`, `CITATION.cff`, or `.release-please-manifest.json`. Release Please manages versioning from conventional commits; bumps happen when release PRs are merged.
 
 **SECURITY.md:** When any commit triggers a major version bump (`!` suffix or `BREAKING CHANGE:` in body/footer), update the "Supported Versions" table in the same PR to show only the new major version as supported.
 
