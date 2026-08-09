@@ -29,7 +29,30 @@ This creates a global command `my-env` that launches Claude Code with a custom s
 
 ### How to Run
 
-Run a single command that sets your configuration source and executes the setup script. The examples below show the one-liner format for each platform.
+Run a single command that sets your configuration source and executes the setup. The CLI and the platform bootstrap commands accept the same configuration sources, environment variables, and flags -- pick whichever fits, the behavior is identical.
+
+### CLI (Any Platform)
+
+With [uv](https://docs.astral.sh/uv/) installed, `uvx cc-toolbox setup` runs the setup on every platform with one identical syntax. The config is the positional argument; every documented environment variable can also be set inline with the repeatable `--env` flag:
+
+```bash
+# Public config URL
+uvx cc-toolbox setup https://raw.githubusercontent.com/org/repo/main/config.yaml
+
+# Local file
+uvx cc-toolbox setup ./my-env.yaml
+
+# Private GitLab repository
+uvx cc-toolbox setup https://gitlab.company.com/namespace/project/-/raw/main/config.yaml --env GITLAB_TOKEN=glpat-<your-token>
+
+# Private GitHub repository
+uvx cc-toolbox setup https://raw.githubusercontent.com/org/repo/main/config.yaml --env GITHUB_TOKEN=ghp_<your-token>
+
+# Config pulling from both hosts, fully non-interactive
+uvx cc-toolbox setup https://raw.githubusercontent.com/org/repo/main/config.yaml --env GITHUB_TOKEN=ghp_<your-token> --env GITLAB_TOKEN=glpat-<your-token> --yes
+```
+
+Regular environment variables (`export GITHUB_TOKEN=...`, `$env:GITHUB_TOKEN='...'`) work with the CLI exactly as they do with the bootstrap scripts, including `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` in place of the positional argument. Values passed with `--env` appear in shell history and the process list; prefer regular environment variables for secrets when that matters.
 
 ### Windows
 
@@ -94,18 +117,21 @@ export CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/rep
 
 ### CLI Flags
 
-| Flag           | Purpose                                             |
-|----------------|-----------------------------------------------------|
-| `--yes` / `-y` | Auto-confirm installation (skip interactive prompt) |
-| `--dry-run`    | Show installation plan and exit without installing  |
+The full flag reference lives in [CLI Flags and Environment Variable Equivalents](#cli-flags-and-environment-variable-equivalents). Flags work identically for `uvx cc-toolbox setup`, direct script runs, and the bootstrap wrappers, which forward all arguments to the setup script verbatim.
 
-> **Important:** CLI flags like `--yes`, `--dry-run`, `--skip-install`, and `--no-admin` cannot be passed through piped invocations (`iex (irm ...)` on Windows, `curl ... | bash` on Linux/macOS). The piped execution pattern creates no parameter binding context, so flags are silently ignored. Use environment variables instead (see [Non-interactive mode](#non-interactive-mode), [Dry-run mode](#dry-run-mode), [Skip Claude Code installation](#skip-claude-code-installation), and [Skip admin elevation (Windows)](#skip-admin-elevation-windows) below).
+> **Important:** `iex (irm ...)` on Windows accepts no arguments, so with that invocation pass options via environment variables (or use the CLI). On Linux/macOS, `curl ... | bash -s -- <config> --yes` passes flags through the pipe.
 
 ## Ready-Made Configurations
 
 The [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository contains ready-made environment configurations that you can use directly.
 
 To install a configuration from that repository, use its full raw URL as the config source:
+
+### CLI (Any Platform)
+
+```bash
+uvx cc-toolbox setup https://raw.githubusercontent.com/alex-feel/claude-code-artifacts-public/main/environments/templates/basic-template.yaml
+```
 
 ### Linux
 
@@ -1532,10 +1558,12 @@ When using configurations from private repositories, you need to provide authent
 
 Authentication is resolved in this order (highest priority first):
 
-1. **CLI `--auth` parameter** -- Format: `"header:value"`, `"header=value"`, or plain token
+1. **Explicit override** -- `CLAUDE_CODE_TOOLBOX_ENV_AUTH` environment variable, format `"header:value"`, `"header=value"`, or plain token
 2. **URL-specific environment variables** -- `GITLAB_TOKEN` for GitLab URLs, `GITHUB_TOKEN` for GitHub URLs
 3. **Generic token** -- `REPO_TOKEN` environment variable (auto-detects repository type)
 4. **Interactive prompt** -- If a terminal is available and the repository type is detected
+
+Every variable above can be set for a single run with the repeatable `--env` flag, identically in every shell: `--env GITHUB_TOKEN=... --env GITLAB_TOKEN=...`. Values passed on the command line are visible in shell history and the process list; prefer real environment variables for secrets when that matters.
 
 #### Variable Scopes
 
@@ -1543,8 +1571,8 @@ Authentication is resolved in this order (highest priority first):
 |--------------------------------|---------------------------------------|-------------------------------------------------|
 | `GITHUB_TOKEN`                 | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope                    |
 | `GITLAB_TOKEN`                 | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope         |
-| `REPO_TOKEN`                   | Shell-level (passed as `--auth`)      | Generic token, auto-detects repo type           |
-| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`)      | Custom header format: `Header-Name:token-value` |
+| `REPO_TOKEN`                   | Python-level (auto-detected from URL) | Generic token, auto-detects repo type           |
+| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Python-level (explicit override)      | Custom header format: `Header-Name:token-value` |
 
 #### URL Handling
 
@@ -2121,8 +2149,8 @@ hooks:
 |--------------------------------|---------------------------------------|------------------------------------------|
 | `GITHUB_TOKEN`                 | Python-level (auto-detected from URL) | GitHub PAT with `repo` scope             |
 | `GITLAB_TOKEN`                 | Python-level (auto-detected from URL) | GitLab PAT with `read_repository` scope  |
-| `REPO_TOKEN`                   | Shell-level (passed as `--auth`)      | Generic token, auto-detects repo type    |
-| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Shell-level (passed as `--auth`)      | Custom header: `Header-Name:token-value` |
+| `REPO_TOKEN`                   | Python-level (auto-detected from URL) | Generic token, auto-detects repo type    |
+| `CLAUDE_CODE_TOOLBOX_ENV_AUTH` | Python-level (explicit override)      | Custom header: `Header-Name:token-value` |
 
 ### CLI Flags and Environment Variable Equivalents
 
@@ -2132,13 +2160,13 @@ hooks:
 | `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing                                   |
 | `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                                        |
 | `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                                            |
-| `--auth`            | `CLAUDE_CODE_TOOLBOX_ENV_AUTH`        | Authentication parameter: `"token"` or `"header:value"`                              |
+| `--env KEY=VALUE`   | --                                    | Set an environment variable for this run (repeatable; any documented variable)       |
 | `--select`          | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install these components plus bundled/required components (sentinels: `all`, `none`) |
 | `--with`            | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                                              |
 | `--without`         | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win)                     |
 | `--list-components` | --                                    | List the configuration's components and exit                                         |
 
-CLI flags take precedence over environment variables. For piped invocations (`curl | bash`, `iex(irm ...)`), use environment variables since CLI flags cannot be passed.
+CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`.
 
 ## Troubleshooting
 

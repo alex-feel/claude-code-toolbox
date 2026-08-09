@@ -86,36 +86,14 @@ if [ -z "$CONFIG" ]; then
     exit 1
 fi
 
-# Build auth arguments
-# GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-# Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
-AUTH_ARGS=""
-if [ -n "${CLAUDE_CODE_TOOLBOX_ENV_AUTH:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} Using provided authentication"
-    AUTH_ARGS="--auth $CLAUDE_CODE_TOOLBOX_ENV_AUTH"
-elif [ -n "${REPO_TOKEN:-}" ]; then
-    echo -e "${CYAN}[INFO]${NC} Generic repo token found, will use for authentication"
-    AUTH_ARGS="--auth $REPO_TOKEN"
+# Forward all user arguments to the Python script verbatim. When the config
+# comes from the first positional argument, consume it; everything else passes
+# through unchanged so the wrapper and the Python interface stay identical.
+# Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN,
+# CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python script.
+if [ -z "${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}" ] && [ "$#" -gt 0 ]; then
+    shift
 fi
-
-# Collect extra flags to forward to Python script
-EXTRA_ARGS=""
-for arg in "$@"; do
-    case "$arg" in
-        --yes|-y)
-            EXTRA_ARGS="$EXTRA_ARGS --yes"
-            ;;
-        --dry-run)
-            EXTRA_ARGS="$EXTRA_ARGS --dry-run"
-            ;;
-        --skip-install)
-            EXTRA_ARGS="$EXTRA_ARGS --skip-install"
-            ;;
-        --no-admin)
-            EXTRA_ARGS="$EXTRA_ARGS --no-admin"
-            ;;
-    esac
-done
 
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)
@@ -127,11 +105,7 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
    curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
-    if [ -n "$AUTH_ARGS" ]; then
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $AUTH_ARGS $EXTRA_ARGS
-    else
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" $EXTRA_ARGS
-    fi
+    uv run --no-project --python 3.12 setup_environment.py "$CONFIG" "$@"
     EXIT_CODE=$?
 else
     echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"

@@ -5597,7 +5597,8 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
     """Resolve authentication headers for a URL from non-interactive sources.
 
     Checks two sources in order:
-        1. Command-line auth_param (format "header:value", "header=value", or bare token)
+        1. auth_param from CLAUDE_CODE_TOOLBOX_ENV_AUTH (format "header:value",
+           "header=value", or bare token)
         2. Environment variables (GITLAB_TOKEN, GITHUB_TOKEN, REPO_TOKEN)
 
     This function is pure and non-interactive: it never prompts the user, never
@@ -5626,21 +5627,25 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
         # Support both : and = as separators
         if ':' in auth_param:
             header_name, token = auth_param.split(':', 1)
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {header_name: token}
         if '=' in auth_param:
             header_name, token = auth_param.split('=', 1)
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {header_name: token}
         # Bare token: use default header based on repo type.
         token = auth_param
         if repo_type == 'gitlab':
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return {'PRIVATE-TOKEN': token}
         if repo_type == 'github':
-            info('Using authentication from command-line parameter')
+            info('Using authentication from CLAUDE_CODE_TOOLBOX_ENV_AUTH')
             return build_github_headers(token)
-        error('Cannot determine auth header type. Use format: --auth "header:value"')
+        error(
+            'Cannot determine auth header type. '
+            'Set CLAUDE_CODE_TOOLBOX_ENV_AUTH="Header-Name:value" '
+            '(e.g. --env CLAUDE_CODE_TOOLBOX_ENV_AUTH=Header-Name:value)',
+        )
         return {}
 
     # Method 2: Environment variables.
@@ -5696,7 +5701,7 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         info(f"Checked environment variables: {', '.join(tokens_checked)}")
         info('You can provide authentication by:')
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
-        info('  2. Using --auth parameter: --auth "token_here"')
+        info(f'  2. Passing it on the command line: --env {tokens_checked[0]}=token_here')
 
         # Ask if they want to enter it now
         try:
@@ -12087,13 +12092,37 @@ def restore_env_vars_from_args() -> tuple[list[str], bool]:
     return remaining_args, was_elevated_via_uac
 
 
+def _apply_env_overrides(env_pairs: list[str] | None) -> None:
+    """Apply --env KEY=VALUE pairs to the process environment.
+
+    Explicit --env values override inherited environment variables,
+    matching shell semantics (VAR=x command). Exits with an error on a
+    malformed pair, mirroring argparse's fail-fast handling of bad input.
+
+    Args:
+        env_pairs: Raw KEY=VALUE strings from the repeatable --env flag,
+            or None when the flag was not used.
+    """
+    for pair in env_pairs or []:
+        key, separator, value = pair.partition('=')
+        if not separator or not ENV_VAR_NAME_PATTERN.match(key):
+            error(f"Invalid --env value '{pair}': expected KEY=VALUE with a valid variable name")
+            sys.exit(1)
+        os.environ[key] = value
+
+
 def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     """Merge CLI flags with environment variable equivalents.
 
-    CLI flags take precedence over environment variables. For boolean
-    flags (store_true), argparse defaults to False when the flag is
-    absent, so the env var acts as a fallback for piped invocations
-    where CLI flags cannot be passed.
+    Applies --env KEY=VALUE overrides to the process environment FIRST,
+    so every env-var read below (and every later consumer, including
+    child processes) sees them. CLI flags take precedence over
+    environment variables. For boolean flags (store_true), argparse
+    defaults to False when the flag is absent, so the env var acts as a
+    fallback for piped invocations where CLI flags cannot be passed.
+
+    args.auth carries the CLAUDE_CODE_TOOLBOX_ENV_AUTH value (settable
+    via --env), or None when the variable is empty or unset.
 
     Called immediately after parse_args() and before any flag-dependent
     logic (admin checks, confirmation gates, installation flow).
@@ -12104,12 +12133,12 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     Returns:
         Modified args namespace with environment variables merged.
     """
+    _apply_env_overrides(getattr(args, 'env_vars', None))
     args.yes = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
     args.dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
     args.skip_install = args.skip_install or os.environ.get('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL') == '1'
     args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
-    if not args.auth:
-        args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH')
+    args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH') or None
     # 'or None' treats an empty-string export (a common CI-template
     # default) as absent, matching every other toolbox env var, instead of
     # aborting the run with an error about a flag the user never passed;
@@ -12170,8 +12199,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description='Setup development environment for Claude Code')
     parser.add_argument('config', nargs='?', help='Configuration file name (e.g., python.yaml)')
     parser.add_argument('--skip-install', action='store_true', help='Skip Claude Code installation')
-    parser.add_argument('--auth', type=str, help='Authentication for private repos (e.g., "token" or "header:token")')
     parser.add_argument('--no-admin', action='store_true', help='Do not request admin elevation even if needed')
+    parser.add_argument(
+        '--env',
+        dest='env_vars',
+        action='append',
+        metavar='KEY=VALUE',
+        help='Set an environment variable for this run (repeatable; identical in every '
+        'shell and forwarded through Windows UAC elevation). Covers every documented '
+        'variable, e.g. --env GITHUB_TOKEN=... --env GITLAB_TOKEN=...',
+    )
     parser.add_argument(
         '--yes', '-y',
         action='store_true',

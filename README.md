@@ -108,6 +108,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBO
 
 ```bash
 uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'
+
+# Private repositories: pass tokens inline with --env, or export them as regular environment variables
+uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' --env GITHUB_TOKEN=ghp_your-token --env GITLAB_TOKEN=glpat-your-token
 ```
 
 For a persistent `cc-toolbox` command, install it once with `uv tool install cc-toolbox` (or `pipx install cc-toolbox`).

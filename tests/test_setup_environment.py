@@ -14984,7 +14984,7 @@ class TestResolveArgs:
         dry_run: bool = False,
         skip_install: bool = False,
         no_admin: bool = False,
-        auth: str | None = None,
+        env_vars: list[str] | None = None,
         select: str | None = None,
         with_: str | None = None,
         without: str | None = None,
@@ -14994,7 +14994,7 @@ class TestResolveArgs:
             dry_run=dry_run,
             skip_install=skip_install,
             no_admin=no_admin,
-            auth=auth,
+            env_vars=env_vars,
             select=select,
             with_=with_,
             without=without,
@@ -15036,6 +15036,52 @@ class TestResolveArgs:
         assert args.select is None
         assert args.with_ is None
         assert args.without is None
+
+    def test_env_flag_sets_variables(self) -> None:
+        """--env KEY=VALUE pairs land in os.environ."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('TOOLBOX_TEST_A', None)
+            os.environ.pop('TOOLBOX_TEST_B', None)
+            args = self._make_args(env_vars=['TOOLBOX_TEST_A=alpha', 'TOOLBOX_TEST_B=beta'])
+            setup_environment.resolve_args(args)
+            assert os.environ['TOOLBOX_TEST_A'] == 'alpha'
+            assert os.environ['TOOLBOX_TEST_B'] == 'beta'
+        for key in ('TOOLBOX_TEST_A', 'TOOLBOX_TEST_B'):
+            os.environ.pop(key, None)
+
+    def test_env_flag_overrides_inherited_environment(self) -> None:
+        """--env beats an ambient variable of the same name."""
+        with patch.dict(os.environ, {'TOOLBOX_TEST_A': 'ambient'}):
+            args = self._make_args(env_vars=['TOOLBOX_TEST_A=explicit'])
+            setup_environment.resolve_args(args)
+            assert os.environ['TOOLBOX_TEST_A'] == 'explicit'
+
+    def test_env_flag_applies_before_env_fallback_reads(self) -> None:
+        """A toolbox variable set via --env feeds the same run's fallbacks."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_SELECT', None)
+            args = self._make_args(env_vars=['CLAUDE_CODE_TOOLBOX_SELECT=core'])
+            setup_environment.resolve_args(args)
+            assert args.select == 'core'
+        os.environ.pop('CLAUDE_CODE_TOOLBOX_SELECT', None)
+
+    def test_env_flag_value_may_contain_equals_and_be_empty(self) -> None:
+        """The value part is taken verbatim after the first separator."""
+        with patch.dict(os.environ, {}, clear=False):
+            args = self._make_args(env_vars=['TOOLBOX_TEST_A=Header:a=b', 'TOOLBOX_TEST_B='])
+            setup_environment.resolve_args(args)
+            assert os.environ['TOOLBOX_TEST_A'] == 'Header:a=b'
+            assert os.environ['TOOLBOX_TEST_B'] == ''
+        for key in ('TOOLBOX_TEST_A', 'TOOLBOX_TEST_B'):
+            os.environ.pop(key, None)
+
+    @pytest.mark.parametrize('pair', ['NOSEPARATOR', '=value', '1BAD=x', 'BAD-NAME=x'])
+    def test_env_flag_invalid_pair_exits(self, pair: str) -> None:
+        """A malformed --env pair fails fast with exit code 1."""
+        args = self._make_args(env_vars=[pair])
+        with pytest.raises(SystemExit) as exc_info:
+            setup_environment.resolve_args(args)
+        assert exc_info.value.code == 1
 
     def test_empty_selector_env_vars_treated_as_absent(self) -> None:
         """Empty-string selector exports (a common CI default) stay inactive."""
@@ -15105,19 +15151,31 @@ class TestResolveArgs:
             setup_environment.resolve_args(args)
             assert args.dry_run is True
 
-    def test_auth_from_env_var_when_cli_absent(self) -> None:
-        """CLAUDE_CODE_TOOLBOX_ENV_AUTH provides fallback for args.auth."""
+    def test_auth_from_env_var(self) -> None:
+        """CLAUDE_CODE_TOOLBOX_ENV_AUTH populates args.auth."""
         with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'Authorization:Bearer token123'}):
             args = self._make_args()
             setup_environment.resolve_args(args)
             assert args.auth == 'Authorization:Bearer token123'
 
-    def test_auth_cli_takes_precedence_over_env(self) -> None:
-        """CLI --auth wins over CLAUDE_CODE_TOOLBOX_ENV_AUTH."""
-        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'env-value'}):
-            args = self._make_args(auth='cli-value')
+    def test_auth_none_when_env_var_absent_or_empty(self) -> None:
+        """args.auth is None without CLAUDE_CODE_TOOLBOX_ENV_AUTH (or with an empty export)."""
+        for env in ({}, {'CLAUDE_CODE_TOOLBOX_ENV_AUTH': ''}):
+            with patch.dict(os.environ, env, clear=False):
+                os.environ.pop('CLAUDE_CODE_TOOLBOX_ENV_AUTH', None)
+                os.environ.update(env)
+                args = self._make_args()
+                setup_environment.resolve_args(args)
+                assert args.auth is None
+
+    def test_auth_settable_via_env_flag(self) -> None:
+        """--env CLAUDE_CODE_TOOLBOX_ENV_AUTH=... reaches args.auth."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('CLAUDE_CODE_TOOLBOX_ENV_AUTH', None)
+            args = self._make_args(env_vars=['CLAUDE_CODE_TOOLBOX_ENV_AUTH=Header:value'])
             setup_environment.resolve_args(args)
-            assert args.auth == 'cli-value'
+            assert args.auth == 'Header:value'
+            assert os.environ['CLAUDE_CODE_TOOLBOX_ENV_AUTH'] == 'Header:value'
 
     def test_cli_flag_takes_precedence_over_env_var(self) -> None:
         """CLI --skip-install wins over env var (both True is fine)."""
@@ -15245,7 +15303,7 @@ def _component_args(
         dry_run=False,
         skip_install=False,
         no_admin=False,
-        auth=None,
+        env_vars=None,
         select=select,
         with_=with_,
         without=without,

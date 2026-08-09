@@ -86,37 +86,22 @@ try {
 
     Write-Host "[INFO] Using configuration: $config" -ForegroundColor Yellow
 
-    # Build auth arguments
-    # GITHUB_TOKEN and GITLAB_TOKEN are read directly by Python for per-URL authentication
-    # Only pass --auth for explicit override (CLAUDE_CODE_TOOLBOX_ENV_AUTH) or generic token (REPO_TOKEN)
-    $authArgs = @()
-    if ($env:CLAUDE_CODE_TOOLBOX_ENV_AUTH) {
-        Write-Host "[INFO] Using provided authentication" -ForegroundColor Cyan
-        $authArgs = @('--auth', $env:CLAUDE_CODE_TOOLBOX_ENV_AUTH)
-    } elseif ($env:REPO_TOKEN) {
-        Write-Host "[INFO] Generic repo token found, will use for authentication" -ForegroundColor Cyan
-        $authArgs = @('--auth', $env:REPO_TOKEN)
-    }
-
-    # Collect extra flags to forward to Python script
-    $extraArgs = @()
-    foreach ($arg in $args) {
-        if ($arg -eq '--yes' -or $arg -eq '-y') {
-            $extraArgs += '--yes'
-        } elseif ($arg -eq '--dry-run') {
-            $extraArgs += '--dry-run'
-        } elseif ($arg -eq '--skip-install') {
-            $extraArgs += '--skip-install'
-        } elseif ($arg -eq '--no-admin') {
-            $extraArgs += '--no-admin'
-        }
+    # Forward all user arguments to the Python script verbatim. When the
+    # config comes from the first positional argument, consume it; everything
+    # else passes through unchanged so the wrapper and the Python interface
+    # stay identical. Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN,
+    # REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the
+    # Python script.
+    $forwardArgs = @($args)
+    if (-not $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG -and $forwardArgs.Count -gt 0) {
+        $forwardArgs = @($forwardArgs | Select-Object -Skip 1)
     }
 
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location so Python can resolve module imports
     Push-Location $toolboxDir
     try {
-        $allArgs = @($config) + $authArgs + $extraArgs
+        $allArgs = @($config) + $forwardArgs
         & uv run --no-project --python 3.12 setup_environment.py @allArgs
         $exitCode = $LASTEXITCODE
     } finally {
