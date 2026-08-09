@@ -2399,9 +2399,12 @@ def validate_components(config: dict[str, Any]) -> list[str]:
         entry = cast(dict[str, Any], entry_raw)
         component_entries.append(entry)
 
-        name = str(entry.get('name') or '').strip()
+        name_raw = entry.get('name')
+        name = name_raw.strip() if isinstance(name_raw, str) else ''
         display = name or f'components[{index}]'
-        if not name:
+        if name_raw is not None and not isinstance(name_raw, str):
+            errors.append(f'components[{index}]: name must be a string')
+        elif not name:
             errors.append(f'components[{index}] requires a name')
         elif name in RESERVED_COMPONENT_NAMES:
             errors.append(
@@ -2458,7 +2461,12 @@ def validate_components(config: dict[str, Any]) -> list[str]:
                 continue
             available = _component_section_identities(config, section)
             for selector in cast(list[object], selectors):
-                selector_str = str(selector).strip()
+                if not isinstance(selector, str):
+                    errors.append(
+                        f"Component '{display}': includes.{section} selectors must be strings",
+                    )
+                    continue
+                selector_str = selector.strip()
                 if not selector_str:
                     errors.append(
                         f"Component '{display}': includes.{section} contains an empty selector",
@@ -2478,11 +2486,35 @@ def validate_components(config: dict[str, Any]) -> list[str]:
             if not isinstance(edges_raw, list):
                 errors.append(f"Component '{display}': {edge_key} must be a list of component names")
                 continue
-            errors.extend(
-                f"Component '{display}': {verb} unknown component '{str(ref).strip()}'"
-                for ref in cast(list[object], edges_raw)
-                if str(ref).strip() not in seen_names
-            )
+            for ref in cast(list[object], edges_raw):
+                if not isinstance(ref, str):
+                    errors.append(f"Component '{display}': {edge_key} entries must be strings")
+                elif ref.strip() not in seen_names:
+                    errors.append(f"Component '{display}': {verb} unknown component '{ref.strip()}'")
+
+    # Distinct files-to-download entries deploying to the same final path
+    # make component selectors ambiguous (one selector would claim both),
+    # silently defeating deselection. Only relevant when components exist;
+    # without them the inheritance merge layer handles duplicates itself.
+    if component_entries:
+        ftd_raw = config.get('files-to-download')
+        if isinstance(ftd_raw, list):
+            identity_owners: dict[str, int] = {}
+            for item_index, item in enumerate(cast(list[object], ftd_raw)):
+                if not isinstance(item, dict):
+                    continue
+                identity = _files_download_identity(cast(dict[str, Any], item))
+                if identity is None:
+                    continue
+                identity = identity.strip()
+                if identity in identity_owners:
+                    errors.append(
+                        f'files-to-download entries {identity_owners[identity]} and '
+                        f"{item_index} share the final path '{identity}', making component "
+                        f'selectors ambiguous. Give them distinct destinations.',
+                    )
+                else:
+                    identity_owners[identity] = item_index
 
     if not errors:
         _warn_hook_claim_asymmetry(config, component_entries)
@@ -2551,40 +2583,46 @@ def _validate_component_selector_args(
     return errors
 
 
-def _bundle_closure(seed: set[str], bundles_map: dict[str, list[str]]) -> set[str]:
+def _bundle_closure(seed: list[str], bundles_map: dict[str, list[str]]) -> set[str]:
     """Expand a selection along soft bundle edges to a fixpoint.
 
-    Cycles are tolerated via the visited set.
+    Breadth-first over the ordered seed so traversal is deterministic;
+    cycles are tolerated via the visited set.
 
     Args:
-        seed: Initially selected component names.
+        seed: Initially selected component names in registry order.
         bundles_map: Component name to its bundled component names.
 
     Returns:
         The seed expanded with every transitively bundled name.
     """
     result = set(seed)
-    stack = list(seed)
-    while stack:
-        current = stack.pop()
+    queue = list(seed)
+    index = 0
+    while index < len(queue):
+        current = queue[index]
+        index += 1
         for bundled in bundles_map.get(current, []):
             if bundled not in result:
                 result.add(bundled)
-                stack.append(bundled)
+                queue.append(bundled)
     return result
 
 
 def _requires_closure(
-    seed: set[str],
+    seed: list[str],
     requires_map: dict[str, list[str]],
 ) -> tuple[set[str], dict[str, str]]:
     """Expand a selection along hard requires edges, recording causes.
 
-    Cycles are tolerated via the visited set; each auto-included name
-    records the first requester that pulled it in.
+    Breadth-first over the ordered seed so that when several selected
+    components require the same target, the recorded cause is always the
+    earliest requester in registry order (a set-seeded traversal would make
+    the [auto: ...] summary text vary between identical runs). Cycles are
+    tolerated via the visited set.
 
     Args:
-        seed: Selected component names before the closure.
+        seed: Selected component names in registry order.
         requires_map: Component name to its required component names.
 
     Returns:
@@ -2592,14 +2630,16 @@ def _requires_closure(
     """
     result = set(seed)
     causes: dict[str, str] = {}
-    stack = list(seed)
-    while stack:
-        current = stack.pop()
+    queue = list(seed)
+    index = 0
+    while index < len(queue):
+        current = queue[index]
+        index += 1
         for required in requires_map.get(current, []):
             if required not in result:
                 result.add(required)
                 causes[required] = current
-                stack.append(required)
+                queue.append(required)
     return result, causes
 
 
@@ -2656,9 +2696,9 @@ def resolve_component_selection(
         base = {name for name, c in zip(names, components, strict=True) if c.get('default', True)}
 
     base |= set(with_tokens)
-    expanded = _bundle_closure(base, bundles_map)
+    expanded = _bundle_closure([name for name in names if name in base], bundles_map)
     trimmed = expanded - without_set
-    final, causes = _requires_closure(trimmed, requires_map)
+    final, causes = _requires_closure([name for name in names if name in trimmed], requires_map)
 
     for name in sorted(final & without_set):
         warning(
@@ -12300,6 +12340,7 @@ def main() -> None:
             config_version=config_version,
             inheritance_chain=inheritance_chain,
             args=args,
+            selection=selection,
         )
         plan.auto_injected_items = auto_injected_items
 

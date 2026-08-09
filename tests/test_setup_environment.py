@@ -15443,6 +15443,46 @@ class TestValidateComponents:
         errors = setup_environment.validate_components(config)
         assert any("Duplicate hook event id 'dup'" in e for e in errors)
 
+    def test_non_string_name_rejected(self) -> None:
+        """A non-string component name is rejected, matching the model twin."""
+        config = _components_config()
+        config['components'][0]['name'] = 123
+        errors = setup_environment.validate_components(config)
+        assert any('name must be a string' in e for e in errors)
+
+    def test_non_string_edge_refs_rejected(self) -> None:
+        """Non-string requires/bundles entries are rejected."""
+        config = _components_config()
+        config['components'][0]['requires'] = [123]
+        config['components'][0]['bundles'] = [None]
+        errors = setup_environment.validate_components(config)
+        assert any('requires entries must be strings' in e for e in errors)
+        assert any('bundles entries must be strings' in e for e in errors)
+
+    def test_non_string_selector_rejected(self) -> None:
+        """Non-string selectors are rejected."""
+        config = _components_config()
+        config['components'][0]['includes'] = {'agents': [123]}
+        errors = setup_environment.validate_components(config)
+        assert any('selectors must be strings' in e for e in errors)
+
+    def test_duplicate_final_path_rejected(self) -> None:
+        """Entries sharing a final path are ambiguous once components exist."""
+        config = _components_config()
+        config['files-to-download'] = [
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/g.txt'},
+            {'source': 'files/g.txt', 'dest': '~/.claude/gdir/'},
+        ]
+        config['components'][1]['includes']['files-to-download'] = ['~/.claude/gdir/g.txt']
+        errors = setup_environment.validate_components(config)
+        assert any('share the final path' in e for e in errors)
+
+    def test_whitespace_hook_id_matches_stripped_selector(self) -> None:
+        """Padded event ids match stripped selectors (both sides stripped)."""
+        config = _components_config()
+        config['hooks']['events'][0]['id'] = ' post-edit '
+        assert setup_environment.validate_components(config) == []
+
     def test_hook_claim_asymmetry_warns(self) -> None:
         """Claiming a hooks file without covering its events warns."""
         config = _components_config()
@@ -15643,6 +15683,19 @@ class TestResolveComponentSelection:
             'bundle-pack': 'bundle-pack',
         }
 
+    def test_requires_cause_attribution_is_deterministic(self) -> None:
+        """When several requesters pull the same target, the earliest in registry order is the cause."""
+        components: list[dict[str, Any]] = [
+            {'name': 'a', 'default': False, 'requires': ['c'], 'includes': {'agents': ['x']}},
+            {'name': 'b', 'default': False, 'requires': ['c'], 'includes': {'agents': ['y']}},
+            {'name': 'c', 'default': False, 'includes': {'agents': ['z']}},
+        ]
+        for _ in range(20):
+            selection = setup_environment.resolve_component_selection(
+                components, _component_args(select='a,b'),
+            )
+            assert selection.auto_included == {'c': "required by 'a'"}
+
 
 class TestApplyComponentSelection:
     """Test apply_component_selection() in-place filtering."""
@@ -15800,6 +15853,41 @@ class TestComponentSelectionInPlan:
         buf = io.StringIO()
         setup_environment.display_installation_summary(plan, output=buf)
         assert 'Components:' not in buf.getvalue()
+
+
+class TestComponentSelectionMainWiring:
+    """Regression: main() threads the resolved selection into the plan summary."""
+
+    def test_dry_run_summary_renders_components_block(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dry run of main() with components renders the Components block."""
+        config = _components_config()
+        monkeypatch.setattr(
+            setup_environment,
+            'load_config_from_source',
+            lambda *_a, **_k: (config, 'https://example.com/test.yaml'),
+        )
+        monkeypatch.setattr(
+            setup_environment,
+            'validate_all_config_files',
+            lambda *_a, **_k: (True, []),
+        )
+        monkeypatch.setattr(
+            sys,
+            'argv',
+            ['setup_environment.py', 'test', '--dry-run', '--skip-install', '--no-admin'],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            setup_environment.main()
+        assert exc_info.value.code == 0
+        output = capsys.readouterr()
+        combined = output.out + output.err
+        assert 'Components:' in combined
+        assert '[x] Core (core)' in combined
+        assert 'Replay: --select core' in combined
 
 
 class TestDisplayComponentRegistry:
