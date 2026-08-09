@@ -1205,6 +1205,10 @@ class TestMainFlowWithValidation:
             yes=True,
             dry_run=False,
             no_admin=False,
+            select=None,
+            with_=None,
+            without=None,
+            list_components=False,
         )
         mock_load.return_value = (
             {
@@ -1274,6 +1278,10 @@ class TestMainFlowWithValidation:
             yes=True,
             dry_run=False,
             no_admin=False,
+            select=None,
+            with_=None,
+            without=None,
+            list_components=False,
         )
         mock_load.return_value = (
             {

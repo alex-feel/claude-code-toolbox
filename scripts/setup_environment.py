@@ -150,6 +150,14 @@ SELECTABLE_SECTIONS: frozenset[str] = frozenset({
     'hooks',
 })
 
+# Component names reserved as --select sentinels ('--select all' selects
+# every component, '--select none' selects no component)
+RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
+
+# Component names: lowercase letters, digits, dots, underscores, hyphens;
+# must start with a letter or digit
+COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
+
 # Path prefixes indicating sensitive filesystem destinations
 SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
     '~/.ssh/',
@@ -743,6 +751,33 @@ class InheritanceChainEntry:
 
 
 @dataclass
+class ComponentSelection:
+    """Resolved component selection state threaded into the installation plan.
+
+    is_active is False when the configuration defines no components, in
+    which case every other field is empty and no filtering occurs.
+    """
+
+    is_active: bool = False
+    # Component names in registry order
+    available: list[str] = field(default_factory=lambda: list[str]())
+    # Display label per component name (falls back to the name itself)
+    labels: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    # Final selected names (after selectors and closures), registry order
+    selected: list[str] = field(default_factory=lambda: list[str]())
+    # Names added by the hard requires closure, mapped to their cause
+    auto_included: dict[str, str] = field(default_factory=lambda: dict[str, str]())
+    # Copy-pasteable --select flag reproducing this selection
+    replay: str = ''
+
+    @property
+    def skipped(self) -> list[str]:
+        """Component names not selected, in registry order."""
+        selected_set = set(self.selected)
+        return [name for name in self.available if name not in selected_set]
+
+
+@dataclass
 class InstallationPlan:
     """Structured representation of what the setup will install.
 
@@ -801,6 +836,9 @@ class InstallationPlan:
 
     # Auto-injected items (auto-update controls)
     auto_injected_items: list[str] = field(default_factory=lambda: list[str]())
+
+    # Component selection (inactive when the config defines no components)
+    component_selection: ComponentSelection | None = None
 
     @property
     def total_resources(self) -> int:
@@ -2157,6 +2195,604 @@ def validate_global_config(global_config: dict[str, Any]) -> list[str]:
             )
 
     return errors
+
+
+def _component_item_keys(section: str, item: object) -> set[str]:
+    """Compute the identity keys a component selector can match for one item.
+
+    Mirrors each section's merge identity: the exact string for agents,
+    slash-commands, rules, and dependencies; the entry name for skills and
+    mcp-servers; and both the raw dest and the normalized final file path
+    (via _files_download_identity) for files-to-download. Hook events and
+    hook files are handled by _component_section_identities because hooks
+    is a composite section. Keys are whitespace-stripped to match the
+    Pydantic model's str_strip_whitespace behavior.
+
+    Args:
+        section: Selectable section name.
+        item: One item from that section.
+
+    Returns:
+        Set of identity keys; empty when the item has no identity (such
+        items are mandatory and never claimable).
+    """
+    if section in ('agents', 'slash-commands', 'rules', 'dependencies'):
+        return {str(item).strip()}
+    if section in ('skills', 'mcp-servers'):
+        if isinstance(item, dict):
+            name = cast(dict[str, Any], item).get('name')
+            if name is not None:
+                return {str(name).strip()}
+        return set()
+    if section == 'files-to-download':
+        if not isinstance(item, dict):
+            return set()
+        entry = cast(dict[str, Any], item)
+        keys: set[str] = set()
+        dest = entry.get('dest')
+        if dest is not None:
+            keys.add(str(dest).strip())
+        identity = _files_download_identity(entry)
+        if identity:
+            keys.add(identity.strip())
+        return keys
+    return set()
+
+
+def _component_section_identities(config: dict[str, Any], section: str) -> set[str]:
+    """Compute all claimable item identities for a selectable section.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+        section: Selectable section name.
+
+    Returns:
+        Set of identity strings component selectors may reference.
+    """
+    keys: set[str] = set()
+    if section == 'hooks':
+        hooks_raw = config.get('hooks')
+        if isinstance(hooks_raw, dict):
+            hooks_dict = cast(dict[str, Any], hooks_raw)
+            keys.update(str(file_path).strip() for file_path in hooks_dict.get('files') or [])
+            keys.update(
+                str(cast(dict[str, Any], event)['id']).strip()
+                for event in hooks_dict.get('events') or []
+                if isinstance(event, dict) and cast(dict[str, Any], event).get('id') is not None
+            )
+        return keys
+    if section == 'dependencies':
+        deps_raw = config.get('dependencies')
+        if isinstance(deps_raw, dict):
+            for commands in cast(dict[str, Any], deps_raw).values():
+                if isinstance(commands, list):
+                    for command in cast(list[object], commands):
+                        keys |= _component_item_keys(section, command)
+        return keys
+    section_raw = config.get(section)
+    if isinstance(section_raw, list):
+        for item in cast(list[object], section_raw):
+            keys |= _component_item_keys(section, item)
+    return keys
+
+
+def _warn_hook_claim_asymmetry(
+    config: dict[str, Any],
+    components: list[dict[str, Any]],
+) -> None:
+    """Warn when claimed hooks files are not covered by their events' claims.
+
+    A command hook event references its script by basename. When a hooks
+    file is claimed by components that do not also cover every event
+    referencing it, a selection can drop the file while a surviving event
+    still needs it, breaking the hook at runtime. This is a soft warning,
+    not an error, because the asymmetry can also be a deliberate author
+    choice.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+        components: Component entries from the configuration.
+    """
+    hooks_raw = config.get('hooks')
+    if not isinstance(hooks_raw, dict):
+        return
+    hooks_dict = cast(dict[str, Any], hooks_raw)
+    files = [str(f).strip() for f in hooks_dict.get('files') or []]
+    events = [
+        cast(dict[str, Any], e)
+        for e in hooks_dict.get('events') or []
+        if isinstance(e, dict)
+    ]
+    if not files or not events:
+        return
+
+    file_claims: dict[str, set[str]] = {f: set() for f in files}
+    event_claims: dict[str, set[str]] = {}
+    for comp in components:
+        comp_name = str(comp.get('name', '')).strip()
+        includes_raw = comp.get('includes')
+        if not isinstance(includes_raw, dict):
+            continue
+        selectors_raw = cast(dict[str, Any], includes_raw).get('hooks')
+        if not isinstance(selectors_raw, list):
+            continue
+        selectors = {str(s).strip() for s in cast(list[object], selectors_raw)}
+        for file_path in file_claims:
+            if file_path in selectors:
+                file_claims[file_path].add(comp_name)
+        for event in events:
+            event_id = event.get('id')
+            if event_id is not None and str(event_id).strip() in selectors:
+                event_claims.setdefault(str(event_id).strip(), set()).add(comp_name)
+
+    for file_path, file_claimers in file_claims.items():
+        if not file_claimers:
+            continue
+        file_basename = Path(file_path.split('?')[0]).name
+        for event in events:
+            if event.get('type', 'command') != 'command':
+                continue
+            command = str(event.get('command') or '').split('?')[0]
+            if not command or ' ' in command or Path(command).name != file_basename:
+                continue
+            event_id = event.get('id')
+            claimers = event_claims.get(str(event_id).strip(), set()) if event_id is not None else set()
+            if not claimers or claimers - file_claimers:
+                warning(
+                    f"hooks file '{file_path}' is claimed by component(s) "
+                    f'{sorted(file_claimers)} but a hook event referencing it is not '
+                    f'covered by the same component(s); deselecting the file could '
+                    f'break that event. Claim the file and its events together.',
+                )
+
+
+def validate_components(config: dict[str, Any]) -> list[str]:
+    """Validate the components registry against the resolved configuration.
+
+    Runtime twin of the Pydantic components validation in
+    scripts/models/environment_config.py (standalone script policy prevents
+    importing the model). Checks component entry shape, name format and
+    reserved literals, includes keys against SELECTABLE_SECTIONS, selector
+    resolution against the config's actual items, requires/bundles
+    references, duplicate component names, and duplicate hook event ids
+    (the id check runs even without components, matching the model). Emits
+    a hook-claim asymmetry warning as a side effect; never raises.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+
+    Returns:
+        List of error messages; empty when the registry is valid.
+    """
+    import difflib
+
+    errors: list[str] = []
+
+    hooks_raw = config.get('hooks')
+    seen_ids: set[str] = set()
+    if isinstance(hooks_raw, dict):
+        for event in cast(dict[str, Any], hooks_raw).get('events') or []:
+            if not isinstance(event, dict):
+                continue
+            event_id = cast(dict[str, Any], event).get('id')
+            if event_id is None:
+                continue
+            id_str = str(event_id).strip()
+            if id_str in seen_ids:
+                errors.append(
+                    f"Duplicate hook event id '{id_str}'. Hook ids must be unique across events.",
+                )
+            seen_ids.add(id_str)
+
+    components_raw = config.get('components') or []
+    if not isinstance(components_raw, list):
+        errors.append("'components' must be a list of component entries")
+        return errors
+
+    allowed_fields = {'name', 'label', 'description', 'default', 'requires', 'bundles', 'includes'}
+    component_entries: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for index, entry_raw in enumerate(cast(list[object], components_raw)):
+        if not isinstance(entry_raw, dict):
+            errors.append(f'components[{index}] must be a mapping')
+            continue
+        entry = cast(dict[str, Any], entry_raw)
+        component_entries.append(entry)
+
+        name = str(entry.get('name') or '').strip()
+        display = name or f'components[{index}]'
+        if not name:
+            errors.append(f'components[{index}] requires a name')
+        elif name in RESERVED_COMPONENT_NAMES:
+            errors.append(
+                f"Component name '{name}' is reserved (used as a --select sentinel). "
+                f'Choose another name.',
+            )
+        elif not COMPONENT_NAME_PATTERN.match(name):
+            errors.append(
+                f"Component name '{name}' is invalid. Names must use lowercase letters, "
+                f'digits, dots, underscores, and hyphens, and start with a letter or digit.',
+            )
+        if name:
+            if name in seen_names:
+                errors.append(
+                    f"Duplicate component name '{name}'. Component names must be unique.",
+                )
+            seen_names.add(name)
+
+        unknown_fields = sorted(set(entry) - allowed_fields)
+        if unknown_fields:
+            errors.append(f"Component '{display}': unknown field(s): {', '.join(unknown_fields)}")
+        label_raw = entry.get('label')
+        if label_raw is not None and not isinstance(label_raw, str):
+            errors.append(f"Component '{display}': label must be a string")
+        description_raw = entry.get('description')
+        if description_raw is not None and not isinstance(description_raw, str):
+            errors.append(f"Component '{display}': description must be a string")
+        default_raw = entry.get('default')
+        if default_raw is not None and not isinstance(default_raw, bool):
+            errors.append(f"Component '{display}': default must be a boolean")
+
+        includes_raw = entry.get('includes')
+        if not isinstance(includes_raw, dict) or not includes_raw:
+            errors.append(
+                f"Component '{display}': includes must claim at least one item. "
+                f'Selectable sections: {sorted(SELECTABLE_SECTIONS)}',
+            )
+            continue
+        for section, selectors in cast(dict[str, Any], includes_raw).items():
+            if section not in SELECTABLE_SECTIONS:
+                close = difflib.get_close_matches(
+                    str(section), sorted(SELECTABLE_SECTIONS), n=1, cutoff=0.6,
+                )
+                hint = f' (did you mean {close[0]!r}?)' if close else ''
+                errors.append(
+                    f"Component '{display}': includes key '{section}' is not selectable{hint}. "
+                    f'Selectable sections: {sorted(SELECTABLE_SECTIONS)}',
+                )
+                continue
+            if not isinstance(selectors, list) or not selectors:
+                errors.append(
+                    f"Component '{display}': includes.{section} must list at least one selector",
+                )
+                continue
+            available = _component_section_identities(config, section)
+            for selector in cast(list[object], selectors):
+                selector_str = str(selector).strip()
+                if not selector_str:
+                    errors.append(
+                        f"Component '{display}': includes.{section} contains an empty selector",
+                    )
+                elif selector_str not in available:
+                    errors.append(
+                        f"Component '{display}': includes.{section} selector "
+                        f"'{selector_str}' matches no item in {section}",
+                    )
+
+    for entry in component_entries:
+        display = str(entry.get('name') or '').strip() or '<unnamed>'
+        for edge_key, verb in (('requires', 'requires'), ('bundles', 'bundles')):
+            edges_raw = entry.get(edge_key)
+            if edges_raw is None:
+                continue
+            if not isinstance(edges_raw, list):
+                errors.append(f"Component '{display}': {edge_key} must be a list of component names")
+                continue
+            errors.extend(
+                f"Component '{display}': {verb} unknown component '{str(ref).strip()}'"
+                for ref in cast(list[object], edges_raw)
+                if str(ref).strip() not in seen_names
+            )
+
+    if not errors:
+        _warn_hook_claim_asymmetry(config, component_entries)
+    return errors
+
+
+def _parse_component_csv(value: str | None) -> list[str] | None:
+    """Parse a comma-separated component list, distinguishing absent from empty.
+
+    Args:
+        value: Raw flag or environment variable value, or None when absent.
+
+    Returns:
+        None when the input is absent; otherwise the list of non-empty,
+        whitespace-stripped tokens (possibly empty).
+    """
+    if value is None:
+        return None
+    return [token.strip() for token in value.split(',') if token.strip()]
+
+
+def _validate_component_selector_args(
+    component_names: list[str],
+    args: argparse.Namespace,
+) -> list[str]:
+    """Validate --select/--with/--without values against the registry.
+
+    Args:
+        component_names: Known component names from the configuration.
+        args: Parsed CLI arguments (after resolve_args env merging).
+
+    Returns:
+        List of error messages; empty when every selector is valid.
+    """
+    import difflib
+
+    errors: list[str] = []
+    known = set(component_names)
+    for flag, raw in (
+        ('--select', args.select),
+        ('--with', args.with_),
+        ('--without', args.without),
+    ):
+        tokens = _parse_component_csv(raw)
+        if tokens is None:
+            continue
+        if not tokens:
+            sentinel_hint = ' or a sentinel (all, none)' if flag == '--select' else ''
+            errors.append(f'{flag} requires at least one component name{sentinel_hint}')
+            continue
+        for token in tokens:
+            if token in RESERVED_COMPONENT_NAMES:
+                if flag != '--select':
+                    errors.append(
+                        f"{flag} does not accept the sentinel '{token}' (only --select does)",
+                    )
+                elif len(tokens) > 1:
+                    errors.append(
+                        f"--select sentinel '{token}' cannot be combined with other names",
+                    )
+                continue
+            if token not in known:
+                close = difflib.get_close_matches(token, sorted(known), n=1, cutoff=0.6)
+                hint = f" (did you mean '{close[0]}'?)" if close else ''
+                errors.append(f"{flag}: unknown component '{token}'{hint}")
+    return errors
+
+
+def _bundle_closure(seed: set[str], bundles_map: dict[str, list[str]]) -> set[str]:
+    """Expand a selection along soft bundle edges to a fixpoint.
+
+    Cycles are tolerated via the visited set.
+
+    Args:
+        seed: Initially selected component names.
+        bundles_map: Component name to its bundled component names.
+
+    Returns:
+        The seed expanded with every transitively bundled name.
+    """
+    result = set(seed)
+    stack = list(seed)
+    while stack:
+        current = stack.pop()
+        for bundled in bundles_map.get(current, []):
+            if bundled not in result:
+                result.add(bundled)
+                stack.append(bundled)
+    return result
+
+
+def _requires_closure(
+    seed: set[str],
+    requires_map: dict[str, list[str]],
+) -> tuple[set[str], dict[str, str]]:
+    """Expand a selection along hard requires edges, recording causes.
+
+    Cycles are tolerated via the visited set; each auto-included name
+    records the first requester that pulled it in.
+
+    Args:
+        seed: Selected component names before the closure.
+        requires_map: Component name to its required component names.
+
+    Returns:
+        Tuple of (expanded name set, auto-included name to requester map).
+    """
+    result = set(seed)
+    causes: dict[str, str] = {}
+    stack = list(seed)
+    while stack:
+        current = stack.pop()
+        for required in requires_map.get(current, []):
+            if required not in result:
+                result.add(required)
+                causes[required] = current
+                stack.append(required)
+    return result, causes
+
+
+def resolve_component_selection(
+    components: list[dict[str, Any]],
+    args: argparse.Namespace,
+) -> ComponentSelection:
+    """Resolve which components are selected for this run.
+
+    Selection inputs in precedence order: author defaults, then the
+    --select/--with/--without selectors (env var equivalents already merged
+    by resolve_args). --select replaces the default set entirely (with the
+    sentinels all/none); --with adds to it; bundle edges softly expand the
+    seeded set; --without then removes names; the hard requires closure
+    runs last and wins over --without with a warning.
+
+    Args:
+        components: Component entries from the validated configuration.
+        args: Parsed CLI arguments (after resolve_args env merging).
+
+    Returns:
+        ComponentSelection describing the final selection; inactive when
+        the configuration defines no components.
+    """
+    if not components:
+        return ComponentSelection()
+
+    names = [str(c.get('name', '')).strip() for c in components]
+    labels = {
+        name: str(c.get('label') or '').strip() or name
+        for name, c in zip(names, components, strict=True)
+    }
+    bundles_map = {
+        name: [str(b).strip() for b in c.get('bundles') or []]
+        for name, c in zip(names, components, strict=True)
+    }
+    requires_map = {
+        name: [str(r).strip() for r in c.get('requires') or []]
+        for name, c in zip(names, components, strict=True)
+    }
+
+    select_tokens = _parse_component_csv(args.select)
+    with_tokens = _parse_component_csv(args.with_) or []
+    without_set = set(_parse_component_csv(args.without) or [])
+
+    if select_tokens is not None:
+        if select_tokens == ['all']:
+            base = set(names)
+        elif select_tokens == ['none']:
+            base = set()
+        else:
+            base = set(select_tokens)
+    else:
+        base = {name for name, c in zip(names, components, strict=True) if c.get('default', True)}
+
+    base |= set(with_tokens)
+    expanded = _bundle_closure(base, bundles_map)
+    trimmed = expanded - without_set
+    final, causes = _requires_closure(trimmed, requires_map)
+
+    for name in sorted(final & without_set):
+        warning(
+            f"--without '{name}' overridden: component "
+            f"'{causes.get(name, '?')}' requires it",
+        )
+
+    selected = [name for name in names if name in final]
+    replay = '--select ' + (','.join(selected) if selected else 'none')
+    return ComponentSelection(
+        is_active=True,
+        available=names,
+        labels=labels,
+        selected=selected,
+        auto_included={name: f"required by '{cause}'" for name, cause in causes.items()},
+        replay=replay,
+    )
+
+
+def apply_component_selection(
+    config: dict[str, Any],
+    selection: ComponentSelection,
+) -> None:
+    """Filter the resolved config in place according to the selection.
+
+    Per section: an item is dropped iff at least one component claims it
+    and no selected component claims it. Items claimed by no component are
+    mandatory and always survive, as do items without an identity. Section
+    keys are never deleted; emptied lists stay in place preserving shape.
+
+    Args:
+        config: Fully resolved configuration dictionary (mutated in place).
+        selection: The resolved component selection.
+    """
+    components = [
+        cast(dict[str, Any], c)
+        for c in config.get('components') or []
+        if isinstance(c, dict)
+    ]
+    if not components or not selection.is_active:
+        return
+
+    selected = set(selection.selected)
+    claimed: dict[str, set[str]] = {section: set() for section in SELECTABLE_SECTIONS}
+    kept: dict[str, set[str]] = {section: set() for section in SELECTABLE_SECTIONS}
+    for comp in components:
+        includes_raw = comp.get('includes')
+        if not isinstance(includes_raw, dict):
+            continue
+        is_selected = str(comp.get('name', '')).strip() in selected
+        for section, selectors in cast(dict[str, Any], includes_raw).items():
+            if section not in SELECTABLE_SECTIONS or not isinstance(selectors, list):
+                continue
+            selector_set = {str(s).strip() for s in cast(list[object], selectors)}
+            claimed[section] |= selector_set
+            if is_selected:
+                kept[section] |= selector_set
+
+    def _survives(section: str, keys: set[str]) -> bool:
+        return not keys or not (keys & claimed[section]) or bool(keys & kept[section])
+
+    for section in ('agents', 'slash-commands', 'rules', 'skills', 'mcp-servers', 'files-to-download'):
+        section_raw = config.get(section)
+        if isinstance(section_raw, list):
+            config[section] = [
+                item for item in cast(list[object], section_raw)
+                if _survives(section, _component_item_keys(section, item))
+            ]
+
+    deps_raw = config.get('dependencies')
+    if isinstance(deps_raw, dict):
+        deps_dict = cast(dict[str, Any], deps_raw)
+        for platform_key, commands in deps_dict.items():
+            if isinstance(commands, list):
+                deps_dict[platform_key] = [
+                    command for command in cast(list[object], commands)
+                    if _survives('dependencies', _component_item_keys('dependencies', command))
+                ]
+
+    hooks_raw = config.get('hooks')
+    if isinstance(hooks_raw, dict):
+        hooks_dict = cast(dict[str, Any], hooks_raw)
+        files_raw = hooks_dict.get('files')
+        if isinstance(files_raw, list):
+            hooks_dict['files'] = [
+                file_path for file_path in cast(list[object], files_raw)
+                if _survives('hooks', {str(file_path).strip()})
+            ]
+        events_raw = hooks_dict.get('events')
+        if isinstance(events_raw, list):
+            kept_events: list[object] = []
+            for event in cast(list[object], events_raw):
+                event_id = cast(dict[str, Any], event).get('id') if isinstance(event, dict) else None
+                event_keys = {str(event_id).strip()} if event_id is not None else set[str]()
+                if _survives('hooks', event_keys):
+                    kept_events.append(event)
+            hooks_dict['events'] = kept_events
+
+
+def display_component_registry(components: list[dict[str, Any]]) -> None:
+    """Print the component registry for --list-components.
+
+    Args:
+        components: Component entries from the validated configuration.
+    """
+    print()
+    print(f'{Colors.BOLD}Components:{Colors.NC}')
+    if not components:
+        info('This configuration defines no components; every item is mandatory.')
+        return
+    for comp in components:
+        name = str(comp.get('name', '')).strip()
+        label = str(comp.get('label') or '').strip()
+        default_marker = ' [default]' if comp.get('default', True) else ''
+        title = name + (f' -- {label}' if label and label != name else '') + default_marker
+        print(f'  * {title}')
+        description = str(comp.get('description') or '').strip()
+        if description:
+            print(f'      {description}')
+        requires = [str(r).strip() for r in comp.get('requires') or []]
+        if requires:
+            print(f'      requires: {", ".join(requires)}')
+        bundles = [str(b).strip() for b in comp.get('bundles') or []]
+        if bundles:
+            print(f'      bundles: {", ".join(bundles)}')
+        includes_raw = comp.get('includes')
+        if isinstance(includes_raw, dict):
+            counts = ', '.join(
+                f'{len(cast(list[object], selectors))} {section}'
+                for section, selectors in cast(dict[str, Any], includes_raw).items()
+                if isinstance(selectors, list)
+            )
+            if counts:
+                print(f'      includes: {counts}')
 
 
 def write_global_config(
@@ -6071,6 +6707,7 @@ def collect_installation_plan(
     config_version: str | None,
     inheritance_chain: list[InheritanceChainEntry],
     args: argparse.Namespace,
+    selection: ComponentSelection | None = None,
 ) -> InstallationPlan:
     """Collect all installation artifacts into a structured plan.
 
@@ -6086,6 +6723,8 @@ def collect_installation_plan(
             (before inheritance resolution). None if root config has no version.
         inheritance_chain: Resolved inheritance chain entries.
         args: Parsed CLI arguments.
+        selection: Resolved component selection, or None when the config
+            defines no components.
 
     Returns:
         InstallationPlan containing all artifacts to be installed.
@@ -6184,6 +6823,7 @@ def collect_installation_plan(
         status_line=config.get('status-line'),
         unknown_keys=unknown_keys,
         sensitive_paths=sensitive_paths,
+        component_selection=selection,
     )
 
 
@@ -6266,6 +6906,21 @@ def display_installation_summary(
         type_parts = [f'{count} {name}' for name, count in sorted(type_counts.items())]
         _print(f'    ({", ".join(type_parts)})')
     _print(f'  * MCP servers: {len(plan.mcp_servers)}')
+
+    # Component selection
+    component_selection = plan.component_selection
+    if component_selection is not None and component_selection.is_active:
+        _print()
+        _print(f'{Colors.BOLD}Components:{Colors.NC}')
+        selected_set = set(component_selection.selected)
+        for name in component_selection.available:
+            mark = '[x]' if name in selected_set else '[ ]'
+            label = component_selection.labels.get(name, name)
+            suffix = f' ({name})' if label != name else ''
+            cause = component_selection.auto_included.get(name)
+            cause_str = f' {Colors.GREEN}[auto: {cause}]{Colors.NC}' if cause else ''
+            _print(f'  {mark} {label}{suffix}{cause_str}')
+        _print(f'  Replay: {component_selection.replay}')
 
     # Claude Code installation
     _print()
@@ -11195,6 +11850,12 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
     if not args.auth:
         args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH')
+    if args.select is None:
+        args.select = os.environ.get('CLAUDE_CODE_TOOLBOX_SELECT')
+    if args.with_ is None:
+        args.with_ = os.environ.get('CLAUDE_CODE_TOOLBOX_WITH')
+    if args.without is None:
+        args.without = os.environ.get('CLAUDE_CODE_TOOLBOX_WITHOUT')
     return args
 
 
@@ -11256,6 +11917,27 @@ def main() -> None:
         '--dry-run',
         action='store_true',
         help='Show installation plan and exit without installing',
+    )
+    parser.add_argument(
+        '--select',
+        type=str,
+        help='Install exactly these components (comma-separated; sentinels: all, none)',
+    )
+    parser.add_argument(
+        '--with',
+        dest='with_',
+        type=str,
+        help='Add components to the default selection (comma-separated)',
+    )
+    parser.add_argument(
+        '--without',
+        type=str,
+        help='Remove components from the selection (comma-separated; hard requires still win)',
+    )
+    parser.add_argument(
+        '--list-components',
+        action='store_true',
+        help='List the components defined by the configuration and exit',
     )
     args = parser.parse_args()
     resolve_args(args)
@@ -11320,6 +12002,36 @@ def main() -> None:
                 source_type=classify_config_source(config_source),
                 name=config.get('name', config_name),
             )]
+
+        # Resolve author-defined component selection at the single choke
+        # point: after inheritance resolution and before the admin check and
+        # remote file validation, so deselected items never trigger UAC
+        # elevation, network fetches, or auth prompts. Downstream consumers
+        # re-read config keys fresh, so one in-place filter pass suffices.
+        components_list: list[dict[str, Any]] = [
+            cast(dict[str, Any], c)
+            for c in config.get('components') or []
+            if isinstance(c, dict)
+        ]
+        component_errors = validate_components(config)
+        if component_errors:
+            for err in component_errors:
+                error(err)
+            sys.exit(1)
+        selector_errors = _validate_component_selector_args(
+            [str(c.get('name', '')).strip() for c in components_list],
+            args,
+        )
+        if selector_errors:
+            for err in selector_errors:
+                error(err)
+            sys.exit(1)
+        if args.list_components:
+            display_component_registry(components_list)
+            sys.exit(0)
+        selection = resolve_component_selection(components_list, args)
+        if selection.is_active:
+            apply_component_selection(config, selection)
 
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
