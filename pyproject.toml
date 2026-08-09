@@ -4,16 +4,60 @@ version = "6.0.1"
 description = "Claude Code Toolbox — automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux."
 readme = "README.md"
 authors = [{ name = "Aleksandr Filippov", email = "alexfeel@protonmail.com" }]
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["claude", "claude-code", "installer", "setup", "environment", "cli"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+]
 
 dependencies = [
     "pyyaml>=6.0.2",
-    "pydantic>=2.10.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/alex-feel/claude-code-toolbox"
+Repository = "https://github.com/alex-feel/claude-code-toolbox"
+Issues = "https://github.com/alex-feel/claude-code-toolbox/issues"
+Changelog = "https://github.com/alex-feel/claude-code-toolbox/blob/main/CHANGELOG.md"
+
+[project.scripts]
+claude-code-toolbox = "claude_code_toolbox.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = [
+    "scripts/__init__.py",
+    "scripts/cli.py",
+    "scripts/setup_environment.py",
+    "scripts/install_claude.py",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+"scripts" = "claude_code_toolbox"
+
+[tool.hatch.build.targets.sdist]
+include = ["/scripts", "/README.md", "/LICENSE", "/CHANGELOG.md"]
+
+[tool.uv]
+# The wheel's `sources` prefix rewrite (scripts -> claude_code_toolbox) is
+# unsupported by hatchling's editable dev-mode installs, so the dev venv does
+# not install the project; tests import via pytest's pythonpath instead, and
+# the packaged import path is exercised by `uv build` plus the uvx smoke run.
+package = false
 
 [dependency-groups]
 dev = [
     "pre-commit>=4.0.1",
+    "pydantic>=2.10.3",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",

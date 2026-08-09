@@ -1,0 +1,4 @@
+# Minimal offline configuration for the package-smoke CI job.
+# Deliberately contains no files-to-download, no dependencies, and no
+# mcp-servers, so a --dry-run performs zero network I/O.
+name: Packaging Smoke

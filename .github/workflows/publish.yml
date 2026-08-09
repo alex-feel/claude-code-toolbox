@@ -1,0 +1,90 @@
+name: Build and Publish Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      # On a release event the default checkout ref is the release tag, so the
+      # build always matches the tagged commit even after post-release pushes
+      # to main (such as the update-uv-lock commit).
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+
+      - name: Determine version
+        id: version
+        run: |
+          set -euo pipefail
+          # Try release tag first, fall back to pyproject.toml
+          if [ -n '${{ github.event.release.tag_name }}' ]; then
+            tag='${{ github.event.release.tag_name }}'
+            version="${tag#v}"  # strip leading 'v' if present
+            echo "Using release tag version: ${version}"
+          else
+            version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+            echo "Using pyproject.toml version: ${version}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Assert distributions carry the release version
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          if [ -z "$version" ]; then
+            echo "ERROR: Version not determined" >&2
+            exit 1
+          fi
+          test -f "dist/claude_code_toolbox-${version}-py3-none-any.whl"
+          test -f "dist/claude_code_toolbox-${version}.tar.gz"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-dists
+          path: dist/
+          if-no-files-found: error
+
+  publish-to-pypi:
+    name: Publish Package to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/claude-code-toolbox/${{ needs.build.outputs.version }}
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: python-dists
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.13.0
+        with:
+          packages-dir: dist/
+          skip-existing: true
