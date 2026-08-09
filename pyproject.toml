@@ -18,6 +18,7 @@ classifiers = [
 
 dependencies = [
     "pyyaml>=6.0.2",
+    "questionary>=2.0.0",
 ]
 
 [project.urls]
@@ -63,6 +64,7 @@ dev = [
     "pytest-cov>=6.0.0",
     "pytest-mock>=3.14.0",
     "pytest-timeout>=2.3.1",
+    "questionary>=2.0.0",
     "types-PyYAML>=6.0.12",
     "ty>=0.0.28",
 ]
