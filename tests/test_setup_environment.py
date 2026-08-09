@@ -15129,15 +15129,15 @@ class TestElevationLaunchArgs:
     def test_installed_package_relaunches_via_cli_module(self) -> None:
         """A packaged import with a non-script argv[0] relaunches via -m <package>.cli setup."""
         result = setup_environment._elevation_launch_args(
-            'claude_code_toolbox.setup_environment',
-            'claude-code-toolbox.exe setup',
+            'cc_toolbox.setup_environment',
+            'cc-toolbox.exe setup',
         )
-        assert result == ['-m', 'claude_code_toolbox.cli', 'setup']
+        assert result == ['-m', 'cc_toolbox.cli', 'setup']
 
     def test_packaged_import_with_script_argv0_uses_argv0(self) -> None:
         """A packaged import still relaunches through argv[0] when it points at a .py file."""
         result = setup_environment._elevation_launch_args(
-            'claude_code_toolbox.setup_environment',
+            'cc_toolbox.setup_environment',
             'setup_environment.py',
         )
         assert result == ['setup_environment.py']
@@ -15145,7 +15145,7 @@ class TestElevationLaunchArgs:
     def test_script_suffix_detection_is_case_insensitive(self) -> None:
         """An uppercase .PY argv[0] counts as a script path."""
         result = setup_environment._elevation_launch_args(
-            'claude_code_toolbox.setup_environment',
+            'cc_toolbox.setup_environment',
             'SETUP_ENVIRONMENT.PY',
         )
         assert result == ['SETUP_ENVIRONMENT.PY']

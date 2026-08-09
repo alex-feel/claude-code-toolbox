@@ -56,8 +56,8 @@ jobs:
             echo "ERROR: Version not determined" >&2
             exit 1
           fi
-          test -f "dist/claude_code_toolbox-${version}-py3-none-any.whl"
-          test -f "dist/claude_code_toolbox-${version}.tar.gz"
+          test -f "dist/cc_toolbox-${version}-py3-none-any.whl"
+          test -f "dist/cc_toolbox-${version}.tar.gz"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
@@ -74,7 +74,7 @@ jobs:
       id-token: write
     environment:
       name: pypi
-      url: https://pypi.org/project/claude-code-toolbox/${{ needs.build.outputs.version }}
+      url: https://pypi.org/project/cc-toolbox/${{ needs.build.outputs.version }}
 
     steps:
       - name: Download artifacts

@@ -232,10 +232,10 @@ jobs:
       - name: Smoke-test the wheel via uvx
         shell: bash
         run: |
-          uvx --from "${{ steps.wheel.outputs.path }}" claude-code-toolbox --help
-          uvx --from "${{ steps.wheel.outputs.path }}" claude-code-toolbox setup --help
-          uvx --from "${{ steps.wheel.outputs.path }}" claude-code-toolbox install --help
-          uvx --from "${{ steps.wheel.outputs.path }}" claude-code-toolbox setup ./tests/fixtures/packaging_smoke.yaml --dry-run --skip-install --yes
+          uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox --help
+          uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox setup --help
+          uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox install --help
+          uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox setup ./tests/fixtures/packaging_smoke.yaml --dry-run --skip-install --yes
 
   # Summary job
   summary:

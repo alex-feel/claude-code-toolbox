@@ -27,10 +27,10 @@ curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/
 On any platform with [uv](https://docs.astral.sh/uv/) already installed, the same installer is available from PyPI:
 
 ```bash
-uvx claude-code-toolbox install
+uvx cc-toolbox install
 ```
 
-For a persistent command, run `uv tool install claude-code-toolbox` (or `pipx install claude-code-toolbox`) once and then use `claude-code-toolbox install`. The PyPI path runs the identical installer and honors the same `CLAUDE_CODE_TOOLBOX_*` environment variables documented under [Environment Variables](#environment-variables).
+For a persistent command, run `uv tool install cc-toolbox` (or `pipx install cc-toolbox`) once and then use `cc-toolbox install`. The PyPI path runs the identical installer and honors the same `CLAUDE_CODE_TOOLBOX_*` environment variables documented under [Environment Variables](#environment-variables).
 
 The installer automatically handles all dependencies (uv, Python, Node.js if needed) and installs Claude Code using the native Anthropic installer with npm fallback.
 

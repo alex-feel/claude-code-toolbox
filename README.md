@@ -28,7 +28,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Private repository support** -- GitHub and GitLab authentication with token-based access
 - **Cross-platform** -- consistent behavior across Windows, macOS, and Linux
 - **One-command setup** -- everything from a single YAML configuration file
-- **PyPI distribution** -- the same setup and installer, runnable as `uvx claude-code-toolbox` on any machine with uv
+- **PyPI distribution** -- the same setup and installer, runnable as `uvx cc-toolbox` on any machine with uv
 
 ## Quick Start
 
@@ -106,10 +106,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBO
 **Any platform, via PyPI** (requires [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-uvx claude-code-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'
+uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml'
 ```
 
-For a persistent `claude-code-toolbox` command, install it once with `uv tool install claude-code-toolbox` (or `pipx install claude-code-toolbox`).
+For a persistent `cc-toolbox` command, install it once with `uv tool install cc-toolbox` (or `pipx install cc-toolbox`).
 
 You can also use a local file (`./my-config.yaml`) or a configuration from a private repository. See the [Environment Configuration Guide](docs/environment-configuration-guide.md) for all options including authentication.
 
@@ -121,7 +121,7 @@ See [Ready-Made Configurations](docs/environment-configuration-guide.md#ready-ma
 
 ## Installing Claude Code
 
-If you just need the Claude Code CLI without a custom environment configuration, the toolbox includes standalone installers that use the official Anthropic native installer with automatic npm fallback. With uv present, `uvx claude-code-toolbox install` runs the same installer from PyPI.
+If you just need the Claude Code CLI without a custom environment configuration, the toolbox includes standalone installers that use the official Anthropic native installer with automatic npm fallback. With uv present, `uvx cc-toolbox install` runs the same installer from PyPI.
 
 See the [Installing Claude Code](docs/installing-claude-code.md) guide for platform-specific commands and options.
 
