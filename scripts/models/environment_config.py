@@ -1796,6 +1796,17 @@ class EnvironmentConfig(BaseModel):
         requires/bundles reference existing component names, and every
         includes selector matches at least one item in its section.
 
+        A config that declares ``inherit`` is validated WITHOUT the
+        cross-reference checks (selector resolution against sections,
+        requires/bundles against component names, and the duplicate
+        final-path check over files-to-download): its full item and
+        component sets exist only after inheritance resolution, so a
+        standalone file legitimately references items its parents
+        contribute. The runtime twin, validate_components() in
+        setup_environment.py, validates the RESOLVED configuration and
+        enforces those checks there. Within-file invariants (duplicate
+        hook ids, duplicate component names) remain enforced here.
+
         Returns:
             The validated EnvironmentConfig instance.
 
@@ -1826,42 +1837,47 @@ class EnvironmentConfig(BaseModel):
                     )
                 seen_names.add(component.name)
 
-            # Distinct files-to-download entries deploying to the same final
-            # path make component selectors ambiguous (one selector would
-            # claim both), silently defeating deselection.
-            identity_owners: dict[str, int] = {}
-            for entry_index, entry in enumerate(self.files_to_download or []):
-                identity = _download_selector_identity(entry.source, entry.dest).strip()
-                if identity in identity_owners:
-                    errors.append(
-                        f'files-to-download entries {identity_owners[identity]} and '
-                        f"{entry_index} share the final path '{identity}', making component "
-                        f'selectors ambiguous. Give them distinct destinations.',
-                    )
-                else:
-                    identity_owners[identity] = entry_index
+            # Cross-reference checks are decidable only on a config whose
+            # item and component sets are complete: a config declaring
+            # inherit legitimately references items its parents contribute,
+            # so the runtime twin enforces these on the RESOLVED config
+            if not self.inherit:
+                # Distinct files-to-download entries deploying to the same final
+                # path make component selectors ambiguous (one selector would
+                # claim both), silently defeating deselection.
+                identity_owners: dict[str, int] = {}
+                for entry_index, entry in enumerate(self.files_to_download or []):
+                    identity = _download_selector_identity(entry.source, entry.dest).strip()
+                    if identity in identity_owners:
+                        errors.append(
+                            f'files-to-download entries {identity_owners[identity]} and '
+                            f"{entry_index} share the final path '{identity}', making component "
+                            f'selectors ambiguous. Give them distinct destinations.',
+                        )
+                    else:
+                        identity_owners[identity] = entry_index
 
-            known_names = {component.name for component in components}
-            identities = self._selectable_item_identities()
-            for component in components:
-                errors.extend(
-                    f"Component '{component.name}': requires unknown component '{ref}'"
-                    for ref in component.requires
-                    if ref not in known_names
-                )
-                errors.extend(
-                    f"Component '{component.name}': bundles unknown component '{ref}'"
-                    for ref in component.bundles
-                    if ref not in known_names
-                )
-                for section, selectors in component.includes.items():
-                    available = identities.get(section, set())
+                known_names = {component.name for component in components}
+                identities = self._selectable_item_identities()
+                for component in components:
                     errors.extend(
-                        f"Component '{component.name}': includes.{section} selector "
-                        f"'{selector}' matches no item in {section}"
-                        for selector in selectors
-                        if selector not in available
+                        f"Component '{component.name}': requires unknown component '{ref}'"
+                        for ref in component.requires
+                        if ref not in known_names
                     )
+                    errors.extend(
+                        f"Component '{component.name}': bundles unknown component '{ref}'"
+                        for ref in component.bundles
+                        if ref not in known_names
+                    )
+                    for section, selectors in component.includes.items():
+                        available = identities.get(section, set())
+                        errors.extend(
+                            f"Component '{component.name}': includes.{section} selector "
+                            f"'{selector}' matches no item in {section}"
+                            for selector in selectors
+                            if selector not in available
+                        )
 
         if errors:
             raise ValueError(
