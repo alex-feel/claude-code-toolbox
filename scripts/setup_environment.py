@@ -3066,17 +3066,33 @@ def execute_deselection_cleanup(
                 continue
             _remove_file(target_dir / name, description)
 
+    def _download_target(entry: dict[str, Any]) -> Path | None:
+        identity = _files_download_identity(entry)
+        if not identity:
+            return None
+        target = Path(normalize_tilde_path(identity.strip()))
+        # process_file_downloads() also treats an EXISTING directory as a
+        # directory-form dest even without a trailing separator
+        if target.is_dir():
+            target = target / _source_filename(str(entry.get('source', '')))
+        return target
+
+    surviving_targets = {
+        resolved for resolved in (
+            _download_target(cast(dict[str, Any], item))
+            for item in cast(list[object], surviving_config.get('files-to-download') or [])
+            if isinstance(item, dict)
+        ) if resolved is not None
+    }
     for entry in deselected['files-to-download']:
         if isinstance(entry, dict):
-            entry_dict = cast(dict[str, Any], entry)
-            identity = _files_download_identity(entry_dict)
-            if identity:
-                target = Path(normalize_tilde_path(identity.strip()))
-                # process_file_downloads() also treats an EXISTING directory
-                # as a directory-form dest even without a trailing separator
-                if target.is_dir():
-                    target = target / _source_filename(str(entry_dict.get('source', '')))
-                _remove_file(target, 'file')
+            target = _download_target(cast(dict[str, Any], entry))
+            if target is None:
+                continue
+            if target in surviving_targets:
+                info(f"Keeping file '{target.name}': a selected entry deploys to the same path")
+                continue
+            _remove_file(target, 'file')
 
     for skill in deselected['skills']:
         if isinstance(skill, dict):
@@ -3118,8 +3134,11 @@ def execute_deselection_cleanup(
                 success(f'Removed deselected MCP server: {name} (scope: {scope})')
             else:
                 stderr = (result.stderr or '').strip()
-                # 'not found' is the healthy first-run case: nothing was installed
-                if 'not found' not in stderr.lower():
+                # A missing server is the healthy first-run case. The claude
+                # CLI reports it as 'No user-scoped MCP server found with
+                # name: <name>' (or the project/local variants), so the
+                # shared marker is 'found with name'
+                if 'found with name' not in stderr.lower():
                     warning(
                         f"Cannot remove MCP server '{name}' (scope: {scope}): "
                         f'exit code {result.returncode}'

@@ -1897,12 +1897,21 @@ class EnvironmentConfig(BaseModel):
         Note: Prompt hooks (type='prompt') do not use command or config files,
         so they are excluded from file consistency validation.
 
+        A config that declares ``inherit`` is exempt: its hooks.events can
+        legitimately reference a command file a parent's hooks.files
+        contributes, and a parent's hooks.files entry is legitimately
+        unused by itself because children reference it, so the
+        cross-references are decidable only on the resolved composition.
+
         Returns:
             The validated EnvironmentConfig instance.
 
         Raises:
             ValueError: If hooks files consistency rules are violated.
         """
+        if self.inherit:
+            return self
+
         # Skip validation if hooks is not configured
         if self.hooks is None:
             # If status_line is configured but hooks is None, that's an error

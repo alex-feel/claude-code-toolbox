@@ -2482,6 +2482,22 @@ class TestComponentsGraphValidation:
         with pytest.raises(ValidationError, match='Duplicate component name'):
             EnvironmentConfig.model_validate(config)
 
+    def test_inherit_config_skips_hooks_files_consistency(self):
+        """A leaf may reference a hook file a parent's hooks.files contributes."""
+        config = self._config(inherit='parent.yaml')
+        config['hooks'] = {
+            'events': [
+                {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'parent-hook.py'},
+            ],
+        }
+        EnvironmentConfig.model_validate(config)
+
+    def test_inherit_config_allows_unused_hooks_files(self):
+        """A parent's hooks.files entry is legitimately unused by itself."""
+        config = self._config(inherit='parent.yaml')
+        config['hooks'] = {'files': ['hooks/shared-hook.py'], 'events': []}
+        EnvironmentConfig.model_validate(config)
+
     def test_inherit_config_still_rejects_duplicate_hook_ids(self):
         """Duplicate hook event ids stay rejected for inherit-declaring configs."""
         config = self._config(inherit='parent.yaml')

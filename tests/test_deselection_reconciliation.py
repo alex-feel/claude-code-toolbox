@@ -226,6 +226,56 @@ class TestExecuteDeselectionCleanup:
         assert not (dest_dir / 'report.txt').exists()
         assert dest_dir.is_dir()
 
+    def test_surviving_download_target_is_never_deleted(self, tmp_path: Path) -> None:
+        """A deselected entry resolving to a surviving entry's final path is skipped."""
+        dirs = self._dirs(tmp_path)
+        drop = tmp_path / 'dropzone'
+        drop.mkdir()
+        deployed = drop / 'config.txt'
+        deployed.write_text('kept')
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [],
+            'files-to-download': [{'source': 'a/config.txt', 'dest': str(deployed)}],
+            'hooks-files': [], 'hooks-events': [],
+        }
+        surviving = {
+            'files-to-download': [{'source': 'b/config.txt', 'dest': str(drop) + '/'}],
+        }
+        with patch.object(setup_environment, 'normalize_tilde_path', side_effect=lambda p, **_: p):
+            setup_environment.execute_deselection_cleanup(
+                deselected, surviving,
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=True,
+            )
+        assert deployed.read_text() == 'kept'
+
+    def test_missing_server_stderr_wording_does_not_warn(self, tmp_path: Path) -> None:
+        """The real claude CLI missing-server wording is tolerated silently."""
+        dirs = self._dirs(tmp_path)
+        deselected: dict[str, list[Any]] = {
+            'agents': [], 'slash-commands': [], 'rules': [], 'skills': [],
+            'mcp-servers': [{'name': 'srv', 'scope': 'user'}],
+            'files-to-download': [], 'hooks-files': [], 'hooks-events': [],
+        }
+        stderr = 'No user-scoped MCP server found with name: srv\n'
+        with (
+            patch.object(setup_environment, 'find_command', return_value='claude'),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', stderr),
+            ),
+            patch.object(setup_environment, 'warning') as mock_warning,
+        ):
+            setup_environment.execute_deselection_cleanup(
+                deselected, {},
+                agents_dir=dirs['agents'], commands_dir=dirs['commands'],
+                rules_dir=dirs['rules'], skills_dir=dirs['skills'],
+                hooks_dir=dirs['hookfiles'], is_isolated=True,
+            )
+        assert not mock_warning.called
+
     def test_failed_mcp_remove_warns(self, tmp_path: Path) -> None:
         """A non-zero claude mcp remove exit surfaces as a warning."""
         dirs = self._dirs(tmp_path)

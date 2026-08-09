@@ -1226,6 +1226,8 @@ Selection resolves before the Windows admin-elevation check and before remote fi
 
 CI model validation of a config that declares `inherit` skips the cross-reference checks (selector resolution, `requires`/`bundles` references, and the duplicate final-path check): the full item and component sets exist only after inheritance resolution, so those checks run at setup time against the resolved configuration instead. Within-file invariants (duplicate component names, duplicate hook event ids) stay enforced on every file.
 
+An inherited registry survives composition like any other undeclared key: a key the composing config does not declare SURVIVES from its parent, and `merge-keys` only chooses merge-versus-replace for keys the child declares. When a composition removes items a parent's registry claims (for example by replacing `hooks` or emptying `skills`), the composing config must override the registry itself -- declare `components: []` to drop selectability entirely, or declare a replacement registry claiming only surviving items.
+
 Deselection also uninstalls. A re-run that deselects a component removes what an earlier run installed for it: deselected MCP servers are removed via `claude mcp remove` for every non-profile scope (`user`, `local`, `project`; the profile `mcp.json` is rebuilt from the filtered configuration each run), toolbox-written hook entries of deselected events are stripped from the shared `settings.json`, and deselected skill directories, agent/command/rule files, hook files, and downloaded files are deleted from their install locations. The removal plan derives entirely from the current configuration (every claimed item is named there), so no on-disk state is required; removals appear in the installation summary as `[REMOVE]` rows and are previewed without acting under `--dry-run`. Dependencies are never uninstalled: arbitrary install commands cannot be reversed.
 
 ## Advanced Topics
@@ -1782,6 +1784,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
+23. **Remove deselected components** -- Uninstalls previously installed artifacts of deselected components: MCP servers, skill directories, agent/command/rule/hook/downloaded files, and shared-settings hook entries. Runs in BOTH modes (as Step 23 with `command-names`, as Step 22 without) and only when the selection deselects at least one claimed item.
 
 Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
 
