@@ -33,6 +33,8 @@ The installer uses a native-first approach with automatic npm fallback. Entry po
 
 `install_claude.py` and `setup_environment.py` MUST be fully standalone -- NEVER import from each other. Users may run either script without the other being present.
 
+`scripts/cli.py` is the packaging dispatcher and the ONLY module permitted to import both standalone scripts; neither standalone script may import it (CI enforced via `TestNoCliImports`, which checks import statements, not substrings -- `setup_environment.py` legitimately builds a `<package>.cli` module path as a runtime string for its UAC relaunch). `cli.py` uses relative imports so the same file serves as `scripts.cli` in-repo and `claude_code_toolbox.cli` inside the wheel; it is NOT a standalone script.
+
 **Identical Code** (CI enforced via `tests/test_standalone_policy.py`): `Colors` class, `find_command()`, `_prefer_windows_executable()`, `get_real_user_home()`, `_dev_tty_sudo_available()`, `_run_with_sudo_fallback()`, `needs_sudo_for_npm()` (EXACT body match), shell config file list (7 files + conditional filtering), Fish config detection (`'fish' in str()`), marker block constants (`# >>> claude-code-toolbox >>>`).
 
 **Intentionally Different** (MUST NOT synchronize): `info()`/`success()`/`warning()`/`error()` (different formatting), `run_command()` (different encoding/error handling), `find_bash_windows()` (setup_environment.py has debug_log), `is_admin()` (different implementations).
@@ -55,6 +57,16 @@ The installer uses a native-first approach with automatic npm fallback. Entry po
 | Not found                                         | `none`               | Fresh install                         |
 
 In `auto` mode, `native` and `unknown` sources attempt native first with npm fallback. Confirmed `npm` sources go directly to npm. Confirmed `winget` sources try `winget upgrade` first, falling back to npm on failure.
+
+### PyPI Distribution
+
+The repository publishes to PyPI as `claude-code-toolbox` via an in-place hatchling remap: `[tool.hatch.build.targets.wheel]` `only-include`s exactly four files (`scripts/{__init__,cli,setup_environment,install_claude}.py`) and `[tool.hatch.build.targets.wheel.sources]` rewrites `scripts` → `claude_code_toolbox`, so the wheel ships `claude_code_toolbox/` while not one byte moves on disk and the curl|bash bootstrap path stays untouched. `scripts/models` is excluded from the wheel, keeping the runtime dependency closure to `pyyaml` alone (`pydantic` lives in the dev group). The single console script `claude-code-toolbox = "claude_code_toolbox.cli:main"` dispatches `setup`/`install` subcommands (`uvx claude-code-toolbox setup <config>`). The PEP 723 headers are inert comment blocks when the files are imported as modules, so identical bytes serve both `uv run --no-project` and the wheel.
+
+**Editable-install limitation:** hatchling refuses dev-mode installs when `sources` changes a path prefix, so `[tool.uv] package = false` keeps `uv sync` from installing the project; the dev venv imports via pytest's `pythonpath = ["."]` (`scripts.cli`), and the packaged import path is exercised by `uv build` plus the `package-smoke` CI job (`uvx --from dist/*.whl` on all three OSes, deliberately NOT skipped on release-please branches).
+
+**UAC relaunch under entry points:** `_elevation_launch_args(__name__, sys.argv[0])` in `setup_environment.py` relaunches elevation via `-m <package>.cli setup` when the module runs from an installed package with a non-`.py` `argv[0]` (a console-script shim `python.exe` cannot re-run); every direct-script invocation keeps relaunching through `sys.argv[0]`.
+
+**Publishing:** `.github/workflows/publish.yml` (same pattern as mcp-context-server) triggers on `release: published`; a `build` job (checkout defaults to the release tag, `uv build`, version assert, artifact upload) is permission-isolated from a `publish-to-pypi` job (`id-token: write`, `environment: pypi`, `pypa/gh-action-pypi-publish` with trusted publishing). The PyPI trusted publisher is registered against workflow `publish.yml`, environment `pypi`.
 
 ### Node.js Compatibility
 
@@ -368,7 +380,7 @@ Recurring patterns that cause CI failures. Every item below has caused at least 
 
 ## Script Dependencies
 
-Python 3.12 required. **uv** installed by bootstrap scripts. Dependencies: PyYAML, Pydantic. Dev: pytest, ruff, pre-commit.
+Python 3.12 required. **uv** installed by bootstrap scripts. Published runtime dependency: PyYAML only. Dev-only: Pydantic (consumed by `scripts/models` and its tests), pytest, ruff, pre-commit.
 
 ## Version Management
 

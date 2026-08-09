@@ -9,6 +9,8 @@ import re
 import textwrap
 from pathlib import Path
 
+import pytest
+
 SCRIPTS_DIR = Path(__file__).parent.parent / 'scripts'
 INSTALL_CLAUDE = SCRIPTS_DIR / 'install_claude.py'
 SETUP_ENVIRONMENT = SCRIPTS_DIR / 'setup_environment.py'
@@ -306,4 +308,31 @@ class TestGlobalConfigExcludedKeysParity:
             f'GLOBAL_CONFIG_EXCLUDED_KEYS mismatch: '
             f'setup_environment.py has {sorted(SETUP_EXCLUDED_KEYS)}, '
             f'environment_config.py has {sorted(MODEL_EXCLUDED_KEYS)}'
+        )
+
+
+class TestNoCliImports:
+    """Enforce that neither standalone script imports the cli dispatcher module.
+
+    The check is import-statement-shaped (AST) rather than a substring scan,
+    because setup_environment.py legitimately builds a ``<package>.cli`` module
+    path as a runtime string for its UAC relaunch command line.
+    """
+
+    @staticmethod
+    def _imported_module_names(source: str) -> set[str]:
+        names: set[str] = set()
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                names.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module)
+        return names
+
+    @pytest.mark.parametrize('script_path', [INSTALL_CLAUDE, SETUP_ENVIRONMENT])
+    def test_standalone_script_does_not_import_cli(self, script_path: Path) -> None:
+        imported = self._imported_module_names(_read_source(script_path))
+        cli_imports = {name for name in imported if name == 'cli' or name.endswith('.cli')}
+        assert not cli_imports, (
+            f'{script_path.name} imports the cli dispatcher -- violates standalone policy: {sorted(cli_imports)}'
         )
