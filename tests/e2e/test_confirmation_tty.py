@@ -57,6 +57,17 @@ result = setup_environment.confirm_installation(None)
 print('RESULT=' + repr(result))
 '''
 
+NUMBERED_PICKER_PROBE = '''
+import sys, time
+sys.path.insert(0, {repo!r})
+from scripts.setup_environment import _prompt_component_selection_numbered
+time.sleep({delay})
+result = _prompt_component_selection_numbered(
+    ['alpha', 'beta'], {{'alpha': 'Alpha', 'beta': 'Beta'}}, ['alpha', 'beta'],
+)
+print('RESULT=' + repr(result))
+'''
+
 
 def _reap_child(pid: int) -> None:
     """Wait for the probe child, force-killing it if it lingers."""
@@ -183,6 +194,35 @@ class TestDevTtyConfirmationRead:
             delay=1.0,
         )
         assert result == "RESULT='y'"
+
+
+class TestNumberedPickerThroughPty:
+    """The Tier 2 numbered picker through a real pty with piped stdin."""
+
+    def test_pre_queued_garbage_never_confirms_the_seed(self) -> None:
+        """Garbage queued before the picker renders cannot press Enter for the user.
+
+        The questionary tier can fail mid-render with its terminal query
+        replies still queued; the numbered picker flushes them at entry, so
+        the user's real toggle of item 2 plus Enter decides the outcome.
+        """
+        result = _run_pty_probe(
+            NUMBERED_PICKER_PROBE,
+            b'2\n\n',
+            pre_queued=b'\x1b[24;80R',
+            prompt_marker=b'Enter = confirm:',
+            delay=1.0,
+        )
+        assert result == "RESULT=['alpha']"
+
+    def test_contaminated_line_reprompts_not_confirms(self) -> None:
+        """An all-garbage line mid-loop is invalid input, not Enter-confirm."""
+        result = _run_pty_probe(
+            NUMBERED_PICKER_PROBE,
+            b'\x1b[24;80R\n2\n\n',
+            prompt_marker=b'Enter = confirm:',
+        )
+        assert result == "RESULT=['alpha']"
 
 
 class TestConfirmInstallationThroughPty:
