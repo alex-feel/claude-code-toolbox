@@ -17,6 +17,7 @@ platform too, where the tests are skipped.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import os
 import select
@@ -68,8 +69,11 @@ def _reap_child(pid: int) -> None:
         if done:
             return
         time.sleep(0.05)
-    os.kill(pid, _SIGKILL)
-    os.waitpid(pid, 0)
+    try:
+        os.kill(pid, _SIGKILL)
+        os.waitpid(pid, 0)
+    except (ProcessLookupError, ChildProcessError, OSError):
+        pass
 
 
 def _run_pty_probe(
@@ -135,7 +139,8 @@ def _run_pty_probe(
                 timed_out = False
                 break
         if timed_out:
-            os.kill(pid, _SIGKILL)
+            with contextlib.suppress(ProcessLookupError, OSError):
+                os.kill(pid, _SIGKILL)
     finally:
         _reap_child(pid)
         os.close(master)
