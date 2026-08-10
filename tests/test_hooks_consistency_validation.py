@@ -282,6 +282,26 @@ class TestValidateHooksFilesConsistency:
         errors = validate_hooks_files_consistency(config)
         assert 'hooks.files[0] must be a string path or URL' in errors
 
+    def test_require_all_files_used_false_skips_unused_rule(self) -> None:
+        """The post-selection mode tolerates stranded files but not dangling refs."""
+        stranded = {
+            'hooks': {
+                'files': ['hooks/a.py', 'hooks/stranded.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'a.py'}],
+            },
+        }
+        assert validate_hooks_files_consistency(stranded, require_all_files_used=False) == []
+        assert validate_hooks_files_consistency(stranded) != []
+
+        dangling = {
+            'hooks': {
+                'files': [],
+                'events': [{'event': 'PostToolUse', 'command': 'dropped.py'}],
+            },
+        }
+        errors = validate_hooks_files_consistency(dangling, require_all_files_used=False)
+        assert any('dropped.py' in e for e in errors)
+
 
 class TestBuildHooksJsonFileReferenceClassification:
     """hooks.files-aware file-reference classification in _build_hooks_json."""
