@@ -7970,13 +7970,17 @@ def _dev_tty_available() -> bool:
 # Terminal escape sequences that can contaminate an interactive read: CSI
 # sequences (including cursor-position reports like ESC[24;80R that a
 # terminal queues in reply to queries from a full-screen prompt session),
-# OSC sequences, charset designators, and any other two-character ESC
-# sequence.
+# OSC sequences, SS3 function keys, and charset designators. Any remaining
+# ESC byte is stripped ALONE: consuming the following character too would
+# turn Alt+y (sent as ESC y by many terminals) into an empty answer and
+# silently decline a clear consent, while a stray residue character merely
+# triggers the re-prompt.
 _TERMINAL_SEQUENCE_PATTERN = re.compile(
     r'\x1b\[[0-9;?<=>]*[A-Za-z~]'
     r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+    r'|\x1bO.'
     r'|\x1b[()*+][0-9A-Za-z]'
-    r'|\x1b.',
+    r'|\x1b',
 )
 
 
@@ -7988,7 +7992,8 @@ def _sanitize_interactive_input(raw: str) -> str:
     cursor-position reply left by a full-screen prompt session prefixes the
     user's typed answer, so a visually clean ``y`` reads as
     ``ESC[24;80Ry``. Removes escape sequences and remaining C0 control
-    characters, then strips surrounding whitespace.
+    characters, then strips surrounding whitespace. An Alt-modified key
+    (sent as ESC plus the character) reduces to the bare character.
 
     Args:
         raw: The raw line as read from the interactive device.

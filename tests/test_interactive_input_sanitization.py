@@ -39,6 +39,13 @@ class TestSanitizeInteractiveInput:
             ('\x1b(By\n', 'y'),
             ('\x01\x02y\x7f\n', 'y'),
             ('\x1b[?2004hy\x1b[?2004l\n', 'y'),
+            # Alt+y arrives as a bare ESC plus the character; the ESC is
+            # stripped alone so the consent survives
+            ('\x1by\n', 'y'),
+            # SS3 function keys (xterm F1) are stripped whole
+            ('\x1bOPy\n', 'y'),
+            ('\x1bOP\n', ''),
+            ('\x1b\n', ''),
             ('', ''),
             ('\x1b[24;80R\n', ''),
         ],
@@ -104,6 +111,23 @@ class TestFlushPendingTerminalInput:
         with patch.object(sys, 'platform', 'linux'), \
              patch.dict(sys.modules, {'termios': None}), \
              patch.object(sys, 'stdin', fake_stdin):
+            _flush_pending_terminal_input()
+
+    def test_windows_branch_drains_console_buffer(self) -> None:
+        """The win32 branch drains msvcrt keystrokes until the buffer is empty."""
+        fake_msvcrt = SimpleNamespace(
+            kbhit=MagicMock(side_effect=[True, True, False]),
+            getwch=MagicMock(return_value='x'),
+        )
+        with patch.object(sys, 'platform', 'win32'), \
+             patch.dict(sys.modules, {'msvcrt': fake_msvcrt}):
+            _flush_pending_terminal_input()
+        assert fake_msvcrt.getwch.call_count == 2
+
+    def test_windows_missing_msvcrt_is_silent(self) -> None:
+        """An unavailable msvcrt module ends the flush without raising."""
+        with patch.object(sys, 'platform', 'win32'), \
+             patch.dict(sys.modules, {'msvcrt': None}):
             _flush_pending_terminal_input()
 
 
