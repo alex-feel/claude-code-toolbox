@@ -1,5 +1,20 @@
 # Changelog
 
+## [7.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.0.0...v7.1.0) (2026-08-10)
+
+
+### Features
+
+* uninstall previously installed artifacts of deselected components ([233f3b6](https://github.com/alex-feel/claude-code-toolbox/commit/233f3b612ea16c61462a11528e438a8ae688470e))
+
+
+### Bug Fixes
+
+* resolve component selectors in lockstep with their items during inheritance ([3ccfa58](https://github.com/alex-feel/claude-code-toolbox/commit/3ccfa586d601b87834f65d920a083581145dc110))
+* resolve confirmed findings of the 7.1.0 release-gate round 1 ([39ab1c7](https://github.com/alex-feel/claude-code-toolbox/commit/39ab1c7b0137af8ffed593164867e3c58c404268))
+* resolve confirmed findings of the deselection reconciliation review ([13a2313](https://github.com/alex-feel/claude-code-toolbox/commit/13a2313fe7547106a08de5c91ddf895a21dbda3c))
+* skip components cross-reference checks for inherit-declaring configs ([6512723](https://github.com/alex-feel/claude-code-toolbox/commit/651272397e22632b57aec9fc98699ee6ed56fdb0))
+
 ## [7.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v6.1.0...v7.0.0) (2026-08-09)
 
 
