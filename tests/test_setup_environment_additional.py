@@ -134,8 +134,9 @@ class TestAuthenticationWithPrompts:
             headers = setup_environment.get_auth_headers('https://gitlab.com/repo', None)
 
             assert headers == {'PRIVATE-TOKEN': 'secret_token'}
-            # Verify mocks were called correctly
-            mock_isatty.assert_called_once()
+            # Verify mocks were called correctly; isatty is consulted by
+            # both the prompt guard and the hardened reader
+            assert mock_isatty.called
             assert mock_isatty.return_value is True
             mock_input.assert_called_once()
             assert mock_input.return_value == 'y'
@@ -151,8 +152,9 @@ class TestAuthenticationWithPrompts:
             headers = setup_environment.get_auth_headers('https://github.com/repo', None)
 
             assert headers == {'Authorization': 'Bearer gh_token123'}
-            # Verify mocks were called and configured correctly
-            mock_isatty.assert_called_once()
+            # Verify mocks were called and configured correctly; isatty is
+            # consulted by both the prompt guard and the hardened reader
+            assert mock_isatty.called
             assert mock_isatty.return_value is True
             mock_input.assert_called_once()
             assert mock_input.return_value == 'y'
@@ -5128,3 +5130,41 @@ class TestNodejsDirThreading:
         assert mock_configure.call_count == 2
         for call in mock_configure.call_args_list:
             assert call[1]['nodejs_dir'] == r'C:\custom\nodejs'
+
+
+class TestFetchUrlCoreAuthCachePopulation:
+    """Download-time auth escalation populates the shared cache for real.
+
+    Exercises the actual _fetch_url_core 401 branch instead of calling
+    AuthHeaderCache.cache_headers directly: the first unauthenticated
+    request fails, credentials resolve, the cache is populated, and the
+    retry carries the resolved header.
+    """
+
+    @patch('setup_environment.get_auth_headers', return_value={'PRIVATE-TOKEN': 'tok'})
+    @patch('setup_environment.urlopen')
+    def test_401_escalation_populates_cache_and_retries(
+        self,
+        mock_urlopen: MagicMock,
+        mock_get_auth: MagicMock,
+    ) -> None:
+        """A 401 resolves credentials, caches them, and retries with auth."""
+        url = 'https://example.com/files/data.txt'
+        ok_response = MagicMock()
+        ok_response.read.return_value = b'content'
+        mock_urlopen.side_effect = [
+            urllib.error.HTTPError(url, 401, 'Unauthorized', {}, None),
+            ok_response,
+        ]
+
+        cache = setup_environment.AuthHeaderCache(None)
+        result = setup_environment._fetch_url_core(url, auth_cache=cache)
+
+        assert result == 'content'
+        mock_get_auth.assert_called_once_with(url, None)
+        is_cached, headers = cache.get_cached_headers(url)
+        assert is_cached
+        assert headers == {'PRIVATE-TOKEN': 'tok'}
+        assert mock_urlopen.call_count == 2
+        retry_request = mock_urlopen.call_args_list[1].args[0]
+        assert retry_request.has_header('Private-token')

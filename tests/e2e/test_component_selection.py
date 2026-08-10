@@ -232,3 +232,82 @@ class TestPickerIntegration:
         assert config['skills'] == []
         validation_errors = validate_selected_artifacts(config, components, selection.selected)
         assert not validation_errors, '\n'.join(validation_errors)
+
+
+class TestMainDeselectionWiring:
+    """main() threads the deselection plan into real on-disk cleanup.
+
+    Every other test of execute_deselection_cleanup builds the plan by
+    hand; these run the REAL wiring: choke-point plan collection from the
+    unfiltered config, then Step 22/23 cleanup against actual files under
+    the isolated home.
+    """
+
+    @staticmethod
+    def _components_config(command_names: list[str] | None) -> dict[str, Any]:
+        config: dict[str, Any] = {
+            'name': 'Deselection Wiring',
+            'agents': ['agents/kept.md', 'agents/deselected.md'],
+            'components': [
+                {'name': 'core', 'includes': {'agents': ['agents/kept.md']}},
+                {'name': 'extra', 'includes': {'agents': ['agents/deselected.md']}},
+            ],
+        }
+        if command_names:
+            config['command-names'] = command_names
+        return config
+
+    def _run_main(self, config: dict[str, Any]) -> None:
+        with (
+            patch('scripts.setup_environment.load_config_from_source',
+                  return_value=(config, 'test.yaml')),
+            patch('scripts.setup_environment.validate_all_config_files',
+                  return_value=(True, [])),
+            patch('scripts.setup_environment.install_claude', return_value=True),
+            patch('scripts.setup_environment.install_dependencies', return_value=[]),
+            patch('scripts.setup_environment.process_resources', return_value=True),
+            patch('scripts.setup_environment.process_skills', return_value=True),
+            patch('scripts.setup_environment.configure_all_mcp_servers',
+                  return_value=(True, [], {'global_count': 0, 'profile_count': 0,
+                                           'combined_count': 0})),
+            patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude'),
+            patch('scripts.setup_environment.is_admin', return_value=True),
+            patch('scripts.setup_environment.register_global_command', return_value=True),
+            patch('sys.argv', ['setup_environment.py', 'test', '--yes', '--skip-install',
+                               '--without', 'extra']),
+            patch('sys.exit') as mock_exit,
+        ):
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+    def test_non_isolated_run_removes_deselected_agent_file(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Step 22 deletes the deselected component's file and keeps the rest."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        agents_dir = claude_dir / 'agents'
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / 'kept.md').write_text('kept', encoding='utf-8')
+        (agents_dir / 'deselected.md').write_text('bye', encoding='utf-8')
+
+        self._run_main(self._components_config(None))
+
+        assert (agents_dir / 'kept.md').exists()
+        assert not (agents_dir / 'deselected.md').exists()
+
+    def test_isolated_run_removes_deselected_agent_file(
+        self,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """Step 23 deletes the deselected file inside the isolated profile."""
+        claude_dir = e2e_isolated_home['claude_dir']
+        agents_dir = claude_dir / 'tcmd' / 'agents'
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / 'kept.md').write_text('kept', encoding='utf-8')
+        (agents_dir / 'deselected.md').write_text('bye', encoding='utf-8')
+
+        self._run_main(self._components_config(['tcmd']))
+
+        assert (agents_dir / 'kept.md').exists()
+        assert not (agents_dir / 'deselected.md').exists()
