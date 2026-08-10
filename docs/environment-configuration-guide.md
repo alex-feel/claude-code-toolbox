@@ -890,16 +890,23 @@ Status line script configuration. The script file and optional config file are d
 - **Default:** `None`
 - **Inheritance:** Standard override (child replaces parent)
 - **Fields:**
-  - `file` (str, required) -- Script file path
+  - `file` (str, required) -- Script filename; must exactly match the basename of a `hooks.files` entry (a path form like `hooks/statusline.py` fails validation)
   - `padding` (int, optional) -- Padding value
-  - `config` (str, optional) -- Config file (appended as command argument)
+  - `config` (str, optional) -- Config file reference (appended as command argument); matched against `hooks.files` basenames after query-parameter stripping and basename extraction
 - **Note:** Both `file` and `config` (if specified) must exist in `hooks.files`. If `status-line` is configured, the `hooks` key must also be present.
 - **Example:**
 
 ```yaml
+hooks:
+  files:
+    - "hooks/statusline.py"
+    - "configs/statusline-config.yaml"
+  # events may reference other hooks.files entries; the status-line
+  # references below already count as usage for these two files
+
 status-line:
-  file: "hooks/statusline.py"
-  config: "configs/statusline-config.yaml"
+  file: "statusline.py"
+  config: "statusline-config.yaml"
   padding: 0
 ```
 
