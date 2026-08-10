@@ -453,3 +453,84 @@ class TestStripHooksFromSettings:
         settings_path = tmp_path / 'settings.json'
         settings_path.write_text('{}')
         assert setup_environment._strip_hooks_from_settings(settings_path, [], hooks_dir) == 0
+
+    def test_pre_quoting_entries_still_match(self, tmp_path: Path) -> None:
+        """Entries written before path quoting existed are still stripped.
+
+        Earlier toolbox versions wrote hook commands with unquoted built
+        paths; the current builder quotes them. The reconciliation matches
+        the command quote-insensitively so upgraded installs still strip
+        deselected hooks instead of orphaning an entry whose file the
+        cleanup deletes.
+        """
+        hooks_dir = tmp_path / 'hookfiles'
+        hooks_dir.mkdir()
+        deselected_events = [
+            {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+             'command': 'linter.py', 'id': 'lint'},
+        ]
+        script = (hooks_dir / 'linter.py').as_posix()
+        legacy_entry = {
+            'type': 'command',
+            'command': f'uv run --no-project --python 3.12 {script}',
+        }
+        settings_path = tmp_path / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'hooks': {'PostToolUse': [{'matcher': 'Edit', 'hooks': [legacy_entry]}]},
+        }))
+
+        removed = setup_environment._strip_hooks_from_settings(
+            settings_path, deselected_events, hooks_dir,
+        )
+
+        assert removed == 1
+        final = json.loads(settings_path.read_text())
+        assert final['hooks'] == {}
+
+    def test_genuinely_different_command_is_kept(self, tmp_path: Path) -> None:
+        """A command differing beyond quoting never matches."""
+        hooks_dir = tmp_path / 'hookfiles'
+        hooks_dir.mkdir()
+        deselected_events = [
+            {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+             'command': 'linter.py', 'id': 'lint'},
+        ]
+        other_script = (hooks_dir / 'other.py').as_posix()
+        settings_path = tmp_path / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'hooks': {'PostToolUse': [{'matcher': 'Edit', 'hooks': [
+                {'type': 'command', 'command': f'uv run --no-project --python 3.12 {other_script}'},
+            ]}]},
+        }))
+
+        removed = setup_environment._strip_hooks_from_settings(
+            settings_path, deselected_events, hooks_dir,
+        )
+
+        assert removed == 0
+        final = json.loads(settings_path.read_text())
+        assert len(final['hooks']['PostToolUse'][0]['hooks']) == 1
+
+    def test_non_command_field_difference_is_kept(self, tmp_path: Path) -> None:
+        """Quote-insensitive matching still requires every other field to be equal."""
+        hooks_dir = tmp_path / 'hookfiles'
+        hooks_dir.mkdir()
+        deselected_events = [
+            {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+             'command': 'linter.py', 'id': 'lint'},
+        ]
+        script = (hooks_dir / 'linter.py').as_posix()
+        settings_path = tmp_path / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'hooks': {'PostToolUse': [{'matcher': 'Edit', 'hooks': [
+                {'type': 'command',
+                 'command': f'uv run --no-project --python 3.12 {script}',
+                 'async': True},
+            ]}]},
+        }))
+
+        removed = setup_environment._strip_hooks_from_settings(
+            settings_path, deselected_events, hooks_dir,
+        )
+
+        assert removed == 0

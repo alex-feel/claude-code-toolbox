@@ -2600,7 +2600,11 @@ def _hook_file_basename(path_or_url: str) -> str:
     return parts[-1] if parts else path_or_url
 
 
-def validate_hooks_files_consistency(config: dict[str, Any]) -> list[str]:
+def validate_hooks_files_consistency(
+    config: dict[str, Any],
+    *,
+    require_all_files_used: bool = True,
+) -> list[str]:
     """Validate hooks files, events, and status-line consistency at runtime.
 
     Runtime twin of the Pydantic validate_hooks_files_consistency model
@@ -2624,6 +2628,12 @@ def validate_hooks_files_consistency(config: dict[str, Any]) -> list[str]:
 
     Args:
         config: Fully resolved configuration dictionary.
+        require_all_files_used: When False, the unused-files check (rule 1)
+            is skipped. Used for the post-selection recheck in main(): a
+            deselected component may legitimately strand a hooks.files entry
+            its claims covered asymmetrically (the hook-claim asymmetry
+            warning covers authoring), while a dangling event or status-line
+            reference is always an error.
 
     Returns:
         List of error messages; empty when hooks references are consistent.
@@ -2763,7 +2773,7 @@ def validate_hooks_files_consistency(config: dict[str, Any]) -> list[str]:
                     used_files.add(config_basename)
 
     # Rule 1: Check that each file in hooks.files is used somewhere
-    if not structure_broken:
+    if require_all_files_used and not structure_broken:
         unused_files = available_files - used_files
         if unused_files:
             errors.append(
@@ -3112,6 +3122,36 @@ def has_deselected_items(deselected: dict[str, list[Any]]) -> bool:
     return any(items for items in deselected.values())
 
 
+def _hook_entries_equal(built: dict[str, Any], existing: object) -> bool:
+    """Compare a freshly built hook entry against an on-disk hook entry.
+
+    Every field is compared by equality except ``command``, which is
+    compared with double quotes stripped from both sides: the builder
+    quotes built file paths, while entries written before quoting existed
+    carry the same command unquoted, and both describe the same hook.
+
+    Args:
+        built: Hook entry dict produced by _build_hooks_json().
+        existing: Candidate entry from the on-disk settings JSON.
+
+    Returns:
+        True when the entries describe the same hook.
+    """
+    if not isinstance(existing, dict):
+        return False
+    built_rest = {k: v for k, v in built.items() if k != 'command'}
+    existing_rest = {k: v for k, v in cast(dict[str, Any], existing).items() if k != 'command'}
+    if built_rest != existing_rest:
+        return False
+    built_command = built.get('command')
+    existing_command = cast(dict[str, Any], existing).get('command')
+    if built_command == existing_command:
+        return True
+    if isinstance(built_command, str) and isinstance(existing_command, str):
+        return built_command.replace('"', '') == existing_command.replace('"', '')
+    return False
+
+
 def _strip_hooks_from_settings(
     settings_path: Path,
     deselected_events: list[dict[str, Any]],
@@ -3123,8 +3163,10 @@ def _strip_hooks_from_settings(
     entry, so hook events written by an earlier run survive deselection
     there. This builds the exact JSON the deselected events generate (via
     the same builder the writer uses) and removes matching entries from the
-    file: hook dicts are matched by equality inside same-matcher groups,
-    emptied groups and event keys are dropped.
+    file: hook dicts are matched inside same-matcher groups via
+    _hook_entries_equal() (quote-insensitive on the command, so entries
+    written before path quoting existed still match), emptied groups and
+    event keys are dropped.
 
     Args:
         settings_path: Path to the shared settings.json file.
@@ -3162,8 +3204,15 @@ def _strip_hooks_from_settings(
                 if not isinstance(group_hooks, list):
                     continue
                 for hook_entry in cast(list[Any], remove_group.get('hooks') or []):
-                    if hook_entry in group_hooks:
-                        group_hooks.remove(hook_entry)
+                    match = next(
+                        (
+                            candidate for candidate in cast(list[Any], group_hooks)
+                            if _hook_entries_equal(cast(dict[str, Any], hook_entry), candidate)
+                        ),
+                        None,
+                    )
+                    if match is not None:
+                        group_hooks.remove(match)
                         removed += 1
         hooks_json[event_name] = [
             g for g in cast(list[Any], existing_groups)
@@ -12950,6 +12999,24 @@ def main() -> None:
         deselected = collect_deselected_items(config, selection)
         if selection.is_active:
             apply_component_selection(config, selection)
+            # Post-selection recheck: deselection can strand an event or
+            # status-line reference whose file a deselected component
+            # claimed. Reference resolution must hold on the filtered
+            # config; unused files are legitimate deselection residue
+            # covered by the hook-claim asymmetry warning.
+            post_selection_errors = validate_hooks_files_consistency(
+                config, require_all_files_used=False,
+            )
+            if post_selection_errors:
+                for err in post_selection_errors:
+                    error(err)
+                error(
+                    'The selected components leave hook references dangling. '
+                    'Select the component that provides the referenced file, or '
+                    'update the components registry to claim the event and its '
+                    'file together.',
+                )
+                sys.exit(1)
 
         # Check if admin rights are needed for this configuration
         if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
