@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.2.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.1...v7.2.2) (2026-08-10)
+
+
+### Bug Fixes
+
+* keep the terminal-input flush best-effort on non-standard streams ([682b070](https://github.com/alex-feel/claude-code-toolbox/commit/682b07063b77cf8700aff17b1257a48fe759188e))
+
 ## [7.2.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.0...v7.2.1) (2026-08-10)
 
 
