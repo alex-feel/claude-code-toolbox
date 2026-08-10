@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.2.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.0...v7.2.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* flush the numbered picker at entry and mark all-garbage lines ([9697751](https://github.com/alex-feel/claude-code-toolbox/commit/96977518eda131758b2d02f1c8a29e712def49ce))
+* route every consent gate through one re-prompting y/N loop ([f20a79d](https://github.com/alex-feel/claude-code-toolbox/commit/f20a79dbd51a26ae990d316e719cbb7718929956))
+* sanitize and flush interactive input so a typed y is never misread ([703628e](https://github.com/alex-feel/claude-code-toolbox/commit/703628ecd1d30f3fadbf4f14ea3228ac34e6bffa))
+* strip a bare ESC alone so Alt-modified consent answers survive ([a52c2e5](https://github.com/alex-feel/claude-code-toolbox/commit/a52c2e5dc4af97f1506262ab08fe045230a48eb1))
+* strip DCS, SOS, PM, and APC string sequences whole ([1cbf101](https://github.com/alex-feel/claude-code-toolbox/commit/1cbf10110e11a374bedac8846ff9b77ec4dd57b8))
+
 ## [7.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.1.0...v7.2.0) (2026-08-10)
 
 
