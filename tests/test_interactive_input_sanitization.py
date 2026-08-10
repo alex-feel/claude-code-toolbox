@@ -45,6 +45,11 @@ class TestSanitizeInteractiveInput:
             # SS3 function keys (xterm F1) are stripped whole
             ('\x1bOPy\n', 'y'),
             ('\x1bOP\n', ''),
+            # DCS/APC/PM string sequences (capability and graphics replies)
+            # are stripped whole including their ST terminator
+            ('\x1bP1$r0m\x1b\\y\n', 'y'),
+            ('\x1b_Gi=1;OK\x1b\\y\n', 'y'),
+            ('\x1b^privacy\x1b\\\n', ''),
             ('\x1b\n', ''),
             ('', ''),
             ('\x1b[24;80R\n', ''),
