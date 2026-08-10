@@ -472,6 +472,7 @@ class TestHooksSettingsRoutingStepOutput:
             {
                 'name': 'Hooks Only',
                 'hooks': {
+                    'files': ['hooks/hook.py'],
                     'events': [
                         {'event': 'PostToolUse', 'matcher': 'Write',
                          'type': 'command', 'command': 'hook.py'},
