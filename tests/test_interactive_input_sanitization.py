@@ -142,6 +142,28 @@ class TestReadUserInputSanitized:
              patch('builtins.input', return_value='\x1b[24;80Ry'):
             assert _read_user_input('prompt: ') == 'y'
 
+    def test_all_garbage_line_returns_marker_not_empty(self) -> None:
+        """A line that was pure terminal garbage never reads as a deliberate Enter.
+
+        An empty answer means deny in confirmations and confirm in the
+        picker, so a fully-sanitized-away line must surface as the
+        contaminated-input marker and hit the unrecognized-answer handling
+        instead.
+        """
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        with patch.object(sys, 'stdin', fake_stdin), \
+             patch('builtins.input', return_value='\x1b[24;80R'):
+            assert _read_user_input('prompt: ') == setup_environment._CONTAMINATED_INPUT_MARKER
+
+    def test_genuine_enter_still_reads_empty(self) -> None:
+        """A deliberate Enter (whitespace-only line) stays an empty answer."""
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        with patch.object(sys, 'stdin', fake_stdin), \
+             patch('builtins.input', return_value=''):
+            assert _read_user_input('prompt: ') == ''
+
 
 class TestConfirmationReprompt:
     """Unrecognized answers re-prompt instead of silently cancelling."""
@@ -161,6 +183,13 @@ class TestConfirmationReprompt:
     def test_garbage_then_yes_proceeds(self) -> None:
         """A mangled first answer re-prompts; the second y proceeds."""
         result, confirmation = self._confirm(['[24;80Rq', 'y'])
+        assert result is True
+        assert confirmation.call_count == 2
+
+    def test_contaminated_marker_reprompts_instead_of_cancelling(self) -> None:
+        """An all-garbage line re-prompts; it never counts as the deny default."""
+        marker = setup_environment._CONTAMINATED_INPUT_MARKER
+        result, confirmation = self._confirm([marker, 'y'])
         assert result is True
         assert confirmation.call_count == 2
 

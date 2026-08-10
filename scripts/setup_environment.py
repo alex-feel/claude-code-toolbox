@@ -3550,6 +3550,12 @@ def _prompt_component_selection_numbered(
         Selected names in registry order, or None when input is unavailable
         (the caller keeps the non-interactive selection).
     """
+    # The questionary tier can fail MID-render (mintty's console error)
+    # after its terminal queries went out, so replies may be queued AFTER
+    # the pre-tier flush; discard them before the first read, where an
+    # empty line means confirm
+    _flush_pending_terminal_input()
+
     selected = set(seed)
     while True:
         print()
@@ -8044,6 +8050,32 @@ def _flush_pending_terminal_input() -> None:
         pass
 
 
+# Returned by _read_user_input() for a line whose content was ENTIRELY
+# terminal-report garbage: an empty string must keep meaning a deliberate
+# Enter (the deny default in confirmations, confirm in the picker), so a
+# fully-sanitized-away line surfaces as this answer and lands in each
+# flow's unrecognized-input handling instead. Plain ASCII so the
+# re-prompt warning renders on any console encoding; a user literally
+# typing it gets the identical unrecognized-answer treatment.
+_CONTAMINATED_INPUT_MARKER = '<terminal-noise>'
+
+
+def _finalize_interactive_line(raw: str) -> str:
+    """Sanitize a raw interactive line, marking all-garbage content.
+
+    Args:
+        raw: The raw line as read from the interactive device.
+
+    Returns:
+        The sanitized answer; _CONTAMINATED_INPUT_MARKER when the line had
+        content but every character of it was terminal-report garbage.
+    """
+    cleaned = _sanitize_interactive_input(raw)
+    if not cleaned and raw.strip():
+        return _CONTAMINATED_INPUT_MARKER
+    return cleaned
+
+
 def _read_user_input(prompt: str) -> str:
     """Read one line of user input with /dev/tty fallback for piped stdin.
 
@@ -8053,7 +8085,9 @@ def _read_user_input(prompt: str) -> str:
     KeyboardInterrupt deliberately propagates to the caller so
     interactive flows can distinguish cancellation from an empty answer.
     The returned line is sanitized: terminal escape sequences and control
-    characters never reach the caller.
+    characters never reach the caller, and a line consisting entirely of
+    such garbage returns _CONTAMINATED_INPUT_MARKER rather than
+    masquerading as a deliberate empty answer.
 
     Args:
         prompt: The prompt string to display.
@@ -8065,7 +8099,7 @@ def _read_user_input(prompt: str) -> str:
     # Try stdin first if it's a TTY
     if sys.stdin.isatty():
         try:
-            return _sanitize_interactive_input(input(prompt))
+            return _finalize_interactive_line(input(prompt))
         except EOFError:
             return ''
 
@@ -8076,7 +8110,7 @@ def _read_user_input(prompt: str) -> str:
                 # Write prompt to stderr (stdout may be piped)
                 sys.stderr.write(prompt)
                 sys.stderr.flush()
-                return _sanitize_interactive_input(tty.readline())
+                return _finalize_interactive_line(tty.readline())
         except (OSError, EOFError):
             pass
 
