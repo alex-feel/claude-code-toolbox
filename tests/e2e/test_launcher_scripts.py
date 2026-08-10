@@ -384,6 +384,11 @@ class TestGeneratedScriptSyntax:
         )
         assert completed.returncode == 0, f'bash -n rejected launch.sh:\n{completed.stderr}'
 
+    @pytest.mark.skipif(
+        sys.platform != 'win32',
+        reason='start.ps1 is generated only on Windows; on POSIX the returned '
+               'tuple carries shell launchers',
+    )
     def test_start_ps1_parses_without_errors(
         self,
         e2e_isolated_home: dict[str, Path],

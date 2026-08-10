@@ -8030,21 +8030,24 @@ def _flush_pending_terminal_input() -> None:
 
             while msvcrt.kbhit():
                 msvcrt.getwch()
-        except (ImportError, OSError):
+        except (ImportError, OSError, AttributeError, TypeError):
             pass
         return
     try:
         import termios
     except ImportError:
         return
-    # termios.error subclasses Exception directly, not OSError
+    # termios.error subclasses Exception directly, not OSError; a
+    # non-standard stdin object (a test double, a wrapped stream) can
+    # raise TypeError or AttributeError from fileno(), and best-effort
+    # means none of these may escape
     try:
         if sys.stdin.isatty():
             termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
         else:
             with open('/dev/tty') as tty:
                 termios.tcflush(tty.fileno(), termios.TCIFLUSH)
-    except (OSError, ValueError, termios.error):
+    except (OSError, ValueError, AttributeError, TypeError, termios.error):
         pass
 
 
