@@ -1,0 +1,17 @@
+# Leaf whose event references a hook file only the parent contributes.
+# Standalone this reference is unresolvable, so the model skips the
+# consistency checks (inherit is declared); on the resolved composition the
+# reference resolves against the merged hooks.files.
+name: Hooks Consistency Valid Leaf
+
+inherit: hooks_consistency_parent.yaml
+
+merge-keys:
+  - hooks
+
+hooks:
+  events:
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "command"
+      command: "e2e_test_hook.py"

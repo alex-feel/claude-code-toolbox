@@ -1,0 +1,14 @@
+# Self-consistent base config for hooks-consistency composition tests:
+# every hooks.files entry is referenced and every reference resolves.
+name: Hooks Consistency Parent
+
+hooks:
+  files:
+    - "hooks/e2e_test_hook.py"
+    - "configs/e2e-hook-config.yaml"
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit|Write"
+      type: "command"
+      command: "e2e_test_hook.py"
+      config: "e2e-hook-config.yaml"

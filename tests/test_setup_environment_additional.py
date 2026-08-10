@@ -2955,7 +2955,7 @@ class TestHookConfigFileSupport:
             hook_cmd = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
             assert 'protect_critical_files.py' in hook_cmd
             assert 'protect_config.yaml' in hook_cmd
-            assert hook_cmd.endswith('protect_config.yaml')
+            assert hook_cmd.endswith('protect_config.yaml"')
 
     def test_create_profile_config_hook_without_config_backward_compat(self) -> None:
         """Test that hooks without config field still work (backward compatibility)."""
@@ -2993,7 +2993,7 @@ class TestHookConfigFileSupport:
             hook_cmd = settings['hooks']['PostToolUse'][0]['hooks'][0]['command']
             assert 'test.py' in hook_cmd
             # Command should end with the Python file, not a config
-            assert hook_cmd.endswith('test.py')
+            assert hook_cmd.endswith('test.py"')
 
     def test_create_profile_config_hook_config_with_query_params(self) -> None:
         """Test hook config with query parameters in filename."""

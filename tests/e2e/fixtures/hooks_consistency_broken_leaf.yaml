@@ -1,0 +1,17 @@
+# Leaf whose event references a hook file NO config in the chain
+# contributes. The model skips the consistency checks (inherit is declared),
+# so only the runtime validation of the resolved composition can catch the
+# dangling reference before it fails at hook execution.
+name: Hooks Consistency Broken Leaf
+
+inherit: hooks_consistency_parent.yaml
+
+merge-keys:
+  - hooks
+
+hooks:
+  events:
+    - event: "PreToolUse"
+      matcher: "Bash"
+      type: "command"
+      command: "e2e_missing_hook.py"

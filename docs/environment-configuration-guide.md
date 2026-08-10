@@ -988,7 +988,7 @@ Setting a field marked FORBIDDEN on a hook type produces a validation error.
 
 #### Command Hooks
 
-Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run` for `.py`, `node` for `.js`/`.mjs`/`.cjs`).
+Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run` for `.py`, `node` for `.js`/`.mjs`/`.cjs`). Built file paths are double-quoted in the generated command, so hooks directories containing spaces (for example a Windows home like `C:/Users/John Smith`) work in every shell.
 
 The `config` field is a toolbox-specific extension: when set, the config file path is appended as an argument to the command. This field is not part of the official Claude Code hooks specification.
 
@@ -1065,7 +1065,9 @@ hooks:
 
 #### File Consistency Rules
 
-The setup validates hook file references for **command hooks only**. HTTP, prompt, and agent hooks do not use file references and are excluded from file consistency validation.
+Hook file references are validated for **command hooks only**. HTTP, prompt, and agent hooks do not use file references and are excluded from file consistency validation.
+
+The rules are enforced in two layers. The Pydantic model validates configurations that do not declare `inherit`; for a config that declares `inherit`, cross-references are decidable only on the resolved composition, so the model skips them. The setup script then validates every fully resolved configuration at runtime -- before the admin check, remote file validation, and any installation work -- listing all violations and exiting with code 1. A composition whose hook events or status-line reference a missing hook file therefore fails at setup time, not at hook execution.
 
 1. Every file listed in `hooks.files` must be used by at least one command hook event or the `status-line` configuration
 2. Every `command` in command hook events must exist in `hooks.files`
@@ -1253,7 +1255,7 @@ When configurations are inherited across different sources (e.g., a GitHub-hoste
 
 **How it works:**
 
-- Each parent config's relative resource paths (agents, rules, slash-commands, hooks files, files-to-download sources, skill bases, system prompts, and status-line files) are resolved to absolute URLs or paths **before** merging with child values
+- Each parent config's relative resource paths (agents, rules, slash-commands, hooks files, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
 - The resolution uses the parent config's own `config_source` (where it was loaded from) and `base-url`
 - Child (leaf) config paths continue to be resolved at validation time using the leaf's own source
 

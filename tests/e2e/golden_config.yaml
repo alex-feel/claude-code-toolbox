@@ -87,6 +87,9 @@ hooks:
     - "hooks/e2e_test_hook_esm.mjs"
     - "hooks/e2e_test_hook_cjs.cjs"
     - "configs/e2e-js-hook-config.json"
+    # Status-line script and its config (referenced by status-line below)
+    - "hooks/e2e_statusline.py"
+    - "configs/e2e-statusline-config.yaml"
   events:
     # Python command hook with config (id makes it claimable by components)
     - event: "PostToolUse"
@@ -266,8 +269,8 @@ global-config:
 
 # Status line configuration
 status-line:
-  file: "hooks/e2e_statusline.py"
-  config: "configs/e2e-statusline-config.yaml"
+  file: "e2e_statusline.py"
+  config: "e2e-statusline-config.yaml"
   padding: 0
 
 # Author-defined selectable component groups. Every component defaults to

@@ -4169,7 +4169,7 @@ class TestCreateSettings:
             assert 'uv run' in settings['statusLine']['command']
             assert 'statusline.py' in settings['statusLine']['command']
             assert 'config.yaml' in settings['statusLine']['command']
-            assert settings['statusLine']['command'].endswith('config.yaml')
+            assert settings['statusLine']['command'].endswith('config.yaml"')
             assert settings['statusLine']['padding'] == 0
 
     def test_create_profile_config_status_line_config_with_query_params(self):
@@ -4256,7 +4256,7 @@ class TestCreateSettings:
 
             assert 'statusLine' in settings
             # Command should end with the Python file, not a config
-            assert settings['statusLine']['command'].endswith('statusline.py')
+            assert settings['statusLine']['command'].endswith('statusline.py"')
 
     def test_create_profile_config_http_hook(self):
         """Test creating settings with HTTP hook passes through all fields."""
@@ -5321,7 +5321,13 @@ class TestDownloadFailureTracking:
                 'command-names': ['test-env'],
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
-                'hooks': {'files': ['hook.py']},
+                'hooks': {
+                    'files': ['hook.py'],
+                    'events': [
+                        {'event': 'PostToolUse', 'matcher': 'Write',
+                         'type': 'command', 'command': 'hook.py'},
+                    ],
+                },
             },
             'test.yaml',
         )
@@ -5384,7 +5390,13 @@ class TestDownloadFailureTracking:
                 'command-names': ['test-env'],
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
-                'hooks': {'files': ['hook.py']},
+                'hooks': {
+                    'files': ['hook.py'],
+                    'events': [
+                        {'event': 'PostToolUse', 'matcher': 'Write',
+                         'type': 'command', 'command': 'hook.py'},
+                    ],
+                },
             },
             'test.yaml',
         )
@@ -5449,7 +5461,13 @@ class TestDownloadFailureTracking:
                 'slash-commands': ['commands/test.md'],
                 'skills': [{'name': 'test-skill'}],
                 'files-to-download': [{'source': 'file.txt', 'dest': '~/file.txt'}],
-                'hooks': {'files': ['hook.py']},
+                'hooks': {
+                    'files': ['hook.py'],
+                    'events': [
+                        {'event': 'PostToolUse', 'matcher': 'Write',
+                         'type': 'command', 'command': 'hook.py'},
+                    ],
+                },
             },
             'test.yaml',
         )
@@ -5588,7 +5606,13 @@ class TestDownloadFailureTracking:
                 'agents': ['agents/test.md'],
                 'slash-commands': ['commands/test.md'],
                 'mcp-servers': [{'name': 'test'}],
-                'hooks': {'files': ['hook.py']},
+                'hooks': {
+                    'files': ['hook.py'],
+                    'events': [
+                        {'event': 'PostToolUse', 'matcher': 'Write',
+                         'type': 'command', 'command': 'hook.py'},
+                    ],
+                },
             },
             'test.yaml',
         )

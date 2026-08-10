@@ -2577,6 +2577,203 @@ def validate_components(config: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _hook_file_basename(path_or_url: str) -> str:
+    """Extract the basename from a hooks.files URL or file path.
+
+    Runtime twin of _extract_basename() in scripts/models/environment_config.py
+    (standalone script policy prevents importing the model; parity enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py). Handles full URLs,
+    Windows paths, Unix paths, and plain filenames, matching the on-disk name
+    process_resources() gives a downloaded hook file.
+
+    Args:
+        path_or_url: The URL or path to extract the basename from.
+
+    Returns:
+        The basename (filename) without path components.
+    """
+    if path_or_url.startswith(('http://', 'https://')):
+        parsed = urllib.parse.urlparse(path_or_url)
+        path_or_url = parsed.path
+
+    parts = path_or_url.replace('\\', '/').split('/')
+    return parts[-1] if parts else path_or_url
+
+
+def validate_hooks_files_consistency(config: dict[str, Any]) -> list[str]:
+    """Validate hooks files, events, and status-line consistency at runtime.
+
+    Runtime twin of the Pydantic validate_hooks_files_consistency model
+    validator in scripts/models/environment_config.py (standalone script
+    policy prevents importing the model; parity enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py). The model skips
+    these cross-reference checks for inherit-declaring configs because they
+    are decidable only on the resolved composition; this twin runs on the
+    RESOLVED configuration at the main() choke point, so a composition whose
+    hook events or status-line reference a missing hook file fails at setup
+    time instead of at hook execution. Checks:
+
+    1. Each file in hooks.files is used by a command hook event or status-line
+    2. Each command hook's command and config exists in hooks.files
+    3. The status-line file and config (if configured) exist in hooks.files
+
+    Prompt, http, and agent hooks do not reference files and are excluded.
+    Structural errors (non-mapping hooks or events, non-string entries)
+    suppress the unused-files check because its verdict is only meaningful on
+    a well-formed configuration. Never raises.
+
+    Args:
+        config: Fully resolved configuration dictionary.
+
+    Returns:
+        List of error messages; empty when hooks references are consistent.
+    """
+    errors: list[str] = []
+
+    status_line_raw = config.get('status-line')
+    if status_line_raw is not None and not isinstance(status_line_raw, dict):
+        errors.append("'status-line' must be a mapping with a 'file' entry")
+        status_line_raw = None
+    status_line = cast(dict[str, Any] | None, status_line_raw)
+
+    hooks_raw = config.get('hooks')
+    if hooks_raw is None:
+        # A status-line without hooks has no hooks.files to carry its script
+        if status_line is not None:
+            status_file_raw = status_line.get('file', '')
+            errors.append(
+                f'status-line.file "{status_file_raw}" requires hooks.files to be configured. '
+                'Add the status-line script to hooks.files.',
+            )
+        return errors
+    if not isinstance(hooks_raw, dict):
+        errors.append("'hooks' must be a mapping with 'files' and 'events' entries")
+        return errors
+    hooks = cast(dict[str, Any], hooks_raw)
+
+    files_raw = hooks.get('files') or []
+    if not isinstance(files_raw, list):
+        errors.append("'hooks.files' must be a list of file paths or URLs")
+        return errors
+    events_raw = hooks.get('events') or []
+    if not isinstance(events_raw, list):
+        errors.append("'hooks.events' must be a list of event mappings")
+        return errors
+
+    structure_broken = False
+
+    # Build set of available file basenames from hooks.files
+    available_files: set[str] = set()
+    for file_index, file_path in enumerate(cast(list[object], files_raw)):
+        if not isinstance(file_path, str):
+            errors.append(f'hooks.files[{file_index}] must be a string path or URL')
+            structure_broken = True
+            continue
+        basename = _hook_file_basename(file_path)
+        if basename:
+            available_files.add(basename)
+
+    available_display = sorted(available_files) if available_files else 'none'
+
+    # Track which files are used
+    used_files: set[str] = set()
+
+    # Rule 2: Check that each command hook's command and config exists in
+    # hooks.files. Only command hooks use file references; http/prompt/agent
+    # hooks are excluded.
+    for event_index, event_raw in enumerate(cast(list[object], events_raw)):
+        if not isinstance(event_raw, dict):
+            errors.append(f'hooks.events[{event_index}] must be a mapping')
+            structure_broken = True
+            continue
+        event = cast(dict[str, Any], event_raw)
+        if event.get('type') in ('prompt', 'http', 'agent'):
+            continue
+
+        # For command hooks, validate command and config files
+        command_raw = event.get('command')
+        if command_raw:
+            if not isinstance(command_raw, str):
+                errors.append(f'hooks.events[{event_index}] command must be a string')
+                structure_broken = True
+            else:
+                command_file = command_raw.strip()
+                if command_file:
+                    if command_file not in available_files:
+                        errors.append(
+                            f'hooks.events command "{command_file}" not found in hooks.files. '
+                            f'Available files: {available_display}',
+                        )
+                    else:
+                        used_files.add(command_file)
+
+        # Check config file reference if present
+        config_raw = event.get('config')
+        if config_raw:
+            if not isinstance(config_raw, str):
+                errors.append(f'hooks.events[{event_index}] config must be a string')
+                structure_broken = True
+            else:
+                config_file = config_raw.strip()
+                # Strip query parameters from the config filename (same as
+                # the command-string construction in _build_hooks_json)
+                clean_config = config_file.split('?')[0] if '?' in config_file else config_file
+                config_basename = _hook_file_basename(clean_config)
+                if config_basename:
+                    if config_basename not in available_files:
+                        errors.append(
+                            f'hooks.events config "{config_file}" not found in hooks.files. '
+                            f'Available files: {available_display}',
+                        )
+                    else:
+                        used_files.add(config_basename)
+
+    # Rule 3: Check that the status-line file and config exist in hooks.files
+    if status_line is not None:
+        status_file_raw = status_line.get('file')
+        if status_file_raw is not None and not isinstance(status_file_raw, str):
+            errors.append('status-line.file must be a string')
+            structure_broken = True
+        elif isinstance(status_file_raw, str):
+            status_file = status_file_raw.strip()
+            if status_file:
+                if status_file not in available_files:
+                    errors.append(
+                        f'status-line.file "{status_file}" not found in hooks.files. '
+                        f'Available files: {available_display}',
+                    )
+                else:
+                    used_files.add(status_file)
+
+        status_config_raw = status_line.get('config')
+        if status_config_raw is not None and not isinstance(status_config_raw, str):
+            errors.append('status-line.config must be a string')
+            structure_broken = True
+        elif isinstance(status_config_raw, str) and status_config_raw:
+            config_file = status_config_raw.strip()
+            clean_config = config_file.split('?')[0] if '?' in config_file else config_file
+            config_basename = _hook_file_basename(clean_config)
+            if config_basename:
+                if config_basename not in available_files:
+                    errors.append(
+                        f'status-line.config "{config_file}" not found in hooks.files. '
+                        f'Available files: {available_display}',
+                    )
+                else:
+                    used_files.add(config_basename)
+
+    # Rule 1: Check that each file in hooks.files is used somewhere
+    if not structure_broken:
+        unused_files = available_files - used_files
+        if unused_files:
+            errors.append(
+                f'hooks.files contains unused files: {sorted(unused_files)}. '
+                'Each file must be referenced by a hook event or status-line.',
+            )
+
+    return errors
+
+
 def _parse_component_csv(value: str | None) -> list[str] | None:
     """Parse a comma-separated component list, distinguishing absent from empty.
 
@@ -10909,6 +11106,55 @@ def download_hook_files(
     return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
 
 
+def _build_file_command(
+    file_reference: str,
+    config_reference: str | None,
+    hooks_dir: Path,
+) -> str:
+    """Build the shell command string for a hooks-directory file reference.
+
+    Shared by _build_hooks_json() (command hooks) and
+    _build_profile_settings() (statusLine): strips query parameters, resolves
+    the basename under hooks_dir, picks the launcher by file type
+    (case-insensitive: Python via uv, JavaScript via node, anything else
+    executes directly), and appends the config file path when given. Built
+    paths are double-quoted so a hooks directory containing spaces (for
+    example a Windows home like C:/Users/John Smith) survives shell
+    word-splitting in bash, PowerShell, and cmd alike.
+
+    Args:
+        file_reference: Script file reference from the YAML configuration
+            (a hooks.files basename, optionally with query parameters).
+        config_reference: Optional config file reference appended as the
+            command's argument.
+        hooks_dir: Absolute directory path where downloaded hook files reside.
+
+    Returns:
+        The complete command string for the generated settings JSON.
+    """
+    clean_reference = file_reference.split('?')[0] if '?' in file_reference else file_reference
+    file_name = Path(clean_reference).name
+    lowered_name = file_name.lower()
+    if lowered_name.endswith(('.py', '.pyw')):
+        launcher_prefix = 'uv run --no-project --python 3.12 '
+    elif lowered_name.endswith(('.js', '.mjs', '.cjs')):
+        launcher_prefix = 'node '
+    else:
+        launcher_prefix = ''
+
+    file_path_str = (hooks_dir / file_name).as_posix()
+    command = f'{launcher_prefix}"{file_path_str}"'
+
+    if config_reference:
+        clean_config = (
+            config_reference.split('?')[0] if '?' in config_reference else config_reference
+        )
+        config_path_str = (hooks_dir / Path(clean_config).name).as_posix()
+        command = f'{command} "{config_path_str}"'
+
+    return command
+
+
 def _apply_common_hook_fields(
     hook_config: dict[str, Any],
     hook: dict[str, Any],
@@ -10962,6 +11208,16 @@ def _build_hooks_json(
     hook_events = hooks.get('events', [])
     if not hook_events:
         return result
+
+    # Basenames listed in hooks.files: a listed name is always a file
+    # reference, even when it contains spaces, so the space heuristic in the
+    # command branch below only classifies commands that are not listed
+    hook_files_raw = hooks.get('files')
+    listed_basenames: set[str] = {
+        _hook_file_basename(f).strip()
+        for f in (hook_files_raw if isinstance(hook_files_raw, list) else [])
+        if isinstance(f, str)
+    }
 
     for hook in hook_events:
         event = hook.get('event')
@@ -11020,59 +11276,14 @@ def _build_hooks_json(
             # Strip query parameters from command if present
             clean_command = command.split('?')[0] if '?' in command else command
 
-            # Check if this looks like a file reference or a direct command
-            # File references typically don't contain spaces (just the filename)
-            # Direct commands like 'echo "test"' contain spaces
-            is_file_reference = ' ' not in clean_command
+            # Check if this looks like a file reference or a direct command:
+            # any basename listed in hooks.files is a file reference (even
+            # with spaces); otherwise commands with spaces, like
+            # 'echo "test"', are direct commands used as-is
+            is_file_reference = clean_command in listed_basenames or ' ' not in clean_command
 
-            if is_file_reference:
-                # Determine if this is a Python script (case-insensitive check)
-                is_python_script = clean_command.lower().endswith(('.py', '.pyw'))
-
-                # Determine if this is a JavaScript/Node.js script (case-insensitive check)
-                is_javascript_script = clean_command.lower().endswith(('.js', '.mjs', '.cjs'))
-
-                if is_python_script:
-                    # Python script - use uv run for cross-platform execution
-                    hook_path = hooks_dir / Path(clean_command).name
-                    hook_path_str = hook_path.as_posix()
-                    full_command = f'uv run --no-project --python 3.12 {hook_path_str}'
-
-                    # Append config file path if specified
-                    if config:
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-
-                elif is_javascript_script:
-                    # JavaScript script - use node for cross-platform execution
-                    hook_path = hooks_dir / Path(clean_command).name
-                    hook_path_str = hook_path.as_posix()
-                    full_command = f'node {hook_path_str}'
-
-                    # Append config file path if specified
-                    if config:
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-
-                else:
-                    # Other file - build absolute path and use as-is
-                    hook_path = hooks_dir / Path(clean_command).name
-                    hook_path_str = hook_path.as_posix()
-                    full_command = hook_path_str
-
-                    # Append config file path if specified
-                    if config:
-                        clean_config = config.split('?')[0] if '?' in config else config
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        full_command = f'{full_command} {config_path_str}'
-            else:
-                # Direct command with spaces - use as-is
-                full_command = command
+            # An unlisted command with spaces is a direct command used as-is
+            full_command = _build_file_command(command, config, hooks_dir) if is_file_reference else command
 
             # Add hook configuration for command hook
             hook_config = {
@@ -11267,47 +11478,12 @@ def _build_profile_settings(
         elif isinstance(status_line, dict):
             status_line_file = status_line.get('file')
             if status_line_file:
-                # Build absolute path to the hook file in hooks directory
-                # Strip query parameters from filename
                 clean_filename = status_line_file.split('?')[0] if '?' in status_line_file else status_line_file
                 filename = Path(clean_filename).name
-                hook_path = hooks_dir / filename
-                hook_path_str = hook_path.as_posix()
 
-                # Extract optional config file reference
-                status_line_config_file = status_line.get('config')
-
-                # Determine command based on file extension
-                if filename.lower().endswith(('.py', '.pyw')):
-                    # Python script - use uv run
-                    status_line_command = f'uv run --no-project --python 3.12 {hook_path_str}'
-
-                    # Append config file path if specified
-                    if status_line_config_file:
-                        # Strip query parameters from config filename
-                        clean_config = (
-                            status_line_config_file.split('?')[0]
-                            if '?' in status_line_config_file
-                            else status_line_config_file
-                        )
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        status_line_command = f'{status_line_command} {config_path_str}'
-                else:
-                    # Other file - use path directly
-                    status_line_command = hook_path_str
-
-                    # Append config file path if specified
-                    if status_line_config_file:
-                        # Strip query parameters from config filename
-                        clean_config = (
-                            status_line_config_file.split('?')[0]
-                            if '?' in status_line_config_file
-                            else status_line_config_file
-                        )
-                        config_path = hooks_dir / Path(clean_config).name
-                        config_path_str = config_path.as_posix()
-                        status_line_command = f'{status_line_command} {config_path_str}'
+                status_line_command = _build_file_command(
+                    status_line_file, status_line.get('config'), hooks_dir,
+                )
 
                 status_line_built: dict[str, Any] = {
                     'type': 'command',
@@ -12744,8 +12920,9 @@ def main() -> None:
             if isinstance(c, dict)
         ]
         component_errors = validate_components(config)
-        if component_errors:
-            for err in component_errors:
+        hooks_consistency_errors = validate_hooks_files_consistency(config)
+        if component_errors or hooks_consistency_errors:
+            for err in [*component_errors, *hooks_consistency_errors]:
                 error(err)
             sys.exit(1)
         selector_errors = _validate_component_selector_args(

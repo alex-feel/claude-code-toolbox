@@ -231,8 +231,8 @@ global-config:
 
 # Status line configuration
 status-line:
-  file: "hooks/e2e_statusline.py"
-  config: "configs/e2e-statusline-config.yaml"
+  file: "e2e_statusline.py"
+  config: "e2e-statusline-config.yaml"
   padding: 0
 
 # Author-defined selectable component groups. DERIVED from
