@@ -270,14 +270,15 @@ class TestConfirmInstallationThroughPty:
     def test_all_garbage_line_reprompts_then_accepts(self) -> None:
         """A pure-garbage line re-prompts; a y at the re-prompt proceeds.
 
-        The y is sent only after the warning renders, because the
-        re-prompt flushes type-ahead by design.
+        The y is sent only after the SECOND consent prompt renders: the
+        re-prompt flushes type-ahead before rendering, so synchronizing on
+        the warning alone races the flush and can discard the answer.
         """
         result, output = _run_pty_probe(
             CONFIRM_INSTALLATION_PROBE,
             b'\x1b[24;80R\n',
             prompt_marker=b'Proceed with installation?',
-            followup=(b'Unrecognized answer', b'y\n'),
+            followup=(b'Proceed with installation?', b'y\n'),
         )
         assert result == 'RESULT=True'
         assert 'Unrecognized answer' in output
