@@ -81,6 +81,73 @@ class TestCollectDeselectedItems:
         assert not setup_environment.has_deselected_items(after_filter)
 
 
+class TestSelectorPathResolution:
+    """Component selectors follow their items through inheritance resolution."""
+
+    @staticmethod
+    def _write(base: Path, name: str, config: dict[str, Any]) -> Path:
+        import yaml
+        path = base / name
+        path.write_text(yaml.safe_dump(config, sort_keys=False), encoding='utf-8')
+        return path
+
+    def test_selectors_track_resolved_items_through_inherit(self, tmp_path: Path) -> None:
+        """Path selectors resolve with their items; event ids stay untouched."""
+        import yaml
+        self._write(tmp_path, 'parent.yaml', {
+            'name': 'Parent',
+            'agents': ['agents/a.md'],
+            'hooks': {
+                'files': ['hooks/h.py'],
+                'events': [{
+                    'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                    'command': 'h.py', 'id': 'steer',
+                }],
+            },
+            'components': [{
+                'name': 'core',
+                'includes': {'agents': ['agents/a.md'], 'hooks': ['hooks/h.py', 'steer']},
+            }],
+        })
+        leaf = self._write(tmp_path, 'leaf.yaml', {
+            'name': 'Leaf', 'inherit': str(tmp_path / 'parent.yaml'),
+        })
+        resolved, _ = setup_environment.resolve_config_inheritance(
+            yaml.safe_load(leaf.read_text(encoding='utf-8')), str(leaf),
+        )
+        with patch.object(setup_environment, 'warning'):
+            errors = setup_environment.validate_components(resolved)
+        assert errors == []
+        includes = resolved['components'][0]['includes']
+        assert includes['agents'][0] == resolved['agents'][0]
+        assert includes['hooks'][0] == resolved['hooks']['files'][0]
+        assert includes['hooks'][1] == 'steer'
+
+    def test_merged_registry_resolves_across_list_inherit(self, tmp_path: Path) -> None:
+        """A parent registry surviving a merge-keys composition still validates."""
+        import yaml
+        self._write(tmp_path, 'parent_a.yaml', {
+            'name': 'A',
+            'agents': ['agents/a.md'],
+            'components': [{'name': 'core', 'includes': {'agents': ['agents/a.md']}}],
+        })
+        self._write(tmp_path, 'parent_b.yaml', {'name': 'B', 'agents': ['agents/b.md']})
+        leaf = self._write(tmp_path, 'leaf.yaml', {
+            'name': 'Leaf',
+            'inherit': [
+                str(tmp_path / 'parent_a.yaml'),
+                {'config': str(tmp_path / 'parent_b.yaml'), 'merge-keys': ['agents', 'components']},
+            ],
+        })
+        resolved, _ = setup_environment.resolve_config_inheritance(
+            yaml.safe_load(leaf.read_text(encoding='utf-8')), str(leaf),
+        )
+        with patch.object(setup_environment, 'warning'):
+            errors = setup_environment.validate_components(resolved)
+        assert errors == []
+        assert len(resolved['agents']) == 2
+
+
 class TestExecuteDeselectionCleanup:
     """Removal execution against a simulated prior installation."""
 

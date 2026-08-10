@@ -6262,18 +6262,29 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
     result = config.copy()
     base_url = config.get('base-url')
 
+    # Original-to-resolved mapping per selectable section, used below to
+    # rewrite this config's own component selectors in lockstep with the
+    # items they claim (selector identity for these sections is the item
+    # string, which this function changes)
+    selector_mappings: dict[str, dict[str, str]] = {}
+
     # --- Simple list keys: agents, slash-commands, rules ---
     for key in ('agents', 'slash-commands', 'rules'):
         items = result.get(key)
         if isinstance(items, list):
             resolved_items = []
+            mapping: dict[str, str] = {}
             for item in items:
                 if isinstance(item, str):
                     resolved_path, _ = resolve_resource_path(item, config_source, base_url)
                     resolved_items.append(resolved_path)
+                    if resolved_path != item:
+                        mapping[item.strip()] = resolved_path
                 else:
                     resolved_items.append(item)
             result[key] = resolved_items
+            if mapping:
+                selector_mappings[key] = mapping
 
     # --- hooks.files ---
     hooks = result.get('hooks')
@@ -6282,14 +6293,47 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
         hook_files = hooks.get('files')
         if isinstance(hook_files, list):
             resolved_files = []
+            hooks_mapping: dict[str, str] = {}
             for item in hook_files:
                 if isinstance(item, str):
                     resolved_path, _ = resolve_resource_path(item, config_source, base_url)
                     resolved_files.append(resolved_path)
+                    if resolved_path != item:
+                        hooks_mapping[item.strip()] = resolved_path
                 else:
                     resolved_files.append(item)
             hooks['files'] = resolved_files
+            if hooks_mapping:
+                selector_mappings['hooks'] = hooks_mapping
         result['hooks'] = hooks
+
+    # --- components[].includes selectors for path-identity sections ---
+    # A selector that exactly matches an item string rewritten above is
+    # rewritten to the same resolved string, so authors write one string in
+    # the item list and the selector and both resolve identically. Every
+    # other selector (hook event ids, name identities, already-absolute
+    # paths, cross-file claims written in resolved form) passes through.
+    components = result.get('components')
+    if isinstance(components, list) and selector_mappings:
+        resolved_components: list[Any] = []
+        for comp in components:
+            if not isinstance(comp, dict):
+                resolved_components.append(comp)
+                continue
+            comp_copy = cast(dict[str, Any], comp).copy()
+            includes = comp_copy.get('includes')
+            if isinstance(includes, dict):
+                includes_copy = cast(dict[str, Any], includes).copy()
+                for section, section_mapping in selector_mappings.items():
+                    selectors = includes_copy.get(section)
+                    if isinstance(selectors, list):
+                        includes_copy[section] = [
+                            section_mapping.get(s.strip(), s) if isinstance(s, str) else s
+                            for s in cast(list[object], selectors)
+                        ]
+                comp_copy['includes'] = includes_copy
+            resolved_components.append(comp_copy)
+        result['components'] = resolved_components
 
     # --- files-to-download[].source ---
     ftd = result.get('files-to-download')
