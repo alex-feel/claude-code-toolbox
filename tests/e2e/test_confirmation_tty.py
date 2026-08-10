@@ -93,8 +93,9 @@ def _run_pty_probe(
     *,
     pre_queued: bytes = b'',
     prompt_marker: bytes = b'PROMPT_READY',
+    followup: tuple[bytes, bytes] | None = None,
     delay: float = 0.0,
-) -> str:
+) -> tuple[str, str]:
     """Run a probe in a child whose controlling terminal is a fresh pty.
 
     The child's stdin is redirected to /dev/null before exec, so the
@@ -106,11 +107,17 @@ def _run_pty_probe(
         payload: Bytes written to the pty after the prompt renders.
         pre_queued: Bytes queued into the pty before the prompt renders.
         prompt_marker: Output substring that signals the prompt rendered.
+        followup: Optional second exchange (marker, payload): the payload
+            is written only after the marker appears in output produced
+            AFTER the first payload was sent, because consent re-prompts
+            flush type-ahead.
         delay: Seconds the child sleeps before prompting, giving pre_queued
             bytes time to land in the terminal input queue.
 
     Returns:
-        The RESULT=... line printed by the child.
+        Tuple of the RESULT=... line printed by the child and the child's
+        full decoded output (for asserting which prompts and warnings
+        rendered).
 
     Raises:
         AssertionError: When the probe times out or produces no RESULT line.
@@ -126,6 +133,8 @@ def _run_pty_probe(
 
     buffer = b''
     sent = False
+    followup_sent = False
+    search_from = 0
     timed_out = True
     deadline = time.time() + 60
     try:
@@ -146,6 +155,13 @@ def _run_pty_probe(
             if not sent and prompt_marker in buffer:
                 os.write(master, payload)
                 sent = True
+                search_from = len(buffer)
+            if (
+                sent and not followup_sent and followup is not None
+                and followup[0] in buffer[search_from:]
+            ):
+                os.write(master, followup[1])
+                followup_sent = True
             if b'RESULT=' in buffer and b'\n' in buffer.split(b'RESULT=')[-1]:
                 timed_out = False
                 break
@@ -159,9 +175,10 @@ def _run_pty_probe(
     if timed_out:
         raise AssertionError(f'pty probe timed out; output so far: {buffer!r}')
 
-    for line in buffer.decode('utf-8', 'replace').splitlines():
+    output = buffer.decode('utf-8', 'replace')
+    for line in output.splitlines():
         if 'RESULT=' in line:
-            return line[line.index('RESULT='):]
+            return line[line.index('RESULT='):], output
     raise AssertionError(f'no RESULT line in pty output: {buffer!r}')
 
 
@@ -170,11 +187,13 @@ class TestDevTtyConfirmationRead:
 
     def test_clean_yes(self) -> None:
         """A plain typed y reads back as y."""
-        assert _run_pty_probe(CONFIRMATION_PROBE, b'y\n') == "RESULT='y'"
+        result, _ = _run_pty_probe(CONFIRMATION_PROBE, b'y\n')
+        assert result == "RESULT='y'"
 
     def test_clean_no(self) -> None:
         """A plain typed n reads back as n."""
-        assert _run_pty_probe(CONFIRMATION_PROBE, b'n\n') == "RESULT='n'"
+        result, _ = _run_pty_probe(CONFIRMATION_PROBE, b'n\n')
+        assert result == "RESULT='n'"
 
     def test_contaminated_line_sanitized(self) -> None:
         """A cursor-position report glued to the answer is stripped.
@@ -183,14 +202,20 @@ class TestDevTtyConfirmationRead:
         user sees a clean y, and the unsanitized read returned
         ESC[24;80Ry.
         """
-        assert _run_pty_probe(CONFIRMATION_PROBE, b'\x1b[24;80Ry\n') == "RESULT='y'"
+        result, _ = _run_pty_probe(CONFIRMATION_PROBE, b'\x1b[24;80Ry\n')
+        assert result == "RESULT='y'"
 
     def test_pre_queued_garbage_flushed(self) -> None:
-        """Bytes queued before the prompt renders never satisfy the read."""
-        result = _run_pty_probe(
+        """A garbage line queued before the prompt renders is discarded.
+
+        The queued report forms its own complete line so an unflushed read
+        would consume it as a standalone answer; the flush makes the read
+        start at the user's y with no detour through the marker handling.
+        """
+        result, _ = _run_pty_probe(
             CONFIRMATION_PROBE,
             b'y\n',
-            pre_queued=b'\x1b[24;80R',
+            pre_queued=b'\x1b[24;80R\n',
             delay=1.0,
         )
         assert result == "RESULT='y'"
@@ -205,24 +230,29 @@ class TestNumberedPickerThroughPty:
         The questionary tier can fail mid-render with its terminal query
         replies still queued; the numbered picker flushes them at entry, so
         the user's real toggle of item 2 plus Enter decides the outcome.
+        The queued report forms its own complete line, and the absence of
+        the invalid-input warning proves the flush discarded it rather than
+        the marker handling absorbing it.
         """
-        result = _run_pty_probe(
+        result, output = _run_pty_probe(
             NUMBERED_PICKER_PROBE,
             b'2\n\n',
-            pre_queued=b'\x1b[24;80R',
+            pre_queued=b'\x1b[24;80R\n',
             prompt_marker=b'Enter = confirm:',
             delay=1.0,
         )
         assert result == "RESULT=['alpha']"
+        assert 'Invalid input' not in output
 
     def test_contaminated_line_reprompts_not_confirms(self) -> None:
         """An all-garbage line mid-loop is invalid input, not Enter-confirm."""
-        result = _run_pty_probe(
+        result, output = _run_pty_probe(
             NUMBERED_PICKER_PROBE,
             b'\x1b[24;80R\n2\n\n',
             prompt_marker=b'Enter = confirm:',
         )
         assert result == "RESULT=['alpha']"
+        assert 'Invalid input' in output
 
 
 class TestConfirmInstallationThroughPty:
@@ -230,16 +260,31 @@ class TestConfirmInstallationThroughPty:
 
     def test_contaminated_yes_proceeds(self) -> None:
         """The full consent flow accepts a contaminated y."""
-        result = _run_pty_probe(
+        result, _ = _run_pty_probe(
             CONFIRM_INSTALLATION_PROBE,
             b'\x1b[24;80Ry\n',
             prompt_marker=b'Proceed with installation?',
         )
         assert result == 'RESULT=True'
 
+    def test_all_garbage_line_reprompts_then_accepts(self) -> None:
+        """A pure-garbage line re-prompts; a y at the re-prompt proceeds.
+
+        The y is sent only after the warning renders, because the
+        re-prompt flushes type-ahead by design.
+        """
+        result, output = _run_pty_probe(
+            CONFIRM_INSTALLATION_PROBE,
+            b'\x1b[24;80R\n',
+            prompt_marker=b'Proceed with installation?',
+            followup=(b'Unrecognized answer', b'y\n'),
+        )
+        assert result == 'RESULT=True'
+        assert 'Unrecognized answer' in output
+
     def test_enter_cancels(self) -> None:
         """The default deny still cancels through the real path."""
-        result = _run_pty_probe(
+        result, _ = _run_pty_probe(
             CONFIRM_INSTALLATION_PROBE,
             b'\n',
             prompt_marker=b'Proceed with installation?',
