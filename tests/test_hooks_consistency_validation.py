@@ -282,6 +282,35 @@ class TestValidateHooksFilesConsistency:
         errors = validate_hooks_files_consistency(config)
         assert 'hooks.files[0] must be a string path or URL' in errors
 
+    def test_status_line_empty_or_missing_file_fails(self) -> None:
+        """The status-line file field mirrors the model: required and non-empty."""
+        base_hooks = {'files': ['hooks/sl.py'], 'events': []}
+        missing = validate_hooks_files_consistency(
+            {'hooks': dict(base_hooks), 'status-line': {'padding': 0}},
+        )
+        assert 'status-line.file cannot be empty' in missing
+        empty = validate_hooks_files_consistency(
+            {'hooks': dict(base_hooks), 'status-line': {'file': '   '}},
+        )
+        assert 'status-line.file cannot be empty' in empty
+
+    def test_status_line_empty_config_fails(self) -> None:
+        """An empty status-line.config mirrors the model's rejection."""
+        errors = validate_hooks_files_consistency({
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': 'sl.py', 'config': ''},
+        })
+        assert 'status-line.config cannot be empty when specified' in errors
+
+    def test_status_line_null_bytes_fail(self) -> None:
+        """Null bytes in status-line references mirror the model's rejection."""
+        errors = validate_hooks_files_consistency({
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': 'sl\x00.py', 'config': 'c\x00.yaml'},
+        })
+        assert 'status-line.file cannot contain null bytes' in errors
+        assert 'status-line.config cannot contain null bytes' in errors
+
     def test_require_all_files_used_false_skips_unused_rule(self) -> None:
         """The post-selection mode tolerates stranded files but not dangling refs."""
         stranded = {

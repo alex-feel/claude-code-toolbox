@@ -511,6 +511,72 @@ class TestStripHooksFromSettings:
         final = json.loads(settings_path.read_text())
         assert len(final['hooks']['PostToolUse'][0]['hooks']) == 1
 
+    def test_direct_command_quote_variant_is_never_matched(self, tmp_path: Path) -> None:
+        """Two distinct direct commands differing only in quoting never match.
+
+        Quote-insensitive matching applies only to built file-reference
+        commands; in a direct command, quotes are literal shell syntax, so
+        deselecting 'echo "deselected"' must not remove a kept hook whose
+        command is 'echo deselected'.
+        """
+        hooks_dir = tmp_path / 'hookfiles'
+        hooks_dir.mkdir()
+        deselected_events = [
+            {'event': 'Notification', 'matcher': '', 'type': 'command',
+             'command': 'echo "deselected"', 'id': 'noisy'},
+        ]
+        settings_path = tmp_path / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'hooks': {'Notification': [{'matcher': '', 'hooks': [
+                {'type': 'command', 'command': 'echo deselected'},
+            ]}]},
+        }))
+
+        removed = setup_environment._strip_hooks_from_settings(
+            settings_path, deselected_events, hooks_dir,
+        )
+
+        assert removed == 0
+        final = json.loads(settings_path.read_text())
+        assert len(final['hooks']['Notification'][0]['hooks']) == 1
+
+    def test_identical_direct_command_is_matched_exactly(self, tmp_path: Path) -> None:
+        """A deselected direct command still strips its own exact entry."""
+        hooks_dir = tmp_path / 'hookfiles'
+        hooks_dir.mkdir()
+        deselected_events = [
+            {'event': 'Notification', 'matcher': '', 'type': 'command',
+             'command': 'echo "deselected"', 'id': 'noisy'},
+        ]
+        settings_path = tmp_path / 'settings.json'
+        settings_path.write_text(json.dumps({
+            'hooks': {'Notification': [{'matcher': '', 'hooks': [
+                {'type': 'command', 'command': 'echo "deselected"'},
+            ]}]},
+        }))
+
+        removed = setup_environment._strip_hooks_from_settings(
+            settings_path, deselected_events, hooks_dir,
+        )
+
+        assert removed == 1
+
+    def test_built_file_command_pattern_locks_builder_grammar(self, tmp_path: Path) -> None:
+        """The quote-normalization gate matches exactly the builder's output shapes."""
+        pattern = setup_environment._BUILT_FILE_COMMAND_PATTERN
+        for reference, config in [
+            ('a.py', None),
+            ('a.py', 'c.yaml'),
+            ('a.js', None),
+            ('a.mjs', 'c.json'),
+            ('a.sh', None),
+            ('a.sh', 'c.yaml'),
+        ]:
+            built = setup_environment._build_file_command(reference, config, tmp_path)
+            assert pattern.fullmatch(built), built
+        for direct in ['echo "test"', 'echo test', 'bash -c "run me"']:
+            assert not pattern.fullmatch(direct), direct
+
     def test_non_command_field_difference_is_kept(self, tmp_path: Path) -> None:
         """Quote-insensitive matching still requires every other field to be equal."""
         hooks_dir = tmp_path / 'hookfiles'
