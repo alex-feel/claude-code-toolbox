@@ -3624,6 +3624,13 @@ def prompt_component_selection(
     print(f'{Colors.BOLD}Environment:{Colors.NC} {environment_name}')
     print(f'{Colors.BOLD}Source:{Colors.NC} {config_source}')
 
+    # Discard bytes queued before the picker renders (stray terminal
+    # reports, accidental type-ahead) so they never register as the first
+    # answer. The flush runs once before the tiers, not per loop
+    # iteration, because type-ahead BETWEEN toggle prompts is legitimate;
+    # in-loop contamination is neutralized by the sanitizing read.
+    _flush_pending_terminal_input()
+
     try:
         import questionary
 
@@ -6333,9 +6340,16 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
         info(f'  2. Passing it on the command line: --env {tokens_checked[0]}=token_here')
 
-        # Ask if they want to enter it now
+        # Ask if they want to enter it now. The read goes through the
+        # shared hardened reader: queued terminal reports are flushed and
+        # escape sequences sanitized, so a clean typed y is never
+        # misread as a decline (the /dev/tty fallback inside is
+        # unreachable here because this branch requires a tty stdin).
         try:
-            response = input('Would you like to enter the token now? (y/N): ').strip().lower()
+            _flush_pending_terminal_input()
+            response = _read_user_input(
+                'Would you like to enter the token now? (y/N): ',
+            ).lower()
             if response == 'y':
                 import getpass
 
@@ -7953,6 +7967,78 @@ def _dev_tty_available() -> bool:
     return False
 
 
+# Terminal escape sequences that can contaminate an interactive read: CSI
+# sequences (including cursor-position reports like ESC[24;80R that a
+# terminal queues in reply to queries from a full-screen prompt session),
+# OSC sequences, charset designators, and any other two-character ESC
+# sequence.
+_TERMINAL_SEQUENCE_PATTERN = re.compile(
+    r'\x1b\[[0-9;?<=>]*[A-Za-z~]'
+    r'|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+    r'|\x1b[()*+][0-9A-Za-z]'
+    r'|\x1b.',
+)
+
+
+def _sanitize_interactive_input(raw: str) -> str:
+    """Strip terminal escape sequences and control characters from input.
+
+    An interactive line can arrive contaminated by terminal report
+    sequences queued in the input buffer -- verified with a real pty: a
+    cursor-position reply left by a full-screen prompt session prefixes the
+    user's typed answer, so a visually clean ``y`` reads as
+    ``ESC[24;80Ry``. Removes escape sequences and remaining C0 control
+    characters, then strips surrounding whitespace.
+
+    Args:
+        raw: The raw line as read from the interactive device.
+
+    Returns:
+        The cleaned user answer.
+    """
+    without_sequences = _TERMINAL_SEQUENCE_PATTERN.sub('', raw)
+    without_controls = ''.join(
+        ch for ch in without_sequences
+        if (ch >= ' ' and ch != '\x7f') or ch == '\t'
+    )
+    return without_controls.strip()
+
+
+def _flush_pending_terminal_input() -> None:
+    """Discard queued unread bytes on the interactive input device.
+
+    A consent prompt must never consume input queued before it rendered:
+    late terminal query replies left by a full-screen prompt session, or
+    stray type-ahead. POSIX flushes the terminal input queue via termios
+    (the queue is a property of the terminal device, so flushing a fresh
+    /dev/tty descriptor clears it for the subsequent read); Windows drains
+    the console keyboard buffer. Best effort: any failure leaves the
+    buffer untouched.
+    """
+    if sys.platform == 'win32':
+        try:
+            import msvcrt
+
+            while msvcrt.kbhit():
+                msvcrt.getwch()
+        except (ImportError, OSError):
+            pass
+        return
+    try:
+        import termios
+    except ImportError:
+        return
+    # termios.error subclasses Exception directly, not OSError
+    try:
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+        else:
+            with open('/dev/tty') as tty:
+                termios.tcflush(tty.fileno(), termios.TCIFLUSH)
+    except (OSError, ValueError, termios.error):
+        pass
+
+
 def _read_user_input(prompt: str) -> str:
     """Read one line of user input with /dev/tty fallback for piped stdin.
 
@@ -7961,18 +8047,20 @@ def _read_user_input(prompt: str) -> str:
     a standard pattern used by sudo, ssh, and gpg. A Ctrl-C
     KeyboardInterrupt deliberately propagates to the caller so
     interactive flows can distinguish cancellation from an empty answer.
+    The returned line is sanitized: terminal escape sequences and control
+    characters never reach the caller.
 
     Args:
         prompt: The prompt string to display.
 
     Returns:
-        User's input string (stripped), or empty string when no
-        interactive input is available.
+        User's input string (sanitized and stripped), or empty string when
+        no interactive input is available.
     """
     # Try stdin first if it's a TTY
     if sys.stdin.isatty():
         try:
-            return input(prompt).strip()
+            return _sanitize_interactive_input(input(prompt))
         except EOFError:
             return ''
 
@@ -7983,7 +8071,7 @@ def _read_user_input(prompt: str) -> str:
                 # Write prompt to stderr (stdout may be piped)
                 sys.stderr.write(prompt)
                 sys.stderr.flush()
-                return tty.readline().strip()
+                return _sanitize_interactive_input(tty.readline())
         except (OSError, EOFError):
             pass
 
@@ -7995,15 +8083,19 @@ def _get_user_confirmation(prompt: str) -> str:
     """Get user input with /dev/tty fallback for piped stdin.
 
     Wraps _read_user_input(), converting Ctrl-C into an empty string so
-    confirmation prompts treat cancellation as a denial.
+    confirmation prompts treat cancellation as a denial. Pending unread
+    terminal input is discarded first so a consent answer is never
+    satisfied by bytes queued before the prompt rendered.
 
     Args:
         prompt: The prompt string to display.
 
     Returns:
-        User's input string (stripped), or empty string on EOF/error/Ctrl-C.
+        User's input string (sanitized), or empty string on
+        EOF/error/Ctrl-C.
     """
     try:
+        _flush_pending_terminal_input()
         return _read_user_input(prompt)
     except KeyboardInterrupt:
         return ''
@@ -8071,14 +8163,20 @@ def confirm_installation(
         info('  CLAUDE_CODE_TOOLBOX_ENV_AUTH=<val>   Authentication (header:value)')
         return False
 
-    # Interactive confirmation
+    # Interactive confirmation. An unrecognized answer re-prompts instead
+    # of silently cancelling, so a mangled line never reads as a denial;
+    # Enter and n/no cancel immediately.
     print()
-    response = _get_user_confirmation(
-        f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}',
-    )
-
-    if response.lower() in ('y', 'yes'):
-        return True
+    for _ in range(3):
+        response = _get_user_confirmation(
+            f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}',
+        )
+        answer = response.lower()
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('', 'n', 'no'):
+            break
+        warning(f'Unrecognized answer {response!r}; type y to proceed or n to cancel.')
 
     info('Installation cancelled by user.')
     return False

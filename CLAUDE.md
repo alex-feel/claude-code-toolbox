@@ -92,6 +92,8 @@ The setup script requires explicit user confirmation before installing. CLI flag
 
 **Default:** Interactive → `[y/N]` prompt (deny default). Piped with `/dev/tty` → prompts via tty. Non-interactive → refuses (exit 1). Exit `0` for success/dry-run/cancellation, `1` for errors (including download and dependency-installation failures).
 
+**Interactive-read hardening:** `_read_user_input()` sanitizes every line via `_sanitize_interactive_input()` (terminal escape sequences and control characters stripped — a queued cursor-position report left by the full-screen picker glued `ESC[24;80R` onto a typed `y`, cancelling the install; verified with a real pty). `_get_user_confirmation()` first discards queued unread terminal input via `_flush_pending_terminal_input()` (POSIX `termios.tcflush`, Windows `msvcrt` drain), and `confirm_installation()` re-prompts up to three times on an unrecognized answer instead of silently cancelling (Enter/`n`/`no` still deny immediately). Real-path coverage: `tests/e2e/test_confirmation_tty.py` drives `_get_user_confirmation` and `confirm_installation` through an actual pty with piped stdin (POSIX-only).
+
 **Known Config Keys:** The setup script validates config keys against `KNOWN_CONFIG_KEYS` constant. Unknown keys are flagged with `[?]` in the installation summary. When adding new config keys to `setup_environment.py`, remember to update `KNOWN_CONFIG_KEYS`.
 
 **Sensitive Path Detection:** Files-to-download destinations are checked against `SENSITIVE_PATH_PREFIXES`. Sensitive paths (e.g., `~/.ssh/`, `~/.bashrc`) are flagged with `[!]` in the installation summary.
