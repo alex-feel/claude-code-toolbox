@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.2.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.1.0...v7.2.0) (2026-08-10)
+
+
+### Features
+
+* validate hooks-files consistency on the resolved configuration at setup time ([5dd2af2](https://github.com/alex-feel/claude-code-toolbox/commit/5dd2af267550a57af1247ee1d2dc38da8ec1f257))
+
+
+### Bug Fixes
+
+* close selection and upgrade gaps in hooks validation and reconciliation ([02e25dc](https://github.com/alex-feel/claude-code-toolbox/commit/02e25dc0d66cb271b79a653c588c05d8561536f1))
+* gate quote-insensitive hook matching to built file-reference commands ([2524837](https://github.com/alex-feel/claude-code-toolbox/commit/2524837c59441f05d4dae18f4dd0dca968591696))
+
 ## [7.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.0.0...v7.1.0) (2026-08-10)
 
 
