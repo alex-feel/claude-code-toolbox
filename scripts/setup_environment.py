@@ -2738,28 +2738,43 @@ def validate_hooks_files_consistency(
                     else:
                         used_files.add(config_basename)
 
-    # Rule 3: Check that the status-line file and config exist in hooks.files
+    # Rule 3: Check that the status-line file and config exist in hooks.files.
+    # The value checks mirror the StatusLine field validators in the model
+    # (file required and non-empty, config non-empty when specified, no null
+    # bytes), which run even for inherit-declaring configs, so a resolved
+    # composition can never legitimately carry these shapes.
     if status_line is not None:
         status_file_raw = status_line.get('file')
         if status_file_raw is not None and not isinstance(status_file_raw, str):
             errors.append('status-line.file must be a string')
             structure_broken = True
-        elif isinstance(status_file_raw, str):
+        elif status_file_raw is None or not status_file_raw.strip():
+            errors.append('status-line.file cannot be empty')
+            structure_broken = True
+        elif '\x00' in status_file_raw:
+            errors.append('status-line.file cannot contain null bytes')
+            structure_broken = True
+        else:
             status_file = status_file_raw.strip()
-            if status_file:
-                if status_file not in available_files:
-                    errors.append(
-                        f'status-line.file "{status_file}" not found in hooks.files. '
-                        f'Available files: {available_display}',
-                    )
-                else:
-                    used_files.add(status_file)
+            if status_file not in available_files:
+                errors.append(
+                    f'status-line.file "{status_file}" not found in hooks.files. '
+                    f'Available files: {available_display}',
+                )
+            else:
+                used_files.add(status_file)
 
         status_config_raw = status_line.get('config')
         if status_config_raw is not None and not isinstance(status_config_raw, str):
             errors.append('status-line.config must be a string')
             structure_broken = True
-        elif isinstance(status_config_raw, str) and status_config_raw:
+        elif isinstance(status_config_raw, str) and not status_config_raw.strip():
+            errors.append('status-line.config cannot be empty when specified')
+            structure_broken = True
+        elif isinstance(status_config_raw, str) and '\x00' in status_config_raw:
+            errors.append('status-line.config cannot contain null bytes')
+            structure_broken = True
+        elif isinstance(status_config_raw, str):
             config_file = status_config_raw.strip()
             clean_config = config_file.split('?')[0] if '?' in config_file else config_file
             config_basename = _hook_file_basename(clean_config)
@@ -3122,13 +3137,25 @@ def has_deselected_items(deselected: dict[str, list[Any]]) -> bool:
     return any(items for items in deselected.values())
 
 
+# Output grammar of _build_file_command(): optional launcher prefix, quoted
+# script path, optional quoted config path. Only commands of this shape may
+# be compared quote-insensitively; in a direct command, quotes are literal
+# shell syntax and stripping them would conflate distinct commands.
+_BUILT_FILE_COMMAND_PATTERN = re.compile(
+    r'(?:uv run --no-project --python 3\.12 |node )?"[^"]*"(?: "[^"]*")?',
+)
+
+
 def _hook_entries_equal(built: dict[str, Any], existing: object) -> bool:
     """Compare a freshly built hook entry against an on-disk hook entry.
 
-    Every field is compared by equality except ``command``, which is
-    compared with double quotes stripped from both sides: the builder
-    quotes built file paths, while entries written before quoting existed
-    carry the same command unquoted, and both describe the same hook.
+    Every field is compared by equality except ``command``: when the built
+    command matches the _build_file_command() output grammar, it is compared
+    with double quotes stripped from both sides, because entries written
+    before path quoting existed carry the same file-reference command
+    unquoted. A direct command (passed through verbatim by
+    _build_hooks_json()) keeps its quotes as literal content and is compared
+    exactly, so two direct commands differing only in quoting never match.
 
     Args:
         built: Hook entry dict produced by _build_hooks_json().
@@ -3147,7 +3174,11 @@ def _hook_entries_equal(built: dict[str, Any], existing: object) -> bool:
     existing_command = cast(dict[str, Any], existing).get('command')
     if built_command == existing_command:
         return True
-    if isinstance(built_command, str) and isinstance(existing_command, str):
+    if (
+        isinstance(built_command, str)
+        and isinstance(existing_command, str)
+        and _BUILT_FILE_COMMAND_PATTERN.fullmatch(built_command)
+    ):
         return built_command.replace('"', '') == existing_command.replace('"', '')
     return False
 

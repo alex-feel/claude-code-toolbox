@@ -188,6 +188,38 @@ CONSISTENCY_CORPUS: list[tuple[str, dict[str, Any], bool]] = [
         {'status-line': {'file': 'sl.py'}},
         False,
     ),
+    (
+        'status-line-empty-config',
+        {
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': 'sl.py', 'config': ''},
+        },
+        False,
+    ),
+    (
+        'status-line-whitespace-file',
+        {
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': '   '},
+        },
+        False,
+    ),
+    (
+        'status-line-missing-file',
+        {
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'padding': 0},
+        },
+        False,
+    ),
+    (
+        'status-line-null-byte-file',
+        {
+            'hooks': {'files': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': 'sl\x00.py'},
+        },
+        False,
+    ),
 ]
 
 
