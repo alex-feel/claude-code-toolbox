@@ -6346,17 +6346,13 @@ def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, 
         info(f'  1. Setting environment variable: {tokens_checked[0]}')
         info(f'  2. Passing it on the command line: --env {tokens_checked[0]}=token_here')
 
-        # Ask if they want to enter it now. The read goes through the
-        # shared hardened reader: queued terminal reports are flushed and
-        # escape sequences sanitized, so a clean typed y is never
-        # misread as a decline (the /dev/tty fallback inside is
+        # Ask if they want to enter it now. The shared consent gate
+        # flushes queued terminal reports, sanitizes escape sequences,
+        # and re-prompts on an unrecognized answer, so a clean typed y is
+        # never misread as a decline (the /dev/tty fallback inside is
         # unreachable here because this branch requires a tty stdin).
         try:
-            _flush_pending_terminal_input()
-            response = _read_user_input(
-                'Would you like to enter the token now? (y/N): ',
-            ).lower()
-            if response == 'y':
+            if _ask_yes_no('Would you like to enter the token now? (y/N): '):
                 import getpass
 
                 input_token = getpass.getpass(f'Enter {repo_type.title()} token (will not echo): ')
@@ -8140,6 +8136,32 @@ def _get_user_confirmation(prompt: str) -> str:
         return ''
 
 
+def _ask_yes_no(prompt: str) -> bool:
+    """Ask a y/N consent question with unrecognized-answer re-prompting.
+
+    Up to three attempts: y/yes accepts, a deliberate Enter or n/no
+    declines, and any other answer -- including the contaminated-input
+    marker for an all-garbage line -- warns and re-prompts instead of
+    silently counting as a denial. Every consent gate goes through this
+    single loop so a mangled line is handled identically everywhere.
+
+    Args:
+        prompt: The prompt string to display.
+
+    Returns:
+        True only on explicit consent.
+    """
+    for _ in range(3):
+        response = _get_user_confirmation(prompt)
+        answer = response.lower()
+        if answer in ('y', 'yes'):
+            return True
+        if answer in ('', 'n', 'no'):
+            return False
+        warning(f'Unrecognized answer {response!r}; type y to proceed or n to cancel.')
+    return False
+
+
 def confirm_installation(
     plan: InstallationPlan,
     auto_confirm: bool = False,
@@ -8202,20 +8224,10 @@ def confirm_installation(
         info('  CLAUDE_CODE_TOOLBOX_ENV_AUTH=<val>   Authentication (header:value)')
         return False
 
-    # Interactive confirmation. An unrecognized answer re-prompts instead
-    # of silently cancelling, so a mangled line never reads as a denial;
-    # Enter and n/no cancel immediately.
+    # Interactive confirmation
     print()
-    for _ in range(3):
-        response = _get_user_confirmation(
-            f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}',
-        )
-        answer = response.lower()
-        if answer in ('y', 'yes'):
-            return True
-        if answer in ('', 'n', 'no'):
-            break
-        warning(f'Unrecognized answer {response!r}; type y to proceed or n to cancel.')
+    if _ask_yes_no(f'{Colors.YELLOW}Proceed with installation? [y/N]: {Colors.NC}'):
+        return True
 
     info('Installation cancelled by user.')
     return False

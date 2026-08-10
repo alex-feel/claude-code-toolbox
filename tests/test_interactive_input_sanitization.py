@@ -210,3 +210,46 @@ class TestConfirmationReprompt:
         result, confirmation = self._confirm([''])
         assert result is False
         assert confirmation.call_count == 1
+
+
+class TestCredentialsGateReprompt:
+    """The credentials y/N gate handles a garbled line like the confirmation.
+
+    Before the shared _ask_yes_no gate, any answer other than a literal y
+    -- including the contaminated-input marker -- silently declined
+    authentication with no warning.
+    """
+
+    @staticmethod
+    def _prompt(responses: list[str]) -> tuple[dict[str, str], MagicMock]:
+        gate = MagicMock(side_effect=responses)
+        fake_stdin = MagicMock()
+        fake_stdin.isatty.return_value = True
+        with patch.object(sys, 'stdin', fake_stdin), \
+             patch.object(setup_environment, '_get_user_confirmation', gate), \
+             patch('getpass.getpass', return_value='tok123'), \
+             patch.dict('os.environ', {}, clear=True):
+            headers = setup_environment.prompt_for_credentials(
+                'https://gitlab.com/repo', tokens_checked=['GITLAB_TOKEN'],
+            )
+        return headers, gate
+
+    def test_marker_reprompts_then_yes_reaches_token_entry(self) -> None:
+        """An all-garbage line re-prompts; the second y collects the token."""
+        marker = setup_environment._CONTAMINATED_INPUT_MARKER
+        headers, gate = self._prompt([marker, 'y'])
+        assert headers == {'PRIVATE-TOKEN': 'tok123'}
+        assert gate.call_count == 2
+
+    def test_persistent_garbage_declines(self) -> None:
+        """Three unrecognized answers decline authentication."""
+        marker = setup_environment._CONTAMINATED_INPUT_MARKER
+        headers, gate = self._prompt([marker, marker, marker])
+        assert headers == {}
+        assert gate.call_count == 3
+
+    def test_explicit_no_declines_on_first_read(self) -> None:
+        """An explicit n declines without re-prompting."""
+        headers, gate = self._prompt(['n'])
+        assert headers == {}
+        assert gate.call_count == 1
