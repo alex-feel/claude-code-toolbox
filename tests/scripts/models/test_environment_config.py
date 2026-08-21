@@ -430,7 +430,7 @@ class TestHookEventValidation:
 
 
 class TestHookEventAllTypes:
-    """Test HookEvent model for all 4 hook types with aliases and field matrix."""
+    """Test HookEvent model for all 5 hook types with aliases and field matrix."""
 
     # --- HTTP hook valid cases ---
     def test_http_hook_with_url(self) -> None:
@@ -557,10 +557,11 @@ class TestHookEventAllTypes:
         common = {'if': 'Bash(*)', 'status-message': 'Working...', 'once': True, 'timeout': 30}
 
         for hook_data in [
-            {'event': 'E', 'type': 'command', 'command': 'c.py', **common},
-            {'event': 'E', 'type': 'http', 'url': 'http://x.com', **common},
-            {'event': 'E', 'type': 'prompt', 'prompt': 'p', **common},
-            {'event': 'E', 'type': 'agent', 'prompt': 'a', **common},
+            {'event': 'PostToolUse', 'type': 'command', 'command': 'c.py', **common},
+            {'event': 'PostToolUse', 'type': 'http', 'url': 'http://x.com', **common},
+            {'event': 'PostToolUse', 'type': 'prompt', 'prompt': 'p', **common},
+            {'event': 'PostToolUse', 'type': 'agent', 'prompt': 'a', **common},
+            {'event': 'PostToolUse', 'type': 'mcp_tool', 'server': 's', 'tool': 't', **common},
         ]:
             event = HookEvent.model_validate(hook_data)
             assert event.if_condition == 'Bash(*)'
@@ -785,6 +786,370 @@ class TestHookEventAllTypes:
         })
         assert config.hooks is not None
         assert len(config.hooks.events) == 1
+
+    def test_validate_hooks_files_consistency_skips_mcp_tool(self) -> None:
+        """MCP tool hooks are skipped during file consistency validation."""
+        from scripts.models.environment_config import EnvironmentConfig
+        config = EnvironmentConfig.model_validate({
+            'name': 'test',
+            'hooks': {
+                'files': [],
+                'events': [
+                    {'event': 'PostToolUse', 'type': 'mcp_tool', 'server': 'linter', 'tool': 'lint_file'},
+                ],
+            },
+        })
+        assert config.hooks is not None
+        assert len(config.hooks.events) == 1
+
+
+class TestHookEventContinueOnBlock:
+    """Test the continue-on-block field (prompt hooks only)."""
+
+    def test_prompt_hook_with_continue_on_block(self) -> None:
+        """Prompt hook accepts continue-on-block."""
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'matcher': 'Search|Grep',
+            'type': 'prompt',
+            'prompt': 'Route search calls to the right tool',
+            'continue-on-block': True,
+        })
+        assert event.continue_on_block is True
+
+    def test_prompt_hook_with_continue_on_block_false(self) -> None:
+        """Prompt hook accepts an explicit continue-on-block: false."""
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'prompt',
+            'prompt': 'test',
+            'continue-on-block': False,
+        })
+        assert event.continue_on_block is False
+
+    def test_continue_on_block_defaults_to_none(self) -> None:
+        """Omitted continue-on-block stays None."""
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'prompt',
+            'prompt': 'test',
+        })
+        assert event.continue_on_block is None
+
+    def test_agent_hook_with_continue_on_block_raises(self) -> None:
+        """Agent hook rejects continue-on-block (prompt hooks only)."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'agent',
+                'prompt': 'test',
+                'continue-on-block': True,
+            })
+        assert "cannot have 'continue-on-block' field" in str(exc_info.value)
+        assert 'prompt hooks only' in str(exc_info.value)
+
+    def test_command_hook_with_continue_on_block_raises(self) -> None:
+        """Command hook rejects continue-on-block."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'continue-on-block': True,
+            })
+        assert "cannot have 'continue-on-block' field" in str(exc_info.value)
+
+    def test_http_hook_with_continue_on_block_raises(self) -> None:
+        """HTTP hook rejects continue-on-block."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://localhost:8080/hook',
+                'continue-on-block': True,
+            })
+        assert "cannot have 'continue-on-block' field" in str(exc_info.value)
+
+
+class TestHookEventArgsField:
+    """Test the args field (command hooks only, exec form)."""
+
+    def test_command_hook_with_args(self) -> None:
+        """Command hook accepts an args list."""
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'matcher': 'Edit',
+            'type': 'command',
+            'command': 'linter.py',
+            'args': ['--fix', '--strict'],
+        })
+        assert event.args == ['--fix', '--strict']
+
+    def test_command_hook_with_empty_args(self) -> None:
+        """Command hook accepts an empty args list."""
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'type': 'command',
+            'command': 'linter.py',
+            'args': [],
+        })
+        assert event.args == []
+
+    def test_command_hook_args_with_shell_raises(self) -> None:
+        """Combining args with shell raises (exec form has no shell)."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'command',
+                'command': 'linter.py',
+                'args': ['--fix'],
+                'shell': 'bash',
+            })
+        assert "cannot combine 'shell' with 'args'" in str(exc_info.value)
+
+    def test_prompt_hook_with_args_raises(self) -> None:
+        """Prompt hook rejects args."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'args': ['--fix'],
+            })
+        assert "cannot have 'args' field" in str(exc_info.value)
+
+    def test_http_hook_with_args_raises(self) -> None:
+        """HTTP hook rejects args."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'http://localhost:8080/hook',
+                'args': ['--fix'],
+            })
+        assert "cannot have 'args' field" in str(exc_info.value)
+
+
+class TestHookEventAsyncRewake:
+    """Test the async-rewake field (command hooks only)."""
+
+    def test_command_hook_with_async_rewake(self) -> None:
+        """Command hook accepts async-rewake."""
+        event = HookEvent.model_validate({
+            'event': 'Stop',
+            'type': 'command',
+            'command': 'verify.py',
+            'async-rewake': True,
+        })
+        assert event.async_rewake is True
+
+    def test_command_hook_with_async_and_async_rewake(self) -> None:
+        """Command hook accepts async and async-rewake together."""
+        event = HookEvent.model_validate({
+            'event': 'Stop',
+            'type': 'command',
+            'command': 'verify.py',
+            'async': True,
+            'async-rewake': True,
+        })
+        assert event.async_execution is True
+        assert event.async_rewake is True
+
+    def test_prompt_hook_with_async_rewake_raises(self) -> None:
+        """Prompt hook rejects async-rewake."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'async-rewake': True,
+            })
+        assert "cannot have 'async-rewake' field" in str(exc_info.value)
+
+
+class TestHookEventMcpTool:
+    """Test the mcp_tool hook type."""
+
+    def test_mcp_tool_hook_valid(self) -> None:
+        """MCP tool hook with server and tool is valid."""
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'matcher': 'Write',
+            'type': 'mcp_tool',
+            'server': 'linter',
+            'tool': 'lint_file',
+        })
+        assert event.type == 'mcp_tool'
+        assert event.server == 'linter'
+        assert event.tool == 'lint_file'
+        assert event.input is None
+
+    def test_mcp_tool_hook_with_input(self) -> None:
+        """MCP tool hook accepts an input mapping."""
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'type': 'mcp_tool',
+            'server': 'linter',
+            'tool': 'lint_file',
+            'input': {'file_path': '${tool_input.file_path}', 'strict': True},
+        })
+        assert event.input == {'file_path': '${tool_input.file_path}', 'strict': True}
+
+    def test_mcp_tool_hook_with_common_fields(self) -> None:
+        """MCP tool hook accepts the common fields."""
+        event = HookEvent.model_validate({
+            'event': 'PreToolUse',
+            'type': 'mcp_tool',
+            'server': 'guard',
+            'tool': 'check_call',
+            'if': 'Bash(git *)',
+            'status-message': 'Checking...',
+            'once': True,
+            'timeout': 20,
+        })
+        assert event.if_condition == 'Bash(git *)'
+        assert event.status_message == 'Checking...'
+        assert event.once is True
+        assert event.timeout == 20
+
+    def test_mcp_tool_hook_without_server_raises(self) -> None:
+        """MCP tool hook without server raises ValueError."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'mcp_tool',
+                'tool': 'lint_file',
+            })
+        assert "requires 'server' field" in str(exc_info.value)
+
+    def test_mcp_tool_hook_without_tool_raises(self) -> None:
+        """MCP tool hook without tool raises ValueError."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'mcp_tool',
+                'server': 'linter',
+            })
+        assert "requires 'tool' field" in str(exc_info.value)
+
+    def test_mcp_tool_hook_with_command_raises(self) -> None:
+        """MCP tool hook rejects command-hook fields."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'mcp_tool',
+                'server': 'linter',
+                'tool': 'lint_file',
+                'command': 'test.py',
+            })
+        assert "cannot have 'command' field" in str(exc_info.value)
+
+    def test_mcp_tool_hook_with_prompt_raises(self) -> None:
+        """MCP tool hook rejects prompt-hook fields."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'mcp_tool',
+                'server': 'linter',
+                'tool': 'lint_file',
+                'prompt': 'test',
+            })
+        assert "cannot have 'prompt' field" in str(exc_info.value)
+
+    def test_command_hook_with_server_raises(self) -> None:
+        """Command hook rejects mcp_tool-hook fields."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'command',
+                'command': 'test.py',
+                'server': 'linter',
+            })
+        assert "cannot have 'server' field" in str(exc_info.value)
+
+    def test_prompt_hook_with_input_raises(self) -> None:
+        """Prompt hook rejects the input field."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'input': {'a': 1},
+            })
+        assert "cannot have 'input' field" in str(exc_info.value)
+
+
+class TestHookEventValueConstraints:
+    """Test value-level constraints on hook event fields."""
+
+    def test_zero_timeout_raises(self) -> None:
+        """Zero timeout is rejected (Claude Code requires a positive timeout)."""
+        with pytest.raises(ValidationError):
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'timeout': 0,
+            })
+
+    def test_negative_timeout_raises(self) -> None:
+        """Negative timeout is rejected."""
+        with pytest.raises(ValidationError):
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'timeout': -5,
+            })
+
+    def test_http_url_without_scheme_raises(self) -> None:
+        """An http hook url without an http(s) scheme is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'http',
+                'url': 'localhost:8080/hook',
+            })
+        assert 'valid http:// or https:// URL' in str(exc_info.value)
+
+    def test_http_url_https_accepted(self) -> None:
+        """An https url is accepted."""
+        event = HookEvent.model_validate({
+            'event': 'PostToolUse',
+            'type': 'http',
+            'url': 'https://hooks.example.com/post-tool-use',
+        })
+        assert event.url == 'https://hooks.example.com/post-tool-use'
+
+    def test_unknown_event_name_warns(self) -> None:
+        """An event name Claude Code does not recognize produces a warning."""
+        with pytest.warns(UserWarning, match='Unknown hook event name'):
+            HookEvent.model_validate({
+                'event': 'TotallyMadeUpEvent',
+                'type': 'prompt',
+                'prompt': 'test',
+            })
+
+    def test_known_event_name_no_warning(self) -> None:
+        """A recognized event name produces no warning."""
+        import warnings as warnings_module
+        with warnings_module.catch_warnings():
+            warnings_module.simplefilter('error')
+            HookEvent.model_validate({
+                'event': 'PostToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+            })
+
+    def test_unknown_yaml_key_raises(self) -> None:
+        """An undeclared YAML key on a hook event is rejected, not silently dropped."""
+        with pytest.raises(ValidationError):
+            HookEvent.model_validate({
+                'event': 'PreToolUse',
+                'type': 'prompt',
+                'prompt': 'test',
+                'continueOnBlock': True,
+            })
 
 
 class TestPromptHooksWithEnvironmentConfig:

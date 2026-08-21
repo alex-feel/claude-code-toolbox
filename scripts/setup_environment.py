@@ -159,6 +159,47 @@ RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
 # must start with a letter or digit
 COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
+# Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
+# other name at configuration load time. _build_hooks_json() warns (rather
+# than errors) on names outside this set so a configuration written for a
+# newer Claude Code release keeps installing. Inline copy of
+# HOOK_EVENT_NAMES in scripts/models/environment_config.py (standalone
+# script policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_hook_event_names_parity.py.
+HOOK_EVENT_NAMES: frozenset[str] = frozenset({
+    'ConfigChange',
+    'CwdChanged',
+    'DirectoryAdded',
+    'Elicitation',
+    'ElicitationResult',
+    'FileChanged',
+    'InstructionsLoaded',
+    'MessageDisplay',
+    'Notification',
+    'PermissionDenied',
+    'PermissionRequest',
+    'PostCompact',
+    'PostToolBatch',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'PreCompact',
+    'PreToolUse',
+    'SessionEnd',
+    'SessionStart',
+    'Setup',
+    'Stop',
+    'StopFailure',
+    'SubagentStart',
+    'SubagentStop',
+    'TaskCompleted',
+    'TaskCreated',
+    'TeammateIdle',
+    'UserPromptExpansion',
+    'UserPromptSubmit',
+    'WorktreeCreate',
+    'WorktreeRemove',
+})
+
 # Path prefixes indicating sensitive filesystem destinations
 SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
     '~/.ssh/',
@@ -2621,8 +2662,8 @@ def validate_hooks_files_consistency(
     2. Each command hook's command and config exists in hooks.files
     3. The status-line file and config (if configured) exist in hooks.files
 
-    Prompt, http, and agent hooks do not reference files and are excluded.
-    Structural errors (non-mapping hooks or events, non-string entries)
+    Prompt, http, agent, and mcp_tool hooks do not reference files and are
+    excluded. Structural errors (non-mapping hooks or events, non-string entries)
     suppress the unused-files check because its verdict is only meaningful on
     a well-formed configuration. Never raises.
 
@@ -2697,7 +2738,7 @@ def validate_hooks_files_consistency(
             structure_broken = True
             continue
         event = cast(dict[str, Any], event_raw)
-        if event.get('type') in ('prompt', 'http', 'agent'):
+        if event.get('type') in ('prompt', 'http', 'agent', 'mcp_tool'):
             continue
 
         # For command hooks, validate command and config files
@@ -11340,6 +11381,28 @@ def download_hook_files(
     return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
 
 
+def _hook_launcher_args(file_name: str) -> list[str]:
+    """Return the launcher argument list for a hooks-directory file.
+
+    Picks the launcher by file type (case-insensitive): Python files run via
+    uv, JavaScript files via node, and anything else executes directly (an
+    empty launcher list).
+
+    Args:
+        file_name: Bare file name of the hook script.
+
+    Returns:
+        Launcher executable and its arguments; empty when the file executes
+        directly.
+    """
+    lowered_name = file_name.lower()
+    if lowered_name.endswith(('.py', '.pyw')):
+        return ['uv', 'run', '--no-project', '--python', '3.12']
+    if lowered_name.endswith(('.js', '.mjs', '.cjs')):
+        return ['node']
+    return []
+
+
 def _build_file_command(
     file_reference: str,
     config_reference: str | None,
@@ -11349,9 +11412,8 @@ def _build_file_command(
 
     Shared by _build_hooks_json() (command hooks) and
     _build_profile_settings() (statusLine): strips query parameters, resolves
-    the basename under hooks_dir, picks the launcher by file type
-    (case-insensitive: Python via uv, JavaScript via node, anything else
-    executes directly), and appends the config file path when given. Built
+    the basename under hooks_dir, picks the launcher by file type via
+    _hook_launcher_args(), and appends the config file path when given. Built
     paths are double-quoted so a hooks directory containing spaces (for
     example a Windows home like C:/Users/John Smith) survives shell
     word-splitting in bash, PowerShell, and cmd alike.
@@ -11368,13 +11430,8 @@ def _build_file_command(
     """
     clean_reference = file_reference.split('?')[0] if '?' in file_reference else file_reference
     file_name = Path(clean_reference).name
-    lowered_name = file_name.lower()
-    if lowered_name.endswith(('.py', '.pyw')):
-        launcher_prefix = 'uv run --no-project --python 3.12 '
-    elif lowered_name.endswith(('.js', '.mjs', '.cjs')):
-        launcher_prefix = 'node '
-    else:
-        launcher_prefix = ''
+    launcher_args = _hook_launcher_args(file_name)
+    launcher_prefix = f'{" ".join(launcher_args)} ' if launcher_args else ''
 
     file_path_str = (hooks_dir / file_name).as_posix()
     command = f'{launcher_prefix}"{file_path_str}"'
@@ -11387,6 +11444,52 @@ def _build_file_command(
         command = f'{command} "{config_path_str}"'
 
     return command
+
+
+def _build_file_exec_command(
+    file_reference: str,
+    config_reference: str | None,
+    hooks_dir: Path,
+) -> tuple[str, list[str]]:
+    """Build the exec-form executable and argument list for a file reference.
+
+    Exec-form counterpart of _build_file_command(), used by
+    _build_hooks_json() for command hooks that declare 'args': Claude Code
+    spawns the executable directly with the argument list, without any
+    shell, so no element is quoted (a spaced path survives as a single
+    argument-list element). The launcher executable becomes the command,
+    while the remaining launcher arguments, the resolved script path, and
+    the config file path (when given) become the leading arguments.
+
+    Args:
+        file_reference: Script file reference from the YAML configuration
+            (a hooks.files basename, optionally with query parameters).
+        config_reference: Optional config file reference appended as an
+            argument.
+        hooks_dir: Absolute directory path where downloaded hook files reside.
+
+    Returns:
+        Tuple of the executable to spawn and its leading argument list.
+    """
+    clean_reference = file_reference.split('?')[0] if '?' in file_reference else file_reference
+    file_name = Path(clean_reference).name
+    file_path_str = (hooks_dir / file_name).as_posix()
+
+    launcher_args = _hook_launcher_args(file_name)
+    if launcher_args:
+        executable = launcher_args[0]
+        exec_args = [*launcher_args[1:], file_path_str]
+    else:
+        executable = file_path_str
+        exec_args = []
+
+    if config_reference:
+        clean_config = (
+            config_reference.split('?')[0] if '?' in config_reference else config_reference
+        )
+        exec_args.append((hooks_dir / Path(clean_config).name).as_posix())
+
+    return executable, exec_args
 
 
 def _apply_common_hook_fields(
@@ -11413,6 +11516,22 @@ def _apply_common_hook_fields(
         hook_config['timeout'] = hook['timeout']
 
 
+# YAML keys accepted on a hooks.events[] entry, per hook type. Used by
+# _build_hooks_json() to warn about (and ignore) keys that have no meaning
+# for the entry's type; the generated JSON is built from an explicit
+# whitelist, so an unlisted key never reaches the output.
+_HOOK_COMMON_YAML_KEYS: frozenset[str] = frozenset({
+    'event', 'matcher', 'type', 'if', 'status-message', 'once', 'timeout', 'id',
+})
+_HOOK_TYPE_ALLOWED_YAML_KEYS: dict[str, frozenset[str]] = {
+    'command': _HOOK_COMMON_YAML_KEYS | {'command', 'config', 'args', 'async', 'async-rewake', 'shell'},
+    'http': _HOOK_COMMON_YAML_KEYS | {'url', 'headers', 'allowed-env-vars'},
+    'prompt': _HOOK_COMMON_YAML_KEYS | {'prompt', 'model', 'continue-on-block'},
+    'agent': _HOOK_COMMON_YAML_KEYS | {'prompt', 'model'},
+    'mcp_tool': _HOOK_COMMON_YAML_KEYS | {'server', 'tool', 'input'},
+}
+
+
 def _build_hooks_json(
     hooks: dict[str, Any],
     hooks_dir: Path,
@@ -11420,8 +11539,8 @@ def _build_hooks_json(
     """Build hooks JSON structure from YAML configuration.
 
     Converts YAML hook event definitions into Claude Code's JSON hooks format.
-    Generates absolute POSIX paths for hook file references. Supports all four
-    hook types: command, http, prompt, agent.
+    Generates absolute POSIX paths for hook file references. Supports all five
+    hook types: command, http, prompt, agent, mcp_tool.
 
     Used by create_profile_config() (per-environment config.json, atomic
     overwrite in isolated mode) and indirectly by
@@ -11464,15 +11583,53 @@ def _build_hooks_json(
             warning('Invalid hook configuration: missing event, skipping')
             continue
 
+        if event not in HOOK_EVENT_NAMES:
+            warning(
+                f'Unknown hook event name: {event} (not recognized by Claude Code 2.1.238, '
+                'which rejects unknown event names at configuration load time)',
+            )
+
+        allowed_keys = _HOOK_TYPE_ALLOWED_YAML_KEYS.get(hook_type)
+        if allowed_keys is None:
+            warning(f'Unknown hook type: {hook_type}, skipping')
+            continue
+
+        unknown_keys = sorted(set(hook) - allowed_keys)
+        if unknown_keys:
+            warning(
+                f"Hook event {event}: ignoring key(s) not supported for hook type '{hook_type}': "
+                f'{", ".join(unknown_keys)}',
+            )
+
         # Validate required fields per hook type
         if hook_type == 'command' and not command:
             warning('Invalid command hook: missing command, skipping')
             continue
-        if hook_type == 'http' and not hook.get('url'):
-            warning('Invalid http hook: missing url, skipping')
-            continue
+        if hook_type == 'http':
+            url = hook.get('url')
+            if not url:
+                warning('Invalid http hook: missing url, skipping')
+                continue
+            if not isinstance(url, str) or not url.startswith(('http://', 'https://')):
+                warning(f'Invalid http hook: url must be an http:// or https:// URL, got {url}, skipping')
+                continue
         if hook_type in ('prompt', 'agent') and not hook.get('prompt'):
             warning(f'Invalid {hook_type} hook: missing prompt, skipping')
+            continue
+        if hook_type == 'mcp_tool':
+            if not hook.get('server'):
+                warning('Invalid mcp_tool hook: missing server, skipping')
+                continue
+            if not hook.get('tool'):
+                warning('Invalid mcp_tool hook: missing tool, skipping')
+                continue
+
+        # Claude Code requires a positive timeout on every hook type
+        timeout = hook.get('timeout')
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, int | float) or timeout <= 0
+        ):
+            warning(f'Invalid {hook_type} hook: timeout must be a positive number, got {timeout}, skipping')
             continue
 
         # Add to result
@@ -11516,19 +11673,45 @@ def _build_hooks_json(
             # 'echo "test"', are direct commands used as-is
             is_file_reference = clean_command in listed_basenames or ' ' not in clean_command
 
-            # An unlisted command with spaces is a direct command used as-is
-            full_command = _build_file_command(command, config, hooks_dir) if is_file_reference else command
+            args = hook.get('args')
+            if args is not None:
+                # Exec form: Claude Code spawns the executable directly with
+                # the argument list and no shell, so the launcher and the
+                # resolved script path move into the argument list unquoted.
+                # Only a basename listed in hooks.files is folded this way;
+                # any other command IS the executable (a bare name resolves
+                # via PATH, an absolute path is spawned as-is), so the shell
+                # form's no-space heuristic must not reroute it into hooks_dir
+                extra_args = [str(a) for a in args] if isinstance(args, list) else [str(args)]
+                if clean_command in listed_basenames:
+                    executable, exec_args = _build_file_exec_command(command, config, hooks_dir)
+                else:
+                    executable, exec_args = command, []
+                hook_config = {
+                    'type': hook_type,
+                    'command': executable,
+                    'args': exec_args + extra_args,
+                }
+                if hook.get('shell') is not None:
+                    warning(
+                        f"Hook event {event}: 'shell' is ignored when 'args' is set "
+                        '(exec form spawns the executable without a shell)',
+                    )
+            else:
+                # An unlisted command with spaces is a direct command used as-is
+                full_command = _build_file_command(command, config, hooks_dir) if is_file_reference else command
+                hook_config = {
+                    'type': hook_type,
+                    'command': full_command,
+                }
+                if hook.get('shell') is not None:
+                    hook_config['shell'] = hook['shell']
 
-            # Add hook configuration for command hook
-            hook_config = {
-                'type': hook_type,
-                'command': full_command,
-            }
-            # Pass through command-specific optional fields
+            # Background-execution fields apply to both forms
             if hook.get('async') is not None:
                 hook_config['async'] = hook['async']
-            if hook.get('shell') is not None:
-                hook_config['shell'] = hook['shell']
+            if hook.get('async-rewake') is not None:
+                hook_config['asyncRewake'] = hook['async-rewake']
 
         elif hook_type == 'http':
             # HTTP hooks: pure pass-through, no file-path processing
@@ -11542,13 +11725,15 @@ def _build_hooks_json(
                 hook_config['allowedEnvVars'] = hook['allowed-env-vars']
 
         elif hook_type == 'prompt':
-            # Prompt hooks: pass-through for prompt and model
+            # Prompt hooks: pass-through for prompt, model, continue-on-block
             hook_config = {
                 'type': hook_type,
                 'prompt': hook.get('prompt', ''),
             }
             if hook.get('model') is not None:
                 hook_config['model'] = hook['model']
+            if hook.get('continue-on-block') is not None:
+                hook_config['continueOnBlock'] = hook['continue-on-block']
 
         elif hook_type == 'agent':
             # Agent hooks: same structure as prompt but type is 'agent'
@@ -11559,8 +11744,18 @@ def _build_hooks_json(
             if hook.get('model') is not None:
                 hook_config['model'] = hook['model']
 
+        elif hook_type == 'mcp_tool':
+            # MCP tool hooks: call a tool on an already-configured MCP server
+            hook_config = {
+                'type': hook_type,
+                'server': hook.get('server', ''),
+                'tool': hook.get('tool', ''),
+            }
+            if hook.get('input') is not None:
+                hook_config['input'] = hook['input']
+
         else:
-            warning(f'Unknown hook type: {hook_type}, skipping')
+            # Unreachable: hook_type membership is validated above
             continue
 
         # Apply common fields to ALL hook types

@@ -4,6 +4,7 @@ Defines the schema for Claude Code environment YAML files.
 """
 
 import re
+import warnings
 from pathlib import PurePath
 from typing import Any
 from typing import Literal
@@ -112,6 +113,47 @@ GLOBAL_CONFIG_SETTINGS_ONLY_KEYS: frozenset[str] = frozenset({
 
 # Environment variable names: letters, digits, underscores; no leading digit
 ENV_VAR_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+# Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
+# other name at configuration load time. The HookEvent model warns (rather
+# than errors) on names outside this set so a configuration written for a
+# newer Claude Code release keeps installing. Inline copy of
+# HOOK_EVENT_NAMES in setup_environment.py (standalone script policy
+# prevents cross-import); parity enforced by
+# tests/scripts/models/test_hook_event_names_parity.py.
+HOOK_EVENT_NAMES: frozenset[str] = frozenset({
+    'ConfigChange',
+    'CwdChanged',
+    'DirectoryAdded',
+    'Elicitation',
+    'ElicitationResult',
+    'FileChanged',
+    'InstructionsLoaded',
+    'MessageDisplay',
+    'Notification',
+    'PermissionDenied',
+    'PermissionRequest',
+    'PostCompact',
+    'PostToolBatch',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'PreCompact',
+    'PreToolUse',
+    'SessionEnd',
+    'SessionStart',
+    'Setup',
+    'Stop',
+    'StopFailure',
+    'SubagentStart',
+    'SubagentStop',
+    'TaskCompleted',
+    'TaskCreated',
+    'TeammateIdle',
+    'UserPromptExpansion',
+    'UserPromptSubmit',
+    'WorktreeCreate',
+    'WorktreeRemove',
+})
 
 # Sections whose items may be claimed by entries in the top-level
 # `components:` registry. Any other key inside a component's `includes`
@@ -631,20 +673,21 @@ class MCPServerStdio(BaseModel):
 class HookEvent(BaseModel):
     """Hook event configuration.
 
-    Supports four hook types matching the official Claude Code hooks specification:
+    Supports five hook types matching the official Claude Code hooks specification:
     - command: Executes a shell command (requires 'command' field)
     - http: Sends HTTP POST request (requires 'url' field)
     - prompt: Uses single-turn LLM evaluation (requires 'prompt' field)
     - agent: Spawns a subagent with tool access (requires 'prompt' field)
+    - mcp_tool: Calls a tool on a configured MCP server (requires 'server' and 'tool' fields)
     """
 
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra='forbid')
 
     event: str = Field(..., description='Event name (e.g., PreToolUse, PostToolUse, Notification)')
     matcher: str | None = Field('', description='Regex pattern for matching')
-    type: Literal['command', 'http', 'prompt', 'agent'] = Field(
+    type: Literal['command', 'http', 'prompt', 'agent', 'mcp_tool'] = Field(
         'command',
-        description='Hook type: command, http, prompt, or agent',
+        description='Hook type: command, http, prompt, agent, or mcp_tool',
     )
 
     # Common fields (all hook types)
@@ -664,7 +707,9 @@ class HookEvent(BaseModel):
     )
     timeout: int | None = Field(
         None,
-        description='Timeout in seconds (default varies by type: 600 for command, 30 for prompt, 60 for agent)',
+        gt=0,
+        description='Timeout in seconds; must be positive '
+        '(default varies by type: 600 for command, 30 for prompt, 60 for agent)',
     )
     id: str | None = Field(
         None,
@@ -681,10 +726,21 @@ class HookEvent(BaseModel):
         None,
         description='Optional config file reference to pass as argument to hook command',
     )
+    args: list[str] | None = Field(
+        None,
+        description='Argument list switching the command to exec form: the executable is spawned '
+        'directly with these arguments appended, without any shell parsing',
+    )
     async_execution: bool | None = Field(
         None,
         alias='async',
         description='If true, runs command in background without blocking',
+    )
+    async_rewake: bool | None = Field(
+        None,
+        alias='async-rewake',
+        description='If true, runs the command in the background and wakes the model when it exits '
+        'with code 2 (blocking error); implies async',
     )
     shell: Literal['bash', 'powershell'] | None = Field(
         None,
@@ -715,23 +771,81 @@ class HookEvent(BaseModel):
         None,
         description='Model to use for prompt or agent hook evaluation',
     )
+    continue_on_block: bool | None = Field(
+        None,
+        alias='continue-on-block',
+        description='If true, a denying prompt-hook evaluation (ok: false) feeds its reason back to '
+        'the agent and the turn continues instead of ending; prompt hooks only',
+    )
+
+    # MCP tool hook fields
+    server: str | None = Field(
+        None,
+        description='Name of an already-configured MCP server to invoke (required for mcp_tool hooks)',
+    )
+    tool: str | None = Field(
+        None,
+        description='Name of the tool on the MCP server to call (required for mcp_tool hooks)',
+    )
+    input: dict[str, Any] | None = Field(
+        None,
+        description='Arguments passed to the MCP tool; string values support ${path} interpolation '
+        'from the hook input JSON (e.g., "${tool_input.file_path}")',
+    )
+
+    @field_validator('event')
+    @classmethod
+    def warn_on_unknown_event_name(cls, v: str) -> str:
+        """Warn when the event name is not one Claude Code recognizes.
+
+        Claude Code validates hook event names against a fixed set and rejects
+        unknown names at configuration load time. A warning (not an error)
+        keeps configurations written for a newer Claude Code release
+        installable while still surfacing typos.
+
+        Args:
+            v: The event name to check.
+
+        Returns:
+            The event name unchanged.
+        """
+        if v and v not in HOOK_EVENT_NAMES:
+            warnings.warn(
+                f"Unknown hook event name '{v}'. Claude Code 2.1.238 recognizes: "
+                f'{", ".join(sorted(HOOK_EVENT_NAMES))}. An unrecognized name is written to the '
+                'generated configuration as-is, and Claude Code rejects it at load time.',
+                UserWarning,
+                stacklevel=2,
+            )
+        return v
 
     @model_validator(mode='after')
     def validate_hook_type_fields(self) -> 'HookEvent':
         """Validate that fields match the hook type per official Claude Code spec.
 
         Field Matrix:
-        | Field            | command   | http       | prompt    | agent     |
-        |------------------|-----------|------------|-----------|-----------|
-        | command          | REQUIRED  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | config           | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | async            | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | shell            | Optional  | FORBIDDEN  | FORBIDDEN | FORBIDDEN |
-        | url              | FORBIDDEN | REQUIRED   | FORBIDDEN | FORBIDDEN |
-        | headers          | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
-        | allowed-env-vars | FORBIDDEN | Optional   | FORBIDDEN | FORBIDDEN |
-        | prompt           | FORBIDDEN | FORBIDDEN  | REQUIRED  | REQUIRED  |
-        | model            | FORBIDDEN | FORBIDDEN  | Optional  | Optional  |
+        | Field             | command   | http      | prompt    | agent     | mcp_tool  |
+        |-------------------|-----------|-----------|-----------|-----------|-----------|
+        | command           | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | config            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | args              | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | async             | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | async-rewake      | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | shell             | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | url               | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | headers           | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | allowed-env-vars  | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
+        | prompt            | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  | FORBIDDEN |
+        | model             | FORBIDDEN | FORBIDDEN | Optional  | Optional  | FORBIDDEN |
+        | continue-on-block | FORBIDDEN | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
+        | server            | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | REQUIRED  |
+        | tool              | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | REQUIRED  |
+        | input             | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | Optional  |
+
+        On command hooks, 'shell' is additionally forbidden together with
+        'args', because 'args' switches the command to exec form, which
+        spawns the executable directly without any shell. On http hooks,
+        'url' must be a valid http:// or https:// URL.
 
         Returns:
             The validated HookEvent instance.
@@ -739,106 +853,78 @@ class HookEvent(BaseModel):
         Raises:
             ValueError: If field requirements are not met for the hook type.
         """
-        # Fields exclusive to each type group (typed as object for type checker compatibility)
-        _command_only_fields: dict[str, object] = {
-            'command': self.command,
-            'config': self.config,
-            'async': self.async_execution,
-            'shell': self.shell,
-        }
-        _http_only_fields: dict[str, object] = {
-            'url': self.url,
-            'headers': self.headers,
-            'allowed-env-vars': self.allowed_env_vars,
-        }
-        _prompt_agent_fields: dict[str, object] = {
-            'prompt': self.prompt,
-            'model': self.model,
-        }
+        # (YAML field name, value, hook types that may set it, guidance appended to the error)
+        _field_rules: tuple[tuple[str, object, tuple[str, ...], str], ...] = (
+            ('command', self.command, ('command',), "Use type 'command' for script-based hooks."),
+            ('config', self.config, ('command',), "Use type 'command' for script-based hooks."),
+            ('args', self.args, ('command',), "Use type 'command' for script-based hooks."),
+            ('async', self.async_execution, ('command',), "Use type 'command' for script-based hooks."),
+            ('async-rewake', self.async_rewake, ('command',), "Use type 'command' for script-based hooks."),
+            ('shell', self.shell, ('command',), "Use type 'command' for script-based hooks."),
+            ('url', self.url, ('http',), "Use type 'http' for HTTP webhook hooks."),
+            ('headers', self.headers, ('http',), "Use type 'http' for HTTP webhook hooks."),
+            ('allowed-env-vars', self.allowed_env_vars, ('http',), "Use type 'http' for HTTP webhook hooks."),
+            ('prompt', self.prompt, ('prompt', 'agent'), "Use type 'prompt' or 'agent' for LLM-based hooks."),
+            ('model', self.model, ('prompt', 'agent'), "Use type 'prompt' or 'agent' for LLM-based hooks."),
+            (
+                'continue-on-block',
+                self.continue_on_block,
+                ('prompt',),
+                "Claude Code supports 'continue-on-block' on prompt hooks only.",
+            ),
+            ('server', self.server, ('mcp_tool',), "Use type 'mcp_tool' for MCP tool hooks."),
+            ('tool', self.tool, ('mcp_tool',), "Use type 'mcp_tool' for MCP tool hooks."),
+            ('input', self.input, ('mcp_tool',), "Use type 'mcp_tool' for MCP tool hooks."),
+        )
+        for field_name, value, allowed_types, guidance in _field_rules:
+            if value is not None and self.type not in allowed_types:
+                raise ValueError(
+                    f"Hook type '{self.type}' cannot have '{field_name}' field. {guidance}",
+                )
 
         if self.type == 'command':
             if not self.command:
                 raise ValueError(
                     "Hook type 'command' requires 'command' field. "
-                    "Either provide a command or change type to 'http', 'prompt', or 'agent'.",
+                    "Either provide a command or change type to 'http', 'prompt', 'agent', or 'mcp_tool'.",
                 )
-            for field_name, value in _http_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'command' cannot have '{field_name}' field. "
-                        f"Use type 'http' for HTTP webhook hooks.",
-                    )
-            if self.prompt is not None:
+            if self.args is not None and self.shell is not None:
                 raise ValueError(
-                    "Hook type 'command' cannot have 'prompt' field. "
-                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
-                )
-            if self.model is not None:
-                raise ValueError(
-                    "Hook type 'command' cannot have 'model' field. "
-                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
+                    "Hook type 'command' cannot combine 'shell' with 'args'. "
+                    "'args' switches the command to exec form, which spawns the executable "
+                    'directly without any shell.',
                 )
 
         elif self.type == 'http':
             if not self.url:
                 raise ValueError(
                     "Hook type 'http' requires 'url' field. "
-                    "Provide the URL to send the HTTP POST request to.",
+                    'Provide the URL to send the HTTP POST request to.',
                 )
-            for field_name, value in _command_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'http' cannot have '{field_name}' field. "
-                        f"Use type 'command' for script-based hooks.",
-                    )
-            if self.prompt is not None:
+            parsed_url = urlparse(self.url)
+            if parsed_url.scheme not in ('http', 'https') or not parsed_url.netloc:
                 raise ValueError(
-                    "Hook type 'http' cannot have 'prompt' field. "
-                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
-                )
-            if self.model is not None:
-                raise ValueError(
-                    "Hook type 'http' cannot have 'model' field. "
-                    "Use type 'prompt' or 'agent' for LLM-based hooks.",
+                    f"Hook type 'http' requires 'url' to be a valid http:// or https:// URL, got '{self.url}'.",
                 )
 
-        elif self.type == 'prompt':
+        elif self.type in ('prompt', 'agent'):
             if not self.prompt:
                 raise ValueError(
-                    "Hook type 'prompt' requires 'prompt' field. "
-                    "Either provide a prompt or change type to 'command'.",
+                    f"Hook type '{self.type}' requires 'prompt' field. "
+                    'Provide the prompt for the LLM evaluation.',
                 )
-            for field_name, value in _command_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'prompt' cannot have '{field_name}' field. "
-                        f"Use type 'command' for script-based hooks.",
-                    )
-            for field_name, value in _http_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'prompt' cannot have '{field_name}' field. "
-                        f"Use type 'http' for HTTP webhook hooks.",
-                    )
 
-        elif self.type == 'agent':
-            if not self.prompt:
+        elif self.type == 'mcp_tool':
+            if not self.server:
                 raise ValueError(
-                    "Hook type 'agent' requires 'prompt' field. "
-                    "Provide the prompt for the subagent evaluation.",
+                    "Hook type 'mcp_tool' requires 'server' field. "
+                    'Provide the name of an already-configured MCP server.',
                 )
-            for field_name, value in _command_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'agent' cannot have '{field_name}' field. "
-                        f"Use type 'command' for script-based hooks.",
-                    )
-            for field_name, value in _http_only_fields.items():
-                if value is not None:
-                    raise ValueError(
-                        f"Hook type 'agent' cannot have '{field_name}' field. "
-                        f"Use type 'http' for HTTP webhook hooks.",
-                    )
+            if not self.tool:
+                raise ValueError(
+                    "Hook type 'mcp_tool' requires 'tool' field. "
+                    'Provide the name of the tool to call on the MCP server.',
+                )
 
         return self
 
@@ -1936,7 +2022,7 @@ class EnvironmentConfig(BaseModel):
         # Only command hooks use file references; http/prompt/agent hooks are excluded
         for event in self.hooks.events:
             # Skip non-command hooks - only command hooks reference files
-            if event.type in ('prompt', 'http', 'agent'):
+            if event.type in ('prompt', 'http', 'agent', 'mcp_tool'):
                 continue
 
             # For command hooks, validate command and config files

@@ -114,11 +114,13 @@ hooks:
       matcher: "Grep"
       type: "command"
       command: "e2e_test_hook_cjs.cjs"
-    # Prompt hook example
+    # Prompt hook example (continue-on-block feeds a deny reason back to the
+    # agent and lets the turn continue)
     - event: "PreToolUse"
       matcher: "Bash"
       type: "prompt"
       prompt: "Consider security implications before executing bash commands"
+      continue-on-block: true
       timeout: 30
     # HTTP hook example
     - event: "PostToolUse"
@@ -141,15 +143,37 @@ hooks:
       timeout: 60
       if: "Bash(rm *)"
       once: true
-    # Command hook with async and shell (id makes it claimable by components)
+    # Command hook with async, async-rewake, and shell (id makes it claimable
+    # by components)
     - event: "Notification"
       matcher: ""
       type: "command"
       command: "e2e_test_hook.py"
       async: true
+      async-rewake: true
       shell: "bash"
       status-message: "Running notification handler..."
       id: "e2e-notify"
+    # Command hook in exec form (args spawns the launcher directly, no shell;
+    # id makes it claimable by components alongside its script file)
+    - event: "PreToolUse"
+      matcher: "Task"
+      type: "command"
+      command: "e2e_test_hook.py"
+      args:
+        - "--strict"
+        - "--level"
+        - "2"
+      id: "e2e-exec"
+    # MCP tool hook example (calls a tool on an already-configured MCP server)
+    - event: "PostToolUse"
+      matcher: "Edit"
+      type: "mcp_tool"
+      server: "e2e-http-server"
+      tool: "lint_file"
+      input:
+        file_path: "${tool_input.file_path}"
+      timeout: 20
 
 # MCP Servers - all transport types
 mcp-servers:
@@ -292,6 +316,7 @@ components:
       hooks:
         - "e2e-post-edit"
         - "e2e-notify"
+        - "e2e-exec"
         - "hooks/e2e_test_hook.py"
         - "configs/e2e-hook-config.yaml"
   - name: "mcp-http"

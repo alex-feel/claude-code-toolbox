@@ -912,7 +912,7 @@ status-line:
 
 ### Hooks
 
-Event-driven hooks that run automatically during Claude Code sessions. Four hook types are supported: `command`, `http`, `prompt`, and `agent`.
+Event-driven hooks that run automatically during Claude Code sessions. Five hook types are supported: `command`, `http`, `prompt`, `agent`, and `mcp_tool`.
 
 - **Type:** `Hooks | None`
 - **Default:** `None`
@@ -923,38 +923,41 @@ Event-driven hooks that run automatically during Claude Code sessions. Four hook
 
 #### Hook Types
 
-| Type      | Description                                            | Required Field |
-|-----------|--------------------------------------------------------|----------------|
-| `command` | Executes a shell command or script (default)           | `command`      |
-| `http`    | Sends an HTTP POST request to a URL                    | `url`          |
-| `prompt`  | Single-turn LLM evaluation with no tool access         | `prompt`       |
-| `agent`   | Spawns a subagent with tool access for evaluation      | `prompt`       |
+| Type       | Description                                            | Required Fields  |
+|------------|--------------------------------------------------------|------------------|
+| `command`  | Executes a shell command or script (default)           | `command`        |
+| `http`     | Sends an HTTP POST request to a URL                    | `url`            |
+| `prompt`   | Single-turn LLM evaluation with no tool access         | `prompt`         |
+| `agent`    | Spawns a subagent with tool access for evaluation      | `prompt`         |
+| `mcp_tool` | Calls a tool on an already-configured MCP server       | `server`, `tool` |
 
 #### Common Fields (All Hook Types)
 
-These fields apply to all four hook types:
+These fields apply to all five hook types:
 
 | Field            | YAML Key         | Type   | Required | Description                                                                                                                                                          |
 |------------------|------------------|--------|----------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`)                                                                                                |
+| `event`          | `event`          | `str`  | Yes      | Event name (for example, `PreToolUse`, `PostToolUse`, `Notification`); see [Recognized Event Names](#recognized-event-names)                                         |
 | `matcher`        | `matcher`        | `str`  | No       | Regex pattern for matching (default: `""`)                                                                                                                           |
-| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, or `agent` (default: `command`)                                                                                              |
+| `type`           | `type`           | `str`  | No       | Hook type: `command`, `http`, `prompt`, `agent`, or `mcp_tool` (default: `command`)                                                                                  |
 | `if`             | `if`             | `str`  | No       | Permission rule syntax filter (for example, `"Bash(git *)"`, `"Edit(*.ts)"`)                                                                                         |
 | `status-message` | `status-message` | `str`  | No       | Custom spinner message displayed while the hook runs                                                                                                                 |
 | `once`           | `once`           | `bool` | No       | If true, runs only once per session then is removed (skills only)                                                                                                    |
-| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)                                                                             |
+| `timeout`        | `timeout`        | `int`  | No       | Timeout in seconds; must be positive (defaults vary by type: 600 for command, 30 for prompt, 60 for agent)                                                           |
 | `id`             | `id`             | `str`  | No       | Stable identifier used solely as a [`components`](#components) selector for this event; unique across events when present, never written to the generated hooks JSON |
 
 #### Type-Specific Fields
 
 ##### Command Hook Fields
 
-| Field     | YAML Key  | Type   | Required | Description                                                                                 |
-|-----------|-----------|--------|----------|---------------------------------------------------------------------------------------------|
-| `command` | `command` | `str`  | Yes      | Script filename (must exist in `hooks.files`)                                               |
-| `config`  | `config`  | `str`  | No       | Config file reference (must exist in `hooks.files`). Toolbox-specific: appended as argument |
-| `async`   | `async`   | `bool` | No       | If true, runs the command in the background without blocking                                |
-| `shell`   | `shell`   | `str`  | No       | Shell to use: `"bash"` (default) or `"powershell"`                                          |
+| Field          | YAML Key       | Type        | Required | Description                                                                                 |
+|----------------|----------------|-------------|----------|---------------------------------------------------------------------------------------------|
+| `command`      | `command`      | `str`       | Yes      | Script filename (must exist in `hooks.files`)                                               |
+| `config`       | `config`       | `str`       | No       | Config file reference (must exist in `hooks.files`). Toolbox-specific: appended as argument |
+| `args`         | `args`         | `list[str]` | No       | Argument list switching the command to exec form (see [Command Hooks](#command-hooks))      |
+| `async`        | `async`        | `bool`      | No       | If true, runs the command in the background without blocking                                |
+| `async-rewake` | `async-rewake` | `bool`      | No       | If true, runs in the background and wakes the model on exit code 2; implies `async`         |
+| `shell`        | `shell`        | `str`       | No       | Shell to use: `"bash"` (default) or `"powershell"`; cannot be combined with `args`          |
 
 ##### HTTP Hook Fields
 
@@ -966,38 +969,63 @@ These fields apply to all four hook types:
 
 ##### Prompt and Agent Hook Fields
 
-| Field    | YAML Key | Type  | Required | Description                                       |
-|----------|----------|-------|----------|---------------------------------------------------|
-| `prompt` | `prompt` | `str` | Yes      | Prompt text for LLM evaluation                    |
-| `model`  | `model`  | `str` | No       | Model to use for the evaluation                   |
+| Field               | YAML Key            | Type   | Required | Description                                                                                     |
+|---------------------|---------------------|--------|----------|-------------------------------------------------------------------------------------------------|
+| `prompt`            | `prompt`            | `str`  | Yes      | Prompt text for LLM evaluation                                                                  |
+| `model`             | `model`             | `str`  | No       | Model to use for the evaluation                                                                 |
+| `continue-on-block` | `continue-on-block` | `bool` | No       | Prompt hooks only: a deny feeds its reason back to the agent and the turn continues (see below) |
+
+##### MCP Tool Hook Fields
+
+| Field    | YAML Key | Type   | Required | Description                                                                                    |
+|----------|----------|--------|----------|------------------------------------------------------------------------------------------------|
+| `server` | `server` | `str`  | Yes      | Name of an already-configured MCP server to invoke                                             |
+| `tool`   | `tool`   | `str`  | Yes      | Name of the tool on that server to call                                                        |
+| `input`  | `input`  | `dict` | No       | Arguments passed to the tool; string values support `${path}` interpolation from the hook JSON |
 
 #### Field Matrix
 
 Complete required/forbidden field matrix across all hook types:
 
-| Field              | `command` | `http`    | `prompt`  | `agent`   |
-|--------------------|-----------|-----------|-----------|-----------|
-| `command`          | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `config`           | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `async`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `shell`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN |
-| `url`              | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN |
-| `headers`          | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `allowed-env-vars` | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN |
-| `prompt`           | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  |
-| `model`            | FORBIDDEN | FORBIDDEN | Optional  | Optional  |
-| `if`               | Optional  | Optional  | Optional  | Optional  |
-| `status-message`   | Optional  | Optional  | Optional  | Optional  |
-| `once`             | Optional  | Optional  | Optional  | Optional  |
-| `timeout`          | Optional  | Optional  | Optional  | Optional  |
+| Field               | `command` | `http`    | `prompt`  | `agent`   | `mcp_tool` |
+|---------------------|-----------|-----------|-----------|-----------|------------|
+| `command`           | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `config`            | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `args`              | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `async`             | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `async-rewake`      | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `shell`             | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `url`               | FORBIDDEN | REQUIRED  | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `headers`           | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `allowed-env-vars`  | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN | FORBIDDEN  |
+| `prompt`            | FORBIDDEN | FORBIDDEN | REQUIRED  | REQUIRED  | FORBIDDEN  |
+| `model`             | FORBIDDEN | FORBIDDEN | Optional  | Optional  | FORBIDDEN  |
+| `continue-on-block` | FORBIDDEN | FORBIDDEN | Optional  | FORBIDDEN | FORBIDDEN  |
+| `server`            | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | REQUIRED   |
+| `tool`              | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | REQUIRED   |
+| `input`             | FORBIDDEN | FORBIDDEN | FORBIDDEN | FORBIDDEN | Optional   |
+| `if`                | Optional  | Optional  | Optional  | Optional  | Optional   |
+| `status-message`    | Optional  | Optional  | Optional  | Optional  | Optional   |
+| `once`              | Optional  | Optional  | Optional  | Optional  | Optional   |
+| `timeout`           | Optional  | Optional  | Optional  | Optional  | Optional   |
 
-Setting a field marked FORBIDDEN on a hook type produces a validation error.
+Setting a field marked FORBIDDEN on a hook type produces a validation error. Two combinations are additionally rejected on command hooks: `shell` together with `args` (exec form spawns the executable without a shell), and a non-positive `timeout` on any hook type.
+
+#### Recognized Event Names
+
+Claude Code 2.1.238 recognizes exactly these hook event names and rejects any other name at configuration load time:
+
+`ConfigChange`, `CwdChanged`, `DirectoryAdded`, `Elicitation`, `ElicitationResult`, `FileChanged`, `InstructionsLoaded`, `MessageDisplay`, `Notification`, `PermissionDenied`, `PermissionRequest`, `PostCompact`, `PostToolBatch`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `PreToolUse`, `SessionEnd`, `SessionStart`, `Setup`, `Stop`, `StopFailure`, `SubagentStart`, `SubagentStop`, `TaskCompleted`, `TaskCreated`, `TeammateIdle`, `UserPromptExpansion`, `UserPromptSubmit`, `WorktreeCreate`, `WorktreeRemove`
+
+The toolbox warns about an event name outside this set but still writes it, so a configuration written for a newer Claude Code release keeps installing; a typo surfaces as the warning at setup time and as a load-time rejection by Claude Code.
 
 #### Command Hooks
 
 Execute a script file when the event fires. The `command` field must reference a filename listed in `hooks.files`. The toolbox processes command paths by prepending the appropriate runtime (`uv run` for `.py`, `node` for `.js`/`.mjs`/`.cjs`). Built file paths are double-quoted in the generated command, so hooks directories containing spaces (for example a Windows home like `C:/Users/John Smith`) work in every shell.
 
 The `config` field is a toolbox-specific extension: when set, the config file path is appended as an argument to the command. This field is not part of the official Claude Code hooks specification.
+
+Setting `args` switches the hook to exec form: Claude Code resolves `command` as an executable and spawns it directly with the argument list, without any shell. The toolbox folds the launcher into that shape -- for a Python script it emits `command: "uv"` with `run --no-project --python 3.12`, the resolved script path, the config path (when set), and your `args` entries as the argument list; for a JavaScript script it emits `command: "node"` the same way. No element is quoted, because there is no shell to word-split, so spaced hooks directories are safe in exec form too. `shell` cannot be combined with `args`.
 
 ```yaml
 hooks:
@@ -1010,10 +1038,16 @@ hooks:
       type: "command"
       command: "linter.py"
       config: "linter-config.yaml"
+    - event: "PostToolUse"
+      matcher: "Write"
+      type: "command"
+      command: "linter.py"
+      args: ["--fix", "--level", "2"]
     - event: "Notification"
       type: "command"
       command: "linter.py"
       async: true
+      async-rewake: true
       shell: "bash"
       status-message: "Running notification handler..."
 ```
@@ -1042,6 +1076,8 @@ hooks:
 
 Send a prompt to the LLM for single-turn evaluation when the event fires. No tool access is available.
 
+By default, a denying evaluation (`ok: false`) ends the turn. With `continue-on-block: true`, the deny still blocks the matched action, but its reason is fed back to the agent and the turn continues, so a steering hook can redirect the agent within the same turn. Claude Code supports this setting although its public hooks reference does not document it (verified against Claude Code 2.1.238); it applies to prompt hooks only.
+
 ```yaml
 hooks:
   events:
@@ -1050,6 +1086,7 @@ hooks:
       type: "prompt"
       prompt: "Check if this bash command is safe to execute"
       model: "sonnet"
+      continue-on-block: true
       timeout: 30
 ```
 
@@ -1070,9 +1107,26 @@ hooks:
       once: true
 ```
 
+#### MCP Tool Hooks
+
+Call a tool on an already-configured MCP server when the event fires. The server must be connected in the session the hook runs in (for example, one declared under [`mcp-servers`](#mcp-servers)); the toolbox passes `server`, `tool`, and `input` through to the generated configuration as-is. String values inside `input` support `${path}` interpolation from the hook input JSON.
+
+```yaml
+hooks:
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit"
+      type: "mcp_tool"
+      server: "linter"
+      tool: "lint_file"
+      input:
+        file_path: "${tool_input.file_path}"
+      timeout: 20
+```
+
 #### File Consistency Rules
 
-Hook file references are validated for **command hooks only**. HTTP, prompt, and agent hooks do not use file references and are excluded from file consistency validation.
+Hook file references are validated for **command hooks only**. HTTP, prompt, agent, and MCP tool hooks do not use file references and are excluded from file consistency validation.
 
 The rules are enforced in two layers. The Pydantic model validates configurations that do not declare `inherit`; for a config that declares `inherit`, cross-references are decidable only on the resolved composition, so the model skips them. The setup script then validates every fully resolved configuration at runtime -- before the admin check, remote file validation, and any installation work -- listing all violations and exiting with code 1. When component selection filters the configuration, the setup re-validates the filtered result: a dangling event or `status-line` reference is still an error, while a file stranded by a deselected component is tolerated (see [Component Selection](#components)). A composition whose hook events or status-line reference a missing hook file therefore fails at setup time, not at hook execution.
 
