@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.2...v7.3.0) (2026-08-21)
+
+
+### Features
+
+* extend hooks to the full Claude Code hook configuration contract ([79d36d0](https://github.com/alex-feel/claude-code-toolbox/commit/79d36d0035bb7ef4773b3275d92d9195e0eaa51d))
+
 ## [7.2.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.1...v7.2.2) (2026-08-10)
 
 
