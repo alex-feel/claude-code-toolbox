@@ -316,22 +316,23 @@ Retry logic for GitHub API rate limiting: 10 attempts with linear additive backo
 
 ### Hooks Configuration Structure
 
-Hooks support four types matching the official Claude Code hooks specification:
+Hooks support five types matching the official Claude Code hooks specification:
 
-| Type      | Required Field | Description                                        |
-|-----------|----------------|----------------------------------------------------|
-| `command` | `command`      | Executes a shell command or script (default)       |
-| `http`    | `url`          | Sends an HTTP POST request                         |
-| `prompt`  | `prompt`       | Single-turn LLM evaluation (no tool access)        |
-| `agent`   | `prompt`       | Spawns a subagent with tool access for evaluation  |
+| Type       | Required Fields  | Description                                        |
+|------------|------------------|----------------------------------------------------|
+| `command`  | `command`        | Executes a shell command or script (default)       |
+| `http`     | `url`            | Sends an HTTP POST request                         |
+| `prompt`   | `prompt`         | Single-turn LLM evaluation (no tool access)        |
+| `agent`    | `prompt`         | Spawns a subagent with tool access for evaluation  |
+| `mcp_tool` | `server`, `tool` | Calls a tool on an already-configured MCP server   |
 
-Common fields available on all types: `if`, `status-message`, `once`, `timeout`.
+Common fields available on all types: `if`, `status-message`, `once`, `timeout` (must be positive; non-positive values fail model validation and are warn-skipped at runtime).
 
-Only `command` hooks reference files from `hooks.files`. Other types are pure pass-through. `_apply_common_hook_fields()` applies shared fields to all types.
+Only `command` hooks reference files from `hooks.files`. Other types are pure pass-through. `_apply_common_hook_fields()` applies shared fields to all types. Event names are checked against `HOOK_EVENT_NAMES` (31 names Claude Code 2.1.238 recognizes; byte-identical frozensets in `setup_environment.py` and `environment_config.py`, parity enforced by `tests/scripts/models/test_hook_event_names_parity.py`): an unknown name warns but still installs, so configs written for newer Claude Code releases keep working. `_build_hooks_json()` also warns about (and ignores) YAML keys a hook type does not support; the `HookEvent` model rejects them outright (`extra='forbid'`).
 
 **Consistency validation:** the model's `validate_hooks_files_consistency` (skipped under `inherit`) and its runtime twin of the same name in `setup_environment.py` (running on the resolved config at the `main()` choke point) enforce the same rules: every `hooks.files` entry is referenced by a command hook or `status-line`, every command hook's `command`/`config` and the `status-line` `file`/`config` exist in `hooks.files` (`command` and `status-line.file` are exact basename matches; `config` references match after query-strip plus basename extraction), and `status-line` without `hooks` is an error.
 
-**Command construction:** the shared `_build_file_command()` builds hook and `statusLine` command strings identically (Python via `uv run`, JavaScript via `node`, anything else executes directly) with built paths double-quoted so spaced hooks directories survive shell word-splitting. In `_build_hooks_json()`, a command is a file reference when it matches a `hooks.files` basename (even with spaces) or contains no spaces; anything else passes through as-is.
+**Command construction:** the shared `_build_file_command()` builds hook and `statusLine` command strings identically (launcher selection via `_hook_launcher_args()`: Python via `uv run`, JavaScript via `node`, anything else executes directly) with built paths double-quoted so spaced hooks directories survive shell word-splitting. In `_build_hooks_json()`, a command is a file reference when it matches a `hooks.files` basename (even with spaces) or contains no spaces; anything else passes through as-is. When a command hook declares `args`, `_build_file_exec_command()` produces the exec form instead: the launcher executable becomes `command` and the launcher arguments, resolved script path, config path, and user `args` become the unquoted `args` list (no shell is involved; `shell` is warned about and dropped). The exec-form fold applies ONLY to commands listed in `hooks.files`; any unlisted command -- bare name or absolute path, with or without spaces -- stays verbatim as the executable (the shell form's no-space heuristic never reroutes it into the hooks directory).
 
 ```yaml
 hooks:
@@ -346,9 +347,10 @@ hooks:
 ```
 
 Type-specific fields (setting a field on the wrong type produces a validation error):
-- **command**: `command` (required), `config`, `async`, `shell`
-- **http**: `url` (required), `headers`, `allowed-env-vars`
-- **prompt/agent**: `prompt` (required), `model`
+- **command**: `command` (required), `config`, `args` (exec form; conflicts with `shell`), `async`, `async-rewake` (emitted as `asyncRewake`), `shell`
+- **http**: `url` (required; must be an http/https URL), `headers`, `allowed-env-vars`
+- **prompt/agent**: `prompt` (required), `model`; prompt only: `continue-on-block` (emitted as `continueOnBlock`)
+- **mcp_tool**: `server` (required), `tool` (required), `input`
 
 ### Two-Layer Naming Convention (Sub-Keys)
 

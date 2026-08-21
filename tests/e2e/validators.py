@@ -510,7 +510,7 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
         ]
     }
 
-    Supports all 4 hook types: command, http, prompt, agent.
+    Supports all 5 hook types: command, http, prompt, agent, mcp_tool.
     Also validates common fields (if, status-message, once, timeout) pass-through.
 
     Args:
@@ -563,25 +563,60 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                             command_file = event_config.get('command', '')
                             command_file_lower = command_file.lower()
 
-                            # Check Python prefix
-                            if (
-                                command_file_lower.endswith(('.py', '.pyw'))
-                                and 'uv run' not in command
-                            ):
-                                errors.append(
-                                    f"Python hook '{command_file}' missing 'uv run' prefix "
-                                    f'in command: {command}',
-                                )
+                            if event_config.get('args') is not None:
+                                # Exec form: the launcher is the executable and
+                                # the script path plus user args live in 'args'
+                                actual_args = hook.get('args')
+                                if not isinstance(actual_args, list):
+                                    errors.append(
+                                        f"Exec-form hook '{event_name}' missing 'args' list",
+                                    )
+                                else:
+                                    if command_file_lower.endswith(('.py', '.pyw')) and command != 'uv':
+                                        errors.append(
+                                            f"Exec-form Python hook '{command_file}' must spawn 'uv', "
+                                            f'got: {command}',
+                                        )
+                                    elif (
+                                        command_file_lower.endswith(('.js', '.mjs', '.cjs'))
+                                        and command != 'node'
+                                    ):
+                                        errors.append(
+                                            f"Exec-form JavaScript hook '{command_file}' must spawn 'node', "
+                                            f'got: {command}',
+                                        )
+                                    expected_tail = [str(a) for a in event_config['args']]
+                                    if expected_tail and actual_args[-len(expected_tail):] != expected_tail:
+                                        errors.append(
+                                            f"Exec-form hook '{event_name}' args tail mismatch: "
+                                            f'expected {expected_tail!r}, got {actual_args!r}',
+                                        )
+                            else:
+                                # Check Python prefix
+                                if (
+                                    command_file_lower.endswith(('.py', '.pyw'))
+                                    and 'uv run' not in command
+                                ):
+                                    errors.append(
+                                        f"Python hook '{command_file}' missing 'uv run' prefix "
+                                        f'in command: {command}',
+                                    )
 
-                            # Check JavaScript prefix
-                            elif (
-                                command_file_lower.endswith(('.js', '.mjs', '.cjs'))
-                                and not command.startswith('node ')
-                            ):
-                                errors.append(
-                                    f"JavaScript hook '{command_file}' missing 'node' prefix "
-                                    f'in command: {command}',
-                                )
+                                # Check JavaScript prefix
+                                elif (
+                                    command_file_lower.endswith(('.js', '.mjs', '.cjs'))
+                                    and not command.startswith('node ')
+                                ):
+                                    errors.append(
+                                        f"JavaScript hook '{command_file}' missing 'node' prefix "
+                                        f'in command: {command}',
+                                    )
+
+                                if event_config.get('shell') is not None and hook.get('shell') != event_config['shell']:
+                                    errors.append(
+                                        f"Hook '{event_name}' shell field mismatch: "
+                                        f"expected {event_config['shell']!r}, got {hook.get('shell')!r}",
+                                    )
 
                             # Validate command-specific optional fields pass-through
                             if event_config.get('async') is not None and hook.get('async') != event_config['async']:
@@ -589,10 +624,11 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                     f"Hook '{event_name}' async field mismatch: "
                                     f"expected {event_config['async']!r}, got {hook.get('async')!r}",
                                 )
-                            if event_config.get('shell') is not None and hook.get('shell') != event_config['shell']:
+                            expected_rewake = event_config.get('async-rewake')
+                            if expected_rewake is not None and hook.get('asyncRewake') != expected_rewake:
                                 errors.append(
-                                    f"Hook '{event_name}' shell field mismatch: "
-                                    f"expected {event_config['shell']!r}, got {hook.get('shell')!r}",
+                                    f"Hook '{event_name}' asyncRewake field mismatch: "
+                                    f"expected {expected_rewake!r}, got {hook.get('asyncRewake')!r}",
                                 )
 
                         elif hook_type == 'http':
@@ -620,6 +656,30 @@ def _validate_hooks_structure(actual: dict[str, Any], config: dict[str, Any]) ->
                                 errors.append(
                                     f"{hook_type.capitalize()} hook '{event_name}' model mismatch: "
                                     f"expected {expected_model!r}, got {hook.get('model')!r}",
+                                )
+                            expected_cob = event_config.get('continue-on-block')
+                            if expected_cob is not None and hook.get('continueOnBlock') != expected_cob:
+                                errors.append(
+                                    f"Prompt hook '{event_name}' continueOnBlock mismatch: "
+                                    f"expected {expected_cob!r}, got {hook.get('continueOnBlock')!r}",
+                                )
+
+                        elif hook_type == 'mcp_tool':
+                            if hook.get('server') != event_config.get('server'):
+                                errors.append(
+                                    f"MCP tool hook '{event_name}' server mismatch: "
+                                    f"expected {event_config.get('server')!r}, got {hook.get('server')!r}",
+                                )
+                            if hook.get('tool') != event_config.get('tool'):
+                                errors.append(
+                                    f"MCP tool hook '{event_name}' tool mismatch: "
+                                    f"expected {event_config.get('tool')!r}, got {hook.get('tool')!r}",
+                                )
+                            expected_input = event_config.get('input')
+                            if expected_input is not None and hook.get('input') != expected_input:
+                                errors.append(
+                                    f"MCP tool hook '{event_name}' input mismatch: "
+                                    f"expected {expected_input!r}, got {hook.get('input')!r}",
                                 )
 
                         # Validate common fields pass-through for all types

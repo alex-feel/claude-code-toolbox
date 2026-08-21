@@ -4844,6 +4844,328 @@ class TestBuildHooksJson:
         result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
         assert len(result['PostToolUse']) == 2
 
+    def test_unknown_type_skipped_without_empty_group(self, capsys):
+        """Unknown hook type is skipped and leaves no empty matcher group."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'webhook',
+                             'url': 'http://localhost:8080/hook'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'Unknown hook type: webhook' in capsys.readouterr().out
+
+
+class TestBuildHooksJsonSchemaFields:
+    """Tests for hook fields mirroring Claude Code's hook configuration schema."""
+
+    def test_prompt_continue_on_block_emitted(self):
+        """Prompt hook continue-on-block is emitted as continueOnBlock."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Search|Grep', 'type': 'prompt',
+                             'prompt': 'Route search calls', 'continue-on-block': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['continueOnBlock'] is True
+
+    def test_prompt_continue_on_block_false_emitted(self):
+        """An explicit continue-on-block: false is still emitted."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'Check safety', 'continue-on-block': False}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['continueOnBlock'] is False
+
+    def test_prompt_continue_on_block_absent(self):
+        """Omitted continue-on-block never reaches the generated JSON."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'Check safety'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert 'continueOnBlock' not in hook
+
+    def test_command_async_rewake_emitted(self):
+        """Command hook async-rewake is emitted as asyncRewake."""
+        hooks = {'events': [{'event': 'Stop', 'matcher': '', 'type': 'command',
+                             'command': 'verify.py', 'async-rewake': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['Stop'][0]['hooks'][0]
+        assert hook['asyncRewake'] is True
+
+    def test_command_async_rewake_absent(self):
+        """Omitted async-rewake never reaches the generated JSON."""
+        hooks = {'events': [{'event': 'Stop', 'matcher': '', 'type': 'command',
+                             'command': 'verify.py'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['Stop'][0]['hooks'][0]
+        assert 'asyncRewake' not in hook
+
+    def test_command_async_and_async_rewake_together(self):
+        """async and asyncRewake can both be emitted on one command hook."""
+        hooks = {'events': [{'event': 'Stop', 'matcher': '', 'type': 'command',
+                             'command': 'verify.py', 'async': True, 'async-rewake': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['Stop'][0]['hooks'][0]
+        assert hook['async'] is True
+        assert hook['asyncRewake'] is True
+
+    def test_mcp_tool_hook_emitted(self):
+        """MCP tool hook emits server, tool, and input."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'mcp_tool',
+                             'server': 'linter', 'tool': 'lint_file',
+                             'input': {'file_path': '${tool_input.file_path}'}}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['type'] == 'mcp_tool'
+        assert hook['server'] == 'linter'
+        assert hook['tool'] == 'lint_file'
+        assert hook['input'] == {'file_path': '${tool_input.file_path}'}
+
+    def test_mcp_tool_hook_without_input(self):
+        """MCP tool hook without input omits the key."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'mcp_tool',
+                             'server': 'linter', 'tool': 'lint_file'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert 'input' not in hook
+
+    def test_mcp_tool_hook_common_fields(self):
+        """MCP tool hook carries the common fields."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'mcp_tool',
+                             'server': 'guard', 'tool': 'check_call', 'if': 'Bash(git *)',
+                             'status-message': 'Checking...', 'once': True, 'timeout': 20}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert hook['if'] == 'Bash(git *)'
+        assert hook['statusMessage'] == 'Checking...'
+        assert hook['once'] is True
+        assert hook['timeout'] == 20
+
+    def test_mcp_tool_missing_server_skipped(self, capsys):
+        """MCP tool hook without server is skipped with a warning."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'mcp_tool',
+                             'tool': 'lint_file'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'missing server' in capsys.readouterr().out
+
+    def test_mcp_tool_missing_tool_skipped(self, capsys):
+        """MCP tool hook without tool is skipped with a warning."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'mcp_tool',
+                             'server': 'linter'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'missing tool' in capsys.readouterr().out
+
+
+class TestBuildHooksJsonExecForm:
+    """Tests for command hooks with args (exec form)."""
+
+    def test_python_file_reference_folds_launcher(self):
+        """Python file reference becomes uv executable with folded launcher args."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                             'command': 'linter.py', 'args': ['--fix']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'uv'
+        assert hook['args'] == ['run', '--no-project', '--python', '3.12', '/hooks/linter.py', '--fix']
+
+    def test_javascript_file_reference_folds_node(self):
+        """JavaScript file reference becomes node executable with the script path."""
+        hooks = {'files': ['hooks/check.js'],
+                 'events': [{'event': 'PostToolUse', 'matcher': 'Read', 'type': 'command',
+                             'command': 'check.js', 'args': ['--verbose']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'node'
+        assert hook['args'] == ['/hooks/check.js', '--verbose']
+
+    def test_other_file_reference_direct_executable(self):
+        """A non-Python, non-JavaScript file becomes the executable itself."""
+        hooks = {'files': ['hooks/tool.sh'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'tool.sh', 'args': ['--check']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == '/hooks/tool.sh'
+        assert hook['args'] == ['--check']
+
+    def test_empty_args_still_exec_form(self):
+        """An empty args list still switches to exec form."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py', 'args': []}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'uv'
+        assert hook['args'] == ['run', '--no-project', '--python', '3.12', '/hooks/linter.py']
+
+    def test_config_precedes_user_args(self):
+        """The config file path lands between the script path and user args."""
+        hooks = {'files': ['hooks/linter.py', 'configs/linter-config.yaml'],
+                 'events': [{'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command',
+                             'command': 'linter.py', 'config': 'linter-config.yaml',
+                             'args': ['--strict']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['args'] == [
+            'run', '--no-project', '--python', '3.12',
+            '/hooks/linter.py', '/hooks/linter-config.yaml', '--strict',
+        ]
+
+    def test_exec_form_paths_unquoted(self):
+        """Exec-form path elements carry no quoting even with spaced directories."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py', 'args': []}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/home/John Smith/.claude/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['args'][-1] == '/home/John Smith/.claude/hooks/linter.py'
+        assert '"' not in hook['args'][-1]
+
+    def test_direct_command_with_spaces_passes_through(self):
+        """An unlisted command with spaces stays verbatim in exec form."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'my tool', 'args': ['--check']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'my tool'
+        assert hook['args'] == ['--check']
+
+    def test_unlisted_bare_command_stays_verbatim(self):
+        """An unlisted space-free command is the executable itself, never a hooks_dir path."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
+                             'command': 'echo', 'args': ['hi']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'echo'
+        assert hook['args'] == ['hi']
+
+    def test_unlisted_absolute_path_command_stays_verbatim(self):
+        """An unlisted absolute-path command keeps its directory in exec form."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': '/usr/local/bin/mytool', 'args': ['--check']}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == '/usr/local/bin/mytool'
+        assert hook['args'] == ['--check']
+
+    def test_shell_ignored_and_warned_with_args(self, capsys):
+        """shell is dropped with a warning when args switches to exec form."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py', 'args': ['--fix'], 'shell': 'bash'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert 'shell' not in hook
+        assert "'shell' is ignored" in capsys.readouterr().out
+
+    def test_async_fields_emitted_in_exec_form(self):
+        """async and asyncRewake are emitted alongside args."""
+        hooks = {'files': ['hooks/verify.py'],
+                 'events': [{'event': 'Stop', 'matcher': '', 'type': 'command',
+                             'command': 'verify.py', 'args': [], 'async': True,
+                             'async-rewake': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['Stop'][0]['hooks'][0]
+        assert hook['async'] is True
+        assert hook['asyncRewake'] is True
+
+    def test_args_elements_coerced_to_strings(self):
+        """Non-string args elements are coerced to strings."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py', 'args': ['--level', 3]}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['args'][-2:] == ['--level', '3']
+
+    def test_no_args_keeps_shell_form(self):
+        """Without args the command stays a quoted shell string."""
+        hooks = {'files': ['hooks/linter.py'],
+                 'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PostToolUse'][0]['hooks'][0]
+        assert hook['command'] == 'uv run --no-project --python 3.12 "/hooks/linter.py"'
+        assert 'args' not in hook
+
+
+class TestBuildHooksJsonValueValidation:
+    """Tests for value-level validation in _build_hooks_json()."""
+
+    def test_zero_timeout_skipped(self, capsys):
+        """A zero timeout skips the hook with a warning."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'test', 'timeout': 0}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'timeout must be a positive number' in capsys.readouterr().out
+
+    def test_negative_timeout_skipped(self, capsys):
+        """A negative timeout skips the hook with a warning."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'command',
+                             'command': 'linter.py', 'timeout': -5}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'timeout must be a positive number' in capsys.readouterr().out
+
+    def test_boolean_timeout_skipped(self, capsys):
+        """A boolean timeout skips the hook with a warning."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'test', 'timeout': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'timeout must be a positive number' in capsys.readouterr().out
+
+    def test_positive_timeout_kept(self):
+        """A positive timeout passes through."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'test', 'timeout': 30}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result['PreToolUse'][0]['hooks'][0]['timeout'] == 30
+
+    def test_http_url_without_scheme_skipped(self, capsys):
+        """An http hook url without an http(s) scheme skips the hook."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'http',
+                             'url': 'localhost:8080/hook'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result == {}
+        assert 'url must be an http:// or https:// URL' in capsys.readouterr().out
+
+    def test_http_url_https_kept(self):
+        """An https url passes through."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'http',
+                             'url': 'https://hooks.example.com/post'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert result['PostToolUse'][0]['hooks'][0]['url'] == 'https://hooks.example.com/post'
+
+    def test_unknown_event_name_warns_but_emits(self, capsys):
+        """An unrecognized event name warns yet still reaches the output."""
+        hooks = {'events': [{'event': 'TotallyMadeUpEvent', 'matcher': '', 'type': 'prompt',
+                             'prompt': 'test'}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert 'TotallyMadeUpEvent' in result
+        assert 'Unknown hook event name' in capsys.readouterr().out
+
+    def test_known_event_name_no_warning(self, capsys):
+        """A recognized event name produces no event-name warning."""
+        hooks = {'events': [{'event': 'PostToolUse', 'matcher': '', 'type': 'prompt',
+                             'prompt': 'test'}]}
+        setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        assert 'Unknown hook event name' not in capsys.readouterr().out
+
+    def test_unknown_keys_warned_and_ignored(self, capsys):
+        """Keys not supported for the hook type warn and never reach the JSON."""
+        hooks = {'events': [{'event': 'PreToolUse', 'matcher': 'Bash', 'type': 'prompt',
+                             'prompt': 'test', 'headers': {'X-Key': 'val'},
+                             'continueOnBlock': True}]}
+        result = setup_environment._build_hooks_json(hooks, Path('/hooks'))
+        hook = result['PreToolUse'][0]['hooks'][0]
+        assert 'headers' not in hook
+        assert 'continueOnBlock' not in hook
+        out = capsys.readouterr().out
+        assert 'ignoring key(s) not supported' in out
+        assert 'continueOnBlock' in out
+        assert 'headers' in out
+
     def test_direct_command_passthrough(self):
         """Direct commands with spaces are passed through as-is."""
         hooks = {'events': [{'event': 'PostToolUse', 'matcher': 'Write', 'type': 'command',
