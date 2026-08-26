@@ -10922,6 +10922,10 @@ def _find_project_entry(
 ) -> dict[str, Any] | None:
     """Find the projects-section entry matching a directory.
 
+    Falls back to symlink-resolved comparison so a key recorded through a
+    symlinked path (for example /var vs /private/var on macOS) still matches
+    the physical working directory.
+
     Args:
         projects: The .claude.json projects section.
         project_dir: Directory to look up (normally the current working
@@ -10930,9 +10934,20 @@ def _find_project_entry(
     Returns:
         The matching project entry, or None when the directory has none.
     """
-    target = _normalize_project_dir_key(str(project_dir))
+    targets = {_normalize_project_dir_key(str(project_dir))}
+    with contextlib.suppress(OSError):
+        targets.add(_normalize_project_dir_key(str(project_dir.resolve())))
     for key, value in projects.items():
-        if isinstance(value, dict) and _normalize_project_dir_key(str(key)) == target:
+        if isinstance(value, dict) and _normalize_project_dir_key(str(key)) in targets:
+            return cast(dict[str, Any], value)
+    for key, value in projects.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            resolved_key = _normalize_project_dir_key(str(Path(str(key)).resolve()))
+        except OSError:
+            continue
+        if resolved_key in targets:
             return cast(dict[str, Any], value)
     return None
 

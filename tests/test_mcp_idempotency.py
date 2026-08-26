@@ -19,6 +19,8 @@ from typing import Any
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
+import pytest
+
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
@@ -192,6 +194,18 @@ class TestProjectKeyMatching:
     def test_no_match_returns_none(self, mock_system: MagicMock) -> None:
         del mock_system
         assert setup_environment._find_project_entry({}, Path('/home/dev/proj')) is None
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='symlink creation requires privileges on Windows')
+    def test_symlinked_key_matches_physical_directory(self, tmp_path: Path) -> None:
+        # A key recorded through a symlinked path (macOS /var vs
+        # /private/var) must still match the physical working directory
+        real_dir = tmp_path / 'real'
+        real_dir.mkdir()
+        link = tmp_path / 'link'
+        link.symlink_to(real_dir, target_is_directory=True)
+        projects: dict[str, Any] = {str(link): {'mcpServers': {'a': {}}}}
+        entry = setup_environment._find_project_entry(projects, real_dir)
+        assert entry == {'mcpServers': {'a': {}}}
 
 
 class TestReadJsonObject:

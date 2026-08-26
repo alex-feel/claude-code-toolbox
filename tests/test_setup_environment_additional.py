@@ -3550,24 +3550,27 @@ class TestMCPProfileScope:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_config = Path(tmpdir) / 'mcp.json'
-            # Seed stale entries: server-1 at user scope, server-3 at local
-            # scope (under this working directory's projects entry);
-            # server-2 exists nowhere and must trigger no removal
-            project_key = str(Path(tmpdir)).replace('\\', '/')
-            (Path(tmpdir) / '.claude.json').write_text(json.dumps({
-                'mcpServers': {
-                    'profile-server-1': {'type': 'stdio', 'command': 'uvx', 'args': ['profile1'], 'env': {}},
-                },
-                'projects': {
-                    project_key: {
-                        'mcpServers': {
-                            'profile-server-3': {'type': 'http', 'url': 'http://localhost'},
-                        },
-                    },
-                },
-            }), encoding='utf-8')
 
             with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR': tmpdir}), contextlib.chdir(tmpdir):
+                # Seed stale entries: server-1 at user scope, server-3 at
+                # local scope (under this working directory's projects
+                # entry, keyed by the physical cwd exactly as the Claude CLI
+                # writes it); server-2 exists nowhere and must trigger no
+                # removal
+                project_key = str(Path.cwd()).replace('\\', '/')
+                (Path(tmpdir) / '.claude.json').write_text(json.dumps({
+                    'mcpServers': {
+                        'profile-server-1': {'type': 'stdio', 'command': 'uvx', 'args': ['profile1'], 'env': {}},
+                    },
+                    'projects': {
+                        project_key: {
+                            'mcpServers': {
+                                'profile-server-3': {'type': 'http', 'url': 'http://localhost'},
+                            },
+                        },
+                    },
+                }), encoding='utf-8')
+
                 success, profile_servers, stats = setup_environment.configure_all_mcp_servers(
                     servers,
                     profile_mcp_config_path=profile_config,
