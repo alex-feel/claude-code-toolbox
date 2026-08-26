@@ -5534,7 +5534,7 @@ class TestMainFunction:
         mock_install.return_value = True
         mock_deps.return_value = []
         mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -5662,7 +5662,7 @@ class TestDownloadFailureTracking:
         mock_skills.return_value = True
         mock_hooks.return_value = True
         mock_handle.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -5730,7 +5730,7 @@ class TestDownloadFailureTracking:
         mock_skills.return_value = True
         mock_hooks.return_value = True
         mock_handle.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -5802,7 +5802,7 @@ class TestDownloadFailureTracking:
         mock_skills.return_value = False
         mock_hooks.return_value = False
         mock_handle.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -5867,7 +5867,7 @@ class TestDownloadFailureTracking:
         mock_install.return_value = True
         mock_deps.return_value = ['npm install -g @playwright/cli@latest']
         mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -5947,7 +5947,7 @@ class TestDownloadFailureTracking:
         mock_skills.return_value = True
         mock_hooks.return_value = True
         mock_handle.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -10111,7 +10111,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = []
         mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -10188,7 +10188,7 @@ class TestCommandNames:
         mock_install.return_value = True
         mock_deps.return_value = []
         mock_download.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -11642,7 +11642,7 @@ class TestMainFunctionUserSettings:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = True
 
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
@@ -11716,7 +11716,7 @@ class TestMainFunctionUserSettings:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = True
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
@@ -11813,7 +11813,7 @@ class TestMainFunctionUserSettings:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = True
         mock_settings.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
@@ -11867,7 +11867,7 @@ class TestMainFunctionUserSettings:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = True
 
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
@@ -11915,7 +11915,7 @@ class TestMainFunctionUserSettings:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = False  # Simulate write failure
 
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:
@@ -12392,7 +12392,7 @@ class TestUserSettingsErrorRecovery:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_write_user_settings.return_value = False  # Write fails
 
         with patch('sys.argv', ['setup_environment.py', 'test', '--yes']), patch('sys.exit') as mock_exit:

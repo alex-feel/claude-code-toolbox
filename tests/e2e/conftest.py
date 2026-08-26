@@ -16,7 +16,7 @@ from scripts import setup_environment
 
 
 @pytest.fixture(autouse=True)
-def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+def mock_claude_cli(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent E2E tests from executing real Claude CLI commands.
 
     When Claude is installed locally, configure_mcp_server() calls
@@ -33,7 +33,13 @@ def mock_claude_cli(monkeypatch: pytest.MonkeyPatch) -> None:
 
     This fixture is autouse=True to automatically apply to all E2E tests.
     Individual tests do NOT need to mock find_command separately for Claude.
+
+    Tests marked ``real_binary`` opt out: they exercise the real Claude CLI
+    against an isolated CLAUDE_CONFIG_DIR and provide their own isolation.
     """
+    if request.node.get_closest_marker('real_binary') is not None:
+        return
+
     original_find = setup_environment.find_command
 
     def mock_find(cmd: str) -> str | None:

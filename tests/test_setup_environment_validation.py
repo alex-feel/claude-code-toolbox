@@ -1193,7 +1193,7 @@ class TestMainFlowWithValidation:
         """Test that main exits on validation failure."""
         # Prevent real filesystem writes (mocked sys.exit does not halt execution)
         del mock_mkdir, mock_write_manifest, mock_cleanup_stale
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_profile.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True
@@ -1296,7 +1296,7 @@ class TestMainFlowWithValidation:
             True,
             [('agent', 'good.md', True, 'HEAD')],
         )
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
         mock_profile.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
         mock_register.return_value = True

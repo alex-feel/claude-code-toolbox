@@ -13,7 +13,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 ## Features
 
 - **Custom agents** -- specialized subagents for code review, research, debugging, and any workflow you design
-- **MCP servers** -- HTTP, SSE, and stdio transports with scope-based registration
+- **MCP servers** -- HTTP, SSE, and stdio transports with scope-based registration; unchanged servers are skipped on reruns, preserving their OAuth authentication
 - **Slash commands** -- custom commands for frequently used workflows
 - **Rules** -- user-scope rule files for coding standards, security policies, and project conventions
 - **Skills** -- multi-file skill packages for complex agent capabilities

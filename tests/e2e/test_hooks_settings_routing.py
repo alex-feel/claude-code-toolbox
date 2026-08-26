@@ -349,7 +349,7 @@ class TestSummaryOutputRouting:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
 
         from scripts import setup_environment
 
@@ -417,7 +417,7 @@ class TestSummaryOutputRouting:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
 
         from scripts import setup_environment
 
@@ -483,7 +483,7 @@ class TestHooksSettingsRoutingStepOutput:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
 
         from scripts import setup_environment
 
@@ -538,7 +538,7 @@ class TestHooksSettingsRoutingStepOutput:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0})
+        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
 
         from scripts import setup_environment
 

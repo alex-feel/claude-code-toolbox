@@ -138,7 +138,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
 
+      - name: Install Claude Code binary for real-binary E2E tests
+        shell: bash
+        run: |
+          uv run python scripts/install_claude.py
+          echo "${USERPROFILE:-$HOME}/.local/bin" >> "$GITHUB_PATH"
+
       - name: Run E2E tests
+        env:
+          CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY: '1'
         run: uv run pytest tests/e2e/ -v --tb=long --junit-xml=e2e-results.xml
 
       - name: Upload E2E test results

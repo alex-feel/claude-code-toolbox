@@ -10832,33 +10832,444 @@ def _prepare_windows_bash_env(
     )
 
 
+# The three scopes `claude mcp add/remove` operate on. Scope 'profile' is
+# file-based (create_mcp_config_file) and never reaches the Claude CLI.
+MCP_CLI_SCOPES: tuple[str, str, str] = ('user', 'local', 'project')
+
+
+class McpServerActionPlan(NamedTuple):
+    """Decision for one (server, scope) pair at the MCP configuration step.
+
+    `claude mcp remove` deletes the stored MCP OAuth tokens and OAuth client
+    configuration of http/sse servers (keyed by name plus a hash of the
+    server's type/url/headers), and `claude mcp add` restores only the
+    connection config, never tokens. The plan therefore skips the CLI
+    remove/add cycle entirely for servers whose live configuration already
+    equals the declared one, so an unchanged authenticated server keeps its
+    tokens across setup runs.
+    """
+
+    action: str  # 'skip' (live config matches; no add needed) or 'reconfigure'
+    remove_scopes: list[str]  # scopes that actually hold the name and need removal
+    clears_oauth: bool  # removal will clear stored OAuth tokens (live http/sse entry)
+
+
+def _claude_global_config_file(artifact_base_dir: Path | None) -> Path:
+    """Resolve the .claude.json file `claude mcp` commands operate on.
+
+    Mirrors the Claude CLI's own resolution: CLAUDE_CONFIG_DIR (which the
+    toolbox sets to the isolated profile directory via artifact_base_dir)
+    wins over the home directory.
+
+    Args:
+        artifact_base_dir: Isolated profile directory, or None for the
+            base environment.
+
+    Returns:
+        Path to the .claude.json file holding user- and local-scope servers.
+    """
+    if artifact_base_dir is not None:
+        return artifact_base_dir / '.claude.json'
+    env_dir = os.environ.get('CLAUDE_CONFIG_DIR')
+    if env_dir:
+        return Path(env_dir) / '.claude.json'
+    return get_real_user_home() / '.claude.json'
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    """Read a JSON object file tolerantly.
+
+    Args:
+        path: File to read.
+
+    Returns:
+        The parsed object, {} when the file does not exist (a valid empty
+        state), or None when the file exists but cannot be parsed as a JSON
+        object (the caller must treat the state as unknown).
+    """
+    try:
+        if not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict):
+        return cast(dict[str, Any], data)
+    return None
+
+
+def _normalize_project_dir_key(value: str) -> str:
+    """Normalize a projects-section path key for comparison.
+
+    The Claude CLI keys the projects section by the working directory using
+    forward slashes (on Windows: uppercase drive letter, no trailing slash).
+    Comparison is case-insensitive on Windows because drive-letter casing is
+    not guaranteed across producers of the path.
+
+    Args:
+        value: Raw path key or filesystem path string.
+
+    Returns:
+        Normalized comparison key.
+    """
+    key = value.replace('\\', '/').rstrip('/')
+    return key.casefold() if platform.system() == 'Windows' else key
+
+
+def _find_project_entry(
+    projects: dict[str, Any],
+    project_dir: Path,
+) -> dict[str, Any] | None:
+    """Find the projects-section entry matching a directory.
+
+    Args:
+        projects: The .claude.json projects section.
+        project_dir: Directory to look up (normally the current working
+            directory, which is what `claude mcp --scope local` operates on).
+
+    Returns:
+        The matching project entry, or None when the directory has none.
+    """
+    target = _normalize_project_dir_key(str(project_dir))
+    for key, value in projects.items():
+        if isinstance(value, dict) and _normalize_project_dir_key(str(key)) == target:
+            return cast(dict[str, Any], value)
+    return None
+
+
+def _normalize_mcp_env_config(env_config: object) -> list[str] | None:
+    """Normalize a server's env value to a list of KEY=value strings.
+
+    Args:
+        env_config: The YAML env value (string, list, or None).
+
+    Returns:
+        List of env var strings (empty when env_config is falsy), or None
+        when the value has an invalid type.
+    """
+    if not env_config:
+        return []
+    if isinstance(env_config, str):
+        return [env_config]
+    if isinstance(env_config, list):
+        return [str(item) for item in cast(list[object], env_config)]
+    return None
+
+
+def _mcp_env_list_to_dict(env_list: list[str]) -> dict[str, str]:
+    """Convert KEY=value strings to the env dict the Claude CLI stores.
+
+    Args:
+        env_list: Environment variable assignments.
+
+    Returns:
+        Mapping of variable names to values; entries without '=' are dropped,
+        matching the CLI's rejection of malformed assignments.
+    """
+    env_dict: dict[str, str] = {}
+    for item in env_list:
+        key, sep, value = item.partition('=')
+        if sep:
+            env_dict[key] = value
+    return env_dict
+
+
+def _build_expected_mcp_entry(server: dict[str, Any]) -> dict[str, Any] | None:
+    """Predict the mcpServers entry `claude mcp add` writes for a server spec.
+
+    Mirrors the add-command construction of configure_mcp_server() per
+    platform so the result is byte-comparable with the live entry: stdio
+    commands get YAML args appended (quoted), tildes expanded, and on Windows
+    backslashes converted plus the `cmd /c` wrapper applied to npx commands;
+    http/sse entries carry url and parsed headers. The CLI accepts --env for
+    http/sse but does not persist it, so env participates only in stdio
+    entries.
+
+    Args:
+        server: MCP server spec from the resolved YAML config.
+
+    Returns:
+        The expected stored entry, or None when the spec cannot produce an
+        add command (missing url/command or invalid env type).
+    """
+    transport = server.get('transport')
+    url = server.get('url')
+    command = server.get('command')
+    env_list = _normalize_mcp_env_config(server.get('env'))
+    if env_list is None:
+        return None
+
+    if transport and url:
+        entry: dict[str, Any] = {'type': str(transport), 'url': str(url)}
+        header = server.get('header')
+        if header:
+            key, sep, value = str(header).partition(':')
+            if sep:
+                entry['headers'] = {key.strip(): value.strip()}
+        return entry
+
+    if command:
+        full_command = str(command)
+        args_list = server.get('args')
+        if args_list and isinstance(args_list, list):
+            quoted = ' '.join(shlex.quote(str(a)) for a in cast(list[object], args_list))
+            full_command = f'{full_command} {quoted}'
+        expanded = expand_tildes_in_command(full_command)
+        if platform.system() == 'Windows':
+            expanded = expanded.replace('\\', '/')
+            command_str = f'cmd /c {expanded}' if 'npx' in expanded else expanded
+            try:
+                parts = shlex.split(command_str)
+            except ValueError:
+                parts = command_str.split()
+        else:
+            parts = build_platform_aware_command(expanded)
+        if not parts:
+            return None
+        return {
+            'type': 'stdio',
+            'command': parts[0],
+            'args': parts[1:],
+            'env': _mcp_env_list_to_dict(env_list),
+        }
+
+    return None
+
+
+def _mcp_entries_equal(live: object, expected: dict[str, Any]) -> bool:
+    """Compare a live mcpServers entry with the expected one.
+
+    Only toolbox-controlled fields participate (type, command, url, args,
+    env, headers); fields the CLI may add on its own never force a
+    reconfiguration. An absent args/env/headers key is equivalent to an
+    empty one, matching the CLI's varying serialization across transports.
+
+    Args:
+        live: The stored entry (any type; non-dicts never match).
+        expected: Entry from _build_expected_mcp_entry().
+
+    Returns:
+        True when the live entry matches the declared configuration.
+    """
+    if not isinstance(live, dict):
+        return False
+    live_dict = cast(dict[str, Any], live)
+
+    def _normalized(entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            'type': entry.get('type'),
+            'command': entry.get('command'),
+            'url': entry.get('url'),
+            'args': entry.get('args') or [],
+            'env': entry.get('env') or {},
+            'headers': entry.get('headers') or {},
+        }
+
+    return _normalized(live_dict) == _normalized(expected)
+
+
+def _read_live_mcp_entries(
+    name: str,
+    artifact_base_dir: Path | None,
+) -> dict[str, Any] | None:
+    """Read the live entry stored for a server name at each CLI scope.
+
+    Reads the same files `claude mcp` mutates: .claude.json (user scope at
+    the top level, local scope under the current working directory's
+    projects entry) and .mcp.json in the current working directory (project
+    scope).
+
+    Args:
+        name: MCP server name.
+        artifact_base_dir: Isolated profile directory, or None.
+
+    Returns:
+        Mapping of scope to the raw stored entry (None when the scope does
+        not hold the name), or None when any config file is unreadable and
+        the live state is therefore unknown.
+    """
+    global_config = _read_json_object(_claude_global_config_file(artifact_base_dir))
+    project_file = _read_json_object(Path.cwd() / '.mcp.json')
+    if global_config is None or project_file is None:
+        return None
+
+    entries: dict[str, Any] = dict.fromkeys(MCP_CLI_SCOPES)
+
+    user_servers = global_config.get('mcpServers')
+    if isinstance(user_servers, dict):
+        entries['user'] = cast(dict[str, Any], user_servers).get(name)
+
+    projects = global_config.get('projects')
+    if isinstance(projects, dict):
+        project_entry = _find_project_entry(cast(dict[str, Any], projects), Path.cwd())
+        if project_entry is not None:
+            local_servers = project_entry.get('mcpServers')
+            if isinstance(local_servers, dict):
+                entries['local'] = cast(dict[str, Any], local_servers).get(name)
+
+    project_servers = project_file.get('mcpServers')
+    if isinstance(project_servers, dict):
+        entries['project'] = cast(dict[str, Any], project_servers).get(name)
+
+    return entries
+
+
+def _plan_mcp_server_action(
+    server: dict[str, Any],
+    scope: str,
+    artifact_base_dir: Path | None,
+) -> McpServerActionPlan:
+    """Plan the MCP configuration action for one (server, scope) pair.
+
+    Skips the CLI remove/add cycle only on positive proof that the live
+    entry at the target scope equals the declared configuration; any
+    unreadable or ambiguous state falls back to a full reconfiguration with
+    removal from every CLI scope. Removal is always restricted to scopes
+    that actually hold the name, so a `claude mcp remove` never runs (and
+    never clears http/sse OAuth tokens) against a scope it has nothing to
+    remove from.
+
+    Args:
+        server: MCP server spec (with a single resolved scope).
+        scope: The resolved target scope for this pass.
+        artifact_base_dir: Isolated profile directory, or None.
+
+    Returns:
+        The action plan.
+    """
+    full_reconfigure = McpServerActionPlan(
+        action='reconfigure',
+        remove_scopes=list(MCP_CLI_SCOPES),
+        clears_oauth=False,
+    )
+    name = server.get('name')
+    if not name:
+        return full_reconfigure
+
+    live = _read_live_mcp_entries(str(name), artifact_base_dir)
+    if live is None:
+        return full_reconfigure
+
+    present_scopes = [s for s in MCP_CLI_SCOPES if live.get(s) is not None]
+
+    if scope == 'profile':
+        # Profile servers never get a CLI add; only stale CLI-scope entries
+        # (which would shadow or duplicate the profile config) need removal
+        return McpServerActionPlan(
+            action='skip',
+            remove_scopes=present_scopes,
+            clears_oauth=False,
+        )
+
+    expected = _build_expected_mcp_entry(server)
+    if expected is None:
+        return full_reconfigure
+
+    target_live = live.get(scope)
+    stale_scopes = [s for s in present_scopes if s != scope]
+    if target_live is not None and _mcp_entries_equal(target_live, expected):
+        return McpServerActionPlan(
+            action='skip',
+            remove_scopes=stale_scopes,
+            clears_oauth=False,
+        )
+
+    live_type = target_live.get('type') if isinstance(target_live, dict) else None
+    return McpServerActionPlan(
+        action='reconfigure',
+        remove_scopes=present_scopes,
+        clears_oauth=live_type in ('http', 'sse'),
+    )
+
+
+def _remove_mcp_server_from_cli_scopes(
+    claude_cmd: str | Path,
+    name: str,
+    scopes: list[str],
+    nodejs_dir: str | None,
+    artifact_base_dir: Path | None,
+) -> None:
+    """Remove an MCP server from the given CLI scopes best-effort.
+
+    Uses the same execution environment as the add operation (Git Bash on
+    Windows, direct subprocess on Unix) so removal and add behave
+    symmetrically. Exit codes are ignored: the Claude CLI returns non-zero
+    for a scope that lacks the server, which is expected, not an error.
+
+    Args:
+        claude_cmd: Resolved Claude CLI command.
+        name: MCP server name.
+        scopes: CLI scopes to remove from (subset of MCP_CLI_SCOPES).
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
+        artifact_base_dir: Isolated profile directory, or None.
+    """
+    if not scopes:
+        return
+
+    info(f'Removing existing MCP server {name} (scopes: {", ".join(scopes)})...')
+
+    if platform.system() == 'Windows':
+        # Windows: Use bash execution for consistency with the add operation
+        # (same PATH, shell, and MSYS settings), preventing "not found"
+        # errors due to asymmetric execution
+        env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
+
+        remove_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
+        if artifact_base_dir is not None:
+            remove_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
+
+        for remove_scope in scopes:
+            bash_cmd = (
+                f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
+            )
+            run_bash_command(
+                bash_cmd, capture_output=True, login_shell=True,
+                extra_env=remove_extra_env,
+            )
+    else:
+        # Unix: Direct subprocess execution
+        remove_env: dict[str, str] | None = None
+        if artifact_base_dir is not None:
+            remove_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
+
+        for remove_scope in scopes:
+            remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
+            run_command(remove_cmd, capture_output=True, env=remove_env)
+
+
 def configure_mcp_server(
     server: dict[str, Any],
     nodejs_dir: str | None = None,
     artifact_base_dir: Path | None = None,
+    remove_scopes: list[str] | None = None,
 ) -> bool:
-    """Configure a single MCP server."""
+    """Configure a single MCP server.
+
+    Args:
+        server: MCP server spec with a single resolved scope.
+        nodejs_dir: Verified Node.js directory path, or None if not verified.
+        artifact_base_dir: Isolated profile directory, or None.
+        remove_scopes: CLI scopes to remove the name from before adding.
+            None removes from every CLI scope; an empty list skips removal
+            entirely (the caller has verified no scope holds the name).
+
+    Returns:
+        True when the server ends up configured (or removal-only for
+        profile scope succeeded), False on failure.
+    """
     name = server.get('name')
     scope = server.get('scope', 'user')
     transport = server.get('transport')
     url = server.get('url')
     command = server.get('command')
     header = server.get('header')
-    env_config = server.get('env')
 
     # Normalize env to list for consistent handling (supports both string and list syntax)
-    env_list: list[str] = []
-    if env_config:
-        if isinstance(env_config, str):
-            # Single env var (backward compatibility)
-            env_list = [env_config]
-        elif isinstance(env_config, list):
-            # Multiple env vars (new functionality)
-            for item in cast(list[object], env_config):
-                env_list.append(str(item))
-        else:
-            error(f'Invalid env format for {name}: expected string or list')
-            return False
+    normalized_env = _normalize_mcp_env_config(server.get('env'))
+    if normalized_env is None:
+        error(f'Invalid env format for {name}: expected string or list')
+        return False
+    env_list: list[str] = normalized_env
 
     if not name:
         error('MCP server configuration missing name')
@@ -10878,42 +11289,16 @@ def configure_mcp_server(
         return False
 
     try:
-        # Remove existing MCP server from all scopes to avoid conflicts
-        # When servers with the same name exist at multiple scopes, local-scoped servers
-        # take precedence, followed by project, then user - so we remove from all scopes
-        # Best-effort removal: Claude CLI returns non-zero if server doesn't exist in a scope,
-        # which is expected behavior, not an error - we simply attempt removal from all scopes
-        info(f'Removing existing MCP server {name} from all scopes (best-effort)...')
-
-        if system == 'Windows':
-            # Windows: Use bash execution for consistency with add operation
-            # This ensures removal uses the same environment (PATH, shell, MSYS settings)
-            # as the add operation, preventing "not found" errors due to asymmetric execution
-            env = _prepare_windows_bash_env(claude_cmd, nodejs_dir)
-
-            remove_extra_env: dict[str, str] = {'PATH': env.unix_explicit_path}
-            if artifact_base_dir is not None:
-                remove_extra_env['CLAUDE_CONFIG_DIR'] = str(artifact_base_dir)
-
-            for remove_scope in ['user', 'local', 'project']:
-                bash_cmd = (
-                    f'"{env.unix_claude_cmd}" mcp remove --scope {remove_scope} {name}'
-                )
-                # Best-effort: ignore exit code, server may not exist in this scope
-                run_bash_command(
-                    bash_cmd, capture_output=True, login_shell=True,
-                    extra_env=remove_extra_env,
-                )
-        else:
-            # Unix: Direct subprocess execution
-            remove_env: dict[str, str] | None = None
-            if artifact_base_dir is not None:
-                remove_env = {**os.environ, 'CLAUDE_CONFIG_DIR': str(artifact_base_dir)}
-
-            for remove_scope in ['user', 'local', 'project']:
-                remove_cmd = [str(claude_cmd), 'mcp', 'remove', '--scope', remove_scope, name]
-                # Best-effort: ignore exit code, server may not exist in this scope
-                run_command(remove_cmd, capture_output=True, env=remove_env)
+        # Remove existing MCP server entries to avoid conflicts: when servers
+        # with the same name exist at multiple scopes, local-scoped servers
+        # take precedence, followed by project, then user. The caller narrows
+        # remove_scopes to the scopes that actually hold the name because
+        # `claude mcp remove` clears stored OAuth tokens of http/sse servers;
+        # None (direct calls) removes from every CLI scope
+        scopes_to_remove = list(MCP_CLI_SCOPES) if remove_scopes is None else list(remove_scopes)
+        _remove_mcp_server_from_cli_scopes(
+            claude_cmd, str(name), scopes_to_remove, nodejs_dir, artifact_base_dir,
+        )
 
         # Profile-scoped servers are configured via create_mcp_config_file(), not claude mcp add
         if scope == 'profile':
@@ -11011,6 +11396,11 @@ def configure_mcp_server(
             if args_list and isinstance(args_list, list):
                 command = command + ' ' + ' '.join(shlex.quote(str(a)) for a in args_list)
 
+            # Expand tildes before any splitting so ~/ paths work on every
+            # platform and quoted arguments survive (shlex-aware splitting
+            # happens exactly once, inside build_platform_aware_command)
+            command = expand_tildes_in_command(command)
+
             # Build the command properly
             base_cmd.append(name)  # Add name FIRST, before post-name options
             # Add all environment variables
@@ -11042,9 +11432,9 @@ def configure_mcp_server(
 
                 # Build command string for STDIO
                 # npx needs cmd /c wrapper on Windows even in bash
-                # Expand tildes using Python (produces C:\Users\...) and convert to forward slashes
-                # This prevents Git Bash from expanding ~ to /c/Users/... (Unix format)
-                expanded_command = expand_tildes_in_command(command).replace('\\', '/')
+                # Tildes are already expanded (produces C:\Users\...); convert to
+                # forward slashes so Git Bash does not see Windows separators
+                expanded_command = command.replace('\\', '/')
                 command_str = f'cmd /c {expanded_command}' if 'npx' in expanded_command else expanded_command
 
                 bash_cmd = (
@@ -11067,18 +11457,9 @@ def configure_mcp_server(
                 if result.returncode != 0:
                     debug_log(f'STDIO failed! stdout={result.stdout}, stderr={result.stderr}')
             else:
-                # Unix-like systems - expand tildes and execute
+                # Unix-like systems - execute directly (tildes already expanded
+                # into base_cmd via build_platform_aware_command)
                 info(f'Configuring stdio MCP server {name}...')
-
-                # Apply tilde expansion to command (same as Windows path)
-                # This ensures ~/ paths in MCP server commands work on macOS/Linux
-                if command:
-                    expanded_command = expand_tildes_in_command(command)
-                    # Rebuild base_cmd with expanded command if tilde was expanded
-                    # base_cmd structure: [..., '--', command_parts...]
-                    if expanded_command != command and '--' in [str(arg) for arg in base_cmd]:
-                        separator_idx = [str(arg) for arg in base_cmd].index('--')
-                        base_cmd = list(base_cmd[:separator_idx + 1]) + expanded_command.split()
 
                 stdio_unix_env: dict[str, str] | None = None
                 if artifact_base_dir is not None:
@@ -11158,6 +11539,7 @@ def configure_all_mcp_servers(
         'global_count': 0,      # Servers with any non-profile scope
         'profile_count': 0,     # Servers with profile scope
         'combined_count': 0,    # Servers with BOTH global AND profile scopes
+        'unchanged_count': 0,   # (server, scope) pairs skipped as already configured
     }
 
     for server in servers:
@@ -11185,24 +11567,60 @@ def configure_all_mcp_servers(
         # Add to profile config if profile scope present
         if has_profile:
             profile_servers.append(server)
-            # For profile-only servers, call configure_mcp_server to trigger removal
-            # from all scopes (user, local, project). The function will early-return
-            # after removal since scope == 'profile', skipping the claude mcp add.
+            # Profile servers are configured via create_mcp_config_file(); the
+            # CLI scopes only need cleanup when a stale same-name entry (which
+            # would shadow the profile config) is actually present
             if not has_global:
                 server_copy = server.copy()
                 server_copy['scope'] = 'profile'
-                configure_mcp_server(
-                    server_copy, nodejs_dir=nodejs_dir,
-                    artifact_base_dir=artifact_base_dir,
-                )
+                plan = _plan_mcp_server_action(server_copy, 'profile', artifact_base_dir)
+                if plan.remove_scopes:
+                    claude_cmd = find_command('claude')
+                    if claude_cmd:
+                        _remove_mcp_server_from_cli_scopes(
+                            claude_cmd, server_name, plan.remove_scopes,
+                            nodejs_dir, artifact_base_dir,
+                        )
+                    else:
+                        warning(f'Cannot remove stale MCP server {server_name}: claude command not found')
+                info(f'MCP server {server_name} has scope: profile (will be configured via --strict-mcp-config)')
 
-        # Configure for each non-profile scope via claude mcp add
+        # Configure for each non-profile scope via claude mcp add, skipping
+        # servers whose live configuration already matches the declared one:
+        # `claude mcp remove` clears stored OAuth tokens of http/sse servers,
+        # so an unnecessary remove/add cycle would de-authenticate an
+        # unchanged server on every setup run
         for scope in non_profile_scopes:
             server_copy = server.copy()
             server_copy['scope'] = scope
+            plan = _plan_mcp_server_action(server_copy, scope, artifact_base_dir)
+            if plan.action == 'skip':
+                stats['unchanged_count'] += 1
+                success(f'MCP server {server_name} already configured (scope: {scope}, unchanged) - skipping')
+                if plan.remove_scopes:
+                    # Stale same-name entries at other scopes would shadow or
+                    # duplicate the target-scope entry; remove only those,
+                    # leaving the matching entry and its stored OAuth tokens
+                    # untouched
+                    claude_cmd = find_command('claude')
+                    if claude_cmd:
+                        _remove_mcp_server_from_cli_scopes(
+                            claude_cmd, server_name, plan.remove_scopes,
+                            nodejs_dir, artifact_base_dir,
+                        )
+                    else:
+                        warning(f'Cannot remove stale MCP server {server_name}: claude command not found')
+                continue
+            if plan.clears_oauth:
+                warning(
+                    f'MCP server {server_name} configuration changed; the Claude CLI clears '
+                    f'stored OAuth tokens when removing an http/sse server, so re-authenticate '
+                    f'it via /mcp after setup if it used OAuth',
+                )
             configure_mcp_server(
                 server_copy, nodejs_dir=nodejs_dir,
                 artifact_base_dir=artifact_base_dir,
+                remove_scopes=plan.remove_scopes,
             )
 
     # Create profile MCP config file if there are profile-scoped servers
@@ -14249,6 +14667,8 @@ def main() -> None:
                   f"{mcp_stats['profile_count']} profile-only")
         else:
             print(f'   * MCP servers: {len(mcp_servers)} configured')
+        if mcp_stats['unchanged_count'] > 0:
+            print(f"   * MCP servers unchanged (skipped, tokens preserved): {mcp_stats['unchanged_count']}")
         if status_line and isinstance(status_line, dict):
             status_line_dict = cast(dict[str, Any], status_line)
             status_line_file_val = status_line_dict.get('file', '')

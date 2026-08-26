@@ -269,7 +269,7 @@ class TestMainDeselectionWiring:
             patch('scripts.setup_environment.process_skills', return_value=True),
             patch('scripts.setup_environment.configure_all_mcp_servers',
                   return_value=(True, [], {'global_count': 0, 'profile_count': 0,
-                                           'combined_count': 0})),
+                                           'combined_count': 0, 'unchanged_count': 0})),
             patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude'),
             patch('scripts.setup_environment.is_admin', return_value=True),
             patch('scripts.setup_environment.register_global_command', return_value=True),
