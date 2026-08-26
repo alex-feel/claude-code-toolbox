@@ -10995,10 +10995,9 @@ def _build_expected_mcp_entry(server: dict[str, Any]) -> dict[str, Any] | None:
     Mirrors the add-command construction of configure_mcp_server() per
     platform so the result is byte-comparable with the live entry: stdio
     commands get YAML args appended (quoted), tildes expanded, and on Windows
-    backslashes converted plus the `cmd /c` wrapper applied to npx commands;
-    http/sse entries carry url and parsed headers. The CLI accepts --env for
-    http/sse but does not persist it, so env participates only in stdio
-    entries.
+    backslashes converted plus the `cmd /c` wrapper applied to npx commands,
+    with the declared env attached; http/sse entries carry url and parsed
+    headers.
 
     Args:
         server: MCP server spec from the resolved YAML config.
@@ -11010,9 +11009,6 @@ def _build_expected_mcp_entry(server: dict[str, Any]) -> dict[str, Any] | None:
     transport = server.get('transport')
     url = server.get('url')
     command = server.get('command')
-    env_list = _normalize_mcp_env_config(server.get('env'))
-    if env_list is None:
-        return None
 
     if transport and url:
         entry: dict[str, Any] = {'type': str(transport), 'url': str(url)}
@@ -11024,6 +11020,9 @@ def _build_expected_mcp_entry(server: dict[str, Any]) -> dict[str, Any] | None:
         return entry
 
     if command:
+        env_list = _normalize_mcp_env_config(server.get('env'))
+        if env_list is None:
+            return None
         full_command = str(command)
         args_list = server.get('args')
         if args_list and isinstance(args_list, list):
@@ -11279,13 +11278,6 @@ def configure_mcp_server(
     command = server.get('command')
     header = server.get('header')
 
-    # Normalize env to list for consistent handling (supports both string and list syntax)
-    normalized_env = _normalize_mcp_env_config(server.get('env'))
-    if normalized_env is None:
-        error(f'Invalid env format for {name}: expected string or list')
-        return False
-    env_list: list[str] = normalized_env
-
     if not name:
         error('MCP server configuration missing name')
         return False
@@ -11329,16 +11321,11 @@ def configure_mcp_server(
         # Handle different transport types
         if transport and url:
             # HTTP or SSE transport
-            # Non-variadic options precede positional arguments per Claude CLI syntax.
-            # EXCEPTION: Variadic --header MUST come AFTER positional arguments (name, url)
-            # to prevent Commander.js from consuming positionals as additional header values.
+            # Non-variadic --transport precedes positional arguments per Claude
+            # CLI syntax; variadic --header MUST come AFTER positional arguments
+            # (name, url) to prevent Commander.js from consuming positionals as
+            # additional header values.
             # See: https://github.com/anthropics/claude-code/issues/2341
-            for env_var in env_list:
-                base_cmd.extend(['--env', env_var])
-            base_cmd.extend(['--transport', transport])
-            base_cmd.extend((name, url))
-            if header:
-                base_cmd.extend(['--header', header])
 
             # Windows HTTP transport - use bash for consistent cross-platform behavior
             # This eliminates PowerShell's exit code quirks and CMD escaping issues
@@ -11352,18 +11339,16 @@ def configure_mcp_server(
                 path_preview = explicit_path[:200] + '...' if len(explicit_path) > 200 else explicit_path
                 debug_log(f'unix_explicit_path: {path_preview}')
 
-                # Single-quote --env/--header (via shlex.quote) so a ${VAR} placeholder is
+                # Single-quote --header (via shlex.quote) so a ${VAR} placeholder is
                 # passed to `claude mcp add` literally and stored verbatim in the config;
                 # Claude Code expands it from the environment at runtime. Double-quoting
                 # would let Git Bash expand ${VAR} at setup time, baking the resolved value
                 # (or an empty string when the variable is unset) into the config instead.
                 # This matches the Unix branch and escapes any embedded special characters.
-                env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
-                env_part = f' {env_flags}' if env_flags else ''
                 header_part = f' --header {shlex.quote(header)}' if header else ''
 
                 bash_cmd = (
-                    f'"{env.unix_claude_cmd}" mcp add --scope {scope}{env_part} '
+                    f'"{env.unix_claude_cmd}" mcp add --scope {scope} '
                     f'--transport {transport} {name} "{url}"{header_part}'
                 )
 
@@ -11382,15 +11367,13 @@ def configure_mcp_server(
             else:
                 # On Unix, use bash with updated PATH (consistent with Windows)
                 parent_dir = Path(claude_cmd).parent
-                env_flags = ' '.join(f'--env {shlex.quote(e)}' for e in env_list) if env_list else ''
-                env_part = f' {env_flags}' if env_flags else ''
                 # Single-quote the header (via shlex.quote) so a ${VAR} placeholder is
                 # passed to `claude mcp add` literally and stored verbatim; Claude Code
                 # expands it at runtime. Double-quoting would let bash expand ${VAR} at
                 # setup time, baking the resolved value (or an empty string) into the config.
                 header_part = f' --header {shlex.quote(header)}' if header else ''
                 bash_cmd = (
-                    f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)}{env_part} '
+                    f'{shlex.quote(str(claude_cmd))} mcp add --scope {shlex.quote(scope)} '
                     f'--transport {shlex.quote(transport)} {shlex.quote(name)} {shlex.quote(url)}{header_part}'
                 )
                 current_path = os.environ.get('PATH', '')
@@ -11405,6 +11388,13 @@ def configure_mcp_server(
                 )
         elif command:
             # Stdio transport (command)
+
+            # Normalize env to list for consistent handling (supports both string and list syntax)
+            normalized_env = _normalize_mcp_env_config(server.get('env'))
+            if normalized_env is None:
+                error(f'Invalid env format for {name}: expected string or list')
+                return False
+            env_list: list[str] = normalized_env
 
             # When args is provided separately, combine command + args into full command string
             args_list = server.get('args')
@@ -11714,9 +11704,10 @@ def create_mcp_config_file(
                     server_config['args'] = parsed['args']
             server_config['env'] = {}  # Format consistency with claude mcp add
 
-        # Environment variables (override default empty env)
+        # Environment variables for the stdio child process (override the
+        # default empty env)
         env_config = server.get('env')
-        if env_config:
+        if command and env_config:
             env_dict: dict[str, str] = {}
             if isinstance(env_config, str):
                 # Single env var format: "KEY=VALUE"

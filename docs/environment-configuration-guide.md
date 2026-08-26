@@ -537,7 +537,7 @@ MCP (Model Context Protocol) servers extend Claude Code with additional capabili
 #### HTTP Transport
 
 - **Required fields:** `name`, `transport: "http"`, `url`
-- **Optional fields:** `scope`, `header`, `env`
+- **Optional fields:** `scope`, `header`
 
 ```yaml
 mcp-servers:
@@ -547,7 +547,7 @@ mcp-servers:
     header: "Authorization: Bearer ${MY_TOKEN}"
 ```
 
-**Environment-variable header values (`${VAR}`):** A `${VAR}` (or `${VAR:-default}`) reference inside `header` is preserved literally in the Claude Code configuration and expanded from the environment by Claude Code **at runtime**, when a session starts -- the secret itself is never written into any configuration file, only the placeholder is stored. The setup script preserves the placeholder verbatim when it registers the server (it does not expand it at install time), so the behavior is identical on every operating system and shell. This is the recommended way to configure an authenticated remote MCP server: each user sets the variable (for example `MY_TOKEN`) as a real environment variable on their own machine, and only this placeholder configuration is shared. Do not add `env: "MY_TOKEN"` for this purpose -- `env` configures variables passed to a server and is unrelated to where the header reads its value.
+**Environment-variable header values (`${VAR}`):** A `${VAR}` (or `${VAR:-default}`) reference inside `header` is preserved literally in the Claude Code configuration and expanded from the environment by Claude Code **at runtime**, when a session starts -- the secret itself is never written into any configuration file, only the placeholder is stored. The setup script preserves the placeholder verbatim when it registers the server (it does not expand it at install time), so the behavior is identical on every operating system and shell. This is the recommended way to configure an authenticated remote MCP server: each user sets the variable (for example `MY_TOKEN`) as a real environment variable on their own machine, and only this placeholder configuration is shared.
 
 > **The variable must be set when Claude Code launches.** If a `${VAR}` reference has no value and no default, Claude Code fails to parse the MCP configuration. Ensure the variable is exported before launching Claude Code, or provide a fallback with `${VAR:-default}`.
 
@@ -617,14 +617,14 @@ The setup compares every declared server with the configuration already stored a
 
 #### The `env` Field
 
-Defines environment variables for the MCP server.
+Defines environment variables for the process of a **stdio** MCP server. Claude Code spawns stdio servers itself, so the declared variables reach the child process; a `${VAR}` reference in a value is expanded from the environment at session start, like in `header`.
 
-- **String format:** Single environment variable name
+- **String format:** Single `KEY=VALUE` assignment
 - **List format:** Multiple `KEY=VALUE` pairs
 
 ```yaml
 # Single variable
-env: "API_TOKEN"
+env: "API_TOKEN=${API_TOKEN}"
 
 # Multiple variables
 env:

@@ -134,6 +134,9 @@ def test_stdio_add_matches_expected_entry(isolated_claude_env: dict[str, Path]) 
     assert setup_environment._mcp_entries_equal(stored, expected), (
         f'stored={stored!r} expected={expected!r}'
     )
+    # The real CLI persisted the declared env verbatim, with the ${QUX}
+    # placeholder stored unexpanded for Claude Code to expand at session start
+    assert stored['env'] == {'FOO': 'bar', 'BAZ': '${QUX}'}
 
 
 def test_http_add_matches_expected_entry(isolated_claude_env: dict[str, Path]) -> None:

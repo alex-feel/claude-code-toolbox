@@ -99,20 +99,6 @@ class TestBuildExpectedMcpEntry:
         }
 
     @patch('platform.system', return_value='Linux')
-    def test_http_env_not_persisted_by_cli(self, mock_system: MagicMock) -> None:
-        del mock_system
-        # The Claude CLI accepts --env for http/sse but does not store it,
-        # so the expected entry must not carry env either
-        server = {
-            'name': 'srv',
-            'transport': 'http',
-            'url': 'https://example.invalid/mcp',
-            'env': ['FOO=bar'],
-        }
-        entry = setup_environment._build_expected_mcp_entry(server)
-        assert entry == {'type': 'http', 'url': 'https://example.invalid/mcp'}
-
-    @patch('platform.system', return_value='Linux')
     def test_sse_without_header(self, mock_system: MagicMock) -> None:
         del mock_system
         server = {'name': 'srv', 'transport': 'sse', 'url': 'https://example.invalid/sse'}

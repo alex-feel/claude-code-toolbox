@@ -635,7 +635,6 @@ class MCPServerHTTP(BaseModel):
     transport: Literal['http', 'sse'] = Field(..., description='Transport type')
     url: str = Field(..., description='Server URL')
     header: str | None = Field(None, description='Optional authentication header')
-    env: str | list[str] | None = Field(None, description='Optional environment variables (string or list)')
 
     @field_validator('scope')
     @classmethod
