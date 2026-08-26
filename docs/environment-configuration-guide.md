@@ -605,6 +605,16 @@ mcp-servers:
 
 > **Isolated environments:** When `command-names` creates an isolated environment, `scope: user` MCP servers are configured with `CLAUDE_CONFIG_DIR` pointing to the isolated directory. This ensures `claude mcp add --scope user` writes to the isolated `.claude.json` instead of the home-directory one. This per-call injection is one of the two `CLAUDE_CONFIG_DIR` channels described in [Setup-Time `CLAUDE_CONFIG_DIR` Export](#setup-time-claude_config_dir-export).
 
+#### Idempotent Reconfiguration
+
+The setup compares every declared server with the configuration already stored at its target scope (the isolated `.claude.json` when `command-names` is set, otherwise the base one) and skips the `claude mcp remove`/`claude mcp add` cycle when they match. This matters because `claude mcp remove` deletes the stored MCP OAuth tokens of `http`/`sse` servers (they are keyed by server name plus a hash of the type/url/headers triple), and re-adding restores only the connection settings, never the tokens: without the comparison, every setup run would silently de-authenticate every authenticated remote server.
+
+- A server is skipped only when the live entry at its **declared scope** matches the declared configuration exactly (type, command, args, env, url, headers; a same-name match at a different scope is not a match). Skipped servers appear in the completion summary as `MCP servers unchanged (skipped, tokens preserved)`.
+- A same-name leftover at another scope (which would shadow the declared entry) is still removed, without touching the matching entry or its tokens.
+- When the declared configuration **changed**, the server is removed and re-added. For `http`/`sse` servers this clears the stored OAuth tokens -- unavoidably, because the token key is derived from the changed configuration itself -- and the setup prints a warning to re-authenticate via `/mcp`.
+- When the live state cannot be read (for example a corrupt `.claude.json`), the setup falls back to the full remove-and-add cycle so the declared configuration always wins.
+- Per-project enable/disable choices made in the `/mcp` panel (`disabledMcpServers`/`enabledMcpServers` in the `projects` section) live outside the server entries and are never touched by the setup.
+
 #### The `env` Field
 
 Defines environment variables for the MCP server.

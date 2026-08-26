@@ -11,6 +11,7 @@ These tests verify that:
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -245,6 +246,12 @@ class TestPathClassification:
         """Verify ~/.claude/bin/claude is classified as native."""
         with (
             patch('sys.platform', 'linux'),
+            # Point the native-path probe at an empty home so a claude binary
+            # really installed on this machine cannot shadow the mocked path
+            patch.object(
+                install_claude, 'get_real_user_home',
+                return_value=Path('/nonexistent-e2e-home'),
+            ),
             patch.object(
                 install_claude, 'find_command',
                 return_value='/home/user/.claude/bin/claude',
@@ -262,6 +269,12 @@ class TestPathClassification:
         """Verify .npm-global path is classified as npm."""
         with (
             patch('sys.platform', 'linux'),
+            # Point the native-path probe at an empty home so a claude binary
+            # really installed on this machine cannot shadow the mocked path
+            patch.object(
+                install_claude, 'get_real_user_home',
+                return_value=Path('/nonexistent-e2e-home'),
+            ),
             patch.object(
                 install_claude, 'find_command',
                 return_value='/home/user/.npm-global/bin/claude',

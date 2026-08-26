@@ -164,6 +164,7 @@ filterwarnings = [
 ]
 markers = [
     "allow_real_home: Allow test to write to real home directory (bypasses safety guard)",
+    "real_binary: Exercise the real Claude CLI against an isolated CLAUDE_CONFIG_DIR (skipped when the binary is absent unless CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1)",
 ]
 
 [tool.coverage.run]
