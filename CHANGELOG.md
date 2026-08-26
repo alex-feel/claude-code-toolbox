@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.1...v7.3.2) (2026-08-26)
+
+
+### Bug Fixes
+
+* remove env from remote MCP server configuration ([0d0f05a](https://github.com/alex-feel/claude-code-toolbox/commit/0d0f05a7089edfec8bcc578838791bf26586995d))
+
 ## [7.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.0...v7.3.1) (2026-08-26)
 
 
