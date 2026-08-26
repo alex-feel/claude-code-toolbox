@@ -2927,41 +2927,6 @@ class TestConfigureMCPServer:
     @patch('setup_environment.run_bash_command')
     @patch('setup_environment.find_command')
     @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_env_and_header_argument_order(self, mock_run, mock_find, mock_bash):
-        """Test HTTP transport with both env vars and header places variadic --header after positional args."""
-        mock_find.return_value = 'claude'
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
-        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
-
-        server = {
-            'name': 'test-server',
-            'scope': 'user',
-            'transport': 'http',
-            'url': 'https://api.example.com/mcp/',
-            'header': 'Authorization: Bearer token',
-            'env': ['API_KEY=key123', 'REGION=us-east'],
-        }
-
-        with patch('platform.system', return_value='Linux'):
-            result = setup_environment.configure_mcp_server(server)
-
-        assert result is True
-        bash_cmd = mock_bash.call_args[0][0]
-
-        # Non-variadic options (--env, --transport) must precede name and url
-        name_pos = bash_cmd.index('test-server')
-        url_pos = bash_cmd.index('https://api.example.com/mcp/')
-        assert bash_cmd.index('--env') < name_pos, '--env must precede server name'
-        assert bash_cmd.index('--transport') < name_pos, '--transport must precede server name'
-        assert name_pos < url_pos, 'server name must precede url'
-        # Variadic --header must come AFTER positional arguments
-        assert bash_cmd.index('--header') > url_pos, (
-            '--header must come after url (variadic option prevents greedy consumption)'
-        )
-
-    @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.find_command')
-    @patch('setup_environment.run_command')
     def test_configure_mcp_server_http_header_env_var_placeholder_preserved_unix(self, mock_run, mock_find, mock_bash):
         """Unix HTTP transport single-quotes the header so a ${VAR} placeholder is preserved literally.
 

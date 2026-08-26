@@ -1210,44 +1210,6 @@ class TestMCPServerConfigurationEdgeCases:
         result = setup_environment.configure_mcp_server(server)
         assert result is False
 
-    @patch('platform.system', return_value='Windows')
-    @patch('setup_environment.find_command', return_value='claude')
-    @patch('setup_environment.run_bash_command')
-    @patch('setup_environment.run_command')
-    def test_configure_mcp_server_http_with_env_list(self, mock_run, mock_bash, mock_find, _mock_system):
-        """Test HTTP transport MCP configuration with multiple env vars."""
-        del mock_find  # Unused but required for patch
-        del _mock_system  # Unused but required for patch
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
-        mock_bash.return_value = subprocess.CompletedProcess([], 0, '', '')
-
-        server = {
-            'name': 'test-http-server',
-            'transport': 'http',
-            'url': 'http://localhost:8080',
-            'env': [
-                'AUTH_TOKEN=token123',
-                'REGION=us-west',
-                'TOKEN=${SECRET_TOKEN}',
-            ],
-        }
-
-        result = setup_environment.configure_mcp_server(server)
-        assert result is True
-
-        # Windows: all operations use bash (3 removes + 1 add)
-        assert mock_run.call_count == 0
-        assert mock_bash.call_count == 4
-
-        # Check bash command contains env flags (last bash call is add). Env values are
-        # quoted via shlex.quote (matching the Unix path): safe values need no quotes,
-        # while a ${VAR} placeholder is single-quoted so Git Bash does not expand it at
-        # setup time (Claude Code expands it from the environment at runtime).
-        bash_cmd = mock_bash.call_args[0][0]
-        assert '--env AUTH_TOKEN=token123' in bash_cmd
-        assert '--env REGION=us-west' in bash_cmd
-        assert "--env 'TOKEN=${SECRET_TOKEN}'" in bash_cmd
-
 
 class TestCreateSettingsComplex:
     """Test complex settings creation scenarios."""

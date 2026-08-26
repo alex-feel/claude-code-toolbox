@@ -183,7 +183,6 @@ mcp-servers:
     transport: "http"
     url: "http://localhost:3000/api"
     header: "X-API-Key: test-key"
-    env: "E2E_HTTP_TOKEN"
   # HTTP transport with header (profile scope) - tests header parsing in profile config
   - name: "e2e-http-profile-server"
     scope: "profile"

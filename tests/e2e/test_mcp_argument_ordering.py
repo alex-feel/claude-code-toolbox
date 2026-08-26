@@ -2,8 +2,9 @@
 
 Tests verify that configure_all_mcp_servers() generates CLI commands
 with correct argument ordering per Claude CLI (Commander.js) syntax:
-- Non-variadic options (--transport, --env) precede positional arguments (name, url)
+- Non-variadic --transport precedes positional arguments (name, url)
 - Variadic --header option comes AFTER positional arguments (name, url)
+- Stdio --env flags come after the server name and before the -- separator
 
 Placing --header after positionals prevents Commander.js from greedily
 consuming positional arguments as additional header values, which causes
@@ -157,57 +158,6 @@ class TestMCPArgumentOrdering:
         # Variadic --header must come AFTER positional arguments
         assert header_pos > url_pos, (
             '--header must come after url on Windows (variadic option prevents greedy consumption)'
-        )
-
-    def test_http_with_env_and_header_all_options_precede_positionals(
-        self,
-        e2e_isolated_home: dict[str, Path],
-        golden_config: dict[str, Any],
-    ) -> None:
-        """Verify HTTP transport with --env and --header: non-variadic before positionals, variadic after."""
-        mock_bash = MagicMock(
-            return_value=subprocess.CompletedProcess([], 0, '', ''),
-        )
-        mock_run = MagicMock(
-            return_value=subprocess.CompletedProcess([], 0, '', ''),
-        )
-
-        with (
-            patch('platform.system', return_value='Linux'),
-            patch.object(
-                setup_environment, 'find_command',
-                return_value='/usr/local/bin/claude',
-            ),
-            patch.object(setup_environment, 'run_bash_command', mock_bash),
-            patch.object(setup_environment, 'run_command', mock_run),
-        ):
-            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
-            configure_all_mcp_servers(
-                servers=golden_config.get('mcp-servers', []),
-                profile_mcp_config_path=profile_mcp_path,
-            )
-
-        # e2e-http-server has BOTH env ("E2E_HTTP_TOKEN") and header ("X-API-Key: test-key")
-        bash_cmd = _find_mcp_add_call(mock_bash.call_args_list, 'e2e-http-server')
-        assert bash_cmd is not None, (
-            'No mcp add command found for e2e-http-server in run_bash_command calls'
-        )
-
-        # Non-variadic options (--env, --transport) must precede name and url
-        name_pos = bash_cmd.index('e2e-http-server')
-        url_pos = bash_cmd.index('http://localhost:3000/api')
-        assert bash_cmd.index('--env') < name_pos, (
-            '--env must precede server name positional argument'
-        )
-        assert bash_cmd.index('--transport') < name_pos, (
-            '--transport must precede server name positional argument'
-        )
-        assert name_pos < url_pos, (
-            'server name must precede url positional argument'
-        )
-        # Variadic --header must come AFTER positional arguments
-        assert bash_cmd.index('--header') > url_pos, (
-            '--header must come after url (variadic option prevents greedy consumption)'
         )
 
     def test_http_without_header_argument_order_unchanged(
@@ -572,3 +522,105 @@ class TestMCPProfileHeaderConfig:
         server_config = data['mcpServers']['e2e-combined-scope-server']
         assert server_config['type'] == 'http'
         assert server_config['url'] == 'http://localhost:3003/combined-api'
+
+
+class TestMCPStdioEnvDelivery:
+    """E2E tests proving declared stdio env reaches the CLI add command and the profile JSON."""
+
+    def test_stdio_local_server_add_sends_env(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify the stdio add command carries the declared env after the name and before --."""
+        mock_bash = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                setup_environment, 'find_command',
+                return_value='/usr/local/bin/claude',
+            ),
+            patch.object(setup_environment, 'run_bash_command', mock_bash),
+            patch.object(setup_environment, 'run_command', mock_run),
+        ):
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
+            configure_all_mcp_servers(
+                servers=golden_config.get('mcp-servers', []),
+                profile_mcp_config_path=profile_mcp_path,
+            )
+
+        # On Linux the stdio add executes as argv via run_command; find the
+        # add call for the local-scope stdio server e2e-npx-server
+        add_cmd: list[str] | None = None
+        for call in mock_run.call_args_list:
+            cmd = call[0][0]
+            if isinstance(cmd, list) and 'add' in cmd and 'e2e-npx-server' in cmd:
+                add_cmd = [str(part) for part in cmd]
+                break
+        assert add_cmd is not None, (
+            'No mcp add command found for e2e-npx-server in run_command calls'
+        )
+
+        # The declared env must be delivered via --env, placed after the server
+        # name and before the -- separator per Claude CLI syntax
+        assert '--env' in add_cmd, 'stdio add must carry --env for declared env'
+        env_pos = add_cmd.index('--env')
+        assert add_cmd[env_pos + 1] == 'E2E_NPX_DEBUG=1'
+        assert env_pos > add_cmd.index('e2e-npx-server'), (
+            '--env must come after the server name (a name directly after --env '
+            'is read as another KEY=value pair and rejected by the CLI)'
+        )
+        assert env_pos < add_cmd.index('--'), '--env must precede the -- separator'
+
+    def test_stdio_profile_server_env_in_profile_json(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify the declared env of a profile-scoped stdio server lands verbatim in the MCP JSON."""
+        mock_bash = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+        mock_run = MagicMock(
+            return_value=subprocess.CompletedProcess([], 0, '', ''),
+        )
+
+        with (
+            patch('platform.system', return_value='Linux'),
+            patch.object(
+                setup_environment, 'find_command',
+                return_value='/usr/local/bin/claude',
+            ),
+            patch.object(setup_environment, 'run_bash_command', mock_bash),
+            patch.object(setup_environment, 'run_command', mock_run),
+        ):
+            profile_mcp_path = e2e_isolated_home['claude_dir'] / 'mcp.json'
+            configure_all_mcp_servers(
+                servers=golden_config.get('mcp-servers', []),
+                profile_mcp_config_path=profile_mcp_path,
+            )
+
+        import json
+        assert profile_mcp_path.exists(), (
+            f'Profile MCP config file not created: {profile_mcp_path}'
+        )
+        data = json.loads(profile_mcp_path.read_text(encoding='utf-8'))
+        server_config = data['mcpServers']['e2e-stdio-server']
+
+        # The whole entry is asserted exactly, so the declared env is proven
+        # present and delivered verbatim to the profile session config
+        assert server_config == {
+            'type': 'stdio',
+            'command': 'python',
+            'args': ['-m', 'e2e_test_server'],
+            'env': {
+                'E2E_STDIO_DEBUG': '1',
+                'E2E_STDIO_LOG_LEVEL': 'debug',
+            },
+        }
