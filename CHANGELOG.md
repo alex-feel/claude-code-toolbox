@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.3.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.0...v7.3.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* skip unchanged MCP servers instead of removing and re-adding them ([a16032f](https://github.com/alex-feel/claude-code-toolbox/commit/a16032fed74fe16df02506e2dbaee7854358da51))
+
 ## [7.3.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.2.2...v7.3.0) (2026-08-21)
 
 
