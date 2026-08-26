@@ -235,8 +235,11 @@ def test_changed_config_reconfigures(isolated_claude_env: dict[str, Path]) -> No
     assert stored['url'] == 'https://new.invalid/mcp'
     # The CLI clears the old config's credential entry during removal; the
     # new config derives a different key anyway, so the old token could
-    # never authenticate the new configuration
-    surviving = json.loads(credentials_file.read_text(encoding='utf-8'))
+    # never authenticate the new configuration. On macOS the CLI keeps MCP
+    # OAuth credentials in the Keychain and may delete a plaintext
+    # .credentials.json it encounters, so a missing file also proves the
+    # old entry is gone
+    surviving = json.loads(credentials_file.read_text(encoding='utf-8')) if credentials_file.is_file() else {}
     assert old_key not in surviving.get('mcpOAuth', {})
 
 
