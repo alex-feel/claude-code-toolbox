@@ -155,7 +155,7 @@ class TestIdeStaleCleanup:
 
         # Run cleanup with not-pinned (no isolation, no user-declared key)
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         # Verify all cleaned
@@ -218,7 +218,7 @@ class TestIdeUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         data = json.loads(settings_path.read_text())

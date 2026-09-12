@@ -3897,6 +3897,14 @@ AUTO_UPDATE_DISABLED_VALUE = False
 DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
 DISABLE_AUTOUPDATER_VALUE = '1'
 
+# Installation manifest written once per toolbox-managed profile: the base
+# profile writes ~/.claude/manifest.json and each isolated profile writes
+# ~/.claude/{cmd}/manifest.json. MANIFEST_VERSION_PIN_KEY records the Claude
+# Code version that profile pinned, so any later run can tell whether another
+# profile still needs the machine-global auto-update controls.
+MANIFEST_FILENAME = 'manifest.json'
+MANIFEST_VERSION_PIN_KEY = 'claude_code_version'
+
 # Key recorded by install_claude.py in the base ~/.claude.json identifying how
 # Claude Code was installed. Isolated profiles resolve their global config via
 # CLAUDE_CONFIG_DIR with no fallback to the home directory, so the value must
@@ -3937,11 +3945,83 @@ GZIP_MAGIC = b'\x1f\x8b'
 ZIP_MAGIC = b'PK\x03\x04'
 
 
+def _read_profile_manifest(manifest_path: Path) -> dict[str, Any] | None:
+    """Read one profile manifest, tolerating a missing or unreadable file.
+
+    Args:
+        manifest_path: Path to a profile's manifest.json.
+
+    Returns:
+        The parsed manifest object, or None when the file is absent,
+        unreadable, or does not contain a JSON object.
+    """
+    try:
+        content = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return content if isinstance(content, dict) else None
+
+
+def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> list[str]:
+    """List installed profiles OTHER than this run's that pin a Claude Code version.
+
+    One machine has one Claude Code binary, so the controls that hold it at
+    a pinned version (DISABLE_AUTOUPDATER, autoUpdates, and their IDE
+    extension counterparts) are machine-global. A run may therefore remove
+    them only when no installed profile still needs them.
+
+    Every toolbox-managed profile records its own pin in a manifest: the
+    base profile in ~/.claude/manifest.json, each isolated profile in
+    ~/.claude/{cmd}/manifest.json. A manifest belongs to this run when its
+    'name' field matches primary_command_name (None identifies the base
+    profile), so a profile relocated by a user-set CLAUDE_CONFIG_DIR is
+    recognized as its own rather than counted as another profile.
+
+    A manifest that carries no pin counts as unpinned.
+
+    Args:
+        home_dir: User home directory.
+        primary_command_name: This run's primary command name, or None when
+            the run configures the base profile.
+
+    Returns:
+        Sorted display names of the other installed profiles that pin a
+        version ('base' for the base profile). Empty when none does.
+    """
+    claude_dir = home_dir / '.claude'
+    manifest_paths = [claude_dir / MANIFEST_FILENAME]
+    try:
+        if claude_dir.is_dir():
+            manifest_paths.extend(
+                subdir / MANIFEST_FILENAME
+                for subdir in sorted(claude_dir.iterdir())
+                if subdir.is_dir()
+            )
+    except OSError:
+        return []
+
+    pinned: set[str] = set()
+    for manifest_path in manifest_paths:
+        manifest = _read_profile_manifest(manifest_path)
+        if manifest is None:
+            continue
+        name_raw = manifest.get('name')
+        name = name_raw.strip() or None if isinstance(name_raw, str) else None
+        if name == primary_command_name:
+            continue  # This run's own profile
+        pin = manifest.get(MANIFEST_VERSION_PIN_KEY)
+        if isinstance(pin, str) and pin.strip():
+            pinned.add(name or 'base')
+    return sorted(pinned)
+
+
 def apply_auto_update_settings(
     claude_code_version_normalized: str | None,
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
     os_env_variables: dict[str, str | None] | None,
+    *,
+    other_profile_pinned: bool = False,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -3951,9 +4031,12 @@ def apply_auto_update_settings(
 ]:
     """Apply automatic auto-update settings based on version pinning.
 
-    When a specific version is pinned, disables auto-updates across all
-    three available targets. When version is None (latest/absent), removes
-    auto-injected controls.
+    When this run pins a specific version, disables auto-updates across all
+    three available targets. When nothing on the machine pins a version,
+    removes auto-injected controls. When another installed profile pins a
+    version, the machine-global controls stay in force and no removal is
+    scheduled, because that profile shares the one Claude Code binary this
+    machine has.
 
     Operates on in-memory dicts ONLY -- has no knowledge of command-names,
     file paths, or environment isolation. The existing write routing
@@ -3964,6 +4047,8 @@ def apply_auto_update_settings(
         global_config: Global config dict (may be None).
         user_settings: User settings dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
+        other_profile_pinned: Whether another installed profile pins a
+            Claude Code version, as reported by _other_profile_pins().
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables,
@@ -3980,8 +4065,9 @@ def apply_auto_update_settings(
                 warnings_list, auto_injected,
             )
         )
-    else:
-        # Latest/absent: preserve user declarations, schedule OS-level cleanup
+    elif not other_profile_pinned:
+        # Nothing on the machine pins a version: preserve user declarations,
+        # schedule OS-level cleanup
         global_config, user_settings, os_env_variables = (
             _remove_auto_update_controls(
                 global_config, user_settings, os_env_variables,
@@ -4075,13 +4161,14 @@ def _remove_auto_update_controls(
     dict[str, Any] | None,
     dict[str, str | None] | None,
 ]:
-    """Handle auto-update controls for an unpinned run.
+    """Handle auto-update controls when nothing on the machine pins a version.
 
-    On an unpinned run, nothing has been auto-injected into the in-memory
-    dicts, so every control key present comes from the user's YAML and is
-    PRESERVED (the removal counterpart of WARN-but-Respect on the write
-    side). Stale on-disk artifacts from a prior pinned run are removed by
-    the Step 16 stale-controls sweep instead.
+    Called only when neither this run nor any other installed profile pins
+    a Claude Code version. Nothing has been auto-injected into the
+    in-memory dicts, so every control key present comes from the user's
+    YAML and is PRESERVED (the removal counterpart of WARN-but-Respect on
+    the write side). Stale on-disk artifacts from a prior pinned run are
+    removed by the Step 16 stale-controls sweep instead.
 
     The OS-level variable has no filesystem sweep, so when the user does
     not declare DISABLE_AUTOUPDATER in os-env-variables, a deletion entry
@@ -4129,8 +4216,7 @@ def _collect_user_declared_control_keys(
 
 def cleanup_stale_auto_update_controls(
     home_dir: Path,
-    is_pinned: bool,
-    is_isolated: bool,
+    machine_pinned: bool,
     user_declared: bool,
 ) -> None:
     """Remove stale auto-update controls from filesystem locations.
@@ -4139,60 +4225,52 @@ def cleanup_stale_auto_update_controls(
     via scope-based routing, while removal sweeps the locations that can
     hold artifacts from prior configurations. Two guards bound the sweep:
 
-    - Unpinned runs sweep ALL locations, except that settings.json files
-      keep DISABLE_AUTOUPDATER when the current YAML itself declares the
-      key (the removal counterpart of WARN-but-Respect on the write side).
-    - Pinned runs sweep the base ~/.claude/settings.json only for
-      isolated runs (bare sessions must not inherit an isolated
-      environment's restrictions). In a non-isolated pinned run the base
-      file is the run's own Step 14 write target, so sweeping it would
-      destroy the controls this run just wrote.
+    - The sweep runs only when NO installed profile pins a version. The
+      controls are machine-global, so while this run or any other profile
+      recorded in the profile manifests pins a version, every location
+      keeps its controls.
+    - settings.json files additionally keep DISABLE_AUTOUPDATER when the
+      current YAML itself declares the key (the removal counterpart of
+      WARN-but-Respect on the write side).
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
     Args:
         home_dir: User home directory.
-        is_pinned: Whether a specific Claude Code version is pinned.
-        is_isolated: Whether command-names created an isolated environment.
+        machine_pinned: Whether any installed profile pins a Claude Code
+            version -- this run's own pin or another profile's.
         user_declared: Whether the current resolved YAML declares
             DISABLE_AUTOUPDATER in user-settings.env.
     """
+    if machine_pinned:
+        return
+
+    # Nothing on the machine pins a version: remove auto-update controls
+    # from EVERYWHERE, preserving user-declared settings.json keys
     claude_dir = home_dir / '.claude'
 
-    if not is_pinned:
-        # When NOT pinned: remove auto-update controls from EVERYWHERE,
-        # preserving user-declared settings.json keys
+    if not user_declared:
+        # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
+        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
 
-        if not user_declared:
-            # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
-            _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
-
-            # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
-            if claude_dir.is_dir():
-                for subdir in claude_dir.iterdir():
-                    if subdir.is_dir():
-                        settings_path = subdir / 'settings.json'
-                        if settings_path.exists():
-                            _cleanup_settings_json_autoupdater(settings_path)
-
-        # 3. Clean autoUpdates: false from ~/.claude.json
-        _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
-
-        # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
+        # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
         if claude_dir.is_dir():
             for subdir in claude_dir.iterdir():
                 if subdir.is_dir():
-                    claude_json_path = subdir / '.claude.json'
-                    if claude_json_path.exists():
-                        _cleanup_claude_json_auto_updates(claude_json_path)
+                    settings_path = subdir / 'settings.json'
+                    if settings_path.exists():
+                        _cleanup_settings_json_autoupdater(settings_path)
 
-    elif is_isolated:
-        # When pinned WITH an isolated environment: clean stale
-        # DISABLE_AUTOUPDATER from ~/.claude/settings.json (bare sessions
-        # must not inherit isolated environment restrictions). Without
-        # isolation the base file holds this run's own Step 14 output,
-        # so no settings.json sweep runs.
-        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+    # 3. Clean autoUpdates: false from ~/.claude.json
+    _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
+
+    # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
+    if claude_dir.is_dir():
+        for subdir in claude_dir.iterdir():
+            if subdir.is_dir():
+                claude_json_path = subdir / '.claude.json'
+                if claude_json_path.exists():
+                    _cleanup_claude_json_auto_updates(claude_json_path)
 
 
 def _cleanup_settings_json_autoupdater(settings_path: Path) -> None:
@@ -4240,32 +4318,28 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
 
 
 def _run_stale_controls_cleanup(
-    claude_code_version_normalized: str | None,
-    is_isolated: bool,
+    machine_pinned: bool,
     user_declared_keys: frozenset[str],
 ) -> None:
     """Execute Step 16: cleanup stale auto-update and IDE extension controls.
 
     Args:
-        claude_code_version_normalized: Pinned version string, or None for latest.
-        is_isolated: Whether command-names created an isolated environment.
+        machine_pinned: Whether any installed profile pins a Claude Code
+            version -- this run's own pin or another profile's.
         user_declared_keys: Control keys the current resolved YAML declares
             (computed before injection by _collect_user_declared_control_keys()).
     """
     print()
     print(f'{Colors.CYAN}Step 16: Cleaning stale auto-update and IDE extension controls...{Colors.NC}')
     home = get_real_user_home()
-    is_pinned = claude_code_version_normalized is not None
     cleanup_stale_auto_update_controls(
         home_dir=home,
-        is_pinned=is_pinned,
-        is_isolated=is_isolated,
+        machine_pinned=machine_pinned,
         user_declared=DISABLE_AUTOUPDATER_KEY in user_declared_keys,
     )
     cleanup_stale_ide_extension_controls(
         home_dir=home,
-        is_pinned=is_pinned,
-        is_isolated=is_isolated,
+        machine_pinned=machine_pinned,
         user_declared=IDE_SKIP_AUTO_INSTALL_KEY in user_declared_keys,
     )
 
@@ -4275,6 +4349,8 @@ def apply_ide_extension_settings(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
     os_env_variables: dict[str, str | None] | None,
+    *,
+    other_profile_pinned: bool = False,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -4284,9 +4360,12 @@ def apply_ide_extension_settings(
 ]:
     """Apply automatic IDE extension auto-install settings based on version pinning.
 
-    When a specific version is pinned, disables IDE extension auto-installation
-    across all three available targets. When version is None (latest/absent),
-    removes auto-injected controls.
+    When this run pins a specific version, disables IDE extension
+    auto-installation across all three available targets. When nothing on
+    the machine pins a version, removes auto-injected controls. When
+    another installed profile pins a version, the machine-global controls
+    stay in force and no removal is scheduled, because that profile shares
+    the one Claude Code installation this machine has.
 
     Operates on in-memory dicts ONLY -- has no knowledge of command-names,
     file paths, or environment isolation. The existing write routing
@@ -4297,6 +4376,8 @@ def apply_ide_extension_settings(
         global_config: Global config dict (may be None).
         user_settings: User settings dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
+        other_profile_pinned: Whether another installed profile pins a
+            Claude Code version, as reported by _other_profile_pins().
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables,
@@ -4313,8 +4394,9 @@ def apply_ide_extension_settings(
                 warnings_list, auto_injected,
             )
         )
-    else:
-        # Latest/absent: preserve user declarations, schedule OS-level cleanup
+    elif not other_profile_pinned:
+        # Nothing on the machine pins a version: preserve user declarations,
+        # schedule OS-level cleanup
         global_config, user_settings, os_env_variables = (
             _remove_ide_extension_controls(
                 global_config, user_settings, os_env_variables,
@@ -4408,13 +4490,14 @@ def _remove_ide_extension_controls(
     dict[str, Any] | None,
     dict[str, str | None] | None,
 ]:
-    """Handle IDE extension auto-install controls for an unpinned run.
+    """Handle IDE extension controls when nothing on the machine pins a version.
 
-    On an unpinned run, nothing has been auto-injected into the in-memory
-    dicts, so every control key present comes from the user's YAML and is
-    PRESERVED (the removal counterpart of WARN-but-Respect on the write
-    side). Stale on-disk artifacts from a prior pinned run are removed by
-    the Step 16 stale-controls sweep instead.
+    Called only when neither this run nor any other installed profile pins
+    a Claude Code version. Nothing has been auto-injected into the
+    in-memory dicts, so every control key present comes from the user's
+    YAML and is PRESERVED (the removal counterpart of WARN-but-Respect on
+    the write side). Stale on-disk artifacts from a prior pinned run are
+    removed by the Step 16 stale-controls sweep instead.
 
     The OS-level variable has no filesystem sweep, so when the user does
     not declare CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in os-env-variables, a
@@ -4480,8 +4563,7 @@ def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
 
 def cleanup_stale_ide_extension_controls(
     home_dir: Path,
-    is_pinned: bool,
-    is_isolated: bool,
+    machine_pinned: bool,
     user_declared: bool,
 ) -> None:
     """Remove stale IDE extension auto-install controls from filesystem locations.
@@ -4490,61 +4572,52 @@ def cleanup_stale_ide_extension_controls(
     via scope-based routing, while removal sweeps the locations that can
     hold artifacts from prior configurations. Two guards bound the sweep:
 
-    - Unpinned runs sweep ALL locations, except that settings.json files
-      keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL when the current YAML itself
-      declares the key (the removal counterpart of WARN-but-Respect on
-      the write side).
-    - Pinned runs sweep the base ~/.claude/settings.json only for
-      isolated runs (bare sessions must not inherit an isolated
-      environment's restrictions). In a non-isolated pinned run the base
-      file is the run's own Step 14 write target, so sweeping it would
-      destroy the controls this run just wrote.
+    - The sweep runs only when NO installed profile pins a version. The
+      controls are machine-global, so while this run or any other profile
+      recorded in the profile manifests pins a version, every location
+      keeps its controls.
+    - settings.json files additionally keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
+      when the current YAML itself declares the key (the removal
+      counterpart of WARN-but-Respect on the write side).
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
     Args:
         home_dir: User home directory.
-        is_pinned: Whether a specific Claude Code version is pinned.
-        is_isolated: Whether command-names created an isolated environment.
+        machine_pinned: Whether any installed profile pins a Claude Code
+            version -- this run's own pin or another profile's.
         user_declared: Whether the current resolved YAML declares
             CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in user-settings.env.
     """
+    if machine_pinned:
+        return
+
+    # Nothing on the machine pins a version: remove IDE extension controls
+    # from EVERYWHERE, preserving user-declared settings.json keys
     claude_dir = home_dir / '.claude'
 
-    if not is_pinned:
-        # When NOT pinned: remove IDE extension controls from EVERYWHERE,
-        # preserving user-declared settings.json keys
+    if not user_declared:
+        # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
+        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
 
-        if not user_declared:
-            # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
-            _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
-
-            # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
-            if claude_dir.is_dir():
-                for subdir in claude_dir.iterdir():
-                    if subdir.is_dir():
-                        settings_path = subdir / 'settings.json'
-                        if settings_path.exists():
-                            _cleanup_settings_json_ide_skip(settings_path)
-
-        # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
-        _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
-
-        # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
+        # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
         if claude_dir.is_dir():
             for subdir in claude_dir.iterdir():
                 if subdir.is_dir():
-                    claude_json_path = subdir / '.claude.json'
-                    if claude_json_path.exists():
-                        _cleanup_claude_json_ide_auto_install(claude_json_path)
+                    settings_path = subdir / 'settings.json'
+                    if settings_path.exists():
+                        _cleanup_settings_json_ide_skip(settings_path)
 
-    elif is_isolated:
-        # When pinned WITH an isolated environment: clean stale
-        # CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
-        # (bare sessions must not inherit isolated environment
-        # restrictions). Without isolation the base file holds this run's
-        # own Step 14 output, so no settings.json sweep runs.
-        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+    # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
+    _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
+
+    # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
+    if claude_dir.is_dir():
+        for subdir in claude_dir.iterdir():
+            if subdir.is_dir():
+                claude_json_path = subdir / '.claude.json'
+                if claude_json_path.exists():
+                    _cleanup_claude_json_ide_auto_install(claude_json_path)
 
 
 def _vscode_target_platform() -> str | None:
@@ -12563,35 +12636,44 @@ def create_profile_config(
 
 def write_manifest(
     config_base_dir: Path,
-    command_name: str,
+    command_name: str | None,
     config_version: str | None,
     config_source: str,
     config_source_type: str,
     config_source_url: str | None,
     command_names: list[str],
+    claude_code_version: str | None,
 ) -> bool:
     """Write installation manifest for the environment configuration.
 
     Creates manifest.json containing metadata about the installed
-    configuration. Used by version checking hooks to determine if updates are available.
+    configuration. Version checking hooks read it to determine whether
+    configuration updates are available, and _other_profile_pins() reads
+    the recorded Claude Code version pin across profiles to decide whether
+    the machine-global auto-update controls are still needed.
 
     Args:
-        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
-        command_name: Primary command name
+        config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/
+            for an isolated profile, ~/.claude/ for the base profile
+        command_name: Primary command name, or None for the base profile
         config_version: Optional semantic version from config (e.g., "1.3.0")
         config_source: Raw config source as provided by user
         config_source_type: Classified source type ("url", "local", "repo")
         config_source_url: Resolved fetch URL, or None for local sources
-        command_names: List of all command names (primary + aliases)
+        command_names: List of all command names (primary + aliases), empty
+            for the base profile
+        claude_code_version: Claude Code version this profile pins, or None
+            when the profile tracks the latest release
 
     Returns:
         True if manifest was written successfully, False otherwise.
     """
-    manifest_path = config_base_dir / 'manifest.json'
+    manifest_path = config_base_dir / MANIFEST_FILENAME
 
     manifest: dict[str, Any] = {
         'name': command_name,
         'version': config_version,
+        MANIFEST_VERSION_PIN_KEY: claude_code_version,
         'config_source': config_source,
         'config_source_url': config_source_url,
         'config_source_type': config_source_type,
@@ -12603,7 +12685,7 @@ def write_manifest(
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
-        success('Created manifest.json')
+        success(f'Created {MANIFEST_FILENAME}')
         return True
     except Exception as e:
         warning(f'Failed to write manifest: {e}')
@@ -14015,6 +14097,23 @@ def main() -> None:
             user_settings,
         )
 
+        # The machine has one Claude Code binary, so the auto-update and
+        # IDE extension controls that hold it at a pinned version are
+        # machine-global. Read the profile manifests once to learn whether
+        # any OTHER installed profile still pins a version; while one does,
+        # this run keeps the controls in place instead of removing them.
+        other_pinned_profiles = _other_profile_pins(
+            get_real_user_home(), primary_command_name,
+        )
+        other_profile_pinned = bool(other_pinned_profiles)
+        machine_pinned = claude_code_version_normalized is not None or other_profile_pinned
+        if claude_code_version_normalized is None and other_profile_pinned:
+            pinned_names = ', '.join(f"'{name}'" for name in other_pinned_profiles)
+            info(
+                f'Another installed profile pins a Claude Code version ({pinned_names}); '
+                'auto-update and IDE extension controls are left in place.',
+            )
+
         # Apply automatic auto-update settings based on version pinning
         (
             global_config,
@@ -14027,6 +14126,7 @@ def main() -> None:
             global_config,
             user_settings,
             os_env_variables,
+            other_profile_pinned=other_profile_pinned,
         )
         for warn_msg in auto_update_warnings:
             warning(warn_msg)
@@ -14043,6 +14143,7 @@ def main() -> None:
             global_config,
             user_settings,
             os_env_variables,
+            other_profile_pinned=other_profile_pinned,
         )
         for warn_msg in ide_ext_warnings:
             warning(warn_msg)
@@ -14448,8 +14549,7 @@ def main() -> None:
 
         # Step 16: Cleanup stale auto-update and IDE extension controls
         _run_stale_controls_cleanup(
-            claude_code_version_normalized,
-            is_isolated=bool(primary_command_name),
+            machine_pinned=machine_pinned,
             user_declared_keys=user_declared_control_keys,
         )
 
@@ -14501,6 +14601,7 @@ def main() -> None:
                 config_source_type=config_source_type,
                 config_source_url=config_source_url,
                 command_names=command_names or [primary_command_name],
+                claude_code_version=claude_code_version_normalized,
             )
 
             # Step 20: Create launcher script
@@ -14634,9 +14735,28 @@ def main() -> None:
 
             write_profile_settings_to_settings(settings_delta, claude_user_dir)
 
-            # Steps 19-21: Skip command creation
+            # Step 19: Write the base profile's installation manifest. Every
+            # toolbox-managed profile records its own Claude Code version
+            # pin, so a later run of any profile can tell whether the
+            # machine-global auto-update controls are still needed.
             print()
-            print(f'{Colors.CYAN}Steps 19-21: Skipping command creation (no command-names specified)...{Colors.NC}')
+            print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
+            config_source_type = classify_config_source(config_source)
+            config_source_url = resolve_config_source_url(config_source, config_source_type)
+            write_manifest(
+                config_base_dir=claude_user_dir,
+                command_name=None,
+                config_version=config_version,
+                config_source=config_name,
+                config_source_type=config_source_type,
+                config_source_url=config_source_url,
+                command_names=[],
+                claude_code_version=claude_code_version_normalized,
+            )
+
+            # Steps 20-21: Skip command creation
+            print()
+            print(f'{Colors.CYAN}Steps 20-21: Skipping command creation (no command-names specified)...{Colors.NC}')
 
             # Step 22: Remove previously installed artifacts of deselected
             # components (the removal plan derives from the unfiltered

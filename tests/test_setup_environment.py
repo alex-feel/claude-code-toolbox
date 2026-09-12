@@ -11745,7 +11745,7 @@ class TestMainFunctionUserSettings:
         captured = capsys.readouterr()
         assert 'Step 17: Skipping hooks download (none configured)' in captured.out
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 19-21: Skipping command creation (no command-names specified)' in captured.out
+        assert 'Steps 20-21: Skipping command creation (no command-names specified)' in captured.out
         assert 'Step 14: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -13945,7 +13945,7 @@ class TestCleanupStaleIdeExtensionControls:
         cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         # Verify cleaned
@@ -13974,7 +13974,7 @@ class TestCleanupStaleIdeExtensionControls:
         claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         # settings.json keys preserved (user-declared in the current YAML)
@@ -13986,7 +13986,8 @@ class TestCleanupStaleIdeExtensionControls:
         data = json.loads(claude_json.read_text())
         assert 'autoInstallIdeExtension' not in data
 
-    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
+    def test_machine_pinned_keeps_every_location(self, tmp_path: Path) -> None:
+        """While any installed profile pins a version, no location is swept."""
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -13997,42 +13998,31 @@ class TestCleanupStaleIdeExtensionControls:
         settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
         cmd_settings = cmd_dir / 'settings.json'
         cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoInstallIdeExtension": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
-        # Global settings cleaned (bare sessions must not inherit isolated
-        # environment restrictions)
         data = json.loads(settings.read_text())
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
-        # Command settings NOT cleaned when pinned
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         data = json.loads(cmd_settings.read_text())
         assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
-
-    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
-        """Pinned without isolation: the base settings.json is the run's own write target."""
-        home = tmp_path / 'home'
-        claude_dir = home / '.claude'
-        claude_dir.mkdir(parents=True)
-
-        settings = claude_dir / 'settings.json'
-        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
-
-        _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=False, user_declared=False,
-        )
-
-        data = json.loads(settings.read_text())
-        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        data = json.loads(claude_json.read_text())
+        assert data['autoInstallIdeExtension'] is False
+        data = json.loads(cmd_claude_json.read_text())
+        assert data['autoInstallIdeExtension'] is False
 
     def test_missing_files_no_crash(self, tmp_path: Path) -> None:
         home = tmp_path / 'nonexistent'
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
     def test_preserves_true_values(self, tmp_path: Path) -> None:
@@ -14043,7 +14033,7 @@ class TestCleanupStaleIdeExtensionControls:
         claude_json.write_text('{"autoInstallIdeExtension": true}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         data = json.loads(claude_json.read_text())
@@ -14075,7 +14065,7 @@ class TestCleanupStaleAutoUpdateControls:
         cmd_claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         # Verify cleaned
@@ -14104,7 +14094,7 @@ class TestCleanupStaleAutoUpdateControls:
         claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         # settings.json keys preserved (user-declared in the current YAML)
@@ -14116,7 +14106,8 @@ class TestCleanupStaleAutoUpdateControls:
         data = json.loads(claude_json.read_text())
         assert 'autoUpdates' not in data
 
-    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
+    def test_machine_pinned_keeps_every_location(self, tmp_path: Path) -> None:
+        """While any installed profile pins a version, no location is swept."""
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -14127,43 +14118,158 @@ class TestCleanupStaleAutoUpdateControls:
         settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
         cmd_settings = cmd_dir / 'settings.json'
         cmd_settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoUpdates": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
-        # Global settings cleaned (bare sessions must not inherit isolated
-        # environment restrictions)
         data = json.loads(settings.read_text())
-        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
-        # Command settings NOT cleaned when pinned
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
         data = json.loads(cmd_settings.read_text())
         assert data['env']['DISABLE_AUTOUPDATER'] == '1'
-
-    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
-        """Pinned without isolation: the base settings.json is the run's own write target."""
-        home = tmp_path / 'home'
-        claude_dir = home / '.claude'
-        claude_dir.mkdir(parents=True)
-
-        settings = claude_dir / 'settings.json'
-        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
-
-        _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=False, user_declared=False,
-        )
-
-        data = json.loads(settings.read_text())
-        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        data = json.loads(claude_json.read_text())
+        assert data['autoUpdates'] is False
+        data = json.loads(cmd_claude_json.read_text())
+        assert data['autoUpdates'] is False
 
     def test_missing_files_no_crash(self, tmp_path: Path) -> None:
         home = tmp_path / 'nonexistent'
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
+
+
+class TestOtherProfilePins:
+    """Tests for _other_profile_pins(), the installed-profile pin registry reader."""
+
+    @staticmethod
+    def _write_manifest(directory: Path, name: str | None, pin: str | None) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'manifest.json').write_text(
+            json.dumps({'name': name, 'claude_code_version': pin}),
+            encoding='utf-8',
+        )
+
+    def test_missing_claude_dir_returns_empty(self, tmp_path: Path) -> None:
+        assert setup_environment._other_profile_pins(tmp_path / 'nonexistent', None) == []
+
+    def test_no_manifests_returns_empty(self, tmp_path: Path) -> None:
+        (tmp_path / '.claude' / 'some-cmd').mkdir(parents=True)
+        assert setup_environment._other_profile_pins(tmp_path, 'some-cmd') == []
+
+    def test_invalid_json_is_tolerated(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        (claude_dir / 'manifest.json').write_text('{not json', encoding='utf-8')
+        assert setup_environment._other_profile_pins(tmp_path, 'some-cmd') == []
+
+    def test_non_object_manifest_is_tolerated(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        (claude_dir / 'manifest.json').write_text('["not", "an", "object"]', encoding='utf-8')
+        assert setup_environment._other_profile_pins(tmp_path, 'some-cmd') == []
+
+    def test_base_manifest_pin_seen_by_isolated_run(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude', None, '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ['base']
+
+    def test_isolated_manifest_pin_seen_by_base_run(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == ['claude-personal']
+
+    def test_own_isolated_manifest_is_excluded(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == []
+
+    def test_own_base_manifest_is_excluded(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude', None, '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == []
+
+    def test_own_manifest_excluded_by_name_not_by_location(self, tmp_path: Path) -> None:
+        """A profile relocated by CLAUDE_CONFIG_DIR is matched by its recorded name."""
+        self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == []
+
+    def test_unpinned_manifests_do_not_count(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, None)
+        self._write_manifest(claude_dir / 'blank-pin', 'blank-pin', '   ')
+        legacy = claude_dir / 'legacy'
+        legacy.mkdir(parents=True)
+        (legacy / 'manifest.json').write_text(
+            json.dumps({'name': 'legacy'}), encoding='utf-8',
+        )
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == []
+
+    def test_multiple_pinned_profiles_are_sorted(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, '2.1.85')
+        self._write_manifest(claude_dir / 'zeta', 'zeta', '2.1.85')
+        self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == ['alpha', 'base', 'zeta']
+
+    def test_whitespace_only_name_is_treated_as_base(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, '   ', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == []
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == ['base']
+
+
+class TestControlsWhenAnotherProfilePins:
+    """Another profile's pin suppresses the unpinned OS-level deletion scheduling."""
+
+    def test_auto_update_schedules_os_deletion_when_nothing_pins(self) -> None:
+        _, _, osev, _, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None, other_profile_pinned=False,
+        )
+        assert osev == {'DISABLE_AUTOUPDATER': None}
+        assert auto == []
+
+    def test_auto_update_skips_os_deletion_when_another_profile_pins(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None, other_profile_pinned=True,
+        )
+        assert (gc, us, osev) == (None, None, None), \
+            'A pinned sibling profile must leave every target untouched'
+        assert warns == []
+        assert auto == []
+
+    def test_auto_update_keeps_user_declarations_when_another_profile_pins(self) -> None:
+        os_env: dict[str, str | None] = {'OTHER': 'keep'}
+        _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            None, None, None, os_env, other_profile_pinned=True,
+        )
+        assert osev == {'OTHER': 'keep'}, 'No deletion entry may be scheduled'
+
+    def test_ide_extension_schedules_os_deletion_when_nothing_pins(self) -> None:
+        _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, other_profile_pinned=False,
+        )
+        assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
+
+    def test_ide_extension_skips_os_deletion_when_another_profile_pins(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, other_profile_pinned=True,
+        )
+        assert (gc, us, osev) == (None, None, None)
+        assert warns == []
+        assert auto == []
+
+    def test_own_pin_still_injects_when_another_profile_also_pins(self) -> None:
+        gc, us, osev, _, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None, other_profile_pinned=True,
+        )
+        assert gc == {'autoUpdates': False}
+        assert us == {'env': {'DISABLE_AUTOUPDATER': '1'}}
+        assert osev == {'DISABLE_AUTOUPDATER': '1'}
+        assert len(auto) == 3
 
 
 class TestCollectUserDeclaredControlKeys:

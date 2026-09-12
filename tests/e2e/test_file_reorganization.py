@@ -91,6 +91,7 @@ class TestFileReorganization:
             config_source_type='local',
             config_source_url=None,
             command_names=command_names,
+            claude_code_version=None,
         )
 
         # Verify all expected files exist inside artifact_base_dir
@@ -142,6 +143,7 @@ class TestFileReorganization:
             config_source_type='local',
             config_source_url=None,
             command_names=command_names,
+            claude_code_version=None,
         )
 
         create_launcher_script(artifact_base_dir, cmd)

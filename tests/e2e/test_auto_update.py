@@ -264,7 +264,7 @@ class TestUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         data = json.loads(settings_path.read_text())
@@ -284,7 +284,7 @@ class TestUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         data = json.loads(settings_path.read_text())
@@ -331,7 +331,7 @@ class TestPinnedBaseFlowSequence:
 
         # Step 16: pinned non-isolated cleanup must NOT sweep the base file
         setup_environment._run_stale_controls_cleanup(
-            '2.1.85', is_isolated=False, user_declared_keys=frozenset(),
+            machine_pinned=True, user_declared_keys=frozenset(),
         )
         data = json.loads((claude_dir / 'settings.json').read_text())
         assert data['env']['DISABLE_AUTOUPDATER'] == '1', \

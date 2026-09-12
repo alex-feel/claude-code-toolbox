@@ -303,8 +303,8 @@ class TestScopePreservation:
             f'Non-isolated config must not create subdirectories, found: {subdirs}'
         )
 
-        # No infrastructure files created
-        for f in ['config.json', 'manifest.json', 'mcp.json']:
+        # No isolated-profile infrastructure files created
+        for f in ['config.json', 'mcp.json']:
             assert not (claude_dir / f).exists(), (
                 f'{f} should not exist for non-isolated config'
             )
