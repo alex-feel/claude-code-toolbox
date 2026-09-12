@@ -126,14 +126,17 @@ class TestTwoLevelMerge:
         assert 'Write' in perms
 
     def test_user_settings_env_deep_merge_null_delete(self, fixtures_dir):
-        """User-settings.env deep merged, null deletes parent key."""
+        """User-settings.env deep merged, child null survives as a deletion request."""
         child_path = fixtures_dir / 'merge_child.yaml'
         config = _load_yaml(child_path)
         resolved, _ = _resolve(config, str(child_path))
         env = resolved['user-settings']['env']
         assert env['PARENT_VAR'] == 'parent_val'
         assert env['CHILD_VAR'] == 'child_val'
-        assert 'SHARED_VAR' not in env
+        # The child's null is carried forward so the on-disk writer deletes
+        # SHARED_VAR even though the parent declared a value for it.
+        assert 'SHARED_VAR' in env
+        assert env['SHARED_VAR'] is None
 
     def test_os_env_variables_shallow_merge(self, fixtures_dir):
         """Os-env-variables shallow merged."""

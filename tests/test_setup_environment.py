@@ -6505,11 +6505,11 @@ class TestMergeKeys:
         assert set(result['permissions']['allow']) == {'Read', 'Write'}
 
     def test_merge_config_key_os_env_variables(self):
-        """Dispatch: os-env-variables uses shallow dict merge with null deletes."""
+        """Dispatch: os-env-variables composes shallowly; a child null is carried forward."""
         parent = {'X': 'val1'}
         child = {'X': None, 'Y': 'val2'}
         result = setup_environment._merge_config_key('os-env-variables', parent, child)
-        assert result == {'Y': 'val2'}
+        assert result == {'X': None, 'Y': 'val2'}
 
     def test_merge_config_key_fallback(self):
         """Dispatch: unknown key uses replace semantics."""
@@ -6955,6 +6955,125 @@ class TestDeepMergeSettings:
         updates = {'b': None, 'd': None}
         result = setup_environment.deep_merge_settings(base, updates)
         assert result == {'a': 1, 'c': 3}
+
+
+class TestMergePatchNullSemantics:
+    """Null handling of deep_merge_settings in apply and compose modes.
+
+    Apply mode (the default, used by every on-disk writer) follows RFC 7396
+    JSON Merge Patch: a null deletes and is never stored, including inside
+    a subtree the target does not hold yet. Compose mode (the YAML
+    inheritance layer) carries nulls forward so a child's deletion request
+    reaches the on-disk writer whatever the parent declared.
+    """
+
+    # === Apply mode (on-disk writers) ===
+
+    def test_apply_strips_nulls_from_new_subtree(self) -> None:
+        """A null member of a subtree absent from base is dropped, not stored."""
+        result = setup_environment.deep_merge_settings(
+            {}, {'env': {'ANTHROPIC_AUTH_TOKEN': None, 'KEEP': '1'}},
+        )
+        assert result == {'env': {'KEEP': '1'}}
+
+    def test_apply_strips_nulls_at_every_depth_of_new_subtree(self) -> None:
+        """Nulls nested several levels inside a new subtree are all dropped."""
+        result = setup_environment.deep_merge_settings(
+            {}, {'a': {'b': {'gone': None, 'kept': 1}, 'also_gone': None}},
+        )
+        assert result == {'a': {'b': {'kept': 1}}}
+
+    def test_apply_replaces_non_dict_target_with_stripped_subtree(self) -> None:
+        """RFC 7396: a non-object target member becomes an empty object first."""
+        result = setup_environment.deep_merge_settings(
+            {'env': 'corrupt'}, {'env': {'GONE': None, 'KEPT': 'v'}},
+        )
+        assert result == {'env': {'KEPT': 'v'}}
+
+    def test_apply_new_subtree_of_only_nulls_yields_empty_object(self) -> None:
+        """Applying only deletions onto a missing subtree leaves an empty object."""
+        result = setup_environment.deep_merge_settings({}, {'env': {'GONE': None}})
+        assert result == {'env': {}}
+
+    def test_apply_global_config_mode_strips_nested_nulls(self) -> None:
+        """array_union_keys=set() (arrays replaced) still strips nested nulls."""
+        result = setup_environment.deep_merge_settings(
+            {}, {'section': {'gone': None, 'kept': True}}, array_union_keys=set(),
+        )
+        assert result == {'section': {'kept': True}}
+
+    def test_apply_never_stores_none_at_any_depth(self) -> None:
+        """No None survives anywhere in the applied result, whatever base holds."""
+        base = {'env': {'OLD': 'x'}, 'other': {'deep': {'v': 1}}}
+        updates = {
+            'env': {'OLD': None, 'NEW': None},
+            'other': {'deep': {'v': None, 'w': {'z': None}}},
+            'fresh': {'n': None},
+        }
+        result = setup_environment.deep_merge_settings(base, updates)
+        assert result == {'env': {}, 'other': {'deep': {'w': {}}}, 'fresh': {}}
+        assert 'null' not in json.dumps(result)
+
+    # === Compose mode (YAML inheritance layer) ===
+
+    def test_compose_stores_null_over_parent_value(self) -> None:
+        """A child null replaces the parent's value with a deletion request."""
+        result = setup_environment.deep_merge_settings(
+            {'env': {'TOKEN': 'parent'}}, {'env': {'TOKEN': None}}, preserve_nulls=True,
+        )
+        assert result == {'env': {'TOKEN': None}}
+        assert 'TOKEN' in result['env']
+
+    def test_compose_keeps_null_in_new_subtree(self) -> None:
+        """A null inside a subtree the parent lacks is copied verbatim."""
+        result = setup_environment.deep_merge_settings(
+            {}, {'env': {'TOKEN': None, 'KEEP': '1'}}, preserve_nulls=True,
+        )
+        assert result == {'env': {'TOKEN': None, 'KEEP': '1'}}
+
+    def test_compose_child_value_overrides_parent_null(self) -> None:
+        """A child value wins over a parent's deletion request."""
+        result = setup_environment.deep_merge_settings(
+            {'env': {'TOKEN': None}}, {'env': {'TOKEN': 'child'}}, preserve_nulls=True,
+        )
+        assert result == {'env': {'TOKEN': 'child'}}
+
+    def test_compose_top_level_null_replaces_section(self) -> None:
+        """A top-level child null replaces the whole parent section with None."""
+        result = setup_environment.deep_merge_settings(
+            {'section': {'a': 1}, 'keep': 2}, {'section': None}, preserve_nulls=True,
+        )
+        assert result == {'section': None, 'keep': 2}
+
+    def test_compose_then_apply_equals_sequential_application(self) -> None:
+        """Applying the composed patch equals applying parent then child."""
+        parent = {'env': {'TOKEN': 'parent', 'A': '1'}}
+        child = {'env': {'TOKEN': None, 'B': '2'}}
+        composed = setup_environment.deep_merge_settings(parent, child, preserve_nulls=True)
+        on_disk = {'env': {'TOKEN': 'stale', 'C': '3'}}
+        via_composition = setup_environment.deep_merge_settings(on_disk, composed)
+        sequential = setup_environment.deep_merge_settings(
+            setup_environment.deep_merge_settings(on_disk, parent), child,
+        )
+        assert via_composition == sequential == {'env': {'A': '1', 'B': '2', 'C': '3'}}
+
+
+class TestMergeConfigKeyNullComposition:
+    """The inheritance dispatcher carries child nulls forward for the deep-dict keys."""
+
+    def test_user_settings_child_null_survives_parent_value(self) -> None:
+        """user-settings: a child env null is not consumed by the parent's value."""
+        result = setup_environment._merge_config_key(
+            'user-settings', {'env': {'TOKEN': 'p', 'KEEP': '1'}}, {'env': {'TOKEN': None}},
+        )
+        assert result == {'env': {'TOKEN': None, 'KEEP': '1'}}
+
+    def test_global_config_child_null_survives_parent_value(self) -> None:
+        """global-config: a child null is not consumed by the parent's value."""
+        result = setup_environment._merge_config_key(
+            'global-config', {'autoUpdates': True, 'keep': 1}, {'autoUpdates': None},
+        )
+        assert result == {'autoUpdates': None, 'keep': 1}
 
 
 class TestUnionAllArraysDefault:

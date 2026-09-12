@@ -16,6 +16,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from typing import cast
 
 
 def validate_json_file(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
@@ -51,6 +52,48 @@ def validate_json_file(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
         return None, [f'Failed to read {path}: {e}']
 
 
+def validate_merged_value(actual: object, expected: object, label: str) -> list[str]:
+    """Compare a written JSON value against its YAML declaration.
+
+    Mirrors RFC 7396 null-as-delete at every depth: a member declared
+    ``null`` in YAML must be ABSENT from the written object, never present
+    as a JSON null, because Claude Code copies a null env member into the
+    process environment as the string ``'null'``. Non-null members must be
+    present with the declared value; nested objects are compared member by
+    member so that extra members contributed by other writers are tolerated.
+
+    Args:
+        actual: Value read from the written JSON file.
+        expected: Value declared in the golden YAML (may contain nulls).
+        label: Human-readable path used as the error prefix.
+
+    Returns:
+        List of error strings (empty if the value matches).
+    """
+    if not isinstance(expected, dict):
+        if actual != expected:
+            return [f'{label}: expected {expected!r}, got {actual!r}']
+        return []
+    if not isinstance(actual, dict):
+        return [f'{label}: expected an object, got {actual!r}']
+    actual_obj = cast(dict[str, object], actual)
+    errors: list[str] = []
+    for key, expected_member in cast(dict[str, object], expected).items():
+        member_label = f'{label}.{key}'
+        if expected_member is None:
+            if key in actual_obj:
+                errors.append(
+                    f'{member_label}: expected ABSENT (null-as-delete), '
+                    f'but found {actual_obj[key]!r}',
+                )
+            continue
+        if key not in actual_obj:
+            errors.append(f'{member_label}: missing')
+            continue
+        errors.extend(validate_merged_value(actual_obj[key], expected_member, member_label))
+    return errors
+
+
 def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate settings.json against expected values from config.
 
@@ -60,6 +103,7 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
     Validates:
     - File exists and is valid JSON
     - Values from config['user-settings'] are present
+    - Members declared null at any depth are absent (RFC 7396)
 
     Note: settings.json uses deep merge, so this validates that expected keys
     are present, not that the file contains ONLY these keys.
@@ -115,9 +159,11 @@ def validate_settings_json(path: Path, config: dict[str, Any]) -> list[str]:
                         f"settings.json key '{key}': expected tilde preserved "
                         f"{expected_value!r}, got {actual_value!r}",
                     )
-        elif actual_value != expected_value:
-            errors.append(
-                f"settings.json key '{key}': expected {expected_value!r}, got {actual_value!r}",
+        elif key not in data:
+            errors.append(f"settings.json key '{key}': missing")
+        else:
+            errors.extend(
+                validate_merged_value(actual_value, expected_value, f"settings.json key '{key}'"),
             )
 
     # Also check for unexpanded tildes in tilde-expansion keys not in user-settings
@@ -1226,9 +1272,9 @@ def validate_global_config_output(
             continue
         if key not in content:
             errors.append(f'Missing key {key!r} in ~/.claude.json')
-        elif content[key] != expected_value:
-            errors.append(
-                f'Key {key!r}: expected {expected_value!r}, got {content[key]!r}',
+        else:
+            errors.extend(
+                validate_merged_value(content[key], expected_value, f'~/.claude.json key {key!r}'),
             )
 
     return errors
