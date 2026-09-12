@@ -205,6 +205,48 @@ def _extract_basename(path_or_url: str) -> str:
     return parts[-1] if parts else path_or_url
 
 
+def _hook_helper_overlap_message(overlapping: set[str]) -> str:
+    """Build the error for a basename declared in both hooks lists.
+
+    Exact mirror of the helper of the same name in setup_environment.py
+    (standalone script policy prevents a cross-import; verdict parity is
+    enforced by tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        overlapping: Basenames present in both hooks.files and hooks.helpers.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'hooks.helpers duplicates hooks.files entries: {sorted(overlapping)}. '
+        'Both lists install into the same hooks directory, so each basename '
+        'belongs to exactly one of them.'
+    )
+
+
+def _hook_helper_reference_message(reference_kind: str, reference: str) -> str:
+    """Build the error for a reference that resolves only to a helper.
+
+    Exact mirror of the helper of the same name in setup_environment.py
+    (standalone script policy prevents a cross-import; verdict parity is
+    enforced by tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        reference_kind: Where the reference was written, such as
+            'hooks.events command' or 'status-line.file'.
+        reference: The reference value as the author wrote it.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'{reference_kind} "{reference}" is declared in hooks.helpers. '
+        'Referenced scripts and configs belong in hooks.files; hooks.helpers '
+        'carries only the shared modules those scripts import.'
+    )
+
+
 def _normalize_scope(scope_value: str | list[str] | None) -> list[str]:
     """Normalize scope value to a list of lowercase scope strings.
 
@@ -1056,6 +1098,14 @@ class Hooks(BaseModel):
     """Hooks configuration."""
 
     files: list[str] = Field(default_factory=lambda: [], description='Hook script files to download')
+    helpers: list[str] = Field(
+        default_factory=lambda: [],
+        description=(
+            'Shared modules downloaded into the hooks directory beside the hook scripts. '
+            'Helpers are never referenced as a command, config, or status-line file; hook '
+            'scripts import them from their own directory at run time'
+        ),
+    )
     events: list[HookEvent] = Field(default_factory=lambda: [], description='Hook event configurations')
 
 
@@ -1972,15 +2022,21 @@ class EnvironmentConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_hooks_files_consistency(self) -> 'EnvironmentConfig':
-        """Validate that hooks files, events, and status-line are consistent.
+        """Validate that hooks files, helpers, events, and status-line are consistent.
 
         Ensures:
         1. Each file in hooks.files is used somewhere (events or status-line)
         2. Each file referenced in hooks.events (command hooks only) exists in hooks.files
         3. The status-line.file (if configured) exists in hooks.files
+        4. No basename is declared in both hooks.files and hooks.helpers
 
         Note: Prompt hooks (type='prompt') do not use command or config files,
         so they are excluded from file consistency validation.
+
+        hooks.helpers entries are shared modules the hook scripts import at run
+        time. They are never referenced as a command, config, or status-line
+        file, so rule 1 does not reach them and a reference resolving only to a
+        helper basename is reported as a misplaced declaration.
 
         A config that declares ``inherit`` is exempt: its hooks.events can
         legitimately reference a command file a parent's hooks.files
@@ -2014,6 +2070,19 @@ class EnvironmentConfig(BaseModel):
             if basename:
                 available_files.add(basename)
 
+        # Helpers install into the same directory as the hook scripts, so one
+        # basename cannot be both a referenced script and an unreferenced helper
+        helper_files: set[str] = set()
+        for helper_path in self.hooks.helpers:
+            basename = _extract_basename(helper_path)
+            if basename:
+                helper_files.add(basename)
+
+        # Rule 4: a basename belongs to exactly one of the two lists
+        overlapping = available_files & helper_files
+        if overlapping:
+            raise ValueError(_hook_helper_overlap_message(overlapping))
+
         # Track which files are used
         used_files: set[str] = set()
 
@@ -2029,6 +2098,10 @@ class EnvironmentConfig(BaseModel):
                 command_file = event.command.strip()
                 if command_file:
                     if command_file not in available_files:
+                        if command_file in helper_files:
+                            raise ValueError(
+                                _hook_helper_reference_message('hooks.events command', command_file),
+                            )
                         raise ValueError(
                             f'hooks.events command "{command_file}" not found in hooks.files. '
                             f'Available files: {sorted(available_files) if available_files else "none"}',
@@ -2043,6 +2116,10 @@ class EnvironmentConfig(BaseModel):
                 config_basename = _extract_basename(clean_config)
                 if config_basename:
                     if config_basename not in available_files:
+                        if config_basename in helper_files:
+                            raise ValueError(
+                                _hook_helper_reference_message('hooks.events config', config_file),
+                            )
                         raise ValueError(
                             f'hooks.events config "{config_file}" not found in hooks.files. '
                             f'Available files: {sorted(available_files) if available_files else "none"}',
@@ -2054,6 +2131,10 @@ class EnvironmentConfig(BaseModel):
             status_file = self.status_line.file.strip()
             if status_file:
                 if status_file not in available_files:
+                    if status_file in helper_files:
+                        raise ValueError(
+                            _hook_helper_reference_message('status-line.file', status_file),
+                        )
                     raise ValueError(
                         f'status-line.file "{status_file}" not found in hooks.files. '
                         f'Available files: {sorted(available_files) if available_files else "none"}',
@@ -2068,6 +2149,10 @@ class EnvironmentConfig(BaseModel):
                 config_basename = _extract_basename(clean_config)
                 if config_basename:
                     if config_basename not in available_files:
+                        if config_basename in helper_files:
+                            raise ValueError(
+                                _hook_helper_reference_message('status-line.config', config_file),
+                            )
                         raise ValueError(
                             f'status-line.config "{config_file}" not found in hooks.files. '
                             f'Available files: {sorted(available_files) if available_files else "none"}',

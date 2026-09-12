@@ -92,6 +92,7 @@ FILE_REFERENCE_KEYS: frozenset[str] = frozenset({
     'slash-commands',                 # list[str] -- simple string list
     'rules',                         # list[str] -- simple string list
     'hooks.files',                   # list[str] -- nested under hooks dict
+    'hooks.helpers',                 # list[str] -- nested under hooks dict
     'files-to-download',             # list[dict] -- each dict has 'source' key
     'skills',                        # list[dict] -- each dict has 'base' key
     'command-defaults.system-prompt',  # str -- nested scalar under command-defaults
@@ -869,6 +870,7 @@ class InstallationPlan:
         default_factory=lambda: list[dict[str, Any]](),
     )
     hooks_files: list[str] = field(default_factory=lambda: list[str]())
+    hooks_helpers: list[str] = field(default_factory=lambda: list[str]())
     hooks_events: list[dict[str, Any]] = field(
         default_factory=lambda: list[dict[str, Any]](),
     )
@@ -916,6 +918,7 @@ class InstallationPlan:
             + len(self.skills)
             + len(self.files_to_download)
             + len(self.hooks_files)
+            + len(self.hooks_helpers)
             + len(self.mcp_servers)
         )
 
@@ -2697,6 +2700,50 @@ def _hook_file_basename(path_or_url: str) -> str:
     return parts[-1] if parts else path_or_url
 
 
+def _hook_helper_overlap_message(overlapping: set[str]) -> str:
+    """Build the error for a basename declared in both hooks lists.
+
+    Runtime twin of the helper of the same name in
+    scripts/models/environment_config.py (standalone script policy prevents
+    importing the model; verdict parity is enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        overlapping: Basenames present in both hooks.files and hooks.helpers.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'hooks.helpers duplicates hooks.files entries: {sorted(overlapping)}. '
+        'Both lists install into the same hooks directory, so each basename '
+        'belongs to exactly one of them.'
+    )
+
+
+def _hook_helper_reference_message(reference_kind: str, reference: str) -> str:
+    """Build the error for a reference that resolves only to a helper.
+
+    Runtime twin of the helper of the same name in
+    scripts/models/environment_config.py (standalone script policy prevents
+    importing the model; verdict parity is enforced by
+    tests/scripts/models/test_hooks_consistency_parity.py).
+
+    Args:
+        reference_kind: Where the reference was written, such as
+            'hooks.events command' or 'status-line.file'.
+        reference: The reference value as the author wrote it.
+
+    Returns:
+        The error message.
+    """
+    return (
+        f'{reference_kind} "{reference}" is declared in hooks.helpers. '
+        'Referenced scripts and configs belong in hooks.files; hooks.helpers '
+        'carries only the shared modules those scripts import.'
+    )
+
+
 def validate_hooks_files_consistency(
     config: dict[str, Any],
     *,
@@ -2717,6 +2764,12 @@ def validate_hooks_files_consistency(
     1. Each file in hooks.files is used by a command hook event or status-line
     2. Each command hook's command and config exists in hooks.files
     3. The status-line file and config (if configured) exist in hooks.files
+    4. No basename is declared in both hooks.files and hooks.helpers
+
+    hooks.helpers entries are shared modules the hook scripts import at run
+    time. They are never referenced as a command, config, or status-line file,
+    so rule 1 does not reach them and a reference resolving only to a helper
+    basename is reported as a misplaced declaration.
 
     Prompt, http, agent, and mcp_tool hooks do not reference files and are
     excluded. Structural errors (non-mapping hooks or events, non-string entries)
@@ -2762,6 +2815,10 @@ def validate_hooks_files_consistency(
     if not isinstance(files_raw, list):
         errors.append("'hooks.files' must be a list of file paths or URLs")
         return errors
+    helpers_raw = hooks.get('helpers') or []
+    if not isinstance(helpers_raw, list):
+        errors.append("'hooks.helpers' must be a list of file paths or URLs")
+        return errors
     events_raw = hooks.get('events') or []
     if not isinstance(events_raw, list):
         errors.append("'hooks.events' must be a list of event mappings")
@@ -2779,6 +2836,23 @@ def validate_hooks_files_consistency(
         basename = _hook_file_basename(file_path)
         if basename:
             available_files.add(basename)
+
+    # Helpers install into the same directory as the hook scripts, so one
+    # basename cannot be both a referenced script and an unreferenced helper
+    helper_files: set[str] = set()
+    for helper_index, helper_path in enumerate(cast(list[object], helpers_raw)):
+        if not isinstance(helper_path, str):
+            errors.append(f'hooks.helpers[{helper_index}] must be a string path or URL')
+            structure_broken = True
+            continue
+        basename = _hook_file_basename(helper_path)
+        if basename:
+            helper_files.add(basename)
+
+    # Rule 4: a basename belongs to exactly one of the two lists
+    overlapping = available_files & helper_files
+    if overlapping:
+        errors.append(_hook_helper_overlap_message(overlapping))
 
     available_display = sorted(available_files) if available_files else 'none'
 
@@ -2808,8 +2882,10 @@ def validate_hooks_files_consistency(
                 if command_file:
                     if command_file not in available_files:
                         errors.append(
-                            f'hooks.events command "{command_file}" not found in hooks.files. '
-                            f'Available files: {available_display}',
+                            _hook_helper_reference_message('hooks.events command', command_file)
+                            if command_file in helper_files
+                            else f'hooks.events command "{command_file}" not found in hooks.files. '
+                                 f'Available files: {available_display}',
                         )
                     else:
                         used_files.add(command_file)
@@ -2829,8 +2905,10 @@ def validate_hooks_files_consistency(
                 if config_basename:
                     if config_basename not in available_files:
                         errors.append(
-                            f'hooks.events config "{config_file}" not found in hooks.files. '
-                            f'Available files: {available_display}',
+                            _hook_helper_reference_message('hooks.events config', config_file)
+                            if config_basename in helper_files
+                            else f'hooks.events config "{config_file}" not found in hooks.files. '
+                                 f'Available files: {available_display}',
                         )
                     else:
                         used_files.add(config_basename)
@@ -2855,8 +2933,10 @@ def validate_hooks_files_consistency(
             status_file = status_file_raw.strip()
             if status_file not in available_files:
                 errors.append(
-                    f'status-line.file "{status_file}" not found in hooks.files. '
-                    f'Available files: {available_display}',
+                    _hook_helper_reference_message('status-line.file', status_file)
+                    if status_file in helper_files
+                    else f'status-line.file "{status_file}" not found in hooks.files. '
+                         f'Available files: {available_display}',
                 )
             else:
                 used_files.add(status_file)
@@ -2878,8 +2958,10 @@ def validate_hooks_files_consistency(
             if config_basename:
                 if config_basename not in available_files:
                     errors.append(
-                        f'status-line.config "{config_file}" not found in hooks.files. '
-                        f'Available files: {available_display}',
+                        _hook_helper_reference_message('status-line.config', config_file)
+                        if config_basename in helper_files
+                        else f'status-line.config "{config_file}" not found in hooks.files. '
+                             f'Available files: {available_display}',
                     )
                 else:
                     used_files.add(config_basename)
@@ -5792,18 +5874,19 @@ def validate_all_config_files(
         resolved_path, is_remote = resolve_resource_path(prompt, config_source, base_url)
         files_to_check.append(('system_prompt', prompt, resolved_path, is_remote))
 
-    # Hooks files
+    # Hooks files and helper modules (both install into the hooks directory)
     hooks = config.get('hooks', {})
     if isinstance(hooks, dict):
         hooks_typed = cast(dict[str, Any], hooks)
-        hook_files_raw = hooks_typed.get('files', [])
-        if isinstance(hook_files_raw, list):
-            # Cast to typed list for type safety
-            hook_files_list = cast(list[object], hook_files_raw)
-            for hook_file_item in hook_files_list:
-                if isinstance(hook_file_item, str):
-                    resolved_path, is_remote = resolve_resource_path(hook_file_item, config_source, base_url)
-                    files_to_check.append(('hook', hook_file_item, resolved_path, is_remote))
+        for hooks_key in ('files', 'helpers'):
+            hook_files_raw = hooks_typed.get(hooks_key, [])
+            if isinstance(hook_files_raw, list):
+                # Cast to typed list for type safety
+                hook_files_list = cast(list[object], hook_files_raw)
+                for hook_file_item in hook_files_list:
+                    if isinstance(hook_file_item, str):
+                        resolved_path, is_remote = resolve_resource_path(hook_file_item, config_source, base_url)
+                        files_to_check.append(('hook', hook_file_item, resolved_path, is_remote))
 
     # Files to download
     files_to_download_raw = config.get('files-to-download', [])
@@ -6695,6 +6778,16 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
             hooks['files'] = resolved_files
             if hooks_mapping:
                 selector_mappings['hooks'] = hooks_mapping
+        # Helpers resolve the same way but contribute no selector mapping:
+        # they carry no component identity, so no selector can name one
+        hook_helpers = hooks.get('helpers')
+        if isinstance(hook_helpers, list):
+            hooks['helpers'] = [
+                resolve_resource_path(item, config_source, base_url)[0]
+                if isinstance(item, str)
+                else item
+                for item in hook_helpers
+            ]
         result['hooks'] = hooks
 
     # --- components[].includes selectors for path-identity sections ---
@@ -7160,37 +7253,54 @@ def _merge_named_list(
     return result
 
 
+def _merge_deduplicated_paths(
+    parent_paths: list[Any],
+    child_paths: list[Any],
+) -> list[Any]:
+    """Concatenate two path lists, dropping entries already seen.
+
+    Args:
+        parent_paths: Paths contributed by the parent configuration.
+        child_paths: Paths contributed by the child configuration.
+
+    Returns:
+        Parent paths in order, followed by the child paths not already present.
+    """
+    seen: set[Any] = set()
+    merged: list[Any] = []
+    for path in [*parent_paths, *child_paths]:
+        if path not in seen:
+            seen.add(path)
+            merged.append(path)
+    return merged
+
+
 def _merge_hooks(
     parent_hooks: dict[str, Any],
     child_hooks: dict[str, Any],
 ) -> dict[str, Any]:
-    """Merge hooks: files with dedup, events concatenated.
+    """Merge hooks: files and helpers with dedup, events concatenated.
 
     Args:
         parent_hooks: Parent hooks configuration.
         child_hooks: Child hooks configuration.
 
     Returns:
-        Merged hooks with deduplicated files and concatenated events.
+        Merged hooks with deduplicated files and helpers and concatenated
+        events.
     """
-    parent_files = parent_hooks.get('files', [])
-    child_files = child_hooks.get('files', [])
-    seen_files: set[str] = set()
-    merged_files: list[str] = []
-    for f in parent_files:
-        if f not in seen_files:
-            seen_files.add(f)
-            merged_files.append(f)
-    for f in child_files:
-        if f not in seen_files:
-            seen_files.add(f)
-            merged_files.append(f)
+    merged_files = _merge_deduplicated_paths(
+        parent_hooks.get('files', []), child_hooks.get('files', []),
+    )
+    merged_helpers = _merge_deduplicated_paths(
+        parent_hooks.get('helpers', []), child_hooks.get('helpers', []),
+    )
 
     parent_events = parent_hooks.get('events', [])
     child_events = child_hooks.get('events', [])
     merged_events = list(parent_events) + list(child_events)
 
-    return {'files': merged_files, 'events': merged_events}
+    return {'files': merged_files, 'helpers': merged_helpers, 'events': merged_events}
 
 
 def _merge_dependencies(
@@ -7763,6 +7873,7 @@ def collect_installation_plan(
     # Extract resources
     hooks_dict: dict[str, Any] = config.get('hooks') or {}
     hooks_files: list[str] = hooks_dict.get('files') or []
+    hooks_helpers: list[str] = hooks_dict.get('helpers') or []
     hooks_events_list: list[Any] = hooks_dict.get('events') or []
     hooks_events: list[dict[str, Any]] = [
         cast(dict[str, Any], e) for e in hooks_events_list if isinstance(e, dict)
@@ -7837,6 +7948,7 @@ def collect_installation_plan(
         skills=skills_list,
         files_to_download=files_to_download,
         hooks_files=hooks_files,
+        hooks_helpers=hooks_helpers,
         hooks_events=hooks_events,
         mcp_servers=mcp_servers,
         dependency_commands=dependency_commands,
@@ -7927,6 +8039,7 @@ def display_installation_summary(
     _print(f'  * Skills: {len(plan.skills)}')
     _print(f'  * Files to download: {len(plan.files_to_download)}')
     _print(f'  * Hook files: {len(plan.hooks_files)}')
+    _print(f'  * Hook helpers: {len(plan.hooks_helpers)}')
     _print(f'  * Hook events: {len(plan.hooks_events)}')
     if plan.hooks_events:
         type_counts: dict[str, int] = {}
@@ -11831,14 +11944,16 @@ def download_hook_files(
     hooks_base_dir: Path | None = None,
     auth_cache: AuthHeaderCache | None = None,
 ) -> bool:
-    """Download hook files from configuration.
+    """Download hook files and helper modules from configuration.
 
-    Extracts the file list from hooks configuration and delegates
-    download/parallel logic to process_resources().
+    Extracts the file and helper lists from hooks configuration and delegates
+    download/parallel logic to process_resources(). Helpers land in the same
+    directory as the hook scripts, so a script reaches its helper through its
+    own directory no matter which directory the profile installs into.
 
     Args:
-        hooks: Hooks configuration dictionary with 'files' key. None is
-            accepted and means no hooks: 'hooks:' with no value is a
+        hooks: Hooks configuration dictionary with 'files' and 'helpers' keys.
+            None is accepted and means no hooks: 'hooks:' with no value is a
             model-valid null-as-delete request, and config.get('hooks', {})
             returns that None for a present-with-null key.
         claude_user_dir: Path to Claude user directory
@@ -11853,7 +11968,8 @@ def download_hook_files(
     Returns:
         bool: True if all downloads successful, False otherwise.
     """
-    hook_files = (hooks or {}).get('files', [])
+    hooks_dict = hooks or {}
+    hook_files = [*(hooks_dict.get('files') or []), *(hooks_dict.get('helpers') or [])]
 
     if not hook_files:
         info('No hook files to download')
@@ -12516,7 +12632,7 @@ def create_profile_config(
             statusLine, hooks). Keys present with values are written; keys
             absent or null-valued are omitted. For the ``hooks`` key, the
             value is the full YAML hooks configuration dict with ``files`` /
-            ``events`` keys.
+            ``helpers`` / ``events`` keys.
         config_base_dir: Path to the isolated environment directory
             (e.g., ~/.claude/{cmd}/).
         hooks_base_dir: Optional base directory for hook files.
@@ -14582,20 +14698,22 @@ def main() -> None:
                     'with launcher-based system prompt injection.',
                 )
 
-            # Step 17: Download hooks (and status-line file + config) to
-            # ~/.claude/hooks/. The status-line file and its config must be
-            # listed in hooks.files per the EnvironmentConfig schema Rule 3,
-            # so download_hook_files() handles both automatically.
+            # Step 17: Download hook scripts, helper modules, and the
+            # status-line file + config to ~/.claude/hooks/. The status-line
+            # file and its config must be listed in hooks.files per the
+            # EnvironmentConfig schema Rule 3, so download_hook_files()
+            # handles every source automatically.
             has_hook_events = bool(hooks and hooks.get('events'))
             has_status_line_file = bool(
                 status_line
                 and isinstance(status_line, dict)
                 and status_line.get('file'),
             )
-            hook_files_list = hooks.get('files') if isinstance(hooks, dict) else None
-            has_hook_files = bool(hook_files_list)
+            has_hook_downloads = bool(
+                isinstance(hooks, dict) and (hooks.get('files') or hooks.get('helpers')),
+            )
 
-            if has_hook_events or has_status_line_file or has_hook_files:
+            if has_hook_events or has_status_line_file or has_hook_downloads:
                 print()
                 print(f'{Colors.CYAN}Step 17: Downloading hooks...{Colors.NC}')
                 if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,

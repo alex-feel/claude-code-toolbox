@@ -248,6 +248,7 @@ def mock_repo_path() -> Path:
         ├── hooks/
         │   ├── e2e_test_hook.py
         │   ├── e2e_statusline.py
+        │   ├── e2e_hook_helper.py        # hooks.helpers sibling module
         │   ├── e2e_test_hook.js          # JavaScript hook (standard)
         │   ├── e2e_test_hook_esm.mjs     # JavaScript hook (ES module)
         │   └── e2e_test_hook_cjs.cjs     # JavaScript hook (CommonJS)

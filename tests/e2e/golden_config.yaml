@@ -90,6 +90,10 @@ hooks:
     # Status-line script and its config (referenced by status-line below)
     - "hooks/e2e_statusline.py"
     - "configs/e2e-statusline-config.yaml"
+  # Shared module the hook scripts import from their own directory; never
+  # registered as a command and never referenced by an event
+  helpers:
+    - "hooks/e2e_hook_helper.py"
   events:
     # Python command hook with config (id makes it claimable by components)
     - event: "PostToolUse"

@@ -138,6 +138,82 @@ class TestHooksUnusedFiles:
         assert 'unused files' in str(exc_info.value).lower()
 
 
+class TestHooksHelpers:
+    """Test Rule 4 and the unused-files exemption for hooks.helpers."""
+
+    def test_helpers_default_to_empty_list(self) -> None:
+        """A hooks section without helpers exposes an empty list."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'hooks': {
+                'files': ['hooks/script.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'script.py'}],
+            },
+        })
+        assert config.hooks is not None
+        assert config.hooks.helpers == []
+
+    def test_unreferenced_helper_passes(self) -> None:
+        """A helper referenced by nothing is valid - the unused rule skips it."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'hooks': {
+                'files': ['hooks/script.py'],
+                'helpers': ['hooks/shared.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'script.py'}],
+            },
+        })
+        assert config.hooks is not None
+        assert config.hooks.helpers == ['hooks/shared.py']
+
+    def test_helpers_only_section_passes(self) -> None:
+        """Helpers alone, with no files and no events, are valid."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'hooks': {'helpers': ['hooks/shared.py']},
+        })
+        assert config.hooks is not None
+        assert config.hooks.files == []
+
+    def test_basename_in_both_lists_fails(self) -> None:
+        """A basename declared in hooks.files and hooks.helpers is rejected."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {
+                    'files': ['hooks/script.py'],
+                    'helpers': ['vendor/script.py'],
+                    'events': [{'event': 'PostToolUse', 'command': 'script.py'}],
+                },
+            })
+        assert "hooks.helpers duplicates hooks.files entries: ['script.py']" in str(exc_info.value)
+
+    def test_event_command_referencing_helper_fails(self) -> None:
+        """A command naming a helper is rejected as a misplaced declaration."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {
+                    'files': [],
+                    'helpers': ['hooks/shared.py'],
+                    'events': [{'event': 'PostToolUse', 'command': 'shared.py'}],
+                },
+            })
+        message = str(exc_info.value)
+        assert 'hooks.events command "shared.py" is declared in hooks.helpers' in message
+        assert 'belong in hooks.files' in message
+
+    def test_status_line_referencing_helper_fails(self) -> None:
+        """A status-line file naming a helper is rejected as a misplaced declaration."""
+        with pytest.raises(ValidationError) as exc_info:
+            EnvironmentConfig.model_validate({
+                'name': 'Test',
+                'hooks': {'files': [], 'helpers': ['hooks/sl.py'], 'events': []},
+                'status-line': {'file': 'sl.py'},
+            })
+        assert 'status-line.file "sl.py" is declared in hooks.helpers' in str(exc_info.value)
+
+
 class TestEventFileReferences:
     """Test Rule 2: Each file in hooks.events must exist in hooks.files."""
 

@@ -3,11 +3,18 @@
 
 This hook is triggered by PostToolUse events for Edit/MultiEdit/Write operations.
 It receives a config file path as the first argument.
+
+The script imports its shared helper from its own directory, the way a hook
+reaches a module declared in ``hooks.helpers``.
 """
 
 import json
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import e2e_hook_helper  # noqa: E402
 
 
 def main() -> int:
@@ -34,6 +41,7 @@ def main() -> int:
         'message': 'E2E test hook executed successfully',
         'config_loaded': config_loaded,
         'event_type': event.get('type', 'unknown'),
+        **e2e_hook_helper.describe(),
     }
 
     print(json.dumps(result))
