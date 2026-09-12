@@ -1709,13 +1709,27 @@ def _merge_recursive(
     source: dict[str, JsonValue],
     array_union_keys: set[str] | None,
     current_path: str,
+    *,
+    preserve_nulls: bool = False,
 ) -> None:
     """Recursively merge source into target in-place.
 
-    Null-as-delete (RFC 7396): When a source value is None, the
-    corresponding key is removed from target (no-op if absent).
-    This applies only to object keys -- None values inside arrays
-    are not treated as deletion signals.
+    Null handling (object members only; None elements inside arrays are
+    data, never deletion signals) depends on which layer is merging:
+
+    - preserve_nulls=False -- RFC 7396 JSON Merge Patch APPLICATION, used
+      by every on-disk writer. A None source value removes the key from
+      target (no-op if absent) and is never stored. A source dict that
+      lands on a key target lacks, or whose target value is not a dict,
+      is merged into a fresh empty dict exactly as the RFC prescribes, so
+      None-valued members at any depth are dropped rather than copied
+      into the file as literal JSON nulls.
+    - preserve_nulls=True -- merge-patch COMPOSITION, used by the YAML
+      inheritance layer. The result is itself a patch applied to disk
+      later, so a None source value is stored as None (the child's
+      deletion request survives composition whatever the parent
+      declared) and a source dict landing on a key target lacks is
+      copied verbatim, None members included.
 
     Array merge policy:
     - array_union_keys is None (default): every list is unioned with the
@@ -1726,7 +1740,7 @@ def _merge_recursive(
     - array_union_keys is a set[str]: per-path whitelist -- only the
       dot-notation paths in the set are unioned; all other lists are
       replaced wholesale. This mode is preserved for the YAML inheritance
-      layer (_resolve_single_key -> deep_merge_settings) which has
+      layer (_merge_config_key -> deep_merge_settings) which has
       different trust semantics from on-disk writers.
     - array_union_keys is set() (empty): no paths are unioned; every list
       is replaced. Used by the YAML inheritance layer for global-config
@@ -1738,25 +1752,44 @@ def _merge_recursive(
         array_union_keys: None to union every list at any depth, or a
             set of dot-notation paths to restrict union behavior.
         current_path: Current dot-notation path for tracking nested location.
+        preserve_nulls: False applies the patch (None deletes and is never
+            stored); True composes patches (None survives).
     """
     for key, value in source.items():
         # Build dot-notation path for this key
         key_path = f'{current_path}.{key}' if current_path else key
 
-        # RFC 7396: null values signal key deletion
         if value is None:
-            target.pop(key, None)
+            # RFC 7396: null signals deletion when applying; when
+            # composing, the deletion request is carried forward.
+            if preserve_nulls:
+                target[key] = None
+            else:
+                target.pop(key, None)
+        elif isinstance(value, dict):
+            existing = target.get(key)
+            if isinstance(existing, dict):
+                # Both are dicts - recurse
+                _merge_recursive(
+                    existing,
+                    value,
+                    array_union_keys,
+                    key_path,
+                    preserve_nulls=preserve_nulls,
+                )
+            elif preserve_nulls:
+                # Composition: the subtree is patch content, copied verbatim
+                target[key] = _deep_copy_value(value)
+            else:
+                # RFC 7396: a missing or non-object target member is
+                # replaced by an empty object before the patch recurses,
+                # which strips None-valued members at every depth.
+                fresh: dict[str, JsonValue] = {}
+                _merge_recursive(fresh, value, array_union_keys, key_path)
+                target[key] = fresh
         elif key not in target:
             # Key doesn't exist in target - add it (deep copy)
             target[key] = _deep_copy_value(value)
-        elif isinstance(value, dict) and isinstance(target[key], dict):
-            # Both are dicts - recurse
-            _merge_recursive(
-                cast(dict[str, JsonValue], target[key]),
-                value,
-                array_union_keys,
-                key_path,
-            )
         elif isinstance(value, list) and isinstance(target[key], list):
             # Lists: union when array_union_keys is None (universal default)
             # or when key_path is in the explicit whitelist.
@@ -1765,10 +1798,10 @@ def _merge_recursive(
                 or key_path in array_union_keys
             )
             if should_union:
-                existing = cast(list[JsonValue], target[key])
+                existing_list = cast(list[JsonValue], target[key])
                 new_items = value
-                combined = existing + [
-                    item for item in new_items if item not in existing
+                combined = existing_list + [
+                    item for item in new_items if item not in existing_list
                 ]
                 target[key] = combined
             else:
@@ -1782,6 +1815,8 @@ def deep_merge_settings(
     base: dict[str, Any],
     updates: dict[str, Any],
     array_union_keys: set[str] | None = None,
+    *,
+    preserve_nulls: bool = False,
 ) -> dict[str, Any]:
     """Deep merge updates into base dict with universal array-union.
 
@@ -1793,7 +1828,13 @@ def deep_merge_settings(
     Key behaviors:
     - Keys NOT in updates: PRESERVED unchanged from base.
     - Keys IN updates: UPDATED or ADDED.
-    - Keys with None value in updates: DELETED from result (RFC 7396).
+    - Keys with None value in updates: DELETED from result (RFC 7396)
+      and never stored, at any depth -- a subtree that base does not
+      hold is applied onto an empty object, so its None members are
+      dropped too. With preserve_nulls=True the None is stored instead,
+      which is what the YAML inheritance layer needs: the composed
+      result is a patch applied later, and the deletion request must
+      survive composition whatever base declared.
     - Nested dicts: Recursively merged (not replaced entirely).
     - Arrays: Union with structural dedupe when array_union_keys is None
       (the default). Matches Claude Code CLI's cross-scope merge
@@ -1807,6 +1848,9 @@ def deep_merge_settings(
             paths and replaces all other arrays (per-path whitelist
             preserved for the YAML inheritance layer). An empty set
             disables union entirely (all arrays replaced).
+        preserve_nulls: False (default) applies updates as an RFC 7396
+            merge patch. True composes two patches, carrying None values
+            forward instead of deleting.
 
     Returns:
         New merged dict with base keys preserved and updates applied.
@@ -1826,6 +1870,12 @@ def deep_merge_settings(
         >>> updates = {"b": None}
         >>> deep_merge_settings(base, updates)
         {'a': 1}
+
+        >>> deep_merge_settings({}, {"env": {"TOKEN": None, "KEEP": "1"}})
+        {'env': {'KEEP': '1'}}
+
+        >>> deep_merge_settings({"env": {"TOKEN": "x"}}, {"env": {"TOKEN": None}}, preserve_nulls=True)
+        {'env': {'TOKEN': None}}
     """
     # Create a fresh result dict (do not mutate base)
     result: dict[str, JsonValue] = {}
@@ -1837,7 +1887,13 @@ def deep_merge_settings(
     # Merge in updates. None means "union every array at every depth";
     # explicit set[str] restricts union to those paths (whitelist);
     # set() disables union entirely.
-    _merge_recursive(result, cast(dict[str, JsonValue], updates), array_union_keys, '')
+    _merge_recursive(
+        result,
+        cast(dict[str, JsonValue], updates),
+        array_union_keys,
+        '',
+        preserve_nulls=preserve_nulls,
+    )
 
     return cast(dict[str, Any], result)
 
@@ -7204,29 +7260,31 @@ def _merge_config_key(
         c_hooks = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
         return _merge_hooks(p_hooks, c_hooks)
 
+    # The three dict-valued keys below compose PATCHES rather than applying
+    # one: the resolved config is itself applied to disk later, so a child
+    # null is carried forward as a deletion request instead of being
+    # consumed here -- otherwise a parent-declared value would silently
+    # cancel the child's deletion and the stale on-disk value would survive.
+
     # Global-config: deep merge with no array union
     if key == 'global-config':
         p_gc = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
         c_gc = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
-        return deep_merge_settings(p_gc, c_gc, array_union_keys=set())
+        return deep_merge_settings(p_gc, c_gc, array_union_keys=set(), preserve_nulls=True)
 
     # User-settings: deep merge with default array union keys
     if key == 'user-settings':
         p_us = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
         c_us = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
-        return deep_merge_settings(p_us, c_us, array_union_keys=DEFAULT_ARRAY_UNION_KEYS)
+        return deep_merge_settings(
+            p_us, c_us, array_union_keys=DEFAULT_ARRAY_UNION_KEYS, preserve_nulls=True,
+        )
 
-    # OS-level environment variables: shallow dict merge, null deletes
+    # OS-level environment variables: shallow dict composition
     if key == 'os-env-variables':
         p_env = cast(dict[str, str | None], parent_value) if isinstance(parent_value, dict) else {}
         c_env = cast(dict[str, str | None], child_value) if isinstance(child_value, dict) else {}
-        merged_env: dict[str, str | None] = dict(p_env)
-        for env_k, env_v in c_env.items():
-            if env_v is None:
-                merged_env.pop(env_k, None)
-            else:
-                merged_env[env_k] = env_v
-        return merged_env
+        return {**p_env, **c_env}
 
     # Fallback: replace semantics
     return child_value

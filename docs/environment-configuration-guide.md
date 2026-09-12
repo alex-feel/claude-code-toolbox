@@ -653,7 +653,7 @@ OS-level persistent environment variables written to the shell profile (Linux/ma
 - **Default:** `None`
 - **Special value:** Set a value to `null` to delete an existing variable
 - **Validation:** Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$`
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. Set a value to `null` to delete a parent key (RFC 7396 semantics).
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: shallow dictionary merge. Child keys override matching parent keys. A child `null` is carried into the resolved configuration as a deletion request rather than consumed by the parent's value, so the OS-level variable is deleted at setup time even when the parent declared it.
 - **Example:**
 
 ```yaml
@@ -746,7 +746,7 @@ The on-disk write uses deep merge with universal array union: every list at ever
 - **Type:** `UserSettings | None`
 - **Default:** `None`
 - **Excluded keys:** `hooks` and `statusLine` (these require dedicated write logic with file download, path resolution, and type processing, and must be configured at the YAML root level via the [`hooks`](#hooks) and [`status-line`](#status-line) keys)
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (`permissions.allow`, `permissions.deny`, `permissions.ask` arrays are unioned with deduplication; other arrays use child-replaces-parent semantics in the YAML inheritance layer). Child keys override matching parent keys; `null` values delete keys. **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_user_settings()` -> `_write_merged_json()`) uses universal array union at every depth for all keys; `DEFAULT_ARRAY_UNION_KEYS` applies only inside the YAML composition layer.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (`permissions.allow`, `permissions.deny`, `permissions.ask` arrays are unioned with deduplication; other arrays use child-replaces-parent semantics in the YAML inheritance layer). Child keys override matching parent keys; a child `null` is carried into the resolved configuration as a deletion request rather than consumed by the parent's value, so `write_user_settings()` deletes the key from `~/.claude/settings.json` -- applying the resolved configuration equals applying the parent and then the child. **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_user_settings()` -> `_write_merged_json()`) uses universal array union at every depth for all keys and never stores a `null`; `DEFAULT_ARRAY_UNION_KEYS` and null preservation apply only inside the YAML composition layer.
 - **Example:**
 
 ```yaml
@@ -847,7 +847,7 @@ When `command-names` is present, the setup also propagates the machine's recorde
 - **Default:** `None`
 - **Excluded keys:** `oauthAccount` cannot be set to non-null values (OAuth credentials must not appear in YAML configuration files). Set `oauthAccount: null` to clear authentication state.
 - **Settings-only keys rejected:** Keys that live in `settings.json` (`model`, `permissions`, `env`, `attribution`, `alwaysThinkingEnabled`, `effortLevel`, `companyAnnouncements`, `statusLine`, `hooks`, `availableModels`, `enforceAvailableModels`) are rejected in `global-config` because `~/.claude.json` is not a settings file and Claude Code would silently ignore them at runtime. `model` and the other `settings.json` keys are rejected with the message `Key '{key}' is a settings.json key and is not valid in global-config (~/.claude.json). Move it to user-settings.`; `statusLine` and `hooks` are instead directed to the root-level `status-line` and `hooks` YAML keys. A `null` value is always allowed (a deletion request).
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `array_union_keys=set()` (arrays are replaced in the YAML inheritance layer for child-overrides-parent composition). Child keys override matching parent keys; `null` values delete keys (RFC 7396). **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_global_config()` -> `_write_merged_json()`) uses universal array union at every depth; the `set()` form applies only inside the YAML composition layer.
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: deep recursive merge using `deep_merge_settings()` with `array_union_keys=set()` (arrays are replaced in the YAML inheritance layer for child-overrides-parent composition). Child keys override matching parent keys; a child `null` is carried into the resolved configuration as a deletion request rather than consumed by the parent's value, so `write_global_config()` deletes the key from `~/.claude.json` (RFC 7396). **Note:** YAML inheritance semantics are intentionally separate from on-disk write semantics. The on-disk writer (`write_global_config()` -> `_write_merged_json()`) uses universal array union at every depth and never stores a `null`; the `set()` form and null preservation apply only inside the YAML composition layer.
 - **Example:**
 
 ```yaml
@@ -878,6 +878,8 @@ global-config:
 - Setting a nonexistent key to `null` is a silent no-op
 - Nested deletion: `section: {key: null}` removes only `key`, preserving `section`
 - Top-level deletion: `section: null` removes the entire section
+- A `null` member of a section the target file does not hold yet (or holds as a non-object value) is dropped as well: the section is applied onto an empty object per RFC 7396, so a literal JSON `null` is never written. This matters for `env`, because Claude Code copies a null member into the process environment as the string `'null'` rather than unsetting the variable
+- Under `inherit`, a child `null` survives composition as a deletion request even when the parent declared a value for the same key, so the deletion still happens on disk
 - Null inside arrays is NOT treated as deletion
 - The `--dry-run` summary shows `[DELETE]` markers for null-valued keys
 
@@ -1574,9 +1576,9 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 | Named list (by final file path) | `files-to-download`                   | Identity-based: child overrides parent in-position; new items appended                |
 | Per-platform dict               | `dependencies`                        | Per-platform sub-key list concatenation with deduplication                            |
 | Composite                       | `hooks`                               | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
-| Deep dict                       | `global-config`                       | `deep_merge_settings()` with `array_union_keys=set()` (YAML inheritance layer only)   |
-| Deep dict                       | `user-settings`                       | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS` (YAML inheritance layer only) |
-| Shallow dict                    | `os-env-variables`                    | Shallow merge; child overrides; `null` deletes (RFC 7396)                             |
+| Deep dict                       | `global-config`                       | `deep_merge_settings()` with `array_union_keys=set()`; child `null` carried forward   |
+| Deep dict                       | `user-settings`                       | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS`; child `null` carried forward |
+| Shallow dict                    | `os-env-variables`                    | Shallow merge; child overrides; child `null` carried forward as a deletion request    |
 
 The `files-to-download` identity is the normalized final file path: a `dest` ending with `/` or `\` is combined with the source filename (query parameters stripped) before matching, so distinct files sharing a directory dest keep distinct identities. See [`files-to-download`](#files-to-download) for details.
 
@@ -1914,7 +1916,7 @@ Under this contract, the shared `~/.claude/settings.json` is never scrubbed of k
 2. **DEEP MERGE** the builder delta into the existing content via `_merge_recursive()`, which handles:
    - **Deep recursion** into nested dicts (for example, a delta `hooks: {PostToolUse: [...]}` updates only the `PostToolUse` sub-key of `hooks`, leaving other event names intact if not in the delta).
    - **Universal array union** at every depth via Python structural equality -- existing and new arrays are combined, order-preserving (existing elements first), with duplicate elements removed. Applies to every list-valued key at any nesting level, matching Claude Code CLI's cross-scope merge semantics.
-   - **RFC 7396 null-as-delete**: any value of `None` in the delta (top-level or nested) deletes the corresponding key from the target via `target.pop(key, None)`.
+   - **RFC 7396 null-as-delete**: any value of `None` in the delta (top-level or nested) deletes the corresponding key from the target via `target.pop(key, None)`; a nested dict landing on a key the file lacks (or on a non-object member) is applied onto an empty object, so its `None` members are dropped rather than written as JSON `null`.
    - **Scalar overwrite** on leaf conflicts (new value wins).
 3. **WRITE** the merged result back to disk with a trailing newline for file-format consistency.
 
