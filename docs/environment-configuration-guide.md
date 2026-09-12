@@ -604,6 +604,8 @@ mcp-servers:
 ```
 
 > **Isolated environments:** When `command-names` creates an isolated environment, `scope: user` MCP servers are configured with `CLAUDE_CONFIG_DIR` pointing to the isolated directory. This ensures `claude mcp add --scope user` writes to the isolated `.claude.json` instead of the home-directory one. This per-call injection is one of the two `CLAUDE_CONFIG_DIR` channels described in [Setup-Time `CLAUDE_CONFIG_DIR` Export](#setup-time-claude_config_dir-export).
+>
+> **Strict mode hides non-profile servers from the isolated commands:** As soon as one server declares `profile`, the generated launcher starts Claude Code with `--strict-mcp-config --mcp-config <profile>/mcp.json`, and that session loads **only** the servers in that file. A server declared at `user`, `local`, or `project` scope alone is still registered for bare `claude` sessions, but the isolated commands never see it. The setup reports each such server by name, tells you which commands will not load it, and the completion summary counts them. To make a server available in both places, combine its scope with `profile` -- `scope: [user, profile]` instead of `scope: user`.
 
 #### Idempotent Reconfiguration
 
@@ -1825,6 +1827,13 @@ The two `CLAUDE_CONFIG_DIR` channels are orthogonal and serve different lifetime
 | Runtime launcher export          | When you run the command   | The launched Claude Code session and its tools | `export CLAUDE_CONFIG_DIR` in the generated launcher  |
 
 The runtime launcher export (documented in [Cross-Shell Launcher Architecture](cross-shell-launcher-architecture.md)) remains the sole authoritative runtime source. The setup-time export only governs processes started during installation. The per-call MCP `CLAUDE_CONFIG_DIR` injection (see the [Isolated environments](#scope-options) note under MCP Servers) is retained independently, because the Windows MCP code path builds a curated environment for child processes rather than inheriting the full `os.environ`.
+
+#### Running Setup From Inside An Isolated Profile Session
+
+An isolated command exports `CLAUDE_CONFIG_DIR` for the session it launches, so a setup run started from a terminal inside that session inherits the variable. The Claude CLI resolves `CLAUDE_CONFIG_DIR` ahead of the home directory and offers no fallback, so the inherited value decides where `claude mcp add` and the global-config writes land. The setup checks the variable before it shows the installation summary, so `--dry-run` reports the outcome too:
+
+- **Configuration without `command-names`:** the run is refused with exit code 1. The toolbox targets the base `~/.claude` directory and the base global config is `~/.claude.json`, but the CLI would use `$CLAUDE_CONFIG_DIR/.claude.json` instead -- splitting one run across two directories. Unset the variable (`unset CLAUDE_CONFIG_DIR` in bash, `Remove-Item Env:CLAUDE_CONFIG_DIR` in PowerShell) or run the setup from a terminal that is not inside an isolated profile session.
+- **Configuration with `command-names`:** the run proceeds. When the inherited value differs from the profile directory this run targets, the setup reports that it replaces the value for its child processes and names the profile it is actually configuring. An inherited value equal to the target directory -- setting up a profile from inside its own session -- needs no report.
 
 ### Cross-Shell Command Registration (Windows)
 

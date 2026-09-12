@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from scripts import setup_environment
+from tests.conftest import empty_mcp_stats
 from tests.e2e.validators import validate_selected_artifacts
 
 GOLDEN_CONFIGS = ['golden_config.yaml', 'golden_config_no_command_names.yaml']
@@ -268,8 +269,7 @@ class TestMainDeselectionWiring:
             patch('scripts.setup_environment.process_resources', return_value=True),
             patch('scripts.setup_environment.process_skills', return_value=True),
             patch('scripts.setup_environment.configure_all_mcp_servers',
-                  return_value=(True, [], {'global_count': 0, 'profile_count': 0,
-                                           'combined_count': 0, 'unchanged_count': 0})),
+                  return_value=(True, [], empty_mcp_stats())),
             patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude'),
             patch('scripts.setup_environment.is_admin', return_value=True),
             patch('scripts.setup_environment.register_global_command', return_value=True),
