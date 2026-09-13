@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 import pytest
 
 from scripts import setup_environment
+from tests.conftest import empty_mcp_stats
 
 PINNED_VERSION = '2.1.85'
 
@@ -119,7 +120,7 @@ class TestPinnedBaseWithPinnedIsolatedProfile:
         mock_validate.return_value = (True, [])
         mock_mcp.return_value = (
             True, [],
-            {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0},
+            empty_mcp_stats(),
         )
 
         with patch('sys.argv', ['setup_environment.py', 'personal', '--yes', '--skip-install']), \
@@ -272,7 +273,7 @@ class TestBaseProfileManifest:
         mock_validate.return_value = (True, [])
         mock_mcp.return_value = (
             True, [],
-            {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0},
+            empty_mcp_stats(),
         )
 
         with patch('sys.argv', ['setup_environment.py', 'base', '--yes', '--skip-install']), \
@@ -343,7 +344,7 @@ class TestBaseProfileManifest:
         mock_validate.return_value = (True, [])
         mock_mcp.return_value = (
             True, [],
-            {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0},
+            empty_mcp_stats(),
         )
 
         with patch('sys.argv', ['setup_environment.py', 'base', '--yes', '--skip-install']), \

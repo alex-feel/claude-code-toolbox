@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 
 import setup_environment
+from tests.conftest import empty_mcp_stats
 
 
 class TestSSLErrorHandling:
@@ -1733,7 +1734,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.is_admin', return_value=True)
     @patch(
         'setup_environment.configure_all_mcp_servers',
-        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0}),
+        return_value=(True, [], empty_mcp_stats()),
     )
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script', return_value=None)
@@ -1790,7 +1791,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.process_resources', return_value=True)
     @patch(
         'setup_environment.configure_all_mcp_servers',
-        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0}),
+        return_value=(True, [], empty_mcp_stats()),
     )
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
@@ -1843,7 +1844,7 @@ class TestMainFunctionErrorPaths:
     @patch('setup_environment.handle_resource', return_value=True)
     @patch(
         'setup_environment.configure_all_mcp_servers',
-        return_value=(True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0}),
+        return_value=(True, [], empty_mcp_stats()),
     )
     @patch('setup_environment.create_profile_config', return_value=True)
     @patch('setup_environment.create_launcher_script')
@@ -3561,6 +3562,227 @@ class TestMCPProfileScope:
             assert stats['global_count'] == 0
             assert stats['combined_count'] == 0
 
+    @staticmethod
+    def _run_scope_mix(
+        servers: list[dict[str, Any]],
+        command_names: list[str] | None,
+    ) -> dict[str, int]:
+        """Configure servers against a throwaway profile config and return the stats."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, _, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=Path(tmpdir) / 'mcp.json',
+                command_names=command_names,
+            )
+            return stats
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_warns_per_non_profile_only_server(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Each server the isolated commands cannot load is named, with its fix."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+            {'name': 'project-server', 'command': 'uvx project', 'scope': 'project'},
+            {'name': 'combined-server', 'command': 'uvx combined', 'scope': ['user', 'profile']},
+        ]
+
+        stats = self._run_scope_mix(servers, ['claude-test', 'claude-alias'])
+
+        assert stats['strict_hidden_count'] == 2
+        out = capsys.readouterr().out
+        warnings = [line for line in out.splitlines() if 'will not load' in line]
+        assert len(warnings) == 2
+        joined = '\n'.join(warnings)
+        assert 'user-server (scope: user)' in joined
+        assert 'project-server (scope: project)' in joined
+        assert 'combined-server' not in joined
+        assert 'profile-server' not in joined
+        # Every command sharing the launcher is named, along with the fix
+        assert 'claude-test, claude-alias sessions' in joined
+        assert '--strict-mcp-config' in joined
+        assert 'scope: [user, profile]' in joined
+        assert 'scope: [project, profile]' in joined
+        # A user-scope registration lands in the profile's own .claude.json and
+        # loads nowhere; a project-scope one survives for other sessions
+        user_line = next(line for line in warnings if 'user-server' in line)
+        project_line = next(line for line in warnings if 'project-server' in line)
+        assert "profile's own .claude.json" in user_line
+        assert 'loads nowhere' in user_line
+        assert '.mcp.json of the directory setup ran in' in project_line
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_silent_without_profile_servers(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without a profile MCP config the launcher never enables strict mode."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+            {'name': 'local-server', 'command': 'uvx local', 'scope': 'local'},
+        ]
+
+        stats = self._run_scope_mix(servers, ['claude-test'])
+
+        assert stats['strict_hidden_count'] == 0
+        assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_silent_when_every_server_includes_profile(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A combined scope keeps the server reachable from the isolated commands."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'combined-server', 'command': 'uvx combined', 'scope': ['user', 'profile']},
+        ]
+
+        stats = self._run_scope_mix(servers, ['claude-test'])
+
+        assert stats['strict_hidden_count'] == 0
+        assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_silent_for_non_isolated_run(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without command-names there is no launcher and no strict mode."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+        ]
+
+        stats = self._run_scope_mix(servers, None)
+
+        assert stats['strict_hidden_count'] == 0
+        assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_silent_when_the_profile_config_is_not_written(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A failed profile-config write leaves strict mode off, so nothing is hidden."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+        ]
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch('setup_environment.create_mcp_config_file', return_value=False),
+        ):
+            _, _, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=Path(tmpdir) / 'mcp.json',
+                command_names=['claude-test'],
+            )
+
+        assert stats['strict_hidden_count'] == 0
+        assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_warns_when_a_stale_profile_config_survives_removal(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile config the run cannot delete keeps strict mode on, so the report stands."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [{'name': 'user-server', 'command': 'uvx user', 'scope': 'user'}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_config = Path(tmpdir) / 'mcp.json'
+            stale_config.write_text('{"mcpServers": {}}', encoding='utf-8')
+
+            with patch('pathlib.Path.unlink', side_effect=OSError('in use')):
+                _, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                    servers,
+                    profile_mcp_config_path=stale_config,
+                    command_names=['claude-test'],
+                )
+
+        assert profile_servers == []
+        assert stats['strict_hidden_count'] == 1
+        assert 'user-server (scope: user)' in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_warning_names_a_single_session(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """One command name reads as one session."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'local-server', 'command': 'uvx local', 'scope': ['local']},
+        ]
+
+        stats = self._run_scope_mix(servers, ['claude-test'])
+
+        assert stats['strict_hidden_count'] == 1
+        out = capsys.readouterr().out
+        assert 'local-server (scope: local)' in out
+        assert 'claude-test session:' in out
+        assert 'scope: [local, profile]' in out
+
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value='claude')
     @patch('setup_environment.run_command')
@@ -4649,7 +4871,7 @@ class TestConfigureAllMcpServersStats:
 
             assert success is True
             assert profile_servers == []
-            assert stats == {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0}
+            assert stats == empty_mcp_stats()
             assert not profile_config.exists()
 
     @patch('platform.system', return_value='Linux')
