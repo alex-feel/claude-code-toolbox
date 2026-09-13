@@ -500,7 +500,7 @@ class TestHooksSettingsRoutingStepOutput:
         # Step 18 writes the full profile-owned delta (not just hooks) to
         # the shared settings.json in non-command-names mode.
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 19-21: Skipping command creation' in captured.out
+        assert 'Steps 20-21: Skipping command creation' in captured.out
 
     @patch('scripts.setup_environment.load_config_from_source')
     @patch('scripts.setup_environment.validate_all_config_files')
@@ -555,7 +555,7 @@ class TestHooksSettingsRoutingStepOutput:
         # delta makes the writer a no-op).
         assert 'Step 17: Skipping hooks download (none configured)' in captured.out
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 19-21: Skipping command creation' in captured.out
+        assert 'Steps 20-21: Skipping command creation' in captured.out
 
 
 class TestBuildHooksJsonParity:

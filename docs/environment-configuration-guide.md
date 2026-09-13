@@ -257,7 +257,7 @@ Configuration version for update checking. Extracted from the root config before
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present.
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -364,7 +364,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
-- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, stale auto-injected controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
+- **Auto-update management:** When a specific version is set, auto-update controls are automatically injected into multiple targets to prevent Claude Code from overwriting the pinned version. When `"latest"` is used or the key is absent, stale auto-injected controls from prior pinned runs are cleaned up while user-declared controls are preserved -- unless another installed profile still pins a version, in which case the machine-global controls stay in force. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
 - **IDE extension management:** When a specific version is set, IDE extension auto-install is disabled and the matching extension version is installed into detected VS Code family IDEs. See [Automatic IDE Extension Version Management](#automatic-ide-extension-version-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
@@ -1671,7 +1671,9 @@ Every variable above can be set for a single run with the repeatable `--env` fla
 
 ### Automatic Auto-Update Management
 
-When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into three targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are automatically cleaned up (re-enabling auto-updates) while user-declared controls are preserved.
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects auto-update disable controls into three targets to prevent Claude Code from overwriting the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are cleaned up (re-enabling auto-updates) while user-declared controls are preserved.
+
+The machine has one Claude Code binary, so these controls are machine-global and shared by every profile installed on it. Removal is therefore gated on the whole machine, not on the current run: an unpinned run removes the controls only when no OTHER installed profile pins a version either. See [Several Profiles on One Machine](#several-profiles-on-one-machine).
 
 #### Injection Targets
 
@@ -1681,16 +1683,16 @@ When `claude-code-version` specifies a pinned version (any value other than `"la
 | `user-settings`    | `env.DISABLE_AUTOUPDATER` | `"1"`   | `~/.claude/{cmd}/config.json` (`env` key)         | `~/.claude/settings.json` (`env` key, deep-merge)   |
 | `os-env-variables` | `DISABLE_AUTOUPDATER`     | `"1"`   | Shell profiles / Windows registry                 | Shell profiles / Windows registry                   |
 
-All three targets are injected unconditionally regardless of whether `command-names` is present. The `user-settings.env.DISABLE_AUTOUPDATER` control follows the standard `user-settings` routing: in isolated mode it is built into `~/.claude/{cmd}/config.json` (`env` key) at Step 18; in non-isolated mode it is deep-merged into `~/.claude/settings.json['env']` at Step 14. Deep-merge makes it additive with any user-declared environment variables: `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. A pinned non-isolated run performs no Step 16 `settings.json` sweep (the base file is the run's own Step 14 write target), so the env-based control persists in the final base file.
+All three targets are injected unconditionally regardless of whether `command-names` is present. The `user-settings.env.DISABLE_AUTOUPDATER` control follows the standard `user-settings` routing: in isolated mode it is built into `~/.claude/{cmd}/config.json` (`env` key) at Step 18; in non-isolated mode it is deep-merged into `~/.claude/settings.json['env']` at Step 14. Deep-merge makes it additive with any user-declared environment variables: `_merge_recursive()` recurses into the `env` dict and preserves sub-keys not present in the delta. A pinned run performs no Step 16 sweep at all, so the env-based control persists in the final file.
 
 #### Removal Behavior
 
 When the version is `"latest"` or absent, nothing is auto-injected, so every auto-update control key present in the in-memory configuration comes from the user's YAML and is preserved -- the removal counterpart of the WARN-but-Respect write semantics. Two cleanup mechanisms remove stale artifacts from prior pinned runs instead:
 
-- **OS-level variable:** `DISABLE_AUTOUPDATER` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
+- **OS-level variable:** `DISABLE_AUTOUPDATER` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there, or another installed profile pins a version) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
 - **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). When not pinned, it removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs (`command-names` present), to prevent bare sessions from inheriting isolated environment restrictions; a pinned non-isolated run performs no `settings.json` sweep, because the base file is the run's own write target.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). The sweep runs only when NO installed profile pins a version -- neither this run nor any other profile recorded in the profile manifests. It then removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. While any profile pins a version, no location is swept: every `settings.json`, `.claude.json`, and OS-level control already on the machine stays exactly as it is, and no OS-level deletion is scheduled.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1717,11 +1719,28 @@ Auto-injected settings (version pinning):
 
 The `autoUpdates` key in `~/.claude.json` is considered deprecated by Anthropic (see [issue #3479](https://github.com/anthropics/claude-code/issues/3479)) and may stop working in future Claude Code releases. It is included as a defense-in-depth mechanism alongside the `DISABLE_AUTOUPDATER` environment variable, which is the primary auto-update control. The Claude Code auto-updater may also ignore disable settings in some versions (see issues [#10764](https://github.com/anthropics/claude-code/issues/10764), [#11263](https://github.com/anthropics/claude-code/issues/11263), [#12564](https://github.com/anthropics/claude-code/issues/12564)) -- covering all three targets provides the best protection.
 
+### Several Profiles on One Machine
+
+One machine has one Claude Code binary, so the controls that hold it at a pinned version are machine-global: `DISABLE_AUTOUPDATER` and `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` in the OS environment, `autoUpdates` and `autoInstallIdeExtension` in `~/.claude.json`. A machine can carry several toolbox-managed profiles at once -- the base profile plus one isolated profile per `command-names` entry -- and a run of any of them must not undo what another one needs.
+
+Each profile records its own pin in its installation manifest (Step 19): `~/.claude/manifest.json` for the base profile, `~/.claude/{cmd}/manifest.json` for each isolated profile. The `claude_code_version` field holds the normalized pin, or `null` when that profile tracks the latest release. Before applying auto-update settings, the setup reads every manifest except its own and decides on the whole machine:
+
+- **This run pins a version:** it writes its own controls and sweeps nothing anywhere, whether or not another profile pins.
+- **This run is unpinned and another installed profile pins:** nothing is swept, no OS-level deletion is scheduled, and the setup prints an info line naming the profiles that keep the controls in force.
+- **This run is unpinned and a manifest cannot be read:** the pin cannot be ruled out, so the run behaves exactly as if another profile pinned and says so in the info line. A manifest that is absent, or present without a pin, is a definite answer and does not trigger this.
+- **This run is unpinned and no other profile pins:** the full sweep runs -- `settings.json` files (except a key the current YAML itself declares), `.claude.json` files, and the OS-level variables.
+
+An unpinned profile is protected by the machine-global controls rather than by its own files. Its isolated `~/.claude/{cmd}/config.json` is rebuilt from its own configuration on every run, so it carries `env.DISABLE_AUTOUPDATER` only when its own YAML pins a version or declares the variable; the OS-level `DISABLE_AUTOUPDATER` and `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` the pinning profile wrote are inherited by every session started afterwards, including that profile's.
+
+A profile's own manifest is matched by the `name` field it records, so a profile relocated with a user-set `CLAUDE_CONFIG_DIR` is recognized as its own rather than counted as another profile. A profile relocated outside `~/.claude/` altogether is not scanned, so its pin is invisible to the other profiles even though the controls it needs are machine-global. A manifest written without a pin -- including one that never recorded the field -- counts as unpinned; running that profile's setup again records its current pin.
+
+A recorded pin is retired only by re-running that profile's setup with an unpinned configuration. A profile directory left behind -- a renamed command, an abandoned profile -- therefore keeps its pinned manifest and holds the machine-global controls in force indefinitely. Delete the stale `~/.claude/{cmd}/` directory, or just its `manifest.json`, to retire a pin whose profile is gone.
+
 ### Automatic IDE Extension Version Management
 
 When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, stale auto-injected IDE extension controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved.
 
-This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 3-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, and same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep).
+This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 3-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep), and the same machine-wide gate described in [Several Profiles on One Machine](#several-profiles-on-one-machine).
 
 #### Injection Targets
 
@@ -1738,9 +1757,9 @@ All three targets are injected unconditionally regardless of whether `command-na
 When the version is `"latest"` or absent, nothing is auto-injected, so every IDE extension control key present in the in-memory configuration comes from the user's YAML and is preserved -- identical to the auto-update twin. Two cleanup mechanisms remove stale artifacts from prior pinned runs instead:
 
 - **OS-level variable:** `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
-- **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
+- **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below, which likewise stands down while another installed profile pins a version.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass (Step 16) with identical guards. When not pinned, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files -- unless the current YAML itself declares the key in `user-settings.env`, in which case the `settings.json` sweep is skipped -- and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files (value-conditional: user-set `true` is preserved). When pinned, the sweep cleans `~/.claude/settings.json` only for isolated runs; a pinned non-isolated run performs no `settings.json` sweep.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_ide_extension_controls()` runs alongside `cleanup_stale_auto_update_controls()` as a filesystem sweep pass (Step 16) with identical guards. When no installed profile pins a version, it removes `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` from ALL `settings.json` files -- unless the current YAML itself declares the key in `user-settings.env`, in which case the `settings.json` sweep is skipped -- and removes `autoInstallIdeExtension: false` from ALL `.claude.json` files (value-conditional: user-set `true` is preserved). While any profile pins a version, nothing is swept.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1865,16 +1884,16 @@ Here is a conceptual overview of what the setup script does when you run it with
 13. **Configure MCP servers** -- Sets up MCP servers with scope-based routing.
 14. **Write user settings** -- In non-isolated mode, deep-merges `user-settings` into `~/.claude/settings.json`. In isolated mode, this write is skipped -- the `user-settings` content is built into the profile's `config.json` at Step 18.
 15. **Write global config** -- Merges `global-config` into `~/.claude.json`. With `command-names`, also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the dual-written isolated `.claude.json`.
-16. **Cleanup stale controls** -- Sweeps stale auto-update and IDE extension artifacts from prior configurations (all filesystem locations on unpinned runs, preserving `settings.json` keys the current YAML itself declares; on pinned runs, only the base `~/.claude/settings.json` and only for isolated environments).
+16. **Cleanup stale controls** -- Sweeps stale auto-update and IDE extension artifacts from prior configurations, preserving `settings.json` keys the current YAML itself declares. The sweep runs only when no installed profile pins a Claude Code version; while any profile does, every location keeps its controls.
 17. **Download hooks** -- Downloads hook script files to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without). In non-command-names mode, Step 17 runs when ANY of the following are declared: `hooks.events` non-empty, `hooks.files` non-empty, or `status-line.file` set.
 18. **Write profile settings** -- Writes the profile-owned keys (`statusLine`, `hooks`) as camelCase keys on disk. With `command-names`: writes `~/.claude/{cmd}/config.json` via `create_profile_config()`, merging the `user-settings` content with the built `statusLine`/`hooks` entries (atomic overwrite -- fresh dict each run). Without `command-names`: writes to `~/.claude/settings.json` via `write_profile_settings_to_settings()`, which delegates to `_write_merged_json()` for **deep-merge, universal array union at every depth, and RFC 7396 null-as-delete** (preserves non-delta keys; see [Profile-Level Settings Routing](#profile-level-settings-routing)).
-19. **Write manifest** -- Creates an installation tracking manifest. (Only if `command-names` is specified.)
+19. **Write manifest** -- Creates the profile's installation tracking manifest: `~/.claude/{cmd}/manifest.json` with `command-names`, `~/.claude/manifest.json` without. Records the run's `claude-code-version` pin so any later run can tell whether another profile still needs the machine-global auto-update controls.
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
 22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
 23. **Remove deselected components** -- Uninstalls previously installed artifacts of deselected components: MCP servers, skill directories, agent/command/rule/hook/downloaded files, and shared-settings hook entries. Runs in BOTH modes (as Step 23 with `command-names`, as Step 22 without) and only when the selection deselects at least one claimed item.
 
-Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 19-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
+Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 20-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
 
 ## Profile-Level Settings Routing
 
@@ -1951,7 +1970,7 @@ Keys absent from the delta are preserved in `~/.claude/settings.json`. This cove
 - Prior contributions from `write_profile_settings_to_settings()` itself across other YAML configurations, including list-valued keys (which accumulate additively under the universal array-union contract).
 - Deep-merged contributions from Step 14 `write_user_settings()` (all `user-settings` keys -- `model`, `permissions`, `env`, `effortLevel`, and everything else -- with list-valued keys unioned with structural dedupe across Step 14 and Step 18).
 - User-managed keys outside the toolbox's YAML schema (for example, `includeGitInstructions`, `apiKeyHelper`, `cleanupPeriodDays`, `outputStyle`, `autoMemoryDirectory`, `sandbox.*`, user-managed array-valued keys like `companyAnnouncements` or `permissions.additionalDirectories`).
-- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension) controls, which are injected into `user-settings.env` and written by Step 14: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables and survive the Step 18 write, which touches only `statusLine`/`hooks`. (Pinned non-isolated runs perform no Step 16 `settings.json` sweep, so these controls also survive the cleanup pass -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
+- Auto-injected `env.DISABLE_AUTOUPDATER` (auto-update) and `env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` (IDE extension) controls, which are injected into `user-settings.env` and written by Step 14: because deep-merge recurses into the `env` dict, the injected controls coexist with any user-declared environment variables and survive the Step 18 write, which touches only `statusLine`/`hooks`. (Pinned runs perform no Step 16 sweep, so these controls also survive the cleanup pass -- see [Automatic Auto-Update Management](#automatic-auto-update-management).)
 - Elements written to list-valued keys by any prior contributor (manual user edits, the Claude Code CLI, teammate YAMLs): new elements from the current YAML are unioned with the existing list rather than replacing it.
 
 **Empty-delta no-op:** If neither `status-line` nor `hooks` is declared at YAML root level, the builder returns `{}` and `write_profile_settings_to_settings()` performs ZERO file I/O -- it neither creates nor touches `~/.claude/settings.json`. A YAML with only `user-settings:`, `global-config:`, `agents:`, and so on will never have Step 18 modify `settings.json`; the `user-settings` content (including auto-injected env controls) reaches `settings.json` through Step 14 instead.
@@ -2275,7 +2294,7 @@ If the named configuration is not found, verify the name matches a YAML file in 
 
 ### version requires command-names
 
-The `version` field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
+The `version` field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
 
 ### merge-keys requires inherit
 
