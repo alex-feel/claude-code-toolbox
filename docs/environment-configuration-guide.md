@@ -257,7 +257,7 @@ Configuration version for update checking. Extracted from the root config before
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present.
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -1690,7 +1690,7 @@ When the version is `"latest"` or absent, nothing is auto-injected, so every aut
 - **OS-level variable:** `DISABLE_AUTOUPDATER` has no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` (unless the user explicitly declares the variable there, or another installed profile pins a version) and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
 - **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
-**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). The sweep runs only when NO installed profile pins a version -- neither this run nor any other profile recorded in the profile manifests. It then removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. While any profile pins a version, every location keeps its controls and nothing is swept.
+**Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). The sweep runs only when NO installed profile pins a version -- neither this run nor any other profile recorded in the profile manifests. It then removes `DISABLE_AUTOUPDATER` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- unless the current YAML itself declares `DISABLE_AUTOUPDATER` in `user-settings.env`, in which case the `settings.json` sweep is skipped (the removal counterpart of the WARN-but-Respect write semantics) -- and removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. While any profile pins a version, no location is swept: every `settings.json`, `.claude.json`, and OS-level control already on the machine stays exactly as it is, and no OS-level deletion is scheduled.
 
 #### Conflict Resolution (WARN-but-Respect)
 
@@ -1725,9 +1725,14 @@ Each profile records its own pin in its installation manifest (Step 19): `~/.cla
 
 - **This run pins a version:** it writes its own controls and sweeps nothing anywhere, whether or not another profile pins.
 - **This run is unpinned and another installed profile pins:** nothing is swept, no OS-level deletion is scheduled, and the setup prints an info line naming the profiles that keep the controls in force.
+- **This run is unpinned and a manifest cannot be read:** the pin cannot be ruled out, so the run behaves exactly as if another profile pinned and says so in the info line. A manifest that is absent, or present without a pin, is a definite answer and does not trigger this.
 - **This run is unpinned and no other profile pins:** the full sweep runs -- `settings.json` files (except a key the current YAML itself declares), `.claude.json` files, and the OS-level variables.
 
-A profile's own manifest is matched by the `name` field it records, so a profile relocated with a user-set `CLAUDE_CONFIG_DIR` is recognized as its own rather than counted as another profile. A manifest written without a pin -- including one that never recorded the field -- counts as unpinned; running that profile's setup again records its current pin.
+An unpinned profile is protected by the machine-global controls rather than by its own files. Its isolated `~/.claude/{cmd}/config.json` is rebuilt from its own configuration on every run, so it carries `env.DISABLE_AUTOUPDATER` only when its own YAML pins a version or declares the variable; the OS-level `DISABLE_AUTOUPDATER` and `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` the pinning profile wrote are inherited by every session started afterwards, including that profile's.
+
+A profile's own manifest is matched by the `name` field it records, so a profile relocated with a user-set `CLAUDE_CONFIG_DIR` is recognized as its own rather than counted as another profile. A profile relocated outside `~/.claude/` altogether is not scanned, so its pin is invisible to the other profiles even though the controls it needs are machine-global. A manifest written without a pin -- including one that never recorded the field -- counts as unpinned; running that profile's setup again records its current pin.
+
+A recorded pin is retired only by re-running that profile's setup with an unpinned configuration. A profile directory left behind -- a renamed command, an abandoned profile -- therefore keeps its pinned manifest and holds the machine-global controls in force indefinitely. Delete the stale `~/.claude/{cmd}/` directory, or just its `manifest.json`, to retire a pin whose profile is gone.
 
 ### Automatic IDE Extension Version Management
 
@@ -2280,7 +2285,7 @@ If the named configuration is not found, verify the name matches a YAML file in 
 
 ### version requires command-names
 
-The `version` field controls update checking via `manifest.json` and launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
+The `version` field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
 
 ### merge-keys requires inherit
 

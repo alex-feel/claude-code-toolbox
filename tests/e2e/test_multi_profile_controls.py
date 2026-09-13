@@ -67,28 +67,80 @@ def _seed_base_profile_controls(claude_dir: Path, home: Path) -> None:
 class TestPinnedBaseWithPinnedIsolatedProfile:
     """Scenario (a): a pinned isolated run must not strip the pinned base controls."""
 
+    @patch('scripts.setup_environment.load_config_from_source')
+    @patch('scripts.setup_environment.validate_all_config_files')
+    @patch('scripts.setup_environment.install_claude', return_value=True)
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
+    @patch('scripts.setup_environment.process_resources')
+    @patch('scripts.setup_environment.process_skills')
+    @patch('scripts.setup_environment.configure_all_mcp_servers')
+    @patch('scripts.setup_environment.set_all_os_env_variables', return_value=True)
+    @patch('scripts.setup_environment.generate_env_loader_files', return_value={})
+    @patch('scripts.setup_environment.create_launcher_script')
+    @patch('scripts.setup_environment.register_global_command', return_value=True)
+    @patch('scripts.setup_environment.find_command', return_value='/usr/bin/claude')
+    @patch('scripts.setup_environment.is_admin', return_value=True)
     def test_pinned_isolated_run_keeps_base_settings_controls(
-        self, e2e_isolated_home: dict[str, Path],
+        self,
+        mock_is_admin: MagicMock,
+        mock_find_cmd: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_env_loader: MagicMock,
+        mock_os_env: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        e2e_isolated_home: dict[str, Path],
     ) -> None:
+        """A pinned isolated run leaves every base-profile control untouched."""
+        del mock_is_admin, mock_find_cmd, mock_register, mock_env_loader
+        del mock_skills, mock_resources, mock_deps, mock_install
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
 
         _write_profile_manifest(claude_dir, None, PINNED_VERSION)
         _seed_base_profile_controls(claude_dir, home)
 
-        other_pinned = setup_environment._other_profile_pins(home, 'claude-personal')
-        assert other_pinned == ['base']
-
-        machine_pinned = True  # this run pins as well
-        setup_environment._run_stale_controls_cleanup(
-            machine_pinned=machine_pinned, user_declared_keys=frozenset(),
+        profile_dir = claude_dir / 'claude-personal'
+        mock_launcher.return_value = (profile_dir / 'launch.sh', profile_dir / 'launch.sh')
+        config: dict[str, Any] = {
+            'name': 'Personal Profile',
+            'command-names': ['claude-personal'],
+            'command-defaults': {},
+            'claude-code-version': PINNED_VERSION,
+            'user-settings': {'theme': 'dark'},
+        }
+        mock_load.return_value = (config, 'personal.yaml')
+        mock_validate.return_value = (True, [])
+        mock_mcp.return_value = (
+            True, [],
+            {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0},
         )
+
+        with patch('sys.argv', ['setup_environment.py', 'personal', '--yes', '--skip-install']), \
+             patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
 
         settings = json.loads((claude_dir / 'settings.json').read_text())
         assert settings['env'] == CONTROLLED_SETTINGS_ENV, \
             'A pinned isolated run must not strip the base profile auto-update controls'
-        claude_json = json.loads((home / '.claude.json').read_text())
-        assert claude_json == CONTROLLED_CLAUDE_JSON
+        assert json.loads((home / '.claude.json').read_text()) == CONTROLLED_CLAUDE_JSON
+
+        # The isolated run still writes the machine-global controls itself.
+        assert mock_os_env.call_args is not None
+        os_env_written = mock_os_env.call_args[0][0]
+        assert os_env_written['DISABLE_AUTOUPDATER'] == '1'
+        assert os_env_written['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+
+        manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
+        assert manifest['name'] == 'claude-personal'
+        assert manifest['claude_code_version'] == PINNED_VERSION
 
 
 class TestPinnedBaseWithUnpinnedIsolatedProfile:
@@ -103,9 +155,9 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         _write_profile_manifest(claude_dir, None, PINNED_VERSION)
         _seed_base_profile_controls(claude_dir, home)
 
-        other_pinned = setup_environment._other_profile_pins(home, 'claude-personal')
-        assert other_pinned == ['base']
-        other_profile_pinned = bool(other_pinned)
+        scan = setup_environment._other_profile_pins(home, 'claude-personal')
+        assert scan.pinned_profiles == ['base']
+        other_profile_pinned = scan.other_profile_pinned
         machine_pinned = other_profile_pinned  # this run does not pin
 
         _, _, os_env, _, _ = setup_environment.apply_auto_update_settings(
@@ -149,8 +201,8 @@ class TestSingleUnpinnedProfile:
             json.dumps(dict(CONTROLLED_CLAUDE_JSON)), encoding='utf-8',
         )
 
-        other_pinned = setup_environment._other_profile_pins(home, None)
-        assert other_pinned == []
+        scan = setup_environment._other_profile_pins(home, None)
+        assert scan.other_profile_pinned is False
 
         _, _, os_env, _, _ = setup_environment.apply_auto_update_settings(
             None, None, None, None, other_profile_pinned=False,

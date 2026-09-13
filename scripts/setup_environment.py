@@ -3945,25 +3945,89 @@ GZIP_MAGIC = b'\x1f\x8b'
 ZIP_MAGIC = b'PK\x03\x04'
 
 
-def _read_profile_manifest(manifest_path: Path) -> dict[str, Any] | None:
-    """Read one profile manifest, tolerating a missing or unreadable file.
+class _ProfilePin(NamedTuple):
+    """One profile manifest's answer to the machine-wide pin question.
+
+    Attributes:
+        name: Profile display name recorded in the manifest, None for the
+            base profile.
+        pinned: Whether the profile records a Claude Code version pin.
+        undetermined: Whether the manifest exists but could not be read or
+            parsed, leaving that profile's pin unknown.
+    """
+
+    name: str | None
+    pinned: bool
+    undetermined: bool
+
+
+# A manifest that exists but cannot be read or parsed carries no name and no
+# readable pin, so it answers the pin question with "unknown" instead of "no".
+_UNDETERMINED_PIN = _ProfilePin(name=None, pinned=False, undetermined=True)
+
+
+class _ProfilePinScan(NamedTuple):
+    """What the installed-profile manifests say about version pinning.
+
+    Attributes:
+        pinned_profiles: Sorted display names of the OTHER installed
+            profiles that pin a Claude Code version ('base' for the base
+            profile).
+        undetermined: Whether any part of the registry could not be read,
+            leaving at least one profile's pin unknown.
+    """
+
+    pinned_profiles: list[str]
+    undetermined: bool
+
+    @property
+    def other_profile_pinned(self) -> bool:
+        """Whether another profile still needs the machine-global controls.
+
+        An incomplete read counts as pinned: the controls are machine-global,
+        so removing them on a registry this run could not read in full can
+        break a pin it never saw.
+        """
+        return bool(self.pinned_profiles) or self.undetermined
+
+
+def _read_profile_pin(manifest_path: Path) -> _ProfilePin | None:
+    """Classify one profile manifest for the machine-wide pin question.
 
     Args:
         manifest_path: Path to a profile's manifest.json.
 
     Returns:
-        The parsed manifest object, or None when the file is absent,
-        unreadable, or does not contain a JSON object.
+        The profile's pin state, _UNDETERMINED_PIN when the file exists but
+        cannot be read or parsed as a JSON object, or None when no manifest
+        exists at the path (no profile is recorded there).
     """
     try:
-        content = json.loads(manifest_path.read_text(encoding='utf-8'))
-    except (OSError, json.JSONDecodeError, ValueError):
+        raw = manifest_path.read_text(encoding='utf-8')
+    except FileNotFoundError:
         return None
-    return content if isinstance(content, dict) else None
+    except OSError:
+        return _UNDETERMINED_PIN
+
+    try:
+        content = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return _UNDETERMINED_PIN
+    if not isinstance(content, dict):
+        return _UNDETERMINED_PIN
+
+    name_raw = content.get('name')
+    name = name_raw.strip() or None if isinstance(name_raw, str) else None
+    pin = content.get(MANIFEST_VERSION_PIN_KEY)
+    return _ProfilePin(
+        name=name,
+        pinned=isinstance(pin, str) and bool(pin.strip()),
+        undetermined=False,
+    )
 
 
-def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> list[str]:
-    """List installed profiles OTHER than this run's that pin a Claude Code version.
+def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _ProfilePinScan:
+    """Read which installed profiles OTHER than this run's pin a Claude Code version.
 
     One machine has one Claude Code binary, so the controls that hold it at
     a pinned version (DISABLE_AUTOUPDATER, autoUpdates, and their IDE
@@ -3977,7 +4041,10 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> lis
     profile), so a profile relocated by a user-set CLAUDE_CONFIG_DIR is
     recognized as its own rather than counted as another profile.
 
-    A manifest that carries no pin counts as unpinned.
+    An absent manifest records no profile and counts as unpinned, as does a
+    manifest that carries no pin. A manifest or profile directory that
+    exists but cannot be read leaves the answer undetermined, which the
+    scan reports so the caller keeps the controls in force.
 
     Args:
         home_dir: User home directory.
@@ -3985,11 +4052,11 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> lis
             the run configures the base profile.
 
     Returns:
-        Sorted display names of the other installed profiles that pin a
-        version ('base' for the base profile). Empty when none does.
+        The registry scan result.
     """
     claude_dir = home_dir / '.claude'
     manifest_paths = [claude_dir / MANIFEST_FILENAME]
+    undetermined = False
     try:
         if claude_dir.is_dir():
             manifest_paths.extend(
@@ -3998,21 +4065,44 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> lis
                 if subdir.is_dir()
             )
     except OSError:
-        return []
+        # The profile directories could not be listed, so an isolated
+        # profile's pin may be invisible to this run.
+        undetermined = True
 
     pinned: set[str] = set()
     for manifest_path in manifest_paths:
-        manifest = _read_profile_manifest(manifest_path)
-        if manifest is None:
+        profile = _read_profile_pin(manifest_path)
+        if profile is None:
             continue
-        name_raw = manifest.get('name')
-        name = name_raw.strip() or None if isinstance(name_raw, str) else None
-        if name == primary_command_name:
+        if profile.undetermined:
+            undetermined = True
+            continue
+        if profile.name == primary_command_name:
             continue  # This run's own profile
-        pin = manifest.get(MANIFEST_VERSION_PIN_KEY)
-        if isinstance(pin, str) and pin.strip():
-            pinned.add(name or 'base')
-    return sorted(pinned)
+        if profile.pinned:
+            pinned.add(profile.name or 'base')
+    return _ProfilePinScan(sorted(pinned), undetermined)
+
+
+def _pinned_elsewhere_message(scan: _ProfilePinScan) -> str:
+    """Explain why an unpinned run leaves the machine-global controls in place.
+
+    Args:
+        scan: Registry scan reporting other_profile_pinned as True.
+
+    Returns:
+        Info message naming the profiles that keep the controls in force,
+        or stating that the registry could not be read in full.
+    """
+    if scan.pinned_profiles:
+        names = ', '.join(f"'{name}'" for name in scan.pinned_profiles)
+        reason = f'Another installed profile pins a Claude Code version ({names})'
+    else:
+        reason = (
+            'An installed profile manifest could not be read, so a version '
+            'pin on another profile cannot be ruled out'
+        )
+    return f'{reason}; auto-update and IDE extension controls are left in place.'
 
 
 def apply_auto_update_settings(
@@ -4021,7 +4111,7 @@ def apply_auto_update_settings(
     user_settings: dict[str, Any] | None,
     os_env_variables: dict[str, str | None] | None,
     *,
-    other_profile_pinned: bool = False,
+    other_profile_pinned: bool,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -4048,7 +4138,8 @@ def apply_auto_update_settings(
         user_settings: User settings dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
         other_profile_pinned: Whether another installed profile pins a
-            Claude Code version, as reported by _other_profile_pins().
+            Claude Code version, as reported by
+            _ProfilePinScan.other_profile_pinned.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables,
@@ -4350,7 +4441,7 @@ def apply_ide_extension_settings(
     user_settings: dict[str, Any] | None,
     os_env_variables: dict[str, str | None] | None,
     *,
-    other_profile_pinned: bool = False,
+    other_profile_pinned: bool,
 ) -> tuple[
     dict[str, Any] | None,
     dict[str, Any] | None,
@@ -4377,7 +4468,8 @@ def apply_ide_extension_settings(
         user_settings: User settings dict (may be None).
         os_env_variables: OS-level environment variables dict (may be None).
         other_profile_pinned: Whether another installed profile pins a
-            Claude Code version, as reported by _other_profile_pins().
+            Claude Code version, as reported by
+            _ProfilePinScan.other_profile_pinned.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables,
@@ -14102,17 +14194,13 @@ def main() -> None:
         # machine-global. Read the profile manifests once to learn whether
         # any OTHER installed profile still pins a version; while one does,
         # this run keeps the controls in place instead of removing them.
-        other_pinned_profiles = _other_profile_pins(
+        profile_pin_scan = _other_profile_pins(
             get_real_user_home(), primary_command_name,
         )
-        other_profile_pinned = bool(other_pinned_profiles)
+        other_profile_pinned = profile_pin_scan.other_profile_pinned
         machine_pinned = claude_code_version_normalized is not None or other_profile_pinned
         if claude_code_version_normalized is None and other_profile_pinned:
-            pinned_names = ', '.join(f"'{name}'" for name in other_pinned_profiles)
-            info(
-                f'Another installed profile pins a Claude Code version ({pinned_names}); '
-                'auto-update and IDE extension controls are left in place.',
-            )
+            info(_pinned_elsewhere_message(profile_pin_scan))
 
         # Apply automatic auto-update settings based on version pinning
         (

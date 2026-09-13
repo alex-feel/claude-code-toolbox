@@ -46,6 +46,7 @@ class TestPinnedVersionInjectsIdeControls:
         gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
             claude_code_version_normalized,
             global_config, user_settings, os_env_variables,
+            other_profile_pinned=False,
         )
 
         # Verify all 3 targets injected
@@ -79,12 +80,14 @@ class TestLatestVersionNoIdeControls:
     def test_latest_version_does_not_inject(self) -> None:
         gc, us, osev, _, auto = setup_environment.apply_ide_extension_settings(
             None, None, None, None,
+            other_profile_pinned=False,
         )
         assert not auto
 
     def test_absent_version_does_not_inject(self) -> None:
         gc, us, osev, _, auto = setup_environment.apply_ide_extension_settings(
             None, None, None, None,
+            other_profile_pinned=False,
         )
         assert not auto
 
@@ -101,6 +104,7 @@ class TestIdeAutoMarkerInDryRun:
             claude_code_version_normalized,
             config.get('global-config'), config.get('user-settings'),
             config.get('os-env-variables'),
+            other_profile_pinned=False,
         )
         assert len(auto) == 3
         assert any('autoInstallIdeExtension' in item for item in auto)
@@ -109,6 +113,7 @@ class TestIdeAutoMarkerInDryRun:
     def test_no_auto_marker_when_latest(self) -> None:
         _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
             None, None, None, None,
+            other_profile_pinned=False,
         )
         assert len(auto) == 0
 
@@ -120,6 +125,7 @@ class TestIdeUserConflictRespected:
         gc = {'autoInstallIdeExtension': True}
         gc_out, _, _, warns, auto = setup_environment.apply_ide_extension_settings(
             '2.1.85', gc, None, None,
+            other_profile_pinned=False,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
@@ -182,6 +188,7 @@ class TestIdeUnpinnedRemovalSemantics:
         # Apply with no version pin: user-declared controls are preserved
         gc, us, osev, warns, _ = setup_environment.apply_ide_extension_settings(
             None, {}, {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'OTHER_VAR': 'keep'}}, {},
+            other_profile_pinned=False,
         )
         assert us is not None
         assert us['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1', \
@@ -200,6 +207,7 @@ class TestIdeUnpinnedRemovalSemantics:
         """The OS-level variable gets a deletion entry because it has no disk sweep."""
         _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
             None, {}, {}, {},
+            other_profile_pinned=False,
         )
         assert osev is not None
         assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}, \

@@ -1705,9 +1705,9 @@ class EnvironmentConfig(BaseModel):
     def validate_version_requires_command_names(self) -> 'EnvironmentConfig':
         """Validate that version requires command-names to be present.
 
-        The version field controls update checking via manifest.json and
-        launcher scripts, which are only created when command-names is
-        specified. Without command-names, version has no functional effect.
+        The version field drives the update notification printed by the
+        profile launcher scripts, which are only created when command-names
+        is specified. Without command-names, version has no functional effect.
 
         Returns:
             The validated EnvironmentConfig instance.
@@ -1718,9 +1718,9 @@ class EnvironmentConfig(BaseModel):
         if self.version is not None and not self.command_names:
             raise ValueError(
                 'version requires command-names to be specified. '
-                'The version field controls update checking via manifest.json '
-                'and launcher scripts, which are only created when command-names '
-                'is present. Either add command-names or remove version.',
+                'The version field drives the update notification printed by '
+                'the profile launcher scripts, which are only created when '
+                'command-names is present. Either add command-names or remove version.',
             )
         return self
 
