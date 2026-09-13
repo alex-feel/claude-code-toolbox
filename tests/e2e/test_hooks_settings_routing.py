@@ -22,6 +22,7 @@ from scripts.setup_environment import _build_hooks_json
 from scripts.setup_environment import _build_profile_settings
 from scripts.setup_environment import create_profile_config
 from scripts.setup_environment import write_profile_settings_to_settings
+from tests.conftest import empty_mcp_stats
 from tests.e2e.validators import _validate_hooks_structure
 
 # ---------------------------------------------------------------------------
@@ -349,7 +350,7 @@ class TestSummaryOutputRouting:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
+        mock_mcp.return_value = (True, [], empty_mcp_stats())
 
         from scripts import setup_environment
 
@@ -417,7 +418,7 @@ class TestSummaryOutputRouting:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
+        mock_mcp.return_value = (True, [], empty_mcp_stats())
 
         from scripts import setup_environment
 
@@ -483,7 +484,7 @@ class TestHooksSettingsRoutingStepOutput:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
+        mock_mcp.return_value = (True, [], empty_mcp_stats())
 
         from scripts import setup_environment
 
@@ -538,7 +539,7 @@ class TestHooksSettingsRoutingStepOutput:
         )
         mock_validate.return_value = (True, [])
         mock_install.return_value = True
-        mock_mcp.return_value = (True, [], {'global_count': 0, 'profile_count': 0, 'combined_count': 0, 'unchanged_count': 0})
+        mock_mcp.return_value = (True, [], empty_mcp_stats())
 
         from scripts import setup_environment
 

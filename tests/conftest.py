@@ -21,6 +21,39 @@ _KNOWN_TEST_ARTIFACT_NAMES: frozenset[str] = frozenset({
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
+def empty_mcp_stats() -> dict[str, int]:
+    """Return the stats dict configure_all_mcp_servers produces for a no-op run.
+
+    Tests that patch configure_all_mcp_servers must supply every key main()
+    reads, so this helper keeps the stubbed shape in one place.
+
+    Returns:
+        All-zero stats dict matching the production key set.
+    """
+    return {
+        'global_count': 0,
+        'profile_count': 0,
+        'combined_count': 0,
+        'unchanged_count': 0,
+        'strict_hidden_count': 0,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _isolate_claude_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no ambient CLAUDE_CONFIG_DIR.
+
+    main() exports CLAUDE_CONFIG_DIR for its setup-time child processes, so a
+    main()-flow test of an isolated environment leaves the variable behind for
+    the rest of the session. The same variable is exported by the launcher of
+    any isolated profile, so a developer running the suite from inside such a
+    session would inherit it too. Both would reach the non-isolated guard and
+    fail tests for reasons unrelated to what they assert. Tests that exercise
+    the guard or the export set the variable themselves.
+    """
+    monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for testing."""
