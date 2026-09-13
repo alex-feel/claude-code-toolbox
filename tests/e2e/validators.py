@@ -1792,6 +1792,70 @@ def validate_hooks_in_settings_json(path: Path, config: dict[str, Any]) -> list[
     return errors
 
 
+def validate_hook_helpers_installed(hooks_dir: Path, config: dict[str, Any]) -> list[str]:
+    """Validate hooks.helpers land beside the hook scripts.
+
+    Every helper declared in the YAML must exist under the hooks directory
+    the hook scripts themselves install into, so a script reaches it as a
+    sibling import.
+
+    Args:
+        hooks_dir: Directory hook files and helpers install into
+        config: Full YAML configuration dictionary
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    from scripts import setup_environment
+
+    errors: list[str] = []
+    hooks = config.get('hooks') or {}
+    for helper in hooks.get('helpers') or []:
+        basename = setup_environment._hook_file_basename(str(helper))
+        helper_path = hooks_dir / basename
+        if not helper_path.is_file():
+            errors.append(f'Hook helper {basename!r} missing from {hooks_dir}')
+    return errors
+
+
+def validate_hook_helpers_absent_from_json(
+    hooks_json: dict[str, Any],
+    status_line: dict[str, Any] | None,
+    config: dict[str, Any],
+) -> list[str]:
+    """Validate no helper basename reaches the generated hooks or statusLine.
+
+    Helpers are imported by hook scripts, never launched by Claude Code, so
+    their names must not appear in any generated command or status-line entry.
+
+    Args:
+        hooks_json: The generated hooks mapping (event name -> matcher groups)
+        status_line: The generated statusLine entry, or None when absent
+        config: Full YAML configuration dictionary
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    from scripts import setup_environment
+
+    errors: list[str] = []
+    hooks = config.get('hooks') or {}
+    helper_names = [
+        setup_environment._hook_file_basename(str(helper))
+        for helper in hooks.get('helpers') or []
+    ]
+    if not helper_names:
+        return errors
+
+    rendered = json.dumps({'hooks': hooks_json, 'statusLine': status_line})
+    errors.extend(
+        f'Hook helper {basename!r} leaked into the generated hooks/statusLine JSON'
+        for basename in helper_names
+        if basename in rendered
+    )
+    return errors
+
+
 def validate_selected_artifacts(
     config: dict[str, Any],
     components: list[dict[str, Any]],

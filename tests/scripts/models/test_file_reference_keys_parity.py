@@ -30,7 +30,7 @@ def _get_keys_resolved_by_function() -> frozenset[str]:
         'agents': [sentinel_value],
         'slash-commands': [sentinel_value],
         'rules': [sentinel_value],
-        'hooks': {'files': [sentinel_value], 'events': []},
+        'hooks': {'files': [sentinel_value], 'helpers': [sentinel_value], 'events': []},
         'files-to-download': [{'source': sentinel_value, 'destination': '/tmp/test'}],
         'skills': [{'base': sentinel_value, 'files': ['SKILL.md']}],
         'command-defaults': {'system-prompt': sentinel_value, 'mode': 'replace'},
@@ -45,12 +45,13 @@ def _get_keys_resolved_by_function() -> frozenset[str]:
         if result.get(key) and result[key] != config[key]:
             resolved_keys.add(key)
 
-    # Check hooks.files
-    if (
-        result.get('hooks', {}).get('files')
-        and result['hooks']['files'] != config['hooks']['files']
-    ):
-        resolved_keys.add('hooks.files')
+    # Check hooks.files and hooks.helpers
+    for hooks_key in ('files', 'helpers'):
+        if (
+            result.get('hooks', {}).get(hooks_key)
+            and result['hooks'][hooks_key] != config['hooks'][hooks_key]
+        ):
+            resolved_keys.add(f'hooks.{hooks_key}')
 
     # Check files-to-download
     ftd_result = result.get('files-to-download', [])

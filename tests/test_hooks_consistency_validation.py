@@ -332,6 +332,97 @@ class TestValidateHooksFilesConsistency:
         assert any('dropped.py' in e for e in errors)
 
 
+class TestHooksHelpersConsistency:
+    """Runtime verdicts for the hooks.helpers list."""
+
+    @staticmethod
+    def _with_helper(**overrides: Any) -> dict[str, Any]:
+        """Return a consistent config that also declares a helper module."""
+        hooks: dict[str, Any] = {
+            'files': ['hooks/a.py'],
+            'helpers': ['hooks/shared.py'],
+            'events': [{'event': 'PostToolUse', 'command': 'a.py'}],
+        }
+        hooks.update(overrides)
+        return {'hooks': hooks}
+
+    def test_unreferenced_helper_passes(self) -> None:
+        """A helper referenced by nothing is valid; the unused rule skips it."""
+        assert validate_hooks_files_consistency(self._with_helper()) == []
+
+    def test_helper_only_config_passes(self) -> None:
+        """Helpers alone, with no events and no files, are valid."""
+        config = {'hooks': {'helpers': ['hooks/shared.py'], 'events': []}}
+        assert validate_hooks_files_consistency(config) == []
+
+    def test_duplicate_basename_fails(self) -> None:
+        """A basename declared in both lists is reported once."""
+        config = self._with_helper(helpers=['other/a.py'])
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert "hooks.helpers duplicates hooks.files entries: ['a.py']" in errors[0]
+
+    def test_command_referencing_helper_fails(self) -> None:
+        """A command naming a helper is reported as a misplaced declaration."""
+        config = self._with_helper(
+            events=[{'event': 'PostToolUse', 'command': 'shared.py'}],
+            files=[],
+        )
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert 'hooks.events command "shared.py" is declared in hooks.helpers' in errors[0]
+        assert 'belong in hooks.files' in errors[0]
+
+    def test_event_config_referencing_helper_fails(self) -> None:
+        """An event config naming a helper is reported as a misplaced declaration."""
+        config = self._with_helper(
+            helpers=['configs/shared.yaml'],
+            events=[{'event': 'PostToolUse', 'command': 'a.py', 'config': 'shared.yaml?ref=main'}],
+        )
+        errors = validate_hooks_files_consistency(config)
+        assert len(errors) == 1
+        assert 'hooks.events config "shared.yaml?ref=main" is declared in hooks.helpers' in errors[0]
+
+    def test_status_line_referencing_helper_fails(self) -> None:
+        """A status-line file naming a helper is reported as a misplaced declaration."""
+        config = self._with_helper(helpers=['hooks/sl.py'])
+        config['status-line'] = {'file': 'sl.py'}
+        errors = validate_hooks_files_consistency(config)
+        assert any(
+            'status-line.file "sl.py" is declared in hooks.helpers' in e for e in errors
+        )
+
+    def test_status_line_config_referencing_helper_fails(self) -> None:
+        """A status-line config naming a helper is reported as a misplaced declaration."""
+        config = self._with_helper(
+            files=['hooks/a.py', 'hooks/sl.py'],
+            helpers=['configs/sl_cfg.yaml'],
+        )
+        config['status-line'] = {'file': 'sl.py', 'config': 'sl_cfg.yaml'}
+        errors = validate_hooks_files_consistency(config)
+        assert any(
+            'status-line.config "sl_cfg.yaml" is declared in hooks.helpers' in e
+            for e in errors
+        )
+
+    def test_helpers_non_list_fails(self) -> None:
+        """A non-list helpers value is a structural error."""
+        errors = validate_hooks_files_consistency({'hooks': {'helpers': 'shared.py'}})
+        assert errors == ["'hooks.helpers' must be a list of file paths or URLs"]
+
+    def test_non_string_helper_entry_reported(self) -> None:
+        """A non-string helper entry is reported and suppresses the unused rule."""
+        config = {
+            'hooks': {
+                'files': ['hooks/a.py', 'hooks/unused.py'],
+                'helpers': [42],
+                'events': [{'event': 'PostToolUse', 'command': 'a.py'}],
+            },
+        }
+        errors = validate_hooks_files_consistency(config)
+        assert errors == ['hooks.helpers[0] must be a string path or URL']
+
+
 class TestBuildHooksJsonFileReferenceClassification:
     """hooks.files-aware file-reference classification in _build_hooks_json."""
 

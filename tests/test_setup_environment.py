@@ -4528,6 +4528,34 @@ class TestArtifactIsolation:
             )
             assert result is True
 
+    def test_download_hook_files_includes_helpers(self):
+        """Helpers are downloaded into the same directory as the hook scripts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks: dict[str, Any] = {
+                'files': ['hooks/my_hook.py'],
+                'helpers': ['hooks/shared.py'],
+            }
+            with patch('setup_environment.process_resources', return_value=True) as mock_process:
+                result = setup_environment.download_hook_files(
+                    hooks,
+                    Path(tmpdir),
+                    'test-source',
+                )
+            assert result is True
+            assert mock_process.call_args[0][0] == ['hooks/my_hook.py', 'hooks/shared.py']
+
+    def test_download_hook_files_helpers_only(self):
+        """A hooks section carrying only helpers still downloads them."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('setup_environment.process_resources', return_value=True) as mock_process:
+                result = setup_environment.download_hook_files(
+                    {'helpers': ['hooks/shared.py']},
+                    Path(tmpdir),
+                    'test-source',
+                )
+            assert result is True
+            assert mock_process.call_args[0][0] == ['hooks/shared.py']
+
     def test_create_profile_config_claude_config_dir_injection(self):
         """Test that CLAUDE_CONFIG_DIR from user-settings.env lands in config.json."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -6352,10 +6380,26 @@ class TestMergeKeys:
         assert result['events'] == [{'event': 'E1'}, {'event': 'E2'}]
 
     def test_merge_hooks_missing_keys(self):
-        """Hooks merge: missing 'files' or 'events' treated as empty."""
+        """Hooks merge: missing 'files', 'helpers' or 'events' treated as empty."""
         result = setup_environment._merge_hooks({}, {'files': ['x.py']})
         assert result['files'] == ['x.py']
+        assert result['helpers'] == []
         assert result['events'] == []
+
+    def test_merge_hooks_helpers_dedup(self):
+        """Hooks merge: helpers deduplicate exactly like files."""
+        parent = {'helpers': ['shared.py', 'util.py'], 'events': []}
+        child = {'helpers': ['util.py', 'extra.py'], 'events': []}
+        result = setup_environment._merge_hooks(parent, child)
+        assert result['helpers'] == ['shared.py', 'util.py', 'extra.py']
+
+    def test_merge_hooks_helpers_independent_of_files(self):
+        """Hooks merge: the two lists never bleed into each other."""
+        parent = {'files': ['a.py'], 'helpers': ['shared.py'], 'events': []}
+        child = {'files': ['b.py'], 'helpers': ['extra.py'], 'events': []}
+        result = setup_environment._merge_hooks(parent, child)
+        assert result['files'] == ['a.py', 'b.py']
+        assert result['helpers'] == ['shared.py', 'extra.py']
 
     def test_merge_dependencies_per_platform(self):
         """Dependencies merge: per-platform sub-key merge with dedup."""
@@ -12775,6 +12819,7 @@ class TestCollectInstallationPlan:
             'files-to-download': [{'source': 'f.txt', 'dest': '~/.claude/f.txt'}],
             'hooks': {
                 'files': ['hook.py'],
+                'helpers': ['shared.py'],
                 'events': [{'event': 'PostToolUse', 'type': 'command', 'command': 'hook.py'}],
             },
             'mcp-servers': [{'name': 'srv', 'transport': 'http', 'url': 'http://localhost'}],
@@ -12800,9 +12845,12 @@ class TestCollectInstallationPlan:
         assert len(plan.skills) == 1
         assert len(plan.files_to_download) == 1
         assert len(plan.hooks_files) == 1
+        assert plan.hooks_helpers == ['shared.py']
         assert len(plan.hooks_events) == 1
         assert len(plan.mcp_servers) == 1
         assert plan.config_version == '2.0.0'
+        # Helpers download like every other resource, so they count
+        assert plan.total_resources == 9
 
     def test_collect_plan_unknown_keys(self) -> None:
         """Extra keys are detected in plan.unknown_keys."""
@@ -13090,6 +13138,19 @@ class TestDisplayInstallationSummary:
         output = buf.getvalue()
         assert 'Installation Summary' in output
         assert 'test-env' in output
+
+    def test_display_summary_counts_hook_helpers(self) -> None:
+        """The Resources block reports the hook helper count separately."""
+        plan = self._make_plan(
+            hooks_files=['hooks/h.py'],
+            hooks_helpers=['hooks/shared.py', 'hooks/util.py'],
+        )
+        import io
+        buf = io.StringIO()
+        setup_environment.display_installation_summary(plan, output=buf)
+        output = buf.getvalue()
+        assert 'Hook files: 1' in output
+        assert 'Hook helpers: 2' in output
 
     def test_display_summary_with_inheritance(self) -> None:
         """Inheritance chain is displayed when multiple entries exist."""
@@ -16141,6 +16202,28 @@ class TestValidateComponents:
         assert any("'agents/missing.md' matches no item in agents" in e for e in errors)
         assert any("'nope' matches no item in skills" in e for e in errors)
         assert any("'ghost' matches no item in hooks" in e for e in errors)
+
+    def test_hook_helper_is_not_a_selectable_identity(self) -> None:
+        """A helper path carries no component identity, so no selector can claim it."""
+        config = _components_config()
+        config['hooks']['helpers'] = ['hooks/shared.py']
+        config['components'][0]['includes']['hooks'] = ['hooks/shared.py']
+        errors = setup_environment.validate_components(config)
+        assert any("'hooks/shared.py' matches no item in hooks" in e for e in errors)
+
+    def test_hook_helpers_survive_deselection(self) -> None:
+        """Deselecting every hooks-claiming component leaves helpers in place."""
+        config = _components_config()
+        config['hooks']['helpers'] = ['hooks/shared.py']
+        selection = setup_environment.ComponentSelection(
+            selected=['extra'],
+            available=['core', 'extra', 'bundle-pack'],
+            is_active=True,
+        )
+        deselected = setup_environment.collect_deselected_items(config, selection)
+        setup_environment.apply_component_selection(config, selection)
+        assert config['hooks']['helpers'] == ['hooks/shared.py']
+        assert 'hooks/shared.py' not in (deselected or {}).get('hooks-files', [])
 
     def test_directory_dest_selector_by_identity_accepted(self) -> None:
         """A directory dest is claimable by its normalized final file path."""

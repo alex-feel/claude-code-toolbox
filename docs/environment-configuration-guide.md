@@ -177,7 +177,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                                       |
 | [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup                             |
 | [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Raw `~/.claude.json` content (camelCase keys)              |
-| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)                     |
+| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files, helpers, and events)           |
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
 | [`components`](#components)                           | `list[Component]`      | No       | `[]`    | Author-defined selectable component groups                 |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
@@ -930,9 +930,10 @@ Event-driven hooks that run automatically during Claude Code sessions. Five hook
 
 - **Type:** `Hooks | None`
 - **Default:** `None`
-- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: composite merge. `files` lists are concatenated with deduplication by full file path string equality. `events` lists are concatenated without deduplication (each event is unique by its field combination).
+- **Inheritance:** Standard override (child replaces parent) by default. When listed in `merge-keys`: composite merge. `files` and `helpers` lists are concatenated with deduplication by full file path string equality. `events` lists are concatenated without deduplication (each event is unique by its field combination).
 - **Fields:**
-  - `files` (list[str]) -- Script files to download to `~/.claude/hooks/`. Only used by command hooks.
+  - `files` (list[str]) -- Script files to download to the hooks directory. Only used by command hooks and `status-line`.
+  - `helpers` (list[str]) -- Shared modules to download to the same hooks directory, imported by the hook scripts (see [Hook Helpers](#hook-helpers))
   - `events` (list[HookEvent]) -- Event configurations
 
 #### Hook Types
@@ -1149,6 +1150,43 @@ The rules are enforced in two layers. The Pydantic model validates configuration
 3. Every `config` in command hook events must exist in `hooks.files`
 4. If `status-line` is configured, its `file` and `config` must exist in `hooks.files`
 5. If `status-line` is configured but `hooks` is not defined, that is an error
+6. No filename may appear in both `hooks.files` and `hooks.helpers`
+
+Entries in `hooks.helpers` are exempt from rule 1 -- they exist precisely to be unreferenced. Naming a helper as a `command`, a `config`, or a `status-line` `file`/`config` is an error that tells you to move the entry to `hooks.files`, because a referenced script or config is launched by Claude Code rather than imported by a script.
+
+#### Hook Helpers
+
+Hook scripts frequently share code -- a config loader, a formatting utility, a small client library. Declare those modules in `hooks.helpers` and they download into the same directory as the scripts in `hooks.files`, so a script reaches them as a sibling of itself:
+
+```yaml
+hooks:
+  files:
+    - "hooks/linter.py"
+    - "hooks/statusline.py"
+  helpers:
+    - "hooks/hook_config_loader.py"
+  events:
+    - event: "PostToolUse"
+      matcher: "Edit|MultiEdit|Write"
+      type: "command"
+      command: "linter.py"
+```
+
+```python
+# Inside hooks/linter.py and hooks/statusline.py
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import hook_config_loader
+```
+
+`helpers` accepts the same source forms as `files` (a repository-relative path resolved against `base-url`, or a full URL). Helpers are never registered as a command: no helper name reaches the generated `hooks` JSON or the `statusLine` entry.
+
+The destination follows the hook scripts, which is the point of the key. With `command-names`, both lists install into `~/.claude/{cmd}/hooks/`; without it, both install into `~/.claude/hooks/`. Delivering a helper through [`files-to-download`](#files-to-download) instead pins it to one literal destination, so an isolated profile's hook scripts cannot import it.
+
+Helpers carry no [component](#components) identity: a component selector cannot claim one, and deselecting a component never deletes one. Scope a helper by scoping the scripts that import it -- an unused helper costs one download and nothing else, while a missing one breaks every script that imports it.
 
 #### Supported Script Types
 
@@ -1176,6 +1214,9 @@ hooks:
     - "hooks/linter.py"
     - "hooks/security-check.js"
     - "configs/linter-config.yaml"
+  helpers:
+    # Imported by linter.py from its own directory, never launched directly
+    - "hooks/hook_config_loader.py"
   events:
     # Command hook with config file
     - event: "PostToolUse"
@@ -1286,7 +1327,7 @@ Each section's selectors use its existing merge identity, so a selector is writt
 | `skills`, `mcp-servers`             | The entry's `name`                                                                                                                        |
 | `files-to-download`                 | The entry's `dest`; a directory dest (trailing `/` or `\`) is also matchable by its normalized final file path (`dest` + source filename) |
 | `dependencies`                      | The exact command string, matched across every platform list                                                                              |
-| `hooks`                             | A `hooks.events[].id` (see the `id` common field) or a path string present in `hooks.files`                                               |
+| `hooks`                             | A `hooks.events[].id` (see the `id` common field) or a path string present in `hooks.files`; `hooks.helpers` entries carry no identity    |
 
 Validation fails fast on duplicate component names, dangling `requires`/`bundles` references, `includes` keys outside the selectable sections, selectors matching no item, duplicate hook event ids, and distinct `files-to-download` entries sharing a final path (which would make selectors ambiguous).
 
@@ -1332,7 +1373,7 @@ When configurations are inherited across different sources (e.g., a GitHub-hoste
 
 **How it works:**
 
-- Each parent config's relative resource paths (agents, rules, slash-commands, hooks files, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
+- Each parent config's relative resource paths (agents, rules, slash-commands, hook files and helpers, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
 - The resolution uses the parent config's own `config_source` (where it was loaded from) and `base-url`
 - Child (leaf) config paths continue to be resolved at validation time using the leaf's own source
 
@@ -1577,7 +1618,7 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 | Named list (by `name`)          | `mcp-servers`, `skills`, `components` | Identity-based: child overrides parent in-position; new items appended                |
 | Named list (by final file path) | `files-to-download`                   | Identity-based: child overrides parent in-position; new items appended                |
 | Per-platform dict               | `dependencies`                        | Per-platform sub-key list concatenation with deduplication                            |
-| Composite                       | `hooks`                               | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
+| Composite                       | `hooks`                               | `files` and `helpers`: concat + dedup by full path; `events`: concat (no dedup)       |
 | Deep dict                       | `global-config`                       | `deep_merge_settings()` with `array_union_keys=set()`; child `null` carried forward   |
 | Deep dict                       | `user-settings`                       | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS`; child `null` carried forward |
 | Shallow dict                    | `os-env-variables`                    | Shallow merge; child overrides; child `null` carried forward as a deletion request    |
@@ -1885,7 +1926,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 14. **Write user settings** -- In non-isolated mode, deep-merges `user-settings` into `~/.claude/settings.json`. In isolated mode, this write is skipped -- the `user-settings` content is built into the profile's `config.json` at Step 18.
 15. **Write global config** -- Merges `global-config` into `~/.claude.json`. With `command-names`, also propagates the machine's recorded `installMethod` from the base `~/.claude.json` into the dual-written isolated `.claude.json`.
 16. **Cleanup stale controls** -- Sweeps stale auto-update and IDE extension artifacts from prior configurations, preserving `settings.json` keys the current YAML itself declares. The sweep runs only when no installed profile pins a Claude Code version; while any profile does, every location keeps its controls.
-17. **Download hooks** -- Downloads hook script files to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without). In non-command-names mode, Step 17 runs when ANY of the following are declared: `hooks.events` non-empty, `hooks.files` non-empty, or `status-line.file` set.
+17. **Download hooks** -- Downloads the `hooks.files` scripts and the `hooks.helpers` modules to `~/.claude/{cmd}/hooks/` (with `command-names`) or `~/.claude/hooks/` (without). In non-command-names mode, Step 17 runs when ANY of the following are declared: `hooks.events` non-empty, `hooks.files` non-empty, `hooks.helpers` non-empty, or `status-line.file` set.
 18. **Write profile settings** -- Writes the profile-owned keys (`statusLine`, `hooks`) as camelCase keys on disk. With `command-names`: writes `~/.claude/{cmd}/config.json` via `create_profile_config()`, merging the `user-settings` content with the built `statusLine`/`hooks` entries (atomic overwrite -- fresh dict each run). Without `command-names`: writes to `~/.claude/settings.json` via `write_profile_settings_to_settings()`, which delegates to `_write_merged_json()` for **deep-merge, universal array union at every depth, and RFC 7396 null-as-delete** (preserves non-delta keys; see [Profile-Level Settings Routing](#profile-level-settings-routing)).
 19. **Write manifest** -- Creates the profile's installation tracking manifest: `~/.claude/{cmd}/manifest.json` with `command-names`, `~/.claude/manifest.json` without. Records the run's `claude-code-version` pin so any later run can tell whether another profile still needs the machine-global auto-update controls.
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
@@ -2219,6 +2260,8 @@ hooks:
   files:
     - "hooks/python-linter.py"
     - "configs/linter-config.yaml"
+  helpers:
+    - "hooks/hook_config_loader.py"
   events:
     - event: "PostToolUse"
       matcher: "Edit|MultiEdit|Write"
@@ -2364,6 +2407,14 @@ skills:
 ### hooks.events command not found in hooks.files
 
 Every `command` referenced in hook events must be listed in `hooks.files`. Ensure the filenames match exactly.
+
+### hooks.events command is declared in hooks.helpers
+
+A `command`, `config`, or `status-line` reference names an entry from `hooks.helpers`. Helpers are imported by hook scripts, not launched by Claude Code; move the entry to `hooks.files` if it really is a hook script or a config file.
+
+### hooks.helpers duplicates hooks.files entries
+
+Both lists install into the same hooks directory, so a filename can appear in only one of them. Keep the entry in `hooks.files` when something references it, and in `hooks.helpers` when the hook scripts import it.
 
 ### Key 'hooks' is not allowed in user-settings
 

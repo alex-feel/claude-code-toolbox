@@ -5,7 +5,8 @@ of the Pydantic model validator of the same name in environment_config.py (the
 standalone script policy prevents a cross-import, so the two implementations
 are deliberate duplicates). These tests run a shared corpus of configuration
 shapes through both sides and enforce identical accept/reject verdicts, plus
-strict parity of the basename derivation both sides rely on.
+strict parity of the basename derivation and of the hooks.helpers error
+wording both sides rely on.
 
 The corpus covers only shapes both sides can evaluate: the model rejects
 structural violations (non-string entries, unknown hook types) at the typing
@@ -28,6 +29,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from scripts import setup_environment as runtime_module
+from scripts.models import environment_config as model_module
 from scripts.models.environment_config import EnvironmentConfig
 from scripts.models.environment_config import _extract_basename
 from scripts.setup_environment import _hook_file_basename
@@ -127,8 +130,75 @@ CONSISTENCY_CORPUS: list[tuple[str, dict[str, Any], bool]] = [
         },
         True,
     ),
+    (
+        'consistent-unreferenced-helper',
+        {
+            'hooks': {
+                'files': ['hooks/a.py'],
+                'helpers': ['hooks/shared.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'a.py'}],
+            },
+        },
+        True,
+    ),
+    (
+        'consistent-helpers-only',
+        {'hooks': {'files': [], 'helpers': ['hooks/shared.py'], 'events': []}},
+        True,
+    ),
     ('no-hooks-at-all', {}, True),
     ('null-hooks', {'hooks': None}, True),
+    (
+        'helper-duplicates-file-basename',
+        {
+            'hooks': {
+                'files': ['hooks/a.py'],
+                'helpers': ['vendor/a.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'a.py'}],
+            },
+        },
+        False,
+    ),
+    (
+        'command-references-helper',
+        {
+            'hooks': {
+                'files': [],
+                'helpers': ['hooks/shared.py'],
+                'events': [{'event': 'PostToolUse', 'command': 'shared.py'}],
+            },
+        },
+        False,
+    ),
+    (
+        'event-config-references-helper',
+        {
+            'hooks': {
+                'files': ['hooks/a.py'],
+                'helpers': ['configs/shared.yaml'],
+                'events': [
+                    {'event': 'PostToolUse', 'command': 'a.py', 'config': 'shared.yaml?ref=main'},
+                ],
+            },
+        },
+        False,
+    ),
+    (
+        'status-line-file-references-helper',
+        {
+            'hooks': {'files': [], 'helpers': ['hooks/sl.py'], 'events': []},
+            'status-line': {'file': 'sl.py'},
+        },
+        False,
+    ),
+    (
+        'status-line-config-references-helper',
+        {
+            'hooks': {'files': ['hooks/sl.py'], 'helpers': ['configs/sl_cfg.yaml'], 'events': []},
+            'status-line': {'file': 'sl.py', 'config': 'sl_cfg.yaml'},
+        },
+        False,
+    ),
     (
         'missing-command-reference',
         {
@@ -271,6 +341,30 @@ def test_consistency_verdict_parity(
 def test_basename_derivation_parity(path_or_url: str) -> None:
     """The runtime basename helper mirrors the model's exactly."""
     assert _hook_file_basename(path_or_url) == _extract_basename(path_or_url)
+
+
+def test_helper_overlap_message_parity() -> None:
+    """Both sides word the duplicate-basename error identically."""
+    overlapping = {'b.py', 'a.py'}
+    assert runtime_module._hook_helper_overlap_message(
+        overlapping,
+    ) == model_module._hook_helper_overlap_message(overlapping)
+
+
+@pytest.mark.parametrize(
+    ('reference_kind', 'reference'),
+    [
+        ('hooks.events command', 'shared.py'),
+        ('hooks.events config', 'shared.yaml?ref=main'),
+        ('status-line.file', 'sl.py'),
+        ('status-line.config', 'sl_cfg.yaml'),
+    ],
+)
+def test_helper_reference_message_parity(reference_kind: str, reference: str) -> None:
+    """Both sides word the misplaced-reference error identically."""
+    assert runtime_module._hook_helper_reference_message(
+        reference_kind, reference,
+    ) == model_module._hook_helper_reference_message(reference_kind, reference)
 
 
 def test_inherit_asymmetry_model_skips_runtime_enforces() -> None:
