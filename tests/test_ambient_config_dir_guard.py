@@ -96,14 +96,42 @@ class TestCheckAmbientClaudeConfigDir:
         assert captured.out == ''
         assert captured.err == ''
 
-    def test_whitespace_only_value_counts_as_unset(
+    def test_whitespace_only_value_counts_as_set(
         self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A blank value carries no directory and must not block the run."""
+        """A blank value still redirects the CLI, so the guard must not wave it through."""
         monkeypatch.setenv('CLAUDE_CONFIG_DIR', '   ')
 
-        assert setup_environment.check_ambient_claude_config_dir(None, temp_dir / '.claude') is True
-        assert capsys.readouterr().err == ''
+        assert setup_environment.check_ambient_claude_config_dir(None, temp_dir / '.claude') is False
+        assert 'CLAUDE_CONFIG_DIR is set to' in capsys.readouterr().err
+
+    def test_set_definition_matches_the_cli_target_resolution(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The guard and the CLI-target resolution agree on which values count as set."""
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', '   ')
+        # The resolution the toolbox uses for `claude mcp` targets honors the value...
+        assert setup_environment._claude_global_config_file(None) == Path('   ') / '.claude.json'
+        # ...so the guard must treat the same value as a split run, not as unset
+        assert setup_environment.check_ambient_claude_config_dir(None, Path.home() / '.claude') is False
+
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', '')
+        assert setup_environment._claude_global_config_file(None) == (
+            setup_environment.get_real_user_home() / '.claude.json'
+        )
+        assert setup_environment.check_ambient_claude_config_dir(None, Path.home() / '.claude') is True
+
+    def test_refusal_names_the_persisted_variable_case(
+        self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A variable persisted by a configuration reproduces in every terminal, so say so."""
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(temp_dir / 'profile'))
+
+        assert setup_environment.check_ambient_claude_config_dir(None, temp_dir / '.claude') is False
+
+        err = capsys.readouterr().err
+        assert 'os-env-variables' in err
+        assert 'user-settings.env' in err
 
     def test_non_isolated_run_is_blocked(
         self, temp_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -219,6 +247,38 @@ class TestMainAmbientConfigDirGuard:
 
         assert exc_info.value.code == 1
         assert 'CLAUDE_CONFIG_DIR is set to' in capsys.readouterr().err
+
+    def test_guard_precedes_the_component_picker_and_the_admin_check(
+        self,
+        mock_home_dir: Path,
+        temp_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A refused run asks the user nothing first."""
+        del mock_home_dir
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(temp_dir / 'profile'))
+        config: dict[str, object] = {
+            'name': 'Guarded',
+            'agents': ['agents/optional.md'],
+            'components': [
+                {'name': 'optional', 'includes': {'agents': ['agents/optional.md']}},
+            ],
+        }
+
+        with (
+            patch('setup_environment.prompt_component_selection') as mock_picker,
+            patch('setup_environment.check_admin_needed', return_value=True) as mock_admin,
+            patch('sys.stdin.isatty', return_value=True),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            self._run_main(config, [])
+
+        assert exc_info.value.code == 1
+        # The refusal, not a configuration error, is what ended the run
+        assert 'CLAUDE_CONFIG_DIR is set to' in capsys.readouterr().err
+        mock_picker.assert_not_called()
+        mock_admin.assert_not_called()
 
     def test_isolated_run_warns_and_continues_to_the_summary(
         self,

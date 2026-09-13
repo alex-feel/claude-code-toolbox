@@ -1,10 +1,13 @@
 """E2E tests for the strict-mode MCP scope warning on the golden configuration.
 
 The golden configuration mixes profile-scoped servers with servers registered
-only at user, project and local scope. Because the profile servers make the
-launcher start Claude Code with --strict-mcp-config, the non-profile-only
-servers are reachable from a bare ``claude`` session but not from the isolated
-commands, which the run reports per server.
+only at user, project and local scope. The profile servers make the launcher
+start Claude Code with --strict-mcp-config, so the isolated sessions read only
+the profile MCP config. A project-scope registration stays in the .mcp.json of
+the setup directory and is still loaded by other sessions opened there, while
+user- and local-scope registrations -- which an isolated run writes into the
+profile's own .claude.json -- are loaded nowhere. The run reports each of them
+by name.
 """
 
 from __future__ import annotations
@@ -76,12 +79,23 @@ class TestGoldenConfigStrictScopeWarning:
             command_names=golden_config['command-names'],
         )
 
-        joined = '\n'.join(_warning_lines(capsys.readouterr().out))
+        lines = _warning_lines(capsys.readouterr().out)
+        joined = '\n'.join(lines)
         assert 'e2e-test-cmd, e2e-test-alias sessions' in joined
         assert '--strict-mcp-config' in joined
         assert 'scope: [user, profile]' in joined
         assert 'scope: [project, profile]' in joined
         assert 'scope: [local, profile]' in joined
+
+        # Each line says where that server's registration actually ends up
+        user_line = next(line for line in lines if 'e2e-http-server' in line)
+        local_line = next(line for line in lines if 'e2e-npx-server' in line)
+        project_line = next(line for line in lines if 'e2e-sse-server' in line)
+        for line in (user_line, local_line):
+            assert "profile's own .claude.json" in line
+            assert 'loads nowhere' in line
+        assert '.mcp.json of the directory setup ran in' in project_line
+        assert 'still load it' in project_line
 
     def test_golden_non_isolated_variant_stays_silent(
         self,

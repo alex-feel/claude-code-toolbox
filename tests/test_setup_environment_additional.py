@@ -3613,6 +3613,13 @@ class TestMCPProfileScope:
         assert '--strict-mcp-config' in joined
         assert 'scope: [user, profile]' in joined
         assert 'scope: [project, profile]' in joined
+        # A user-scope registration lands in the profile's own .claude.json and
+        # loads nowhere; a project-scope one survives for other sessions
+        user_line = next(line for line in warnings if 'user-server' in line)
+        project_line = next(line for line in warnings if 'project-server' in line)
+        assert "profile's own .claude.json" in user_line
+        assert 'loads nowhere' in user_line
+        assert '.mcp.json of the directory setup ran in' in project_line
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value='claude')
@@ -3685,6 +3692,69 @@ class TestMCPProfileScope:
 
         assert stats['strict_hidden_count'] == 0
         assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_silent_when_the_profile_config_is_not_written(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A failed profile-config write leaves strict mode off, so nothing is hidden."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [
+            {'name': 'profile-server', 'command': 'uvx profile', 'scope': 'profile'},
+            {'name': 'user-server', 'command': 'uvx user', 'scope': 'user'},
+        ]
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch('setup_environment.create_mcp_config_file', return_value=False),
+        ):
+            _, _, stats = setup_environment.configure_all_mcp_servers(
+                servers,
+                profile_mcp_config_path=Path(tmpdir) / 'mcp.json',
+                command_names=['claude-test'],
+            )
+
+        assert stats['strict_hidden_count'] == 0
+        assert 'will not load' not in capsys.readouterr().out
+
+    @patch('platform.system', return_value='Linux')
+    @patch('setup_environment.find_command', return_value='claude')
+    @patch('setup_environment.run_command')
+    def test_strict_mode_warns_when_a_stale_profile_config_survives_removal(
+        self,
+        mock_run: MagicMock,
+        mock_find: MagicMock,
+        _mock_system: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile config the run cannot delete keeps strict mode on, so the report stands."""
+        del mock_find, _mock_system
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        servers = [{'name': 'user-server', 'command': 'uvx user', 'scope': 'user'}]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stale_config = Path(tmpdir) / 'mcp.json'
+            stale_config.write_text('{"mcpServers": {}}', encoding='utf-8')
+
+            with patch('pathlib.Path.unlink', side_effect=OSError('in use')):
+                _, profile_servers, stats = setup_environment.configure_all_mcp_servers(
+                    servers,
+                    profile_mcp_config_path=stale_config,
+                    command_names=['claude-test'],
+                )
+
+        assert profile_servers == []
+        assert stats['strict_hidden_count'] == 1
+        assert 'user-server (scope: user)' in capsys.readouterr().out
 
     @patch('platform.system', return_value='Linux')
     @patch('setup_environment.find_command', return_value='claude')

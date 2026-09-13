@@ -10912,6 +10912,20 @@ class McpServerActionPlan(NamedTuple):
     clears_oauth: bool  # removal will clear stored OAuth tokens (live http/sse entry)
 
 
+def _ambient_claude_config_dir() -> str | None:
+    """Read the CLAUDE_CONFIG_DIR value the environment hands to the Claude CLI.
+
+    The CLI accepts any non-empty value as a configuration-directory override,
+    so an empty variable is the only state that means "unset" -- a value made
+    of whitespace still redirects the CLI. Every toolbox decision that depends
+    on the variable reads it here, so they all agree on what "set" means.
+
+    Returns:
+        The raw variable value, or None when the variable carries nothing.
+    """
+    return os.environ.get('CLAUDE_CONFIG_DIR') or None
+
+
 def _claude_global_config_file(artifact_base_dir: Path | None) -> Path:
     """Resolve the .claude.json file `claude mcp` commands operate on.
 
@@ -10928,7 +10942,7 @@ def _claude_global_config_file(artifact_base_dir: Path | None) -> Path:
     """
     if artifact_base_dir is not None:
         return artifact_base_dir / '.claude.json'
-    env_dir = os.environ.get('CLAUDE_CONFIG_DIR')
+    env_dir = _ambient_claude_config_dir()
     if env_dir:
         return Path(env_dir) / '.claude.json'
     return get_real_user_home() / '.claude.json'
@@ -11559,6 +11573,34 @@ def configure_mcp_server(
         return False
 
 
+def _strict_hidden_registration_note(scopes: list[str]) -> str:
+    """Say where a server strict mode hides from the isolated sessions still lives.
+
+    A ``project``-scope registration is a .mcp.json file in the directory setup
+    ran in, which strict mode hides from the isolated sessions but leaves for
+    every other session opened there. A ``user``- or ``local``-scope
+    registration goes through `claude mcp add` with CLAUDE_CONFIG_DIR pointing
+    at the isolated profile, so it lands in the profile's own .claude.json --
+    the file only the isolated sessions read, and exactly the file strict mode
+    makes them ignore.
+
+    Args:
+        scopes: The server's non-profile scopes.
+
+    Returns:
+        One sentence naming where the registration ends up.
+    """
+    if 'project' in scopes:
+        return (
+            'Its registration stays in the .mcp.json of the directory setup ran in, '
+            'so sessions opened there outside the isolated commands still load it.'
+        )
+    return (
+        "Its registration goes into the isolated profile's own .claude.json, which no "
+        'session outside those commands reads, so it currently loads nowhere.'
+    )
+
+
 def configure_all_mcp_servers(
     servers: list[dict[str, Any]],
     profile_mcp_config_path: Path | None = None,
@@ -11573,11 +11615,13 @@ def configure_all_mcp_servers(
     to both ~/.claude.json (for global access) and the profile MCP config file
     (for isolated profile sessions).
 
-    When an isolated environment ends up with profile-scoped servers, its
-    launcher starts Claude Code with --strict-mcp-config, so those sessions load
-    the profile MCP config and nothing else. Servers declared at a non-profile
-    scope alone stay registered for bare `claude` sessions but become invisible
-    to the isolated commands; each of them is reported by name.
+    When an isolated environment ends up with a profile MCP config, its
+    launcher starts Claude Code with --strict-mcp-config, so those sessions read
+    that file and nothing else. Servers declared at a non-profile scope alone
+    are then invisible to the isolated commands, and -- because an isolated run
+    registers user- and local-scope servers in the profile's own .claude.json --
+    only a project-scope registration is left for any other session to load.
+    Each such server is reported by name.
 
     Args:
         servers: List of MCP server configurations from YAML
@@ -11621,8 +11665,8 @@ def configure_all_mcp_servers(
     }
 
     # Servers registered only at non-profile scopes, as (name, scopes) pairs.
-    # They are hidden from the isolated commands whenever the run also has
-    # profile-scoped servers, which is only known after the loop below.
+    # Whether the isolated commands end up hiding them depends on the profile
+    # MCP config the block after this loop writes or removes.
     strict_hidden: list[tuple[str, list[str]]] = []
 
     for server in servers:
@@ -11708,24 +11752,6 @@ def configure_all_mcp_servers(
                 remove_scopes=plan.remove_scopes,
             )
 
-    # The launcher enables --strict-mcp-config only when the profile MCP config
-    # exists, so non-profile-only servers stay reachable from the isolated
-    # commands until this run produces at least one profile-scoped server
-    if profile_servers and command_names and strict_hidden:
-        stats['strict_hidden_count'] = len(strict_hidden)
-        session_list = ', '.join(command_names)
-        session_noun = 'session' if len(command_names) == 1 else 'sessions'
-        for hidden_name, hidden_scopes in strict_hidden:
-            scope_text = ', '.join(hidden_scopes)
-            example_scope = f'[{hidden_scopes[0]}, profile]'
-            warning(
-                f'MCP server {hidden_name} (scope: {scope_text}) will not load in the '
-                f'{session_list} {session_noun}: this environment has profile-scoped MCP '
-                f'servers, so the launcher runs Claude Code with --strict-mcp-config and '
-                f'those sessions use only the profile MCP config. Add profile to its scope '
-                f'to load it there as well, for example scope: {example_scope}.',
-            )
-
     # Create profile MCP config file if there are profile-scoped servers
     if profile_servers and profile_mcp_config_path:
         info(f'Creating profile MCP config with {len(profile_servers)} server(s)...')
@@ -11738,6 +11764,25 @@ def configure_all_mcp_servers(
             success(f'Removed stale profile MCP config: {profile_mcp_config_path.name}')
         except OSError as e:
             warning(f'Failed to remove stale profile MCP config: {e}')
+
+    # The launcher turns --strict-mcp-config on by testing for the profile MCP
+    # config file, so the report below asks the same question the launcher will
+    # ask -- after the writes above, whose outcome decides the answer
+    strict_mode_active = profile_mcp_config_path is not None and profile_mcp_config_path.exists()
+    if strict_mode_active and command_names and strict_hidden:
+        stats['strict_hidden_count'] = len(strict_hidden)
+        session_list = ', '.join(command_names)
+        session_noun = 'session' if len(command_names) == 1 else 'sessions'
+        for hidden_name, hidden_scopes in strict_hidden:
+            scope_text = ', '.join(hidden_scopes)
+            example_scope = f'[{hidden_scopes[0]}, profile]'
+            warning(
+                f'MCP server {hidden_name} (scope: {scope_text}) will not load in the '
+                f'{session_list} {session_noun}: the profile MCP config makes the launcher '
+                f'run Claude Code with --strict-mcp-config, so those sessions read only that '
+                f'file. {_strict_hidden_registration_note(hidden_scopes)} Add profile to its '
+                f'scope to serve it to those sessions, for example scope: {example_scope}.',
+            )
 
     return True, profile_servers, stats
 
@@ -13645,14 +13690,16 @@ def check_ambient_claude_config_dir(
     primary_command_name: str | None,
     artifact_base_dir: Path,
 ) -> bool:
-    """Check the terminal's CLAUDE_CONFIG_DIR against this run's target directory.
+    """Check the inherited CLAUDE_CONFIG_DIR against this run's target directory.
 
     The Claude CLI resolves CLAUDE_CONFIG_DIR ahead of the home directory, so
-    ``claude mcp add`` and the global-config writes of a run started inside an
-    isolated profile session follow that variable while the rest of the run
-    writes to its own target directory. A non-isolated run therefore aborts,
-    because it has no way to reconcile the two destinations; an isolated run
-    replaces the variable for its child processes and reports that it did.
+    ``claude mcp add`` and the global-config writes follow that variable while
+    the rest of the run writes to its own target directory. The value reaches
+    the run from an isolated profile session's launcher export, from an
+    OS-level variable, or from a settings ``env`` entry. A non-isolated run
+    therefore aborts, because it has no way to reconcile the two destinations;
+    an isolated run replaces the variable for its child processes and reports
+    that it did.
 
     Args:
         primary_command_name: The primary command name when an isolated
@@ -13662,31 +13709,33 @@ def check_ambient_claude_config_dir(
     Returns:
         True when the run may proceed, False when it must abort.
     """
-    ambient = os.environ.get('CLAUDE_CONFIG_DIR', '').strip()
-    if not ambient:
+    ambient = _ambient_claude_config_dir()
+    if ambient is None:
         return True
 
     if not primary_command_name:
-        error(f'CLAUDE_CONFIG_DIR is set to {ambient} in this terminal.')
+        error(f'CLAUDE_CONFIG_DIR is set to "{ambient}" in this environment.')
         error(
-            'This configuration has no command-names, so the toolbox targets the base '
-            f'{artifact_base_dir} directory, while the Claude CLI resolves CLAUDE_CONFIG_DIR '
-            'first and would write MCP servers and global config into the profile directory '
-            'instead. Setting up the base environment from inside an isolated profile session '
-            'would split the run across two directories.',
+            'This configuration has no command-names, so the toolbox writes its artifacts to '
+            f'{artifact_base_dir} and its global config to the home-directory .claude.json, '
+            'while the Claude CLI resolves CLAUDE_CONFIG_DIR ahead of the home directory and '
+            'would put MCP servers and global config under the directory that variable names. '
+            'The run would be split across two directories.',
         )
         error('')
         error('Fix one of:')
-        error('  1. Unset the variable and run setup again:')
+        error('  1. Clear the variable and run setup again:')
         error('       bash:       unset CLAUDE_CONFIG_DIR')
         error('       PowerShell: Remove-Item Env:CLAUDE_CONFIG_DIR')
         error('  2. Run the setup from a terminal that is not inside an isolated profile session')
+        error('  3. If a configuration persists the variable through os-env-variables or')
+        error('     user-settings.env, remove it there and open a new terminal')
         return False
 
     if _normalize_config_dir_key(ambient) != _normalize_config_dir_key(str(artifact_base_dir)):
         warning(
-            f'CLAUDE_CONFIG_DIR is set to {ambient} in this terminal; setup replaces it with '
-            f'{artifact_base_dir} for its child processes, so this run configures the '
+            f'CLAUDE_CONFIG_DIR is set to "{ambient}" in this environment; setup replaces it '
+            f'with {artifact_base_dir} for its child processes, so this run configures the '
             f'{primary_command_name} profile and not the one the variable points at.',
         )
 
@@ -13997,6 +14046,52 @@ def main() -> None:
         if args.list_components:
             display_component_registry(components_list)
             sys.exit(0)
+
+        # Extract command-names
+        command_names_raw = config.get('command-names')
+
+        # Normalize to list
+        command_names: list[str] | None = None
+        if command_names_raw is not None:
+            if isinstance(command_names_raw, str):
+                command_names = [command_names_raw]
+            elif isinstance(command_names_raw, list):
+                # Convert all items to strings (handles mixed types from YAML)
+                command_names = [str(item) for item in cast(list[object], command_names_raw)]
+            else:
+                error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
+                sys.exit(1)
+
+        # Validate command names
+        if command_names:
+            for cmd_name in command_names:
+                if not cmd_name.strip():
+                    error('Invalid command name: empty or whitespace-only name')
+                    sys.exit(1)
+                if ' ' in cmd_name:
+                    error(f'Invalid command name: "{cmd_name}" contains spaces')
+                    sys.exit(1)
+                # Validate path safety (rejects path separators, traversal, leading dots)
+                if not validate_command_name_for_path(cmd_name):
+                    error(f'Invalid command name for isolation: "{cmd_name}"')
+                    error('Command names must contain only alphanumeric characters, hyphens, and underscores.')
+                    error('Leading dots, path separators, and traversal patterns are not allowed.')
+                    sys.exit(1)
+
+        # Get primary command name (first in list) for file naming
+        primary_command_name = command_names[0] if command_names else None
+        additional_command_names = command_names[1:] if command_names and len(command_names) > 1 else None
+
+        # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
+        # environment. Runs as soon as the target directory is known, so no
+        # component picker and no elevation prompt precedes the refusal, and
+        # --dry-run reports it instead of a plan it cannot execute.
+        target_config_dir, _ = resolve_artifact_base_dir(
+            primary_command_name, config.get('user-settings'),
+        )
+        if not check_ambient_claude_config_dir(primary_command_name, target_config_dir):
+            sys.exit(1)
+
         picker: Callable[[list[str]], list[str] | None] | None = None
         if components_list and (sys.stdin.isatty() or _dev_tty_available()):
             picker_environment_name = str(config.get('name', config_name))
@@ -14072,41 +14167,6 @@ def main() -> None:
             sys.exit(1)
 
         environment_name = config.get('name', 'Development')
-
-        # Extract command-names
-        command_names_raw = config.get('command-names')
-
-        # Normalize to list
-        command_names: list[str] | None = None
-        if command_names_raw is not None:
-            if isinstance(command_names_raw, str):
-                command_names = [command_names_raw]
-            elif isinstance(command_names_raw, list):
-                # Convert all items to strings (handles mixed types from YAML)
-                command_names = [str(item) for item in cast(list[object], command_names_raw)]
-            else:
-                error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
-                sys.exit(1)
-
-        # Validate command names
-        if command_names:
-            for cmd_name in command_names:
-                if not cmd_name.strip():
-                    error('Invalid command name: empty or whitespace-only name')
-                    sys.exit(1)
-                if ' ' in cmd_name:
-                    error(f'Invalid command name: "{cmd_name}" contains spaces')
-                    sys.exit(1)
-                # Validate path safety (rejects path separators, traversal, leading dots)
-                if not validate_command_name_for_path(cmd_name):
-                    error(f'Invalid command name for isolation: "{cmd_name}"')
-                    error('Command names must contain only alphanumeric characters, hyphens, and underscores.')
-                    error('Leading dots, path separators, and traversal patterns are not allowed.')
-                    sys.exit(1)
-
-        # Get primary command name (first in list) for file naming
-        primary_command_name = command_names[0] if command_names else None
-        additional_command_names = command_names[1:] if command_names and len(command_names) > 1 else None
 
         base_url = config.get('base-url')  # Optional base URL override from config
 
@@ -14261,12 +14321,6 @@ def main() -> None:
                     error('  3. Change scope to "local" to install in project-specific .mcp.json')
                     error('  4. Change scope to "project" to install in shared project .mcp.json')
                     sys.exit(1)
-
-        # Guard the run against a CLAUDE_CONFIG_DIR inherited from the terminal.
-        # Runs before the installation summary so --dry-run reports it too.
-        target_config_dir, _ = resolve_artifact_base_dir(primary_command_name, user_settings)
-        if not check_ambient_claude_config_dir(primary_command_name, target_config_dir):
-            sys.exit(1)
 
         header(environment_name)
 
