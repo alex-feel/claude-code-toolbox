@@ -1910,7 +1910,7 @@ For the full technical architecture, see [Cross-Shell Launcher Architecture](cro
 
 Here is a conceptual overview of what the setup script does when you run it with a configuration:
 
-1. **Install Claude Code** -- Uses the native installer with npm fallback. Skipped with `--skip-install`.
+1. **Install Claude Code** -- Runs the `install_claude.py` that ships beside the setup script (the PyPI wheel and the bootstrap wrappers stage both files together) under the interpreter already running the setup, on every platform; without a bundled copy, downloads and runs the platform bootstrap script. The installer uses the native installer with npm fallback. Skipped with `--skip-install`.
 2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs, selecting the VSIX build matching the host targetPlatform. Skipped if no version is pinned or `--skip-install` is used. When the pinned version has no matching marketplace extension for the host platform (every download URL returns HTTP 404), the step prints a warning and skips installation, leaving each IDE's current extension in place.
 3. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
 4. **Download custom files** -- Processes `files-to-download` entries.

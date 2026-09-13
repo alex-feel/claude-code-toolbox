@@ -244,6 +244,9 @@ jobs:
           uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox setup --help
           uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox install --help
           uvx --from "${{ steps.wheel.outputs.path }}" cc-toolbox setup ./tests/fixtures/packaging_smoke.yaml --dry-run --skip-install --yes
+          # Step 1 dispatch inside the real uvx environment: the bundled
+          # installer must launch under the environment's own interpreter.
+          uvx --from "${{ steps.wheel.outputs.path }}" python tests/fixtures/packaging_smoke_step1.py
 
   # Summary job
   summary:

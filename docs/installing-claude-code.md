@@ -110,6 +110,8 @@ CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 curl -fsSL https://raw.githubusercontent.com/al
 
 The bootstrap scripts install `uv` (Astral's Python package manager) and Python 3.12 automatically before running the main installer. The bootstrap scripts download the main installer (`install_claude.py`) to a temporary file before execution. This avoids the Linux kernel `MAX_ARG_STRLEN` limit (128 KiB per argument) that prevents large scripts from being passed via stdin pipe. The main installer then performs the following steps.
 
+The environment setup (`setup_environment.py`, `cc-toolbox setup`) reaches the same installer in its first step. When `install_claude.py` sits beside `setup_environment.py` -- the PyPI wheel ships both, and every bootstrap wrapper stages both together -- the setup runs it under the interpreter already executing the setup, on every platform; the installer needs only the standard library, so no second `uv` environment is involved (under `uvx` the bundled copy lives inside uv's cache, from which `uv run` refuses to launch scripts). Without a bundled copy, the setup downloads and runs the platform bootstrap script listed above.
+
 **Windows (4 steps):**
 
 1. Checks and installs Git Bash if not present (required for scripts that need `bash.exe`)

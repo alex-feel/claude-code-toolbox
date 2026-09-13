@@ -19,6 +19,8 @@ This is the Claude Code Toolbox - a community project providing automated instal
    - `scripts/install_claude.py`: Installs Git Bash (Windows) and Claude Code via native installers with npm fallback
    - `scripts/setup_environment.py`: Configuration-driven environment setup from YAML (sources: repo name, local file path, or remote URL)
 
+**Setup-time installer dispatch:** `install_claude()` in `setup_environment.py` runs the sibling `install_claude.py` (shipped in the wheel and staged by every bootstrap wrapper) with `sys.executable` on every platform, and downloads the platform bootstrap script only when no sibling exists. The sibling is NEVER launched through `uv run`: under `uvx` it lives inside uv's cache, and uv >= 0.11.21 refuses to run a script whose directory is inside the cache (`The project directory ... is inside the cache directory ...`). The installer needs only the standard library, so the interpreter already running the setup always suffices. The `package-smoke` CI job proves the dispatch inside a real `uvx` environment via `tests/fixtures/packaging_smoke_step1.py`.
+
 ### Native Claude Code Installation Support
 
 The installer uses a native-first approach with automatic npm fallback. Entry point: `ensure_claude()` → `install_claude_native_cross_platform()` → platform-specific `install_claude_native_{windows,macos,linux}()`. Platform-specific fallback chains: Windows uses Native installer (with HTTP retry) → GCS direct download → npm; macOS/Linux use Native installer → GCS direct download → npm. In `native` mode, npm is excluded from the chain.

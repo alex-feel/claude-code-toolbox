@@ -10788,13 +10788,17 @@ def process_skills(
     return all(results)
 
 
+# Every exception raised inside install_claude() is caught by its own
+# catch-all handler and reported as a False return, so the docstring carries
+# no Raises section; DOC501 cannot see the catch-all.
 def install_claude(version: str | None = None) -> bool:
     """Install Claude Code if needed.
 
-    When a local copy of install_claude.py exists in the same directory
-    (typical when launched from setup-environment.sh), it is used directly
-    to avoid redundant downloads. Otherwise, the platform bootstrap script
-    is downloaded and executed.
+    When install_claude.py sits beside this file (the PyPI wheel ships both
+    scripts and every bootstrap wrapper stages them together), it runs under
+    the interpreter already executing this setup, on every platform: the
+    installer needs only the standard library. Without a sibling copy, the
+    platform bootstrap script is downloaded and executed.
 
     Args:
         version: Specific Claude Code version to install (e.g., "1.0.128").
@@ -10802,11 +10806,7 @@ def install_claude(version: str | None = None) -> bool:
 
     Returns:
         True if installation succeeded, False otherwise.
-
-    Raises:
-        Exception: If installation fails with exit code.
-        URLError: If there's an error downloading the installer script.
-    """
+    """  # noqa: DOC501
     # Check if admin rights needed for Windows installation
     if platform.system() == 'Windows' and not is_admin():
         warning('Installing Claude Code requires administrator privileges on Windows')
@@ -10835,24 +10835,18 @@ def install_claude(version: str | None = None) -> bool:
     temp_installer: str | None = None
 
     try:
-        # Check for local copy of install_claude.py (available when launched
-        # from setup-environment.sh, which downloads both scripts to an
-        # ephemeral $TEMP_DIR created fresh on every run)
+        # The sibling installer runs under this process's own interpreter.
+        # It is never launched through `uv run`: under uvx the sibling lives
+        # inside uv's cache, and uv refuses to run a script whose directory
+        # is inside the cache.
         local_installer = Path(__file__).resolve().parent / 'install_claude.py'
-        if system != 'Windows' and local_installer.is_file():
+        if local_installer.is_file():
             info('Using local installer script')
-            uv_cmd = shutil.which('uv')
-            if not uv_cmd:
-                warning('uv not found in PATH, falling back to bootstrap download')
-            else:
-                result = run_command(
-                    [uv_cmd, 'run', '--no-project', '--python', '3.12', str(local_installer)],
-                    capture_output=False,
-                )
-                if result.returncode == 0:
-                    success('Claude Code installation complete')
-                    return True
-                raise Exception(f'Installation failed with exit code: {result.returncode}')
+            result = run_command([sys.executable, str(local_installer)], capture_output=False)
+            if result.returncode == 0:
+                success('Claude Code installation complete')
+                return True
+            raise Exception(f'Installation failed with exit code: {result.returncode}')
 
         # Download the appropriate installer script
         if system == 'Windows':
