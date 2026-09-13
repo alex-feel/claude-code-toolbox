@@ -165,8 +165,8 @@ class TestHelperImportFromInstalledHook:
     ) -> None:
         """Running the installed hook resolves the sibling helper import.
 
-        The script is executed from an unrelated working directory with the
-        exact command string the toolbox generates, so the import can only
+        The script is executed from an unrelated working directory with a
+        bare interpreter and no extra search path, so the import can only
         resolve through the hook's own directory -- which is what a literal
         ~/.claude/hooks/ download destination fails to provide for an
         isolated profile.

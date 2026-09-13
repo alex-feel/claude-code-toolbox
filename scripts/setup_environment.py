@@ -2678,7 +2678,7 @@ def validate_components(config: dict[str, Any]) -> list[str]:
 
 
 def _hook_file_basename(path_or_url: str) -> str:
-    """Extract the basename from a hooks.files URL or file path.
+    """Extract the basename from a hooks.files or hooks.helpers URL or file path.
 
     Runtime twin of _extract_basename() in scripts/models/environment_config.py
     (standalone script policy prevents importing the model; parity enforced by
@@ -6924,7 +6924,7 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
             if mapping:
                 selector_mappings[key] = mapping
 
-    # --- hooks.files ---
+    # --- hooks.files and hooks.helpers ---
     hooks = result.get('hooks')
     if isinstance(hooks, dict):
         hooks = hooks.copy()
@@ -7418,28 +7418,6 @@ def _merge_named_list(
     return result
 
 
-def _merge_deduplicated_paths(
-    parent_paths: list[Any],
-    child_paths: list[Any],
-) -> list[Any]:
-    """Concatenate two path lists, dropping entries already seen.
-
-    Args:
-        parent_paths: Paths contributed by the parent configuration.
-        child_paths: Paths contributed by the child configuration.
-
-    Returns:
-        Parent paths in order, followed by the child paths not already present.
-    """
-    seen: set[Any] = set()
-    merged: list[Any] = []
-    for path in [*parent_paths, *child_paths]:
-        if path not in seen:
-            seen.add(path)
-            merged.append(path)
-    return merged
-
-
 def _merge_hooks(
     parent_hooks: dict[str, Any],
     child_hooks: dict[str, Any],
@@ -7454,10 +7432,10 @@ def _merge_hooks(
         Merged hooks with deduplicated files and helpers and concatenated
         events.
     """
-    merged_files = _merge_deduplicated_paths(
+    merged_files = _merge_string_list(
         parent_hooks.get('files', []), child_hooks.get('files', []),
     )
-    merged_helpers = _merge_deduplicated_paths(
+    merged_helpers = _merge_string_list(
         parent_hooks.get('helpers', []), child_hooks.get('helpers', []),
     )
 
@@ -12134,14 +12112,14 @@ def download_hook_files(
         bool: True if all downloads successful, False otherwise.
     """
     hooks_dict = hooks or {}
-    hook_files = [*(hooks_dict.get('files') or []), *(hooks_dict.get('helpers') or [])]
+    hook_sources = [*(hooks_dict.get('files') or []), *(hooks_dict.get('helpers') or [])]
 
-    if not hook_files:
+    if not hook_sources:
         info('No hook files to download')
         return True
 
     hooks_dir = hooks_base_dir if hooks_base_dir is not None else claude_user_dir / 'hooks'
-    return process_resources(hook_files, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
+    return process_resources(hook_sources, hooks_dir, 'hook files', config_source, base_url, auth_param, auth_cache)
 
 
 def _hook_launcher_args(file_name: str) -> list[str]:

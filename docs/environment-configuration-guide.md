@@ -177,7 +177,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`skills`](#skills)                                   | `list[Skill]`          | No       | `[]`    | Skill configurations                                       |
 | [`files-to-download`](#files-to-download)             | `list[FileToDownload]` | No       | `[]`    | Files to download during setup                             |
 | [`global-config`](#global-config)                     | `GlobalConfig`         | No       | `None`  | Raw `~/.claude.json` content (camelCase keys)              |
-| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files and events)                     |
+| [`hooks`](#hooks)                                     | `Hooks`                | No       | `None`  | Hook configurations (files, helpers, and events)           |
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
 | [`components`](#components)                           | `list[Component]`      | No       | `[]`    | Author-defined selectable component groups                 |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
@@ -1371,7 +1371,7 @@ When configurations are inherited across different sources (e.g., a GitHub-hoste
 
 **How it works:**
 
-- Each parent config's relative resource paths (agents, rules, slash-commands, hooks files, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
+- Each parent config's relative resource paths (agents, rules, slash-commands, hook files and helpers, files-to-download sources, skill bases, and system prompts) are resolved to absolute URLs or paths **before** merging with child values. `status-line` and hook event `command`/`config` references are `hooks.files` basenames, not paths, so they are never rewritten
 - The resolution uses the parent config's own `config_source` (where it was loaded from) and `base-url`
 - Child (leaf) config paths continue to be resolved at validation time using the leaf's own source
 
@@ -1616,7 +1616,7 @@ If all levels 2-4 use merge: `[A, B, C, D, E]`.
 | Named list (by `name`)          | `mcp-servers`, `skills`, `components` | Identity-based: child overrides parent in-position; new items appended                |
 | Named list (by final file path) | `files-to-download`                   | Identity-based: child overrides parent in-position; new items appended                |
 | Per-platform dict               | `dependencies`                        | Per-platform sub-key list concatenation with deduplication                            |
-| Composite                       | `hooks`                               | `files`: concat + dedup by full path; `events`: concat (no dedup)                     |
+| Composite                       | `hooks`                               | `files` and `helpers`: concat + dedup by full path; `events`: concat (no dedup)       |
 | Deep dict                       | `global-config`                       | `deep_merge_settings()` with `array_union_keys=set()`; child `null` carried forward   |
 | Deep dict                       | `user-settings`                       | `deep_merge_settings()` with `DEFAULT_ARRAY_UNION_KEYS`; child `null` carried forward |
 | Shallow dict                    | `os-env-variables`                    | Shallow merge; child overrides; child `null` carried forward as a deletion request    |
