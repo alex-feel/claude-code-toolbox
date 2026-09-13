@@ -1,5 +1,19 @@
 # Changelog
 
+## [7.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.2...v7.4.0) (2026-09-13)
+
+
+### Features
+
+* add hooks.helpers for shared hook modules ([45701a8](https://github.com/alex-feel/claude-code-toolbox/commit/45701a8dfbb23ca6e9f35f764ae6902cfe84efd3))
+
+
+### Bug Fixes
+
+* keep auto-update controls while any installed profile pins a version ([e7cdc5c](https://github.com/alex-feel/claude-code-toolbox/commit/e7cdc5cde6fad666ddfd93733f450a5bc438502b))
+* keep null env members out of settings.json and carry child nulls through inheritance ([f04e764](https://github.com/alex-feel/claude-code-toolbox/commit/f04e764693f2a41fecb68e4a68c2afd849c518d1))
+* report MCP servers hidden by strict mode and guard the ambient CLAUDE_CONFIG_DIR ([6c9b3d3](https://github.com/alex-feel/claude-code-toolbox/commit/6c9b3d38c2159f589f0731563c7d590980d83411))
+
 ## [7.3.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.1...v7.3.2) (2026-08-26)
 
 
