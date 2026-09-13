@@ -5,9 +5,11 @@ of the operating system.
 
 All isolated environment files use generic names inside {claude_dir}/{cmd}/:
 - config.json (profile settings, Priority 2)
-- settings.json (user settings, Priority 5)
 - mcp.json (MCP server configuration)
 - manifest.json (installation metadata)
+
+A run without command-names writes its own {claude_dir}/manifest.json for the
+base profile, with the same key set.
 """
 
 from typing import Final
@@ -52,6 +54,7 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
     'manifest': [
         'name',
         'version',
+        'claude_code_version',
         'config_source',
         'config_source_url',
         'config_source_type',

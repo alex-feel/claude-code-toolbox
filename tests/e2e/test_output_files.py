@@ -241,6 +241,7 @@ class TestManifestFile:
             config_source_type=config_source_type,
             config_source_url=config_source_url,
             command_names=golden_config['command-names'],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -270,14 +271,16 @@ class TestManifestFile:
             config_source_type='repo',
             config_source_url='https://example.com/config.yaml',
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
 
         required_fields = [
-            'name', 'version', 'config_source', 'config_source_url',
-            'config_source_type', 'installed_at', 'last_checked_at', 'command_names',
+            'name', 'version', 'claude_code_version', 'config_source',
+            'config_source_url', 'config_source_type', 'installed_at',
+            'last_checked_at', 'command_names',
         ]
         missing = [f for f in required_fields if f not in data]
         assert not missing, f'Missing fields in manifest: {missing}'
@@ -323,6 +326,7 @@ class TestManifestFile:
             config_source_type='repo',
             config_source_url=None,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         # Write manifest again with version 2.0.0
@@ -334,6 +338,7 @@ class TestManifestFile:
             config_source_type='repo',
             config_source_url=None,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'

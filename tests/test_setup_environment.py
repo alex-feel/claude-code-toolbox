@@ -11745,7 +11745,7 @@ class TestMainFunctionUserSettings:
         captured = capsys.readouterr()
         assert 'Step 17: Skipping hooks download (none configured)' in captured.out
         assert 'Step 18: Writing profile settings to settings.json' in captured.out
-        assert 'Steps 19-21: Skipping command creation (no command-names specified)' in captured.out
+        assert 'Steps 20-21: Skipping command creation (no command-names specified)' in captured.out
         assert 'Step 14: Writing user settings' in captured.out
 
     @patch('setup_environment.load_config_from_source')
@@ -13575,6 +13575,7 @@ class TestApplyAutoUpdateSettings:
     def test_pinned_version_injects_all_three_targets(self) -> None:
         gc, us, osev, warns, auto = setup_environment.apply_auto_update_settings(
             '2.1.85', None, None, None,
+            other_profile_pinned=False,
         )
         assert gc is not None
         assert gc['autoUpdates'] is False
@@ -13596,6 +13597,7 @@ class TestApplyAutoUpdateSettings:
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1', 'PATH_VAR': '/usr'}
         gc_r, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
             None, gc, us, osev,
+            other_profile_pinned=False,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is False
@@ -13612,6 +13614,7 @@ class TestApplyAutoUpdateSettings:
     def test_none_global_config_creates_dict(self) -> None:
         gc, _, _, _, _ = setup_environment.apply_auto_update_settings(
             '1.0.0', None, {'env': {}}, {},
+            other_profile_pinned=False,
         )
         assert gc is not None
         assert gc['autoUpdates'] is False
@@ -13619,6 +13622,7 @@ class TestApplyAutoUpdateSettings:
     def test_none_user_settings_creates_dict(self) -> None:
         _, us, _, _, _ = setup_environment.apply_auto_update_settings(
             '1.0.0', {}, None, {},
+            other_profile_pinned=False,
         )
         assert us is not None
         assert us['env']['DISABLE_AUTOUPDATER'] == '1'
@@ -13626,6 +13630,7 @@ class TestApplyAutoUpdateSettings:
     def test_none_os_env_variables_creates_dict(self) -> None:
         _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
             '1.0.0', {}, {}, None,
+            other_profile_pinned=False,
         )
         assert osev is not None
         assert osev['DISABLE_AUTOUPDATER'] == '1'
@@ -13634,6 +13639,7 @@ class TestApplyAutoUpdateSettings:
         gc = {'autoUpdates': True}
         gc_r, _, _, warns, auto = setup_environment.apply_auto_update_settings(
             '2.1.85', gc, {}, {},
+            other_profile_pinned=False,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is True
@@ -13645,6 +13651,7 @@ class TestApplyAutoUpdateSettings:
         us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': '0'}}
         _, us_r, _, warns, _ = setup_environment.apply_auto_update_settings(
             '2.1.85', {}, us, {},
+            other_profile_pinned=False,
         )
         assert us_r is not None
         assert us_r['env']['DISABLE_AUTOUPDATER'] == '0'
@@ -13654,6 +13661,7 @@ class TestApplyAutoUpdateSettings:
         gc = {'autoUpdates': False}
         gc_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
             None, gc, None, None,
+            other_profile_pinned=False,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is False
@@ -13663,6 +13671,7 @@ class TestApplyAutoUpdateSettings:
         gc = {'autoUpdates': True}
         gc_r, _, _, warns, _ = setup_environment.apply_auto_update_settings(
             None, gc, None, None,
+            other_profile_pinned=False,
         )
         assert gc_r is not None
         assert gc_r['autoUpdates'] is True
@@ -13677,6 +13686,7 @@ class TestApplyAutoUpdateSettings:
         """
         _, _, osev, warns, auto = setup_environment.apply_auto_update_settings(
             None, None, None, None,
+            other_profile_pinned=False,
         )
         assert osev is not None
         assert osev == {'DISABLE_AUTOUPDATER': None}
@@ -13687,6 +13697,7 @@ class TestApplyAutoUpdateSettings:
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': '1'}
         _, _, osev_r, _, _ = setup_environment.apply_auto_update_settings(
             None, None, None, osev,
+            other_profile_pinned=False,
         )
         assert osev_r is not None
         assert osev_r['DISABLE_AUTOUPDATER'] == '1'
@@ -13694,9 +13705,11 @@ class TestApplyAutoUpdateSettings:
     def test_idempotent_double_injection(self) -> None:
         gc1, us1, osev1, _, auto1 = setup_environment.apply_auto_update_settings(
             '2.1.85', None, None, None,
+            other_profile_pinned=False,
         )
         gc2, us2, osev2, _, auto2 = setup_environment.apply_auto_update_settings(
             '2.1.85', gc1, us1, osev1,
+            other_profile_pinned=False,
         )
         assert gc1 == gc2
         assert us1 == us2
@@ -13707,6 +13720,7 @@ class TestApplyAutoUpdateSettings:
     def test_auto_injected_items_list(self) -> None:
         _, _, _, _, auto = setup_environment.apply_auto_update_settings(
             '2.1.85', None, None, None,
+            other_profile_pinned=False,
         )
         # Exactly three targets: global-config, user-settings.env, os-env-variables.
         # The dropped settings-level env-variables target leaves no fourth entry.
@@ -13728,6 +13742,7 @@ class TestApplyAutoUpdateSettings:
         osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': None}
         gc_r, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
             '2.1.85', gc, us, osev,
+            other_profile_pinned=False,
         )
         assert gc_r is not None
         assert 'autoUpdates' in gc_r
@@ -13755,6 +13770,7 @@ class TestApplyIdeExtensionSettings:
     def test_pinned_version_injects_all_three_targets(self) -> None:
         gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
             '2.1.85', None, None, None,
+            other_profile_pinned=False,
         )
         assert gc is not None
         assert gc.get('autoInstallIdeExtension') is False
@@ -13774,6 +13790,7 @@ class TestApplyIdeExtensionSettings:
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1', 'PATH_VAR': '/usr'}
         gc_out, us_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
             None, gc, us, osev,
+            other_profile_pinned=False,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is False
@@ -13790,18 +13807,21 @@ class TestApplyIdeExtensionSettings:
     def test_none_global_config_creates_dict(self) -> None:
         gc, _, _, _, _ = setup_environment.apply_ide_extension_settings(
             '1.0.0', None, None, None,
+            other_profile_pinned=False,
         )
         assert gc is not None
 
     def test_none_user_settings_creates_dict(self) -> None:
         _, us, _, _, _ = setup_environment.apply_ide_extension_settings(
             '1.0.0', None, None, None,
+            other_profile_pinned=False,
         )
         assert us is not None
 
     def test_none_os_env_variables_creates_dict(self) -> None:
         _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
             '1.0.0', None, None, None,
+            other_profile_pinned=False,
         )
         assert osev is not None
 
@@ -13809,6 +13829,7 @@ class TestApplyIdeExtensionSettings:
         gc = {'autoInstallIdeExtension': True}
         gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
             '2.0.0', gc, None, None,
+            other_profile_pinned=False,
         )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
@@ -13818,6 +13839,7 @@ class TestApplyIdeExtensionSettings:
         us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '0'}}
         _, us_out, _, warns, _ = setup_environment.apply_ide_extension_settings(
             '2.0.0', None, us, None,
+            other_profile_pinned=False,
         )
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '0'
@@ -13825,14 +13847,18 @@ class TestApplyIdeExtensionSettings:
 
     def test_unset_preserves_user_declared_false_autoinstall(self) -> None:
         gc = {'autoInstallIdeExtension': False}
-        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None)
+        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            None, gc, None, None, other_profile_pinned=False,
+        )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is False
         assert not warns
 
     def test_unset_leaves_true_autoinstall_alone(self) -> None:
         gc = {'autoInstallIdeExtension': True}
-        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(None, gc, None, None)
+        gc_out, _, _, warns, _ = setup_environment.apply_ide_extension_settings(
+            None, gc, None, None, other_profile_pinned=False,
+        )
         assert gc_out is not None
         assert gc_out['autoInstallIdeExtension'] is True
         assert not warns
@@ -13846,6 +13872,7 @@ class TestApplyIdeExtensionSettings:
         """
         _, _, osev, warns, auto = setup_environment.apply_ide_extension_settings(
             None, None, None, None,
+            other_profile_pinned=False,
         )
         assert osev is not None
         assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
@@ -13856,6 +13883,7 @@ class TestApplyIdeExtensionSettings:
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}
         _, _, osev_out, _, _ = setup_environment.apply_ide_extension_settings(
             None, None, None, osev,
+            other_profile_pinned=False,
         )
         assert osev_out is not None
         assert osev_out['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
@@ -13863,9 +13891,11 @@ class TestApplyIdeExtensionSettings:
     def test_idempotent_double_injection(self) -> None:
         gc, us, osev, _, auto1 = setup_environment.apply_ide_extension_settings(
             '2.0.0', None, None, None,
+            other_profile_pinned=False,
         )
         gc2, us2, osev2, _, auto2 = setup_environment.apply_ide_extension_settings(
             '2.0.0', gc, us, osev,
+            other_profile_pinned=False,
         )
         assert len(auto1) == 3
         assert len(auto2) == 0  # Already injected, no new items
@@ -13873,6 +13903,7 @@ class TestApplyIdeExtensionSettings:
     def test_auto_injected_items_list(self) -> None:
         _, _, _, _, auto = setup_environment.apply_ide_extension_settings(
             '2.0.0', None, None, None,
+            other_profile_pinned=False,
         )
         # Exactly three targets: global-config, user-settings.env, os-env-variables.
         # The dropped settings-level env-variables target leaves no fourth entry.
@@ -13894,6 +13925,7 @@ class TestApplyIdeExtensionSettings:
         osev: dict[str, str | None] = {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
         gc_out, us_out, osev_out, warns, auto = setup_environment.apply_ide_extension_settings(
             '2.0.0', gc, us, osev,
+            other_profile_pinned=False,
         )
         assert gc_out is not None
         assert 'autoInstallIdeExtension' in gc_out
@@ -13915,7 +13947,7 @@ class TestApplyIdeExtensionSettings:
 
     def test_unset_keeps_user_declared_env_section_value(self) -> None:
         us = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
-        _, us_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None)
+        _, us_out, _, _, _ = setup_environment.apply_ide_extension_settings(None, None, us, None, other_profile_pinned=False)
         assert us_out is not None
         assert us_out['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
@@ -13945,7 +13977,7 @@ class TestCleanupStaleIdeExtensionControls:
         cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         # Verify cleaned
@@ -13974,7 +14006,7 @@ class TestCleanupStaleIdeExtensionControls:
         claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         # settings.json keys preserved (user-declared in the current YAML)
@@ -13986,7 +14018,8 @@ class TestCleanupStaleIdeExtensionControls:
         data = json.loads(claude_json.read_text())
         assert 'autoInstallIdeExtension' not in data
 
-    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
+    def test_machine_pinned_keeps_every_location(self, tmp_path: Path) -> None:
+        """While any installed profile pins a version, no location is swept."""
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -13997,42 +14030,31 @@ class TestCleanupStaleIdeExtensionControls:
         settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
         cmd_settings = cmd_dir / 'settings.json'
         cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoInstallIdeExtension": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoInstallIdeExtension": false}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
-        # Global settings cleaned (bare sessions must not inherit isolated
-        # environment restrictions)
         data = json.loads(settings.read_text())
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
-        # Command settings NOT cleaned when pinned
+        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
         data = json.loads(cmd_settings.read_text())
         assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
-
-    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
-        """Pinned without isolation: the base settings.json is the run's own write target."""
-        home = tmp_path / 'home'
-        claude_dir = home / '.claude'
-        claude_dir.mkdir(parents=True)
-
-        settings = claude_dir / 'settings.json'
-        settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
-
-        _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=False, user_declared=False,
-        )
-
-        data = json.loads(settings.read_text())
-        assert data['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
+        data = json.loads(claude_json.read_text())
+        assert data['autoInstallIdeExtension'] is False
+        data = json.loads(cmd_claude_json.read_text())
+        assert data['autoInstallIdeExtension'] is False
 
     def test_missing_files_no_crash(self, tmp_path: Path) -> None:
         home = tmp_path / 'nonexistent'
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
     def test_preserves_true_values(self, tmp_path: Path) -> None:
@@ -14043,7 +14065,7 @@ class TestCleanupStaleIdeExtensionControls:
         claude_json.write_text('{"autoInstallIdeExtension": true}')
 
         _real_cleanup_stale_ide_extension_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         data = json.loads(claude_json.read_text())
@@ -14075,7 +14097,7 @@ class TestCleanupStaleAutoUpdateControls:
         cmd_claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
 
         # Verify cleaned
@@ -14104,7 +14126,7 @@ class TestCleanupStaleAutoUpdateControls:
         claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=True,
+            home, machine_pinned=False, user_declared=True,
         )
 
         # settings.json keys preserved (user-declared in the current YAML)
@@ -14116,7 +14138,8 @@ class TestCleanupStaleAutoUpdateControls:
         data = json.loads(claude_json.read_text())
         assert 'autoUpdates' not in data
 
-    def test_pinned_isolated_cleans_global_settings_only(self, tmp_path: Path) -> None:
+    def test_machine_pinned_keeps_every_location(self, tmp_path: Path) -> None:
+        """While any installed profile pins a version, no location is swept."""
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -14127,43 +14150,203 @@ class TestCleanupStaleAutoUpdateControls:
         settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
         cmd_settings = cmd_dir / 'settings.json'
         cmd_settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
+        claude_json = home / '.claude.json'
+        claude_json.write_text('{"autoUpdates": false}')
+        cmd_claude_json = cmd_dir / '.claude.json'
+        cmd_claude_json.write_text('{"autoUpdates": false}')
 
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
 
-        # Global settings cleaned (bare sessions must not inherit isolated
-        # environment restrictions)
         data = json.loads(settings.read_text())
-        assert 'DISABLE_AUTOUPDATER' not in data.get('env', {})
-        # Command settings NOT cleaned when pinned
+        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
         data = json.loads(cmd_settings.read_text())
         assert data['env']['DISABLE_AUTOUPDATER'] == '1'
-
-    def test_pinned_non_isolated_keeps_global_settings(self, tmp_path: Path) -> None:
-        """Pinned without isolation: the base settings.json is the run's own write target."""
-        home = tmp_path / 'home'
-        claude_dir = home / '.claude'
-        claude_dir.mkdir(parents=True)
-
-        settings = claude_dir / 'settings.json'
-        settings.write_text('{"env": {"DISABLE_AUTOUPDATER": "1"}}')
-
-        _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=False, user_declared=False,
-        )
-
-        data = json.loads(settings.read_text())
-        assert data['env']['DISABLE_AUTOUPDATER'] == '1'
+        data = json.loads(claude_json.read_text())
+        assert data['autoUpdates'] is False
+        data = json.loads(cmd_claude_json.read_text())
+        assert data['autoUpdates'] is False
 
     def test_missing_files_no_crash(self, tmp_path: Path) -> None:
         home = tmp_path / 'nonexistent'
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=False, is_isolated=False, user_declared=False,
+            home, machine_pinned=False, user_declared=False,
         )
         _real_cleanup_stale_auto_update_controls(
-            home, is_pinned=True, is_isolated=True, user_declared=False,
+            home, machine_pinned=True, user_declared=False,
         )
+
+
+class TestOtherProfilePins:
+    """Tests for _other_profile_pins(), the installed-profile pin registry reader."""
+
+    @staticmethod
+    def _write_manifest(directory: Path, name: str | None, pin: str | None) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'manifest.json').write_text(
+            json.dumps({'name': name, 'claude_code_version': pin}),
+            encoding='utf-8',
+        )
+
+    def test_missing_claude_dir_reports_no_pin(self, tmp_path: Path) -> None:
+        scan = setup_environment._other_profile_pins(tmp_path / 'nonexistent', None)
+        assert scan == ([], False)
+        assert scan.other_profile_pinned is False
+
+    def test_no_manifests_reports_no_pin(self, tmp_path: Path) -> None:
+        (tmp_path / '.claude' / 'some-cmd').mkdir(parents=True)
+        scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
+        assert scan == ([], False)
+
+    def test_invalid_json_is_undetermined(self, tmp_path: Path) -> None:
+        """An unparseable manifest leaves the pin unknown, so the controls stay."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        (claude_dir / 'manifest.json').write_text('{not json', encoding='utf-8')
+        scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
+        assert scan == ([], True)
+        assert scan.other_profile_pinned is True
+
+    def test_non_object_manifest_is_undetermined(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        (claude_dir / 'manifest.json').write_text('["not", "an", "object"]', encoding='utf-8')
+        scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
+        assert scan == ([], True)
+
+    def test_unreadable_manifest_is_undetermined(self, tmp_path: Path) -> None:
+        """An OSError reading an existing manifest must not read as 'no pin'."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir(parents=True)
+        (claude_dir / 'manifest.json').write_text('{}', encoding='utf-8')
+        with patch.object(Path, 'read_text', side_effect=PermissionError('denied')):
+            scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
+        assert scan.other_profile_pinned is True
+
+    def test_unlistable_profile_dir_is_undetermined(self, tmp_path: Path) -> None:
+        """A profile directory that cannot be listed must not authorize the sweep."""
+        (tmp_path / '.claude').mkdir(parents=True)
+        with patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
+            scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
+        assert scan == ([], True)
+        assert scan.other_profile_pinned is True
+
+    def test_base_manifest_pin_seen_by_isolated_run(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude', None, '2.1.85')
+        scan = setup_environment._other_profile_pins(tmp_path, 'claude-personal')
+        assert scan == (['base'], False)
+        assert scan.other_profile_pinned is True
+
+    def test_isolated_manifest_pin_seen_by_base_run(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False)
+
+    def test_own_isolated_manifest_is_excluded(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+
+    def test_own_base_manifest_is_excluded(self, tmp_path: Path) -> None:
+        self._write_manifest(tmp_path / '.claude', None, '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
+
+    def test_own_manifest_excluded_by_name_not_by_location(self, tmp_path: Path) -> None:
+        """A profile relocated by CLAUDE_CONFIG_DIR is matched by its recorded name."""
+        self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-personal', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+
+    def test_unpinned_manifests_do_not_count(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, None)
+        self._write_manifest(claude_dir / 'blank-pin', 'blank-pin', '   ')
+        legacy = claude_dir / 'legacy'
+        legacy.mkdir(parents=True)
+        (legacy / 'manifest.json').write_text(
+            json.dumps({'name': 'legacy'}), encoding='utf-8',
+        )
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == ([], False)
+
+    def test_multiple_pinned_profiles_are_sorted(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, '2.1.85')
+        self._write_manifest(claude_dir / 'zeta', 'zeta', '2.1.85')
+        self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
+        scan = setup_environment._other_profile_pins(tmp_path, 'current')
+        assert scan == (['alpha', 'base', 'zeta'], False)
+
+    def test_whitespace_only_name_is_treated_as_base(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, '   ', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False)
+
+
+class TestPinnedElsewhereMessage:
+    """The info line explaining why an unpinned run keeps the controls."""
+
+    def test_names_the_pinned_profiles(self) -> None:
+        message = setup_environment._pinned_elsewhere_message(
+            setup_environment._ProfilePinScan(['base', 'claude-personal'], False),
+        )
+        assert "('base', 'claude-personal')" in message
+        assert 'left in place' in message
+
+    def test_explains_an_unreadable_registry(self) -> None:
+        message = setup_environment._pinned_elsewhere_message(
+            setup_environment._ProfilePinScan([], True),
+        )
+        assert 'could not be read' in message
+        assert 'left in place' in message
+
+
+class TestControlsWhenAnotherProfilePins:
+    """Another profile's pin suppresses the unpinned OS-level deletion scheduling."""
+
+    def test_auto_update_schedules_os_deletion_when_nothing_pins(self) -> None:
+        _, _, osev, _, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None, other_profile_pinned=False,
+        )
+        assert osev == {'DISABLE_AUTOUPDATER': None}
+        assert auto == []
+
+    def test_auto_update_skips_os_deletion_when_another_profile_pins(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_auto_update_settings(
+            None, None, None, None, other_profile_pinned=True,
+        )
+        assert (gc, us, osev) == (None, None, None), \
+            'A pinned sibling profile must leave every target untouched'
+        assert warns == []
+        assert auto == []
+
+    def test_auto_update_keeps_user_declarations_when_another_profile_pins(self) -> None:
+        os_env: dict[str, str | None] = {'OTHER': 'keep'}
+        _, _, osev, _, _ = setup_environment.apply_auto_update_settings(
+            None, None, None, os_env, other_profile_pinned=True,
+        )
+        assert osev == {'OTHER': 'keep'}, 'No deletion entry may be scheduled'
+
+    def test_ide_extension_schedules_os_deletion_when_nothing_pins(self) -> None:
+        _, _, osev, _, _ = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, other_profile_pinned=False,
+        )
+        assert osev == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
+
+    def test_ide_extension_skips_os_deletion_when_another_profile_pins(self) -> None:
+        gc, us, osev, warns, auto = setup_environment.apply_ide_extension_settings(
+            None, None, None, None, other_profile_pinned=True,
+        )
+        assert (gc, us, osev) == (None, None, None)
+        assert warns == []
+        assert auto == []
+
+    def test_own_pin_still_injects_when_another_profile_also_pins(self) -> None:
+        gc, us, osev, _, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', None, None, None, other_profile_pinned=True,
+        )
+        assert gc == {'autoUpdates': False}
+        assert us == {'env': {'DISABLE_AUTOUPDATER': '1'}}
+        assert osev == {'DISABLE_AUTOUPDATER': '1'}
+        assert len(auto) == 3
 
 
 class TestCollectUserDeclaredControlKeys:
