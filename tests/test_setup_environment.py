@@ -5318,14 +5318,16 @@ class TestRegisterGlobalCommand:
 class TestInstallClaude:
     """Test Claude installation."""
 
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
     @patch('setup_environment.is_admin', return_value=True)
-    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system):
-        """Test installing Claude on Windows."""
+    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system, mock_is_file):
+        """Test installing Claude on Windows via bootstrap download."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
+        assert mock_is_file.return_value is False  # No sibling installer: bootstrap path
         assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer'

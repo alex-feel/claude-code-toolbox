@@ -804,12 +804,13 @@ class TestHandleResource:
 class TestInstallClaudeEdgeCases:
     """Test Claude installation edge cases."""
 
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
     @patch('setup_environment.is_admin', return_value=True)
-    def test_install_claude_windows_ssl_error(self, mock_is_admin, mock_run, mock_urlopen, _mock_system):
-        """Test Claude installation on Windows with SSL error."""
+    def test_install_claude_windows_ssl_error(self, mock_is_admin, mock_run, mock_urlopen, _mock_system, _mock_is_file):
+        """Test Claude installation on Windows via bootstrap download with SSL error."""
         assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_urlopen.side_effect = [
             urllib.error.URLError('SSL: CERTIFICATE_VERIFY_FAILED'),
@@ -822,12 +823,13 @@ class TestInstallClaudeEdgeCases:
         assert mock_urlopen.call_count == 2
         mock_is_admin.assert_called()  # Verify is_admin was called
 
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.is_admin', return_value=True)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    def test_install_claude_windows_failure(self, mock_run, mock_urlopen, mock_system, mock_is_admin):
-        """Test Claude installation failure on Windows."""
+    def test_install_claude_windows_failure(self, mock_run, mock_urlopen, mock_system, mock_is_admin, _mock_is_file):
+        """Test Claude installation failure on Windows via bootstrap download."""
         assert mock_system.return_value == 'Windows'
         assert mock_is_admin.return_value is True
         mock_urlopen.return_value = MagicMock(read=lambda: b'# Script')
@@ -860,11 +862,12 @@ class TestInstallClaudeEdgeCases:
         result = setup_environment.install_claude()
         assert result is True
 
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.is_admin', return_value=True)
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
-    def test_install_claude_windows_network_error(self, mock_urlopen, _mock_system, mock_is_admin):
-        """Test Claude installation with network error."""
+    def test_install_claude_windows_network_error(self, mock_urlopen, _mock_system, mock_is_admin, _mock_is_file):
+        """Test Claude installation via bootstrap download with network error."""
         assert mock_is_admin.return_value is True
         mock_urlopen.side_effect = urllib.error.URLError('Network error')
 
@@ -873,25 +876,64 @@ class TestInstallClaudeEdgeCases:
 
 
 class TestInstallClaudeLocalCopy:
-    """Test install_claude() local copy detection and usage."""
+    """Test install_claude() sibling installer detection and launch."""
 
-    @patch('platform.system', return_value='Linux')
-    @patch('shutil.which', return_value='/usr/bin/uv')
+    SIBLING = str(Path(setup_environment.__file__).resolve().parent / 'install_claude.py')
+
+    @pytest.mark.parametrize('system', ['Linux', 'Darwin', 'Windows'])
+    @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.run_command')
     @patch('pathlib.Path.is_file', return_value=True)
-    def test_install_claude_uses_local_copy_on_linux(self, _mock_is_file, mock_run, _mock_which, _mock_system):
-        """Local install_claude.py is used directly on Linux when present."""
+    def test_sibling_installer_runs_under_current_interpreter(self, _mock_is_file, mock_run, _mock_admin, system):
+        """The sibling install_claude.py runs via sys.executable on every platform."""
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
-        result = setup_environment.install_claude()
+        with patch('platform.system', return_value=system):
+            result = setup_environment.install_claude()
+
         assert result is True
+        mock_run.assert_called_once_with([sys.executable, self.SIBLING], capture_output=False)
+
+    @pytest.mark.parametrize('system', ['Linux', 'Darwin', 'Windows'])
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.run_command')
+    @patch('pathlib.Path.is_file', return_value=True)
+    def test_sibling_installer_never_launches_through_uv(self, _mock_is_file, mock_run, _mock_admin, system):
+        """No uv executable or `uv run` argument reaches the launch argv.
+
+        Under uvx the sibling lives inside uv's cache, and uv refuses to run a
+        script whose directory is inside the cache, so the launch must stay a
+        plain interpreter call.
+        """
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        with patch('platform.system', return_value=system):
+            setup_environment.install_claude()
+
+        argv = mock_run.call_args[0][0]
+        assert len(argv) == 2
+        assert Path(argv[0]).stem != 'uv'
+        assert 'run' not in argv
+        assert '--no-project' not in argv
+        assert '--python' not in argv
+
+    @pytest.mark.parametrize('system', ['Linux', 'Darwin', 'Windows'])
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.urlopen')
+    @patch('setup_environment.run_command')
+    @patch('pathlib.Path.is_file', return_value=True)
+    def test_sibling_installer_failure_returns_false_without_bootstrap(
+        self, _mock_is_file, mock_run, mock_urlopen, _mock_admin, system,
+    ):
+        """A failing sibling installer reports failure; no bootstrap download follows."""
+        mock_run.return_value = subprocess.CompletedProcess([], 2, '', '')
+
+        with patch('platform.system', return_value=system):
+            result = setup_environment.install_claude()
+
+        assert result is False
         mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert '/usr/bin/uv' in call_args[0]
-        assert '--no-project' in call_args
-        assert '--python' in call_args
-        assert '3.12' in call_args
-        assert call_args[-1].endswith('install_claude.py')
+        mock_urlopen.assert_not_called()
 
     @patch('platform.system', return_value='Linux')
     @patch('pathlib.Path.is_file', return_value=False)
@@ -906,34 +948,22 @@ class TestInstallClaudeLocalCopy:
         call_args = mock_run.call_args[0][0]
         assert 'bash' in call_args
 
-    @patch('platform.system', return_value='Darwin')
-    @patch('shutil.which', return_value=None)
-    @patch('pathlib.Path.is_file', return_value=True)
-    @patch('setup_environment.run_command')
-    def test_install_claude_fallback_when_uv_not_found(self, mock_run, _mock_is_file, _mock_which, _mock_system):
-        """Falls back to bootstrap download when uv is not in PATH."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
-
-        result = setup_environment.install_claude()
-        assert result is True
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert 'bash' in call_args
-
     @patch('setup_environment.is_admin', return_value=True)
     @patch('platform.system', return_value='Windows')
+    @patch('pathlib.Path.is_file', return_value=False)
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    def test_install_claude_local_copy_not_used_on_windows(self, mock_run, mock_urlopen, _mock_system, _mock_admin):
-        """Local copy path is skipped on Windows even if file exists."""
+    def test_install_claude_windows_fallback_when_no_local_copy(
+        self, mock_run, mock_urlopen, _mock_is_file, _mock_system, _mock_admin,
+    ):
+        """Without a sibling copy, Windows downloads and runs the PowerShell bootstrap."""
         mock_urlopen.return_value = MagicMock(read=lambda: b'# PowerShell script')
         mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
 
         result = setup_environment.install_claude()
         assert result is True
         mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert 'powershell' in call_args
+        assert 'powershell' in mock_run.call_args[0][0]
 
 
 class TestMCPServerConfigurationEdgeCases:

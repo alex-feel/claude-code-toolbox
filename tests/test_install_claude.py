@@ -22,6 +22,42 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 
 import install_claude
 
+INSTALL_CLAUDE_SCRIPT = Path(__file__).parent.parent / 'scripts' / 'install_claude.py'
+
+
+class TestInstallerRunsUnderCurrentInterpreter:
+    """install_claude.py runs as a plain script under the interpreter at hand.
+
+    setup_environment.py launches its sibling copy of the installer with
+    sys.executable, so the installer must need nothing beyond the standard
+    library and nothing from the directory it happens to live in.
+    """
+
+    def test_help_runs_under_sys_executable(self) -> None:
+        """The repository copy prints its usage under sys.executable."""
+        result = subprocess.run(
+            [sys.executable, str(INSTALL_CLAUDE_SCRIPT), '--help'],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        assert 'usage: install_claude.py' in result.stdout
+
+    def test_help_runs_from_a_foreign_directory(self, tmp_path: Path) -> None:
+        """A lone copy in any directory runs without its sibling modules."""
+        copy = tmp_path / 'install_claude.py'
+        copy.write_bytes(INSTALL_CLAUDE_SCRIPT.read_bytes())
+        result = subprocess.run(
+            [sys.executable, str(copy), '--help'],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert 'usage: install_claude.py' in result.stdout
+
 
 class TestColors:
     """Test the Colors class and color stripping."""
