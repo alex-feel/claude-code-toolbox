@@ -78,6 +78,7 @@ class TestMarkerLifecycle:
             config_source_type='repo',
             config_source_url=None,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         marker_path = claude_dir / 'update-available.json'
@@ -106,6 +107,7 @@ class TestManifestLifecycle:
             config_source_type='repo',
             config_source_url=None,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -132,6 +134,7 @@ class TestManifestLifecycle:
             config_source_type='repo',
             config_source_url=None,
             command_names=all_names,
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -160,6 +163,7 @@ class TestManifestLifecycle:
             config_source_type='url',
             config_source_url=url,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -187,6 +191,7 @@ class TestManifestLifecycle:
             config_source_type='local',
             config_source_url=None,
             command_names=[cmd],
+            claude_code_version=None,
         )
 
         manifest_path = claude_dir / 'manifest.json'

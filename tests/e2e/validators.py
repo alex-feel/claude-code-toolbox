@@ -1134,20 +1134,25 @@ def validate_tilde_preservation_on_unix(
 
 
 def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
-    """Validate {cmd}-manifest.json structure and content.
+    """Validate manifest.json structure and content.
 
-    Validates the installation manifest file that records configuration metadata.
+    Validates the installation manifest file that records configuration
+    metadata for one toolbox-managed profile.
 
     Validates:
     - File exists and is valid JSON
-    - Required fields are present: name, version, config_source, config_source_url,
-      config_source_type, installed_at, last_checked_at, command_names
+    - Required fields are present: name, version, claude_code_version,
+      config_source, config_source_url, config_source_type, installed_at,
+      last_checked_at, command_names
     - version matches config['version'] if present
+    - claude_code_version matches the normalized config pin ('latest' and an
+      absent key both normalize to None)
     - config_source_type is one of: url, local, repo
-    - command_names is a non-empty list
+    - command_names and name match the profile shape: the primary command
+      name and a non-empty list for an isolated profile, None and an empty
+      list for the base profile
     - installed_at is a valid ISO timestamp string
     - last_checked_at is None (freshly created)
-    - name matches the primary command name
 
     Args:
         path: Path to the manifest JSON file
@@ -1164,8 +1169,9 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
 
     # Required fields check
     required_fields = [
-        'name', 'version', 'config_source', 'config_source_url',
-        'config_source_type', 'installed_at', 'last_checked_at', 'command_names',
+        'name', 'version', 'claude_code_version', 'config_source',
+        'config_source_url', 'config_source_type', 'installed_at',
+        'last_checked_at', 'command_names',
     ]
     errors = [
         f"Manifest missing required field: '{field}'"
@@ -1189,6 +1195,17 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"Manifest version: expected None (no version in config), got {data['version']!r}",
         )
 
+    # Claude Code version pin check: the manifest records the NORMALIZED pin,
+    # so 'latest' and an absent key both land as None.
+    raw_pin = config.get('claude-code-version')
+    pin_str = str(raw_pin).strip() if raw_pin is not None else ''
+    expected_pin = None if not pin_str or pin_str.lower() == 'latest' else pin_str
+    if data['claude_code_version'] != expected_pin:
+        errors.append(
+            f'Manifest claude_code_version: expected {expected_pin!r}, '
+            f"got {data['claude_code_version']!r}",
+        )
+
     # config_source_type validation
     valid_types = {'url', 'local', 'repo'}
     if data['config_source_type'] not in valid_types:
@@ -1197,9 +1214,19 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"got {data['config_source_type']!r}",
         )
 
-    # command_names validation
-    if not isinstance(data['command_names'], list) or len(data['command_names']) == 0:
-        errors.append('Manifest command_names: expected non-empty list')
+    # command_names validation: an isolated profile lists its command names,
+    # the base profile lists none.
+    cmd_names = config.get('command-names')
+    is_isolated = isinstance(cmd_names, list) and bool(cmd_names)
+    if not isinstance(data['command_names'], list):
+        errors.append('Manifest command_names: expected list')
+    elif is_isolated and len(data['command_names']) == 0:
+        errors.append('Manifest command_names: expected non-empty list for an isolated profile')
+    elif not is_isolated and len(data['command_names']) != 0:
+        errors.append(
+            f"Manifest command_names: expected empty list for the base profile, "
+            f"got {data['command_names']!r}",
+        )
 
     # installed_at must be a string (ISO timestamp)
     if not isinstance(data['installed_at'], str):
@@ -1215,12 +1242,11 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"got {data['last_checked_at']!r}",
         )
 
-    # name should match primary command name
-    cmd_names = config.get('command-names')
-    expected_cmd = cmd_names[0] if isinstance(cmd_names, list) and cmd_names else ''
-    if expected_cmd and data['name'] != expected_cmd:
+    # name should match the primary command name, or be None for the base profile
+    expected_name = cmd_names[0] if is_isolated else None
+    if data['name'] != expected_name:
         errors.append(
-            f"Manifest name: expected {expected_cmd!r}, got {data['name']!r}",
+            f"Manifest name: expected {expected_name!r}, got {data['name']!r}",
         )
 
     return errors
