@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.0...v7.4.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* run the bundled installer with the current interpreter ([852abcb](https://github.com/alex-feel/claude-code-toolbox/commit/852abcb964892516c7aabdc2ba3aff886944fc4f))
+
 ## [7.4.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.3.2...v7.4.0) (2026-09-13)
 
 
