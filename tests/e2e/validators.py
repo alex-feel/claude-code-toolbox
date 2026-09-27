@@ -1312,8 +1312,9 @@ def validate_auto_update_controls(
     """Validate the autoUpdates control in the .claude.json files.
 
     Covers the global-config autoUpdates dual-write only; the
-    env.DISABLE_AUTOUPDATER settings.json contribution is validated by
-    validate_settings.
+    env.DISABLE_AUTOUPDATER and env.DISABLE_UPDATES contribution is asserted
+    in test_auto_update.py (in memory) and test_profile_settings_routing.py
+    (settings.json).
 
     When pinned=True, expects:
     - ~/.claude.json has autoUpdates: false

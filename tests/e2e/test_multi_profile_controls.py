@@ -167,7 +167,7 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         _, _, os_env, _, _ = setup_environment.apply_auto_update_settings(
             None, None, None, None, other_profile_pinned=other_profile_pinned,
         )
-        assert os_env is None, 'No OS-level DISABLE_AUTOUPDATER deletion may be scheduled'
+        assert os_env is None, 'No OS-level DISABLE_AUTOUPDATER or DISABLE_UPDATES deletion may be scheduled'
         _, _, os_env, _, _ = setup_environment.apply_ide_extension_settings(
             None, None, None, None, other_profile_pinned=other_profile_pinned,
         )

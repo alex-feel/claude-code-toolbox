@@ -4222,7 +4222,8 @@ def apply_auto_update_settings(
     updater and manual updates across all three available targets:
     autoUpdates in global-config, plus DISABLE_AUTOUPDATER and
     DISABLE_UPDATES in user-settings.env and os-env-variables. When
-    nothing on the machine pins a version, removes auto-injected controls.
+    nothing on the machine pins a version, removes the controls the YAML
+    does not keep, whoever set them.
     When another installed profile pins a version, the machine-global
     controls stay in force and no removal is scheduled, because that
     profile shares the one Claude Code binary this machine has.
@@ -4375,15 +4376,14 @@ def _remove_auto_update_controls(
     a Claude Code version. Nothing has been auto-injected into the
     in-memory dicts, so every control key present comes from the user's
     YAML and is PRESERVED (the removal counterpart of WARN-but-Respect on
-    the write side). Stale on-disk artifacts from a prior pinned run are
-    removed by the Step 16 stale-controls sweep instead.
+    the write side). On-disk controls the YAML does not keep are removed
+    by the Step 16 stale-controls sweep instead, whoever set them.
 
     The OS-level variables have no filesystem sweep, so for each
     AUTO_UPDATE_ENV_CONTROLS key the user does not declare in
     os-env-variables, a deletion entry (None) is scheduled here and
-    set_all_os_env_variables() removes any stale OS-level variable left by
-    a prior pinned run. Deleting an absent variable is a safe no-op on all
-    platforms.
+    set_all_os_env_variables() removes the OS-level variable, whoever set
+    it. Deleting an absent variable is a safe no-op on all platforms.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with the
@@ -4547,7 +4547,8 @@ def _cleanup_settings_json_env_controls(settings_path: Path, keys: tuple[str, ..
 def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
     """Remove stale autoUpdates: false from a .claude.json file.
 
-    Only removes when value is false (auto-injected by toolbox).
+    Only removes a false value, whoever set it (the caller skips this
+    sweep when the YAML sets the key to false in global-config).
     Preserves autoUpdates: true (explicit user preference).
     """
     if not claude_json_path.exists():
@@ -4609,7 +4610,8 @@ def apply_ide_extension_settings(
 
     When this run pins a specific version, disables IDE extension
     auto-installation across all three available targets. When nothing on
-    the machine pins a version, removes auto-injected controls. When
+    the machine pins a version, removes the controls the YAML does not
+    keep, whoever set them. When
     another installed profile pins a version, the machine-global controls
     stay in force and no removal is scheduled, because that profile shares
     the one Claude Code installation this machine has.
@@ -4746,14 +4748,14 @@ def _remove_ide_extension_controls(
     a Claude Code version. Nothing has been auto-injected into the
     in-memory dicts, so every control key present comes from the user's
     YAML and is PRESERVED (the removal counterpart of WARN-but-Respect on
-    the write side). Stale on-disk artifacts from a prior pinned run are
-    removed by the Step 16 stale-controls sweep instead.
+    the write side). On-disk controls the YAML does not keep are removed
+    by the Step 16 stale-controls sweep instead, whoever set them.
 
     The OS-level variable has no filesystem sweep, so when the user does
     not declare CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in os-env-variables, a
     deletion entry (None) is scheduled here and set_all_os_env_variables()
-    removes any stale OS-level variable left by a prior pinned run.
-    Deleting an absent variable is a safe no-op on all platforms.
+    removes the OS-level variable, whoever set it. Deleting an absent
+    variable is a safe no-op on all platforms.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with the
@@ -4770,7 +4772,8 @@ def _remove_ide_extension_controls(
 def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
     """Remove stale autoInstallIdeExtension: false from a .claude.json file.
 
-    Only removes when value is false (auto-injected by toolbox).
+    Only removes a false value, whoever set it (the caller skips this
+    sweep when the YAML sets the key to false in global-config).
     Preserves autoInstallIdeExtension: true (explicit user preference).
     """
     if not claude_json_path.exists():
