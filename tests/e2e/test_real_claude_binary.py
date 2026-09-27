@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,18 @@ _DISABLE_UPDATES_MIN_VERSION = (2, 1, 118)
 # A closed local port: any network attempt fails immediately
 _DEAD_PROXY = 'http://127.0.0.1:9'
 _CONTRACT_INSTALL_TARGET = '0.0.0-toolbox-contract'
+# Per-user directory variables and their conventional locations under a home directory
+_USER_DIR_VARIABLES = {
+    'XDG_CONFIG_HOME': Path('.config'),
+    'XDG_DATA_HOME': Path('.local') / 'share',
+    'XDG_STATE_HOME': Path('.local') / 'state',
+    'XDG_CACHE_HOME': Path('.cache'),
+    **(
+        {'APPDATA': Path('AppData') / 'Roaming', 'LOCALAPPDATA': Path('AppData') / 'Local'}
+        if sys.platform == 'win32'
+        else {}
+    ),
+}
 
 pytestmark = [
     pytest.mark.real_binary,
@@ -316,10 +329,12 @@ def _offline_install_env(config_dir: Path, home_dir: Path) -> dict[str, str]:
     """Build a child environment in which `claude install` cannot change anything real.
 
     DISABLE_UPDATES and NO_PROXY are removed, every proxy variable (both
-    cases) points at a closed local port, and the home directory is an empty
-    temporary one, so an install attempt fails before any download and any
-    local install step stays inside the test directory even without the
-    DISABLE_UPDATES gate.
+    cases) points at a closed local port, the home directory is an empty
+    temporary one, and every per-user directory variable the binary resolves
+    its data, state, cache, and config paths from (_USER_DIR_VARIABLES) points
+    at a subdirectory of it, so an install attempt fails before any download
+    and any local install step stays inside the test directory even without
+    the DISABLE_UPDATES gate.
 
     Returns:
         The environment mapping for subprocess.run().
@@ -336,6 +351,10 @@ def _offline_install_env(config_dir: Path, home_dir: Path) -> dict[str, str]:
     env['CLAUDE_CONFIG_DIR'] = str(config_dir)
     env['HOME'] = str(home_dir)
     env['USERPROFILE'] = str(home_dir)
+    for name, relative_dir in _USER_DIR_VARIABLES.items():
+        user_dir = home_dir / relative_dir
+        user_dir.mkdir(parents=True, exist_ok=True)
+        env[name] = str(user_dir)
     return env
 
 
@@ -355,6 +374,22 @@ def _skip_without_disable_updates(env: dict[str, str]) -> None:
     assert version is not None, f'unparsable claude --version output: {result.stdout!r}'
     if version < _DISABLE_UPDATES_MIN_VERSION:
         pytest.skip(f'claude {result.stdout.strip()} predates DISABLE_UPDATES')
+
+
+def test_offline_install_env_confines_user_directories(
+    isolated_claude_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every per-user directory variable points at an existing directory inside the temporary home."""
+    home_dir = tmp_path / 'home'
+    for name in _USER_DIR_VARIABLES:
+        monkeypatch.setenv(name, str(tmp_path / 'outside' / name))
+
+    env = _offline_install_env(isolated_claude_env['config_dir'], home_dir)
+
+    for name, relative_dir in _USER_DIR_VARIABLES.items():
+        assert env[name] == str(home_dir / relative_dir)
+        assert (home_dir / relative_dir).is_dir()
+    assert env['HOME'] == env['USERPROFILE'] == str(home_dir)
 
 
 def test_install_refused_by_disable_updates_in_environment(

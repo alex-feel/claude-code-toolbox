@@ -364,7 +364,7 @@ Specific Claude Code version to install.
 - **Special value:** `"latest"` (case-insensitive) installs the latest available version (same as the default behavior)
 - **Validation:** Must be `"latest"` or valid semver (`X.Y.Z` with optional pre-release and build metadata)
 - **Note:** Works with both native (via direct binary download from Google Cloud Storage) and npm installation methods. If the requested version is not found via GCS, the installer falls back to the native installer with the latest version
-- **Auto-update management:** When a specific version is set, update controls are automatically injected into multiple targets so that neither the background auto-updater nor a manual `claude update` or `claude install` moves Claude Code off the pinned version. When `"latest"` is used or the key is absent, stale auto-injected controls from prior pinned runs are cleaned up while user-declared controls are preserved -- unless another installed profile still pins a version, in which case the machine-global controls stay in force. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
+- **Auto-update management:** When a specific version is set, update controls are automatically injected into multiple targets so that neither the background auto-updater nor a manual `claude update` or `claude install` moves Claude Code off the pinned version. When `"latest"` is used or the key is absent, the controls are removed -- including `DISABLE_AUTOUPDATER` and `DISABLE_UPDATES` set by hand outside the toolbox -- while controls the YAML declares are preserved, unless another installed profile still pins a version, in which case the machine-global controls stay in force. See [Automatic Auto-Update Management](#automatic-auto-update-management) for details.
 - **IDE extension management:** When a specific version is set, IDE extension auto-install is disabled and the matching extension version is installed into detected VS Code family IDEs. See [Automatic IDE Extension Version Management](#automatic-ide-extension-version-management) for details.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `claude-code-version: "1.0.128"` or `claude-code-version: "latest"`
@@ -1712,7 +1712,7 @@ Every variable above can be set for a single run with the repeatable `--env` fla
 
 ### Automatic Auto-Update Management
 
-When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects update controls into three targets that block both the background auto-updater and manual updates, so nothing moves Claude Code off the pinned version. When the version is `"latest"` or absent, stale auto-injected controls from prior pinned runs are cleaned up (re-enabling background and manual updates) while user-declared controls are preserved.
+When `claude-code-version` specifies a pinned version (any value other than `"latest"` or absent), the setup script automatically injects update controls into three targets that block Claude Code's own update paths -- the background auto-updater, `claude update`, and `claude install` -- so none of them moves Claude Code off the pinned version. When the version is `"latest"` or absent, the setup removes these controls, re-enabling those update paths, and keeps only the controls its YAML declares (see [Removal Behavior](#removal-behavior)).
 
 The machine has one Claude Code binary, so these controls are machine-global and shared by every profile installed on it. Removal is therefore gated on the whole machine, not on the current run: an unpinned run removes the controls only when no OTHER installed profile pins a version either. See [Several Profiles on One Machine](#several-profiles-on-one-machine).
 
@@ -1734,9 +1734,9 @@ Claude Code releases before 2.1.118 do not recognize `DISABLE_UPDATES`. For a pi
 
 #### Removal Behavior
 
-When the version is `"latest"` or absent, nothing is auto-injected, so every auto-update control key present in the in-memory configuration comes from the user's YAML and is preserved -- the removal counterpart of the WARN-but-Respect write semantics. Two cleanup mechanisms remove stale artifacts from prior pinned runs instead:
+When the version is `"latest"` or absent, nothing is auto-injected, so every auto-update control key present in the in-memory configuration comes from the user's YAML and is preserved -- the removal counterpart of the WARN-but-Respect write semantics. When nothing on the machine pins a version, the run removes each of `DISABLE_AUTOUPDATER` and `DISABLE_UPDATES` that its YAML does not declare from the OS environment and from every `settings.json` file, whoever set it -- a value set by hand outside the toolbox is removed as well. To keep a variable, declare it in the YAML: a declaration in `os-env-variables` keeps the OS-level variable, and a declaration in `user-settings.env` keeps it in the `settings.json` files. Two cleanup mechanisms perform the removal:
 
-- **OS-level variables:** `DISABLE_AUTOUPDATER` and `DISABLE_UPDATES` have no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` for each of them the user does not explicitly declare there (and for neither while another installed profile pins a version), and the OS environment writer removes any stale OS-level variable left by a prior pinned run. Deleting an absent variable is a safe no-op on all platforms.
+- **OS-level variables:** `DISABLE_AUTOUPDATER` and `DISABLE_UPDATES` have no filesystem sweep, so a deletion entry is scheduled in `os-env-variables` for each of them the user does not explicitly declare there (and for neither while another installed profile pins a version), and the OS environment writer removes the OS-level variable, whether a prior pinned run or anything else set it. Deleting an absent variable is a safe no-op on all platforms.
 - **On-disk files:** Stale artifacts in `settings.json` and `.claude.json` files are removed by the Step 16 filesystem sweep described below.
 
 **Write-remove symmetry:** After all write operations, `cleanup_stale_auto_update_controls()` runs as a filesystem sweep pass (Step 16). The sweep runs only when NO installed profile pins a version -- neither this run nor any other profile recorded in the profile manifests. It then removes `DISABLE_AUTOUPDATER` and `DISABLE_UPDATES` from ALL `settings.json` files (`~/.claude/settings.json` and all `~/.claude/*/settings.json`) -- except a key the current YAML itself declares in `user-settings.env`, which the `settings.json` sweep keeps (the removal counterpart of the WARN-but-Respect write semantics). Each key is decided on its own: declaring `DISABLE_AUTOUPDATER` keeps only that key and still removes a stale `DISABLE_UPDATES`, and the reverse. A file whose `env` block is left empty loses the `env` key. The sweep also removes `autoUpdates: false` from ALL `.claude.json` files (`~/.claude.json` and all `~/.claude/*/.claude.json`). Removal of `autoUpdates` is value-conditional: only `false` (auto-injected) is removed, `true` (user preference) is preserved. While any profile pins a version, no location is swept: every `settings.json`, `.claude.json`, and OS-level control already on the machine stays exactly as it is, and no OS-level deletion is scheduled.
@@ -1746,8 +1746,8 @@ When the version is `"latest"` or absent, nothing is auto-injected, so every aut
 If the user explicitly sets a value in the YAML configuration that contradicts the automatic intent, the user value is preserved and a warning is emitted:
 
 - **User value absent:** Auto-inject (proceed silently)
-- **User value matches intent:** No-op (no warning)
-- **User value contradicts intent:** Respect user value, emit warning. For example, if the user sets `autoUpdates: true` in `global-config` while pinning a specific version, the `true` value is preserved and a warning like `"User set global-config.autoUpdates to True (auto-update intent is False for pinned version). Respecting user value."` is displayed.
+- **User value matches intent:** No-op (no warning). A `DISABLE_AUTOUPDATER` or `DISABLE_UPDATES` value matches whenever Claude Code treats it as enabled: `1`, `true`, `yes`, or `on`, in any letter case and ignoring surrounding whitespace.
+- **User value contradicts intent:** Respect user value, emit warning. For example, if the user sets `autoUpdates: true` in `global-config` while pinning a specific version, the `true` value is preserved and a warning like `"User set global-config.autoUpdates to True (auto-update intent is False for pinned version). Respecting user value."` is displayed. Any other `DISABLE_AUTOUPDATER` or `DISABLE_UPDATES` value, such as `"0"` or `"false"`, contradicts the intent in the same way.
 
 Injection is gated on key MEMBERSHIP, not on value: an explicit user `null` (a deletion request, legal in every target) is a user declaration that contradicts the intent, so it is respected with a warning and never overwritten.
 
@@ -1756,7 +1756,7 @@ Injection is gated on key MEMBERSHIP, not on value: an explicit user `null` (a d
 Auto-injected values are displayed in the installation summary (including `--dry-run` output) with a green `[auto]` marker, similar to the existing `[?]` (unknown keys) and `[!]` (sensitive paths) markers. This makes it clear which values were automatically added by the setup script rather than explicitly configured in the YAML.
 
 ```text
-Auto-injected settings (version pinning):
+Auto-update controls (version pinned):
   [auto] global-config.autoUpdates: false
   [auto] user-settings.env.DISABLE_AUTOUPDATER: "1"
   [auto] user-settings.env.DISABLE_UPDATES: "1"
@@ -1787,9 +1787,9 @@ A recorded pin is retired only by re-running that profile's setup with an unpinn
 
 ### Automatic IDE Extension Version Management
 
-When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, stale auto-injected IDE extension controls from prior pinned runs are automatically cleaned up while user-declared controls are preserved.
+When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, IDE extension controls the YAML does not declare are removed, whether a prior pinned run or anything else set them, while user-declared controls are preserved.
 
-This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture exactly: same 3-target write matrix, same membership-gated WARN-but-Respect conflict resolution, same write-remove symmetry cleanup, same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep), and the same machine-wide gate described in [Several Profiles on One Machine](#several-profiles-on-one-machine).
+This feature mirrors the [Automatic Auto-Update Management](#automatic-auto-update-management) architecture: same 3-target write matrix, same membership-gated WARN-but-Respect conflict resolution (with the value difference noted under Conflict Resolution below), same write-remove symmetry cleanup, same unpinned removal semantics (user declarations preserved in memory, OS-level deletion scheduled, on-disk cleanup via the Step 16 sweep), and the same machine-wide gate described in [Several Profiles on One Machine](#several-profiles-on-one-machine).
 
 #### Injection Targets
 
@@ -1812,14 +1812,14 @@ When the version is `"latest"` or absent, nothing is auto-injected, so every IDE
 
 #### Conflict Resolution (WARN-but-Respect)
 
-Identical to auto-update management: if the user explicitly sets a value that contradicts the automatic intent, the user value is preserved and a warning is emitted.
+Same rules as auto-update management: if the user explicitly sets a value that contradicts the automatic intent, the user value is preserved and a warning is emitted. A user `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL` value matches the intent only when it is exactly `"1"`; any other value is respected with a warning.
 
 #### `[auto]` Marker in Installation Summary
 
-Auto-injected IDE extension values are displayed with the same green `[auto]` marker as auto-update values:
+Auto-injected IDE extension values are displayed with the same green `[auto]` marker, in the same summary block after the auto-update values:
 
 ```text
-Auto-injected settings (version pinning):
+Auto-update controls (version pinned):
   [auto] global-config.autoInstallIdeExtension: false
   [auto] user-settings.env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"
   [auto] os-env-variables.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1"

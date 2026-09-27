@@ -3973,7 +3973,7 @@ def _propagate_install_method(
     return global_config
 
 
-# Constants for auto-update management (used for value parity with install_claude.py)
+# Constants for auto-update management
 AUTO_UPDATE_KEY = 'autoUpdates'
 AUTO_UPDATE_DISABLED_VALUE = False
 DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
@@ -3989,6 +3989,10 @@ AUTO_UPDATE_ENV_CONTROLS: tuple[tuple[str, str], ...] = (
     (DISABLE_AUTOUPDATER_KEY, DISABLE_AUTOUPDATER_VALUE),
     (DISABLE_UPDATES_KEY, DISABLE_UPDATES_VALUE),
 )
+# Values Claude Code reads as enabling an environment control (compared
+# case-insensitively after trimming), so a user value in this set already
+# matches the pin's intent.
+ENV_CONTROL_TRUTHY_VALUES = frozenset({'1', 'true', 'yes', 'on'})
 
 # Installation manifest written once per toolbox-managed profile: the base
 # profile writes ~/.claude/manifest.json and each isolated profile writes
@@ -4263,6 +4267,18 @@ def apply_auto_update_settings(
     return global_config, user_settings, os_env_variables, warnings_list, auto_injected
 
 
+def _env_control_enabled(value: object) -> bool:
+    """Report whether Claude Code reads an environment-control value as enabled.
+
+    Args:
+        value: User-declared value; None (a deletion request) is never enabled.
+
+    Returns:
+        True when the trimmed, lowercased value is in ENV_CONTROL_TRUTHY_VALUES.
+    """
+    return value is not None and str(value).strip().lower() in ENV_CONTROL_TRUTHY_VALUES
+
+
 def _inject_auto_update_controls(
     global_config: dict[str, Any] | None,
     user_settings: dict[str, Any] | None,
@@ -4281,7 +4297,9 @@ def _inject_auto_update_controls(
     tuple order. Injection is gated on key MEMBERSHIP, not on value, per
     key: an explicit user null (a YAML deletion request, legal in every
     target) is a user declaration and is respected with a warning
-    (WARN-but-Respect), never overwritten.
+    (WARN-but-Respect), never overwritten. A user environment-control value
+    Claude Code reads as enabled (any ENV_CONTROL_TRUTHY_VALUES spelling)
+    already matches the intent and produces no warning.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with
@@ -4314,7 +4332,7 @@ def _inject_auto_update_controls(
         if key not in env_section:
             env_section[key] = value
             auto_injected.append(f'user-settings.env.{key}: "{value}"')
-        elif str(env_section[key]) == value:
+        elif _env_control_enabled(env_section[key]):
             pass  # Already matches intent
         else:
             warnings_list.append(
@@ -4330,7 +4348,7 @@ def _inject_auto_update_controls(
         if key not in os_env_variables:
             os_env_variables[key] = value
             auto_injected.append(f'os-env-variables.{key}: "{value}"')
-        elif str(os_env_variables[key]) == value:
+        elif _env_control_enabled(os_env_variables[key]):
             pass  # Already matches intent
         else:
             warnings_list.append(
@@ -4395,13 +4413,13 @@ def _collect_user_declared_control_keys(
         user_settings: User settings dict from the YAML user-settings section.
 
     Returns:
-        Frozen set containing each managed control key (DISABLE_AUTOUPDATER,
-        DISABLE_UPDATES, CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in
-        user-settings.env.
+        Frozen set containing each managed control key (every
+        AUTO_UPDATE_ENV_CONTROLS key plus CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL)
+        declared in user-settings.env.
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
-    for key in (DISABLE_AUTOUPDATER_KEY, DISABLE_UPDATES_KEY, IDE_SKIP_AUTO_INSTALL_KEY):
+    for key in (*(name for name, _ in AUTO_UPDATE_ENV_CONTROLS), IDE_SKIP_AUTO_INSTALL_KEY):
         if isinstance(env_section, dict) and key in env_section:
             declared.add(key)
     return frozenset(declared)
@@ -4731,30 +4749,6 @@ def _remove_ide_extension_controls(
     return global_config, user_settings, os_env_variables
 
 
-def _cleanup_settings_json_ide_skip(settings_path: Path) -> None:
-    """Remove stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from a settings.json file via merge."""
-    if not settings_path.exists():
-        return
-    try:
-        content = json.loads(settings_path.read_text(encoding='utf-8'))
-        env_section = content.get('env') if isinstance(content, dict) else None
-        if isinstance(env_section, dict) and IDE_SKIP_AUTO_INSTALL_KEY in env_section:
-            # Use _write_merged_json with null-as-delete
-            cleanup_dict: dict[str, Any] = {'env': {IDE_SKIP_AUTO_INSTALL_KEY: None}}
-            ok, merged = _write_merged_json(settings_path, cleanup_dict)
-            if ok and merged.get('env') == {}:
-                # Clean empty env: {} after removal
-                merged.pop('env')
-                settings_path.write_text(
-                    json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
-                    encoding='utf-8',
-                )
-            if ok:
-                info(f'Cleaned stale {IDE_SKIP_AUTO_INSTALL_KEY} from {settings_path}')
-    except (OSError, json.JSONDecodeError, ValueError):
-        pass  # Best-effort cleanup; non-fatal
-
-
 def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
     """Remove stale autoInstallIdeExtension: false from a .claude.json file.
 
@@ -4812,7 +4806,7 @@ def cleanup_stale_ide_extension_controls(
 
     if not user_declared:
         # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
-        _cleanup_settings_json_ide_skip(claude_dir / 'settings.json')
+        _cleanup_settings_json_env_controls(claude_dir / 'settings.json', (IDE_SKIP_AUTO_INSTALL_KEY,))
 
         # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
         if claude_dir.is_dir():
@@ -4820,7 +4814,7 @@ def cleanup_stale_ide_extension_controls(
                 if subdir.is_dir():
                     settings_path = subdir / 'settings.json'
                     if settings_path.exists():
-                        _cleanup_settings_json_ide_skip(settings_path)
+                        _cleanup_settings_json_env_controls(settings_path, (IDE_SKIP_AUTO_INSTALL_KEY,))
 
     # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
     _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')

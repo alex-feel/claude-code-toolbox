@@ -13742,27 +13742,57 @@ class TestApplyAutoUpdateSettings:
         assert us_r['env']['DISABLE_UPDATES'] == '1'
 
     def test_conflict_detection_respects_user_disable_updates(self) -> None:
-        """A user DISABLE_UPDATES value differing from '1' is kept with a warning per target."""
+        """A user DISABLE_UPDATES value Claude Code reads as disabled is kept with a warning per target."""
         us: dict[str, Any] = {'env': {'DISABLE_UPDATES': '0'}}
-        osev: dict[str, str | None] = {'DISABLE_UPDATES': 'true'}
+        osev: dict[str, str | None] = {'DISABLE_UPDATES': 'false'}
         _, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
             '2.1.85', {}, us, osev,
             other_profile_pinned=False,
         )
         assert us_r is not None
         assert us_r['env'] == {'DISABLE_UPDATES': '0', 'DISABLE_AUTOUPDATER': '1'}
-        assert osev_r == {'DISABLE_UPDATES': 'true', 'DISABLE_AUTOUPDATER': '1'}
+        assert osev_r == {'DISABLE_UPDATES': 'false', 'DISABLE_AUTOUPDATER': '1'}
         assert warns == [
             (
                 "User set user-settings.env.DISABLE_UPDATES to '0' "
                 "(auto-update intent is '1' for pinned version). Respecting user value."
             ),
             (
-                "User set os-env-variables.DISABLE_UPDATES to 'true' "
+                "User set os-env-variables.DISABLE_UPDATES to 'false' "
                 "(auto-update intent is '1' for pinned version). Respecting user value."
             ),
         ]
         assert not any('DISABLE_UPDATES' in a for a in auto)
+
+    @pytest.mark.parametrize('user_value', ['1', 'true', 'yes', 'on', 'TRUE', ' Yes ', 'On'])
+    def test_truthy_user_env_control_values_match_intent(self, user_value: str) -> None:
+        """Claude Code reads every 1/true/yes/on spelling as enabled, so none contradicts the pin."""
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}}
+        osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        _, us_r, osev_r, warns, auto = setup_environment.apply_auto_update_settings(
+            '2.1.85', {}, us, osev,
+            other_profile_pinned=False,
+        )
+        assert us_r is not None
+        assert us_r['env'] == {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        assert osev_r == {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        assert warns == []
+        assert auto == ['global-config.autoUpdates: false']
+
+    @pytest.mark.parametrize('user_value', ['0', 'false', 'no', 'off', '', 'enabled'])
+    def test_non_truthy_user_env_control_values_warn(self, user_value: str) -> None:
+        """A value Claude Code does not read as enabled is kept with a warning per key and target."""
+        us: dict[str, Any] = {'env': {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}}
+        osev: dict[str, str | None] = {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        _, us_r, osev_r, warns, _ = setup_environment.apply_auto_update_settings(
+            '2.1.85', {}, us, osev,
+            other_profile_pinned=False,
+        )
+        assert us_r is not None
+        assert us_r['env'] == {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        assert osev_r == {'DISABLE_AUTOUPDATER': user_value, 'DISABLE_UPDATES': user_value}
+        assert len(warns) == 4
+        assert all('Respecting user value' in w for w in warns)
 
     def test_pinned_respects_explicit_null_disable_updates(self) -> None:
         """A user null for DISABLE_UPDATES alone is respected; DISABLE_AUTOUPDATER is still injected."""
@@ -14095,7 +14125,9 @@ class TestCleanupStaleIdeExtensionControls:
     conftest autouse fixture replaces the module attribute with a no-op mock.
     """
 
-    def test_not_pinned_cleans_all_locations(self, tmp_path: Path) -> None:
+    def test_not_pinned_cleans_all_locations(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         home = tmp_path / 'home'
         claude_dir = home / '.claude'
         claude_dir.mkdir(parents=True)
@@ -14106,7 +14138,7 @@ class TestCleanupStaleIdeExtensionControls:
         settings = claude_dir / 'settings.json'
         settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
         cmd_settings = cmd_dir / 'settings.json'
-        cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1"}}')
+        cmd_settings.write_text('{"env": {"CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL": "1", "KEEP_ME": "yes"}}')
         claude_json = home / '.claude.json'
         claude_json.write_text('{"autoInstallIdeExtension": false}')
         cmd_claude_json = cmd_dir / '.claude.json'
@@ -14116,11 +14148,12 @@ class TestCleanupStaleIdeExtensionControls:
             home, machine_pinned=False, user_declared=False,
         )
 
-        # Verify cleaned
-        data = json.loads(settings.read_text())
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
-        data = json.loads(cmd_settings.read_text())
-        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {})
+        # Verify cleaned: an emptied env section is dropped, other env entries stay
+        assert json.loads(settings.read_text()) == {}
+        assert json.loads(cmd_settings.read_text()) == {'env': {'KEEP_ME': 'yes'}}
+        out = capsys.readouterr().out
+        assert f'Cleaned stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from {settings}' in out
+        assert f'Cleaned stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from {cmd_settings}' in out
         data = json.loads(claude_json.read_text())
         assert 'autoInstallIdeExtension' not in data
         data = json.loads(cmd_claude_json.read_text())
@@ -14368,6 +14401,59 @@ class TestCleanupStaleAutoUpdateControls:
         _real_cleanup_stale_auto_update_controls(
             home, machine_pinned=True, user_declared_keys=frozenset(),
         )
+
+
+class TestRunStaleControlsCleanup:
+    """Tests for _run_stale_controls_cleanup() (Step 16).
+
+    The real sweeps are restored over the conftest no-op mocks so the test
+    observes what the orchestrator actually forwards to them.
+    """
+
+    @pytest.mark.parametrize(
+        ('declared', 'expected_env'),
+        [
+            (frozenset({'DISABLE_UPDATES'}), {'DISABLE_UPDATES': '1'}),
+            (
+                frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'}),
+                {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
+            ),
+        ],
+    )
+    def test_forwards_user_declared_keys_to_both_sweeps(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        declared: frozenset[str],
+        expected_env: dict[str, str],
+    ) -> None:
+        """Declared keys survive in base and profile settings.json; every undeclared control is removed."""
+        home = tmp_path / 'home'
+        claude_dir = home / '.claude'
+        profile_dir = claude_dir / 'test-cmd'
+        profile_dir.mkdir(parents=True)
+        seeded = {
+            'env': {
+                'DISABLE_AUTOUPDATER': '1',
+                'DISABLE_UPDATES': '1',
+                'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1',
+            },
+        }
+        settings_files = [claude_dir / 'settings.json', profile_dir / 'settings.json']
+        for path in settings_files:
+            path.write_text(json.dumps(seeded), encoding='utf-8')
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: home)
+        monkeypatch.setattr(
+            setup_environment, 'cleanup_stale_auto_update_controls', _real_cleanup_stale_auto_update_controls,
+        )
+        monkeypatch.setattr(
+            setup_environment, 'cleanup_stale_ide_extension_controls', _real_cleanup_stale_ide_extension_controls,
+        )
+
+        setup_environment._run_stale_controls_cleanup(machine_pinned=False, user_declared_keys=declared)
+
+        for path in settings_files:
+            assert json.loads(path.read_text(encoding='utf-8')) == {'env': expected_env}
 
 
 class TestOtherProfilePins:

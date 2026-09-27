@@ -197,7 +197,9 @@ class TestIdeUnpinnedRemovalSemantics:
         assert not warns
 
         # Stale on-disk artifacts are removed by the Step 16 sweep helper
-        setup_environment._cleanup_settings_json_ide_skip(settings_path)
+        setup_environment._cleanup_settings_json_env_controls(
+            settings_path, (setup_environment.IDE_SKIP_AUTO_INSTALL_KEY,),
+        )
         data = json.loads(settings_path.read_text())
         assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {}), \
             'Stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL should be removed from disk by the sweep'
