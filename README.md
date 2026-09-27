@@ -1,5 +1,8 @@
 <h1 align="center">
-  <img src="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner.png" alt="Claude Code Toolbox" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner-dark.svg">
+    <img alt="Claude Code Toolbox" src="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner.svg" width="600">
+  </picture>
 </h1>
 
 [![GitHub License](https://img.shields.io/github/license/alex-feel/claude-code-toolbox)](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-toolbox)
