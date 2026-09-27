@@ -161,7 +161,7 @@ class TestIdeStaleCleanup:
 
         # Run cleanup with not-pinned (no isolation, no user-declared key)
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, machine_pinned=False, user_declared=False,
+            home, machine_pinned=False, user_declared_keys=frozenset(),
         )
 
         # Verify all cleaned
@@ -197,7 +197,9 @@ class TestIdeUnpinnedRemovalSemantics:
         assert not warns
 
         # Stale on-disk artifacts are removed by the Step 16 sweep helper
-        setup_environment._cleanup_settings_json_ide_skip(settings_path)
+        setup_environment._cleanup_settings_json_env_controls(
+            settings_path, (setup_environment.IDE_SKIP_AUTO_INSTALL_KEY,),
+        )
         data = json.loads(settings_path.read_text())
         assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in data.get('env', {}), \
             'Stale CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL should be removed from disk by the sweep'
@@ -226,7 +228,7 @@ class TestIdeUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, machine_pinned=False, user_declared=True,
+            home, machine_pinned=False, user_declared_keys=frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'}),
         )
 
         data = json.loads(settings_path.read_text())

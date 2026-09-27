@@ -68,6 +68,14 @@ CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
 CLAUDE_GITHUB_RELEASES_API = 'https://api.github.com/repos/anthropics/claude-code/releases/latest'
 CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
+# Claude Code prints this and exits 0 when DISABLE_UPDATES blocks `claude install`
+# or `claude update`. The official installer scripts run `claude install` and
+# report success on its exit 0, so an exit-0 installer run can have installed nothing.
+CLAUDE_UPDATES_DISABLED_MESSAGE = 'Updates are disabled by your administrator'
+# Set once an official installer run in this process is refused by DISABLE_UPDATES:
+# the failure guidance then stops recommending the official installer, which the
+# same DISABLE_UPDATES refuses.
+_disable_updates_refusal_observed = False
 
 # Shell config marker block constants
 SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
@@ -2323,13 +2331,24 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     info('Manual installation options:')
-    info(f'  1. Run with sudo: sudo npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  2. Configure npm user directory:')
-    info('       npm config set prefix ~/.npm-global')
-    info('       export PATH=~/.npm-global/bin:$PATH')
-    info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
-    info('  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash')
+    if platform.system() == 'Windows':
+        info(f'  1. Run manually: npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  2. Force native installer only: $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"')
+        installer_item = 3
+        installer_command = f'irm {CLAUDE_INSTALLER_URL} | iex'
+    else:
+        info(f'  1. Run with sudo: sudo npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  2. Configure npm user directory:')
+        info('       npm config set prefix ~/.npm-global')
+        info('       export PATH=~/.npm-global/bin:$PATH')
+        info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
+        installer_item = 4
+        installer_command = 'curl -fsSL https://claude.ai/install.sh | bash'
+    if _disable_updates_refusal_observed:
+        _info_official_installer_blocked(installer_item, installer_command)
+    else:
+        info(f'  {installer_item}. Install native directly: {installer_command}')
     return False
 
 
@@ -3078,18 +3097,70 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     return _install_claude_native_windows_installer(version='latest')
 
 
+def _installer_refused_by_disable_updates(result: subprocess.CompletedProcess[str]) -> bool:
+    """Check whether an official installer run carries the DISABLE_UPDATES refusal.
+
+    Args:
+        result: The completed installer process.
+
+    Returns:
+        True when stdout or stderr contains CLAUDE_UPDATES_DISABLED_MESSAGE.
+    """
+    return any(
+        CLAUDE_UPDATES_DISABLED_MESSAGE in stream
+        for stream in (result.stdout, result.stderr)
+        if stream
+    )
+
+
+def _warn_installer_refused_by_disable_updates() -> None:
+    """Report an official installer run whose `claude install` step was refused.
+
+    Also records the refusal for this process in _disable_updates_refusal_observed.
+    """
+    global _disable_updates_refusal_observed
+    _disable_updates_refusal_observed = True
+    warning(
+        'The official native installer installed nothing: DISABLE_UPDATES blocks '
+        'the `claude install` step it runs',
+    )
+    info('Claude Code reads DISABLE_UPDATES from the environment and from the env block of its settings files')
+
+
+def _info_official_installer_blocked(number: int, installer_command: str) -> None:
+    """Print the troubleshooting item that replaces the official-installer recommendation.
+
+    Used once an official installer run in this process was refused by
+    DISABLE_UPDATES, because running the official installer directly is
+    refused the same way.
+
+    Args:
+        number: The item number in the surrounding numbered list.
+        installer_command: The shell command that runs the official installer.
+    """
+    info(f'  {number}. Official native installer: blocked while DISABLE_UPDATES is set')
+    info('     (in the environment or in the env block of a Claude Code settings file)')
+    info('     - setup configuration that pins claude-code-version: change the pin and re-run the setup')
+    info(f'     - otherwise: remove DISABLE_UPDATES first, then run: {installer_command}')
+
+
 def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
     """Install Claude Code using the official PowerShell installer script.
 
     Internal function that executes the native installer. Should be called
     with version="latest" to bypass the Anthropic installer bug.
 
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification or recovery, so the caller moves on to its remaining methods.
+
     Args:
         version: Version argument to pass to installer. Use "latest" to
                  bypass the version-check bug on fresh installations.
 
     Returns:
-        True if installation succeeded and was verified, False otherwise.
+        True if installation succeeded and was verified, False otherwise
+        (including a run refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3169,6 +3240,9 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():
@@ -3273,12 +3347,16 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
     """Execute the official macOS shell installer from claude.ai.
 
     Downloads and runs the shell installer script, optionally with a version.
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification, so the caller moves on to its remaining methods.
 
     Args:
         version: Version to install. Use 'latest' for the latest stable version.
 
     Returns:
-        True if installation succeeded, False otherwise.
+        True if installation succeeded, False otherwise (including a run
+        refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3329,6 +3407,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():
@@ -3458,12 +3539,16 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
     """Execute the official Linux shell installer from claude.ai.
 
     Downloads and runs the shell installer script, optionally with a version.
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification, so the caller moves on to its remaining methods.
 
     Args:
         version: Version to install. Use 'latest' for the latest stable version.
 
     Returns:
-        True if installation succeeded, False otherwise.
+        True if installation succeeded, False otherwise (including a run
+        refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3514,6 +3599,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():
@@ -4249,14 +4337,20 @@ def ensure_claude() -> bool:
     print()
     info('Troubleshooting steps:')
     if platform.system() == 'Windows':
-        info(f'  1. Try native installer directly: irm {CLAUDE_INSTALLER_URL} | iex')
+        if _disable_updates_refusal_observed:
+            _info_official_installer_blocked(1, f'irm {CLAUDE_INSTALLER_URL} | iex')
+        else:
+            info(f'  1. Try native installer directly: irm {CLAUDE_INSTALLER_URL} | iex')
         info(f'  2. Try npm: npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  3. Force specific method:')
         info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"  (skip npm)')
         info('       $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="npm"     (skip native)')
     else:
-        info('  1. Try native installer directly:')
-        info('     curl -fsSL https://claude.ai/install.sh | bash')
+        if _disable_updates_refusal_observed:
+            _info_official_installer_blocked(1, 'curl -fsSL https://claude.ai/install.sh | bash')
+        else:
+            info('  1. Try native installer directly:')
+            info('     curl -fsSL https://claude.ai/install.sh | bash')
         info('  2. Try npm with sudo:')
         info(f'     sudo npm install -g {CLAUDE_NPM_PACKAGE}')
         info('  3. Configure npm for user installs:')

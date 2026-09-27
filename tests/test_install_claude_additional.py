@@ -1877,6 +1877,437 @@ class TestNativeWindowsInstallerDiagnostics:
         assert call_kwargs.get('capture_output') is True
 
 
+_REFUSED_INSTALLER_STDOUT = (
+    'Setting up Claude Code...\n'
+    'Updates are disabled by your administrator. Contact your IT team to get the latest version.\n'
+    'Installation complete!\n'
+)
+_OFFICIAL_INSTALLER_HELPERS = [
+    '_install_claude_native_windows_installer',
+    '_install_claude_native_macos_installer',
+    '_install_claude_native_linux_installer',
+]
+
+
+@pytest.fixture
+def official_installer_mocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, MagicMock]:
+    """Mock everything around the official installer helpers except their own logic.
+
+    Verification, finalization, and GCS download mocks are configured to
+    succeed, so a helper that ignored a refusal would report success. The
+    process-wide refusal flag starts cleared and is restored afterwards.
+
+    Returns:
+        Mapping of patched install_claude attribute names to their mocks.
+    """
+    response = MagicMock()
+    response.read.return_value = b'# official installer script'
+    urlopen_mock = MagicMock()
+    urlopen_mock.return_value.__enter__.return_value = response
+    temp_file = MagicMock()
+    temp_file.name = str(tmp_path / 'official-installer')
+    named_temp = MagicMock()
+    named_temp.return_value.__enter__.return_value = temp_file
+
+    mocks = {
+        'urlopen': urlopen_mock,
+        'run_command': MagicMock(),
+        'verify_claude_installation': MagicMock(return_value=(True, '/home/test/.local/bin/claude', 'native')),
+        '_verify_installed_binary_executes': MagicMock(return_value=True),
+        '_finalize_native_install': MagicMock(),
+        'ensure_local_bin_in_path_windows': MagicMock(return_value=True),
+        '_ensure_local_bin_in_path_unix': MagicMock(return_value=True),
+        'get_latest_claude_version': MagicMock(return_value='2.1.280'),
+        '_download_claude_direct_from_gcs': MagicMock(return_value=True),
+        '_install_claude_winget': MagicMock(return_value=False),
+        '_cleanup_old_claude_files': MagicMock(),
+        'get_real_user_home': MagicMock(return_value=tmp_path),
+    }
+    for name, mock in mocks.items():
+        monkeypatch.setattr(install_claude, name, mock)
+    monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+    monkeypatch.setattr(install_claude.tempfile, 'NamedTemporaryFile', named_temp)
+    monkeypatch.setattr(install_claude.os, 'unlink', MagicMock())
+    monkeypatch.setattr(install_claude.os, 'chmod', MagicMock())
+    monkeypatch.setattr(install_claude.time, 'sleep', MagicMock())
+    monkeypatch.setattr(Path, 'chmod', MagicMock())
+    return mocks
+
+
+def _mock_platform(monkeypatch: pytest.MonkeyPatch, system: str, sys_platform: str) -> None:
+    """Set platform.system() and sys.platform consistently for one platform."""
+    monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+    monkeypatch.setattr(install_claude.sys, 'platform', sys_platform)
+
+
+class TestOfficialInstallerDisableUpdatesRefusal:
+    """An exit-0 official installer run refused by DISABLE_UPDATES installed nothing."""
+
+    def test_refusal_constant_matches_claude_code_output(self) -> None:
+        """The constant is the refusal text Claude Code prints."""
+        assert install_claude.CLAUDE_UPDATES_DISABLED_MESSAGE == 'Updates are disabled by your administrator'
+
+    @pytest.mark.parametrize(
+        ('stdout', 'stderr', 'expected'),
+        [
+            (_REFUSED_INSTALLER_STDOUT, '', True),
+            ('Installation complete!', _REFUSED_INSTALLER_STDOUT, True),
+            ('Installation complete!', '', False),
+            (None, None, False),
+        ],
+    )
+    def test_refusal_predicate(self, stdout: str | None, stderr: str | None, expected: bool) -> None:
+        """The predicate inspects both output streams and tolerates missing output."""
+        result = subprocess.CompletedProcess([], 0, stdout, stderr)
+
+        assert install_claude._installer_refused_by_disable_updates(result) is expected
+
+    @pytest.mark.parametrize('helper', _OFFICIAL_INSTALLER_HELPERS)
+    def test_refusal_in_stdout_returns_false_without_verification(
+        self,
+        helper: str,
+        official_installer_mocks: dict[str, MagicMock],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A refused run is a failed attempt: no success line, verification, or finalization."""
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, _REFUSED_INSTALLER_STDOUT, '',
+        )
+
+        result = getattr(install_claude, helper)(version='latest')
+
+        assert result is False
+        official_installer_mocks['run_command'].assert_called_once()
+        official_installer_mocks['verify_claude_installation'].assert_not_called()
+        official_installer_mocks['_verify_installed_binary_executes'].assert_not_called()
+        official_installer_mocks['_finalize_native_install'].assert_not_called()
+        official_installer_mocks['ensure_local_bin_in_path_windows'].assert_not_called()
+        official_installer_mocks['_download_claude_direct_from_gcs'].assert_not_called()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'installed via native installer' not in combined
+        assert 'installed nothing: DISABLE_UPDATES blocks the `claude install` step' in combined
+
+    @pytest.mark.parametrize('helper', _OFFICIAL_INSTALLER_HELPERS)
+    def test_refusal_in_stderr_returns_false(
+        self,
+        helper: str,
+        official_installer_mocks: dict[str, MagicMock],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The refusal is detected on stderr as well."""
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, 'Installation complete!', _REFUSED_INSTALLER_STDOUT,
+        )
+
+        result = getattr(install_claude, helper)(version='latest')
+
+        assert result is False
+        official_installer_mocks['verify_claude_installation'].assert_not_called()
+        official_installer_mocks['_finalize_native_install'].assert_not_called()
+        captured = capsys.readouterr()
+        assert 'DISABLE_UPDATES blocks' in captured.out + captured.err
+
+    @pytest.mark.parametrize('helper', _OFFICIAL_INSTALLER_HELPERS)
+    def test_exit_zero_without_refusal_takes_success_path(
+        self,
+        helper: str,
+        official_installer_mocks: dict[str, MagicMock],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An ordinary exit-0 run is still verified and finalized."""
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, 'Installation complete!', '',
+        )
+
+        result = getattr(install_claude, helper)(version='latest')
+
+        assert result is True
+        official_installer_mocks['verify_claude_installation'].assert_called()
+        official_installer_mocks['_verify_installed_binary_executes'].assert_called()
+        official_installer_mocks['_finalize_native_install'].assert_called_once()
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert 'Claude Code installed via native installer' in combined
+        assert 'DISABLE_UPDATES' not in combined
+
+    def test_windows_latest_refused_installer_falls_through_to_gcs(
+        self,
+        official_installer_mocks: dict[str, MagicMock],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Windows latest install moves on to the GCS download after a refused installer."""
+        _mock_platform(monkeypatch, 'Windows', 'win32')
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, _REFUSED_INSTALLER_STDOUT, '',
+        )
+
+        result = install_claude.install_claude_native_windows(None)
+
+        assert result is True
+        official_installer_mocks['run_command'].assert_called_once()
+        official_installer_mocks['_download_claude_direct_from_gcs'].assert_called_once_with(
+            '2.1.280', tmp_path / '.local' / 'bin' / 'claude.exe',
+        )
+        official_installer_mocks['_finalize_native_install'].assert_called_once()
+
+    def test_windows_pinned_refused_last_resort_installer_returns_false(
+        self,
+        official_installer_mocks: dict[str, MagicMock],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A pinned Windows install whose last-resort installer is refused fails honestly."""
+        _mock_platform(monkeypatch, 'Windows', 'win32')
+        official_installer_mocks['_download_claude_direct_from_gcs'].return_value = False
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, _REFUSED_INSTALLER_STDOUT, '',
+        )
+
+        result = install_claude.install_claude_native_windows('2.1.0')
+
+        assert result is False
+        official_installer_mocks['_download_claude_direct_from_gcs'].assert_called_once_with(
+            '2.1.0', tmp_path / '.local' / 'bin' / 'claude.exe',
+        )
+        official_installer_mocks['_install_claude_winget'].assert_called_once_with(version='2.1.0')
+        official_installer_mocks['run_command'].assert_called_once()
+        official_installer_mocks['_finalize_native_install'].assert_not_called()
+
+    @pytest.mark.parametrize(
+        ('system', 'sys_platform', 'install_func'),
+        [
+            ('Darwin', 'darwin', 'install_claude_native_macos'),
+            ('Linux', 'linux', 'install_claude_native_linux'),
+        ],
+    )
+    def test_unix_latest_refused_installer_falls_through_to_gcs(
+        self,
+        system: str,
+        sys_platform: str,
+        install_func: str,
+        official_installer_mocks: dict[str, MagicMock],
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """macOS and Linux latest installs move on to the GCS download after a refused installer."""
+        _mock_platform(monkeypatch, system, sys_platform)
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess(
+            [], 0, _REFUSED_INSTALLER_STDOUT, '',
+        )
+
+        result = getattr(install_claude, install_func)(None)
+
+        assert result is True
+        official_installer_mocks['run_command'].assert_called_once()
+        official_installer_mocks['_download_claude_direct_from_gcs'].assert_called_once_with(
+            '2.1.280', tmp_path / '.local' / 'bin' / 'claude',
+        )
+        official_installer_mocks['_finalize_native_install'].assert_called_once()
+
+    @pytest.mark.parametrize('helper', _OFFICIAL_INSTALLER_HELPERS)
+    @pytest.mark.parametrize(
+        ('stdout', 'expected'),
+        [
+            (_REFUSED_INSTALLER_STDOUT, True),
+            ('Installation complete!', False),
+        ],
+    )
+    def test_refusal_is_recorded_for_the_process(
+        self,
+        helper: str,
+        stdout: str,
+        expected: bool,
+        official_installer_mocks: dict[str, MagicMock],
+    ) -> None:
+        """Only a refused run marks the process as having observed a refusal."""
+        official_installer_mocks['run_command'].return_value = subprocess.CompletedProcess([], 0, stdout, '')
+
+        getattr(install_claude, helper)(version='latest')
+
+        assert install_claude._disable_updates_refusal_observed is expected
+
+
+_BLOCKED_INSTALLER_GUIDANCE = (
+    'Official native installer: blocked while DISABLE_UPDATES is set',
+    '(in the environment or in the env block of a Claude Code settings file)',
+    'setup configuration that pins claude-code-version: change the pin and re-run the setup',
+    'otherwise: remove DISABLE_UPDATES first, then run: ',
+)
+
+
+def _run_ensure_claude_all_methods_failing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    system: str,
+    native_install: MagicMock,
+) -> str:
+    """Run ensure_claude() with every install method failing and return its output."""
+    monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+    monkeypatch.setattr(install_claude, 'get_claude_version', MagicMock(return_value=None))
+    monkeypatch.setattr(install_claude, 'install_claude_native_cross_platform', native_install)
+    monkeypatch.setattr(install_claude, 'install_claude_npm', MagicMock(return_value=False))
+    monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto')
+    monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_VERSION', raising=False)
+
+    assert install_claude.ensure_claude() is False
+
+    captured = capsys.readouterr()
+    return captured.out + captured.err
+
+
+def _run_npm_install_failing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    system: str = 'Linux',
+) -> str:
+    """Run install_claude_npm() with the plain (and, off Windows, sudo) installs failing and return its output."""
+    monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+    # The Windows branch may prepend the Node.js directory to PATH; restore it afterwards.
+    monkeypatch.setenv('PATH', os.environ.get('PATH', ''))
+    npm_path = 'C:/Program Files/nodejs/npm.cmd' if system == 'Windows' else '/usr/bin/npm'
+    monkeypatch.setattr(install_claude, 'find_command', MagicMock(return_value=npm_path))
+    monkeypatch.setattr(install_claude, 'needs_sudo_for_npm', MagicMock(return_value=False))
+    failed = subprocess.CompletedProcess([], 1, '', 'permission denied')
+    monkeypatch.setattr(install_claude, 'run_command', MagicMock(return_value=failed))
+    monkeypatch.setattr(install_claude, '_run_with_sudo_fallback', MagicMock(return_value=failed))
+    monkeypatch.setattr(install_claude.sys.stdin, 'isatty', lambda: False)
+    monkeypatch.setattr(Path, 'exists', lambda _self: True)
+
+    assert install_claude.install_claude_npm() is False
+
+    captured = capsys.readouterr()
+    return captured.out + captured.err
+
+
+class TestTroubleshootingAfterDisableUpdatesRefusal:
+    """Failure guidance stops recommending the official installer once DISABLE_UPDATES refused it."""
+
+    @pytest.mark.parametrize(
+        ('system', 'installer_command'),
+        [
+            ('Windows', f'irm {install_claude.CLAUDE_INSTALLER_URL} | iex'),
+            ('Linux', 'curl -fsSL https://claude.ai/install.sh | bash'),
+        ],
+    )
+    def test_ensure_claude_without_refusal_recommends_official_installer(
+        self,
+        system: str,
+        installer_command: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without a refusal the first troubleshooting step runs the official installer directly."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+
+        combined = _run_ensure_claude_all_methods_failing(
+            monkeypatch, capsys, system, MagicMock(return_value=False),
+        )
+
+        assert '  1. Try native installer directly:' in combined
+        assert installer_command in combined
+        assert 'DISABLE_UPDATES' not in combined
+
+    @pytest.mark.parametrize(
+        ('system', 'installer_command', 'next_step'),
+        [
+            ('Windows', f'irm {install_claude.CLAUDE_INSTALLER_URL} | iex', '  2. Try npm: npm install -g'),
+            ('Linux', 'curl -fsSL https://claude.ai/install.sh | bash', '  2. Try npm with sudo:'),
+        ],
+    )
+    def test_ensure_claude_after_refusal_reports_blocked_installer(
+        self,
+        system: str,
+        installer_command: str,
+        next_step: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A refusal during the native attempt replaces the direct-installer step with the unblock guidance."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+
+        def refused_native_install(version: str | None = None) -> bool:
+            assert version is None
+            install_claude._warn_installer_refused_by_disable_updates()
+            return False
+
+        combined = _run_ensure_claude_all_methods_failing(
+            monkeypatch, capsys, system, MagicMock(side_effect=refused_native_install),
+        )
+
+        assert 'Try native installer directly' not in combined
+        assert f'  1. {_BLOCKED_INSTALLER_GUIDANCE[0]}' in combined
+        for line in _BLOCKED_INSTALLER_GUIDANCE[1:]:
+            assert line in combined
+        assert f'remove DISABLE_UPDATES first, then run: {installer_command}' in combined
+        assert next_step in combined
+
+    def test_npm_failure_without_refusal_recommends_official_installer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without a refusal the npm failure help still offers the direct native install."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys)
+
+        assert '  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash' in combined
+        assert 'DISABLE_UPDATES' not in combined
+
+    def test_npm_failure_on_windows_recommends_windows_commands(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """On Windows the npm failure help offers the PowerShell installer and no Unix-only steps."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys, system='Windows')
+
+        assert f'  1. Run manually: npm install -g {install_claude.CLAUDE_NPM_PACKAGE}' in combined
+        assert '  2. Force native installer only: $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"' in combined
+        assert f'  3. Install native directly: irm {install_claude.CLAUDE_INSTALLER_URL} | iex' in combined
+        assert 'install.sh' not in combined
+        assert 'sudo' not in combined
+        assert 'export PATH' not in combined
+
+    def test_npm_failure_on_windows_after_refusal_reports_blocked_installer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """After a refusal on Windows the unblock guidance names the PowerShell installer command."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', True)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys, system='Windows')
+
+        assert 'Install native directly' not in combined
+        assert f'  3. {_BLOCKED_INSTALLER_GUIDANCE[0]}' in combined
+        assert (
+            f'remove DISABLE_UPDATES first, then run: irm {install_claude.CLAUDE_INSTALLER_URL} | iex'
+            in combined
+        )
+        assert 'install.sh' not in combined
+
+    def test_npm_failure_after_refusal_reports_blocked_installer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """After a refusal the npm failure help replaces the direct native install with the unblock guidance."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', True)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys)
+
+        assert 'Install native directly' not in combined
+        assert f'  4. {_BLOCKED_INSTALLER_GUIDANCE[0]}' in combined
+        for line in _BLOCKED_INSTALLER_GUIDANCE[1:]:
+            assert line in combined
+        assert 'remove DISABLE_UPDATES first, then run: curl -fsSL https://claude.ai/install.sh | bash' in combined
+
+
 class TestEnsureLocalBinInPathUnix:
     """Test the _ensure_local_bin_in_path_unix function."""
 

@@ -1243,7 +1243,7 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         )
 
     # name should match the primary command name, or be None for the base profile
-    expected_name = cmd_names[0] if is_isolated else None
+    expected_name = cmd_names[0] if isinstance(cmd_names, list) and cmd_names else None
     if data['name'] != expected_name:
         errors.append(
             f"Manifest name: expected {expected_name!r}, got {data['name']!r}",
@@ -1312,8 +1312,9 @@ def validate_auto_update_controls(
     """Validate the autoUpdates control in the .claude.json files.
 
     Covers the global-config autoUpdates dual-write only; the
-    env.DISABLE_AUTOUPDATER settings.json contribution is validated by
-    validate_settings.
+    env.DISABLE_AUTOUPDATER and env.DISABLE_UPDATES contribution is asserted
+    in test_auto_update.py (in memory) and test_profile_settings_routing.py
+    (settings.json).
 
     When pinned=True, expects:
     - ~/.claude.json has autoUpdates: false

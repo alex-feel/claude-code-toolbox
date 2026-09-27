@@ -40,6 +40,8 @@ The installer automatically handles all dependencies (uv, Python, Node.js if nee
 
 The native method uses official Anthropic installers (`https://claude.ai/install.ps1` on Windows, `https://claude.ai/install.sh` on macOS and Linux) with platform-specific fallback chains. On Windows, if the native installer fails (including HTTP retry for transient 403/429/5xx errors), the installer tries GCS direct binary download before falling back to npm. On macOS and Linux, the fallback is GCS direct binary download. This is the default and recommended approach because it does not require Node.js, provides more reliable auto-updates via the official update mechanism, and supports specific version installation via direct binary download from Google Cloud Storage. On Windows, winget is used for specific version requests (CASE 2) and the winget upgrade branch.
 
+The official installer scripts download the binary and run its `claude install` step. When `DISABLE_UPDATES` is set -- in the environment or in the `env` block of a Claude Code settings file, for example by a setup configuration that pins `claude-code-version` -- Claude Code refuses that step with `Updates are disabled by your administrator` and the script still exits successfully, having installed nothing. The installer recognizes this refusal, prints a warning, treats that run as failed, and continues with the methods that remain in its fallback chain (GCS direct download, which `DISABLE_UPDATES` does not gate, and npm in `auto` mode). When every remaining method fails as well, the outcome depends on the starting point: a fresh installation, or a request for a specific version (`CLAUDE_CODE_TOOLBOX_VERSION`) that differs from the installed one, is reported as failed; an upgrade to the latest release or a migration from npm to native keeps the current installation and prints a warning.
+
 ### npm Installation (Fallback)
 
 The npm method installs via the `@anthropic-ai/claude-code` npm package. It requires Node.js 18+ (auto-installed if needed) and is used automatically if native installation fails in `auto` mode. You can force npm installation by setting `CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=npm`.
@@ -172,7 +174,7 @@ To switch manually, uninstall the npm version with `npm uninstall -g @anthropic-
 
 ## Auto-Update Management
 
-Auto-update management is handled by `setup_environment.py` via YAML configuration, not by the standalone installer. When `claude-code-version` is specified in a YAML environment configuration, `setup_environment.py` automatically manages auto-update controls across three targets.
+Auto-update management is handled by `setup_environment.py` via YAML configuration, not by the standalone installer. When `claude-code-version` is specified in a YAML environment configuration, `setup_environment.py` automatically manages update controls across three targets. A pin blocks both the background auto-updater (`DISABLE_AUTOUPDATER`, plus `autoUpdates: false` in `~/.claude.json`) and manual updates (`DISABLE_UPDATES`, recognized from Claude Code 2.1.118 on): under `DISABLE_UPDATES`, `claude update` and `claude install` print `Updates are disabled by your administrator` and change nothing. To move a pinned machine to another release, change `claude-code-version` and re-run the setup: its installer downloads the binary directly from Google Cloud Storage, which `DISABLE_UPDATES` does not gate.
 
 For version pinning with auto-update protection, use `setup_environment.py` with a YAML configuration specifying `claude-code-version`. See [Automatic Auto-Update Management](environment-configuration-guide.md#automatic-auto-update-management) in the Environment Configuration Guide.
 
@@ -192,6 +194,8 @@ The installer automatically tries GCS direct download before falling back to npm
 
 - **Windows:** `irm https://claude.ai/install.ps1 | iex`
 - **macOS/Linux:** `curl -fsSL https://claude.ai/install.sh | bash`
+
+While `DISABLE_UPDATES` is set in the environment or in a Claude Code settings file, the official installer prints `Updates are disabled by your administrator` and installs nothing. On a machine where a setup configuration pins `claude-code-version`, change the pin and re-run the setup instead. After such a refusal, the installer's own troubleshooting output replaces the recommendation to run the official installer directly with this advice, plus the alternative for a machine without a pinning setup configuration: remove `DISABLE_UPDATES` first, then run the official installer.
 
 ### Corrupt or Incompatible Binary Detected
 

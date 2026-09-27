@@ -1,11 +1,12 @@
 """E2E tests for auto-update controls on a machine with several toolbox profiles.
 
 The Claude Code binary is machine-global, so the controls that hold it at a
-pinned version (DISABLE_AUTOUPDATER, autoUpdates, CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL,
-autoInstallIdeExtension) are machine-global too. These tests cover the
-interaction between an installed base profile and an installed isolated
-profile: a run removes the controls only when no installed profile pins a
-version, and each run records its own pin in its profile manifest.
+pinned version (DISABLE_AUTOUPDATER, DISABLE_UPDATES, autoUpdates,
+CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL, autoInstallIdeExtension) are machine-global
+too. These tests cover the interaction between an installed base profile and
+an installed isolated profile: a run removes the controls only when no
+installed profile pins a version, and each run records its own pin in its
+profile manifest.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ PINNED_VERSION = '2.1.85'
 
 CONTROLLED_SETTINGS_ENV = {
     'DISABLE_AUTOUPDATER': '1',
+    'DISABLE_UPDATES': '1',
     'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1',
 }
 CONTROLLED_CLAUDE_JSON = {
@@ -137,6 +139,7 @@ class TestPinnedBaseWithPinnedIsolatedProfile:
         assert mock_os_env.call_args is not None
         os_env_written = mock_os_env.call_args[0][0]
         assert os_env_written['DISABLE_AUTOUPDATER'] == '1'
+        assert os_env_written['DISABLE_UPDATES'] == '1'
         assert os_env_written['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
         manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
@@ -164,7 +167,7 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         _, _, os_env, _, _ = setup_environment.apply_auto_update_settings(
             None, None, None, None, other_profile_pinned=other_profile_pinned,
         )
-        assert os_env is None, 'No OS-level DISABLE_AUTOUPDATER deletion may be scheduled'
+        assert os_env is None, 'No OS-level DISABLE_AUTOUPDATER or DISABLE_UPDATES deletion may be scheduled'
         _, _, os_env, _, _ = setup_environment.apply_ide_extension_settings(
             None, None, None, None, other_profile_pinned=other_profile_pinned,
         )
@@ -208,7 +211,7 @@ class TestSingleUnpinnedProfile:
         _, _, os_env, _, _ = setup_environment.apply_auto_update_settings(
             None, None, None, None, other_profile_pinned=False,
         )
-        assert os_env == {'DISABLE_AUTOUPDATER': None}
+        assert os_env == {'DISABLE_AUTOUPDATER': None, 'DISABLE_UPDATES': None}
         _, _, os_env, _, _ = setup_environment.apply_ide_extension_settings(
             None, None, None, None, other_profile_pinned=False,
         )
@@ -221,6 +224,7 @@ class TestSingleUnpinnedProfile:
         for settings_path in (claude_dir / 'settings.json', isolated_dir / 'settings.json'):
             env_section = json.loads(settings_path.read_text()).get('env', {})
             assert 'DISABLE_AUTOUPDATER' not in env_section, settings_path
+            assert 'DISABLE_UPDATES' not in env_section, settings_path
             assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in env_section, settings_path
         for claude_json_path in (home / '.claude.json', isolated_dir / '.claude.json'):
             data = json.loads(claude_json_path.read_text())
