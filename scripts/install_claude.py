@@ -3778,9 +3778,9 @@ def install_claude_native_cross_platform(version: str | None = None, *, exact_ve
                  Supports semantic versions (x.y.z) and pre-release tags.
                  Passed to platform-specific installer scripts.
         exact_version_only: When True, a specific version is installed only
-            by methods that install exactly that version; the official
-            installer, which installs the latest release, is never used as
-            a fallback and the call returns False instead.
+            by the direct download of exactly that version; neither winget
+            nor the official installer (which installs the latest release)
+            is used as a fallback, and the call returns False instead.
 
     Returns:
         True if installation succeeded, False otherwise.
@@ -4040,9 +4040,10 @@ def ensure_claude() -> bool:
                     pre_migration_version = current_version
 
                     # Try native installation WITH the requested version. The
-                    # installed version already matches, so only methods that
-                    # install exactly that version may run: the official
-                    # installer's latest-release fallback would move the binary.
+                    # installed version already matches, so only the direct
+                    # download of exactly that version may run: the official
+                    # installer's latest-release fallback would move the binary,
+                    # and a winget installation is not a native one.
                     if install_claude_native_cross_platform(
                         version=requested_version, exact_version_only=True,
                     ):

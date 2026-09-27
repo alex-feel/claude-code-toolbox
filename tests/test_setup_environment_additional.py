@@ -894,6 +894,40 @@ class TestInstallClaudeLocalCopy:
         assert result is True
         mock_run.assert_called_once_with([sys.executable, self.SIBLING], capture_output=False)
 
+    @pytest.mark.parametrize(
+        ('keep_installed', 'expected_line', 'absent_line'),
+        [
+            (True, 'Running the installer to keep Claude Code version 2.1.80...', 'Installing Claude Code version'),
+            (False, 'Installing Claude Code version 2.1.80...', 'Running the installer to keep'),
+        ],
+        ids=['keep', 'install'],
+    )
+    @patch('setup_environment.is_admin', return_value=True)
+    @patch('setup_environment.run_command')
+    @patch('pathlib.Path.is_file', return_value=True)
+    def test_version_request_announces_keep_or_install(
+        self,
+        _mock_is_file: MagicMock,
+        mock_run: MagicMock,
+        _mock_admin: MagicMock,
+        keep_installed: bool,
+        expected_line: str,
+        absent_line: str,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A requested version is announced as kept or installed, and reaches the installer either way."""
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_VERSION', raising=False)
+        mock_run.return_value = subprocess.CompletedProcess([], 0, '', '')
+
+        assert setup_environment.install_claude('2.1.80', keep_installed=keep_installed) is True
+
+        out = capsys.readouterr().out
+        assert expected_line in out
+        assert absent_line not in out
+        assert os.environ['CLAUDE_CODE_TOOLBOX_VERSION'] == '2.1.80'
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_VERSION', raising=False)
+
     @pytest.mark.parametrize('system', ['Linux', 'Darwin', 'Windows'])
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.run_command')
