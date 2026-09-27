@@ -150,6 +150,8 @@ This verification addresses a known issue where the Anthropic native installer m
 
 In `auto` mode, when an npm installation is detected, the installer automatically attempts to migrate to the native installer for better stability. On successful migration, the old npm installation is removed to prevent PATH conflicts. If npm removal fails (due to permission issues in non-interactive mode), the installer displays a prominent warning with manual removal instructions but does not block the native installation.
 
+When the npm installation is already at the requested version (`CLAUDE_CODE_TOOLBOX_VERSION`), the migration keeps that exact version: it uses only the direct download of exactly that version, never winget or the official installer's latest-release fallback. When that download fails, the npm installation stays in place at its version and the installer prints a warning.
+
 ### Source Detection
 
 The installer classifies the existing installation by examining the binary path.

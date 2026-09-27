@@ -14575,13 +14575,13 @@ class TestOtherProfilePins:
 
     def test_missing_claude_dir_reports_no_pin(self, tmp_path: Path) -> None:
         scan = setup_environment._other_profile_pins(tmp_path / 'nonexistent', None)
-        assert scan == ([], False)
+        assert scan == ([], False, [])
         assert scan.other_profile_pinned is False
 
     def test_no_manifests_reports_no_pin(self, tmp_path: Path) -> None:
         (tmp_path / '.claude' / 'some-cmd').mkdir(parents=True)
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], False)
+        assert scan == ([], False, [])
 
     def test_invalid_json_is_undetermined(self, tmp_path: Path) -> None:
         """An unparseable manifest leaves the pin unknown, so the controls stay."""
@@ -14589,7 +14589,7 @@ class TestOtherProfilePins:
         claude_dir.mkdir(parents=True)
         (claude_dir / 'manifest.json').write_text('{not json', encoding='utf-8')
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
         assert scan.other_profile_pinned is True
 
     def test_non_object_manifest_is_undetermined(self, tmp_path: Path) -> None:
@@ -14597,7 +14597,7 @@ class TestOtherProfilePins:
         claude_dir.mkdir(parents=True)
         (claude_dir / 'manifest.json').write_text('["not", "an", "object"]', encoding='utf-8')
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
 
     def test_unreadable_manifest_is_undetermined(self, tmp_path: Path) -> None:
         """An OSError reading an existing manifest must not read as 'no pin'."""
@@ -14613,31 +14613,31 @@ class TestOtherProfilePins:
         (tmp_path / '.claude').mkdir(parents=True)
         with patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
             scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
         assert scan.other_profile_pinned is True
 
     def test_base_manifest_pin_seen_by_isolated_run(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
         scan = setup_environment._other_profile_pins(tmp_path, 'claude-personal')
-        assert scan == (['base'], False)
+        assert scan == (['base'], False, ['2.1.85'])
         assert scan.other_profile_pinned is True
 
     def test_isolated_manifest_pin_seen_by_base_run(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False, ['2.1.85'])
 
     def test_own_isolated_manifest_is_excluded(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
 
     def test_own_base_manifest_is_excluded(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False, [])
 
     def test_own_manifest_excluded_by_name_not_by_location(self, tmp_path: Path) -> None:
         """A profile relocated by CLAUDE_CONFIG_DIR is matched by its recorded name."""
         self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
 
     def test_unpinned_manifests_do_not_count(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -14648,7 +14648,7 @@ class TestOtherProfilePins:
         (legacy / 'manifest.json').write_text(
             json.dumps({'name': 'legacy'}), encoding='utf-8',
         )
-        assert setup_environment._other_profile_pins(tmp_path, 'current') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == ([], False, [])
 
     def test_multiple_pinned_profiles_are_sorted(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -14656,13 +14656,22 @@ class TestOtherProfilePins:
         self._write_manifest(claude_dir / 'zeta', 'zeta', '2.1.85')
         self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
         scan = setup_environment._other_profile_pins(tmp_path, 'current')
-        assert scan == (['alpha', 'base', 'zeta'], False)
+        assert scan == (['alpha', 'base', 'zeta'], False, ['2.1.85'])
+
+    def test_pinned_versions_are_distinct_and_sorted(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, ' 2.1.90 ')
+        self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
+        self._write_manifest(claude_dir / 'beta', 'beta', '2.1.85')
+        self._write_manifest(claude_dir / 'current', 'current', '2.1.99')
+        scan = setup_environment._other_profile_pins(tmp_path, 'current')
+        assert scan == (['alpha', 'base', 'beta'], False, ['2.1.85', '2.1.90'])
 
     def test_whitespace_only_name_is_treated_as_base(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
         self._write_manifest(claude_dir, '   ', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
-        assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False, [])
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False, ['2.1.85'])
 
 
 class TestPinnedElsewhereMessage:
@@ -14670,14 +14679,14 @@ class TestPinnedElsewhereMessage:
 
     def test_names_the_pinned_profiles(self) -> None:
         message = setup_environment._pinned_elsewhere_message(
-            setup_environment._ProfilePinScan(['base', 'claude-personal'], False),
+            setup_environment._ProfilePinScan(['base', 'claude-personal'], False, ['2.1.85']),
         )
         assert "('base', 'claude-personal')" in message
         assert 'left in place' in message
 
     def test_explains_an_unreadable_registry(self) -> None:
         message = setup_environment._pinned_elsewhere_message(
-            setup_environment._ProfilePinScan([], True),
+            setup_environment._ProfilePinScan([], True, []),
         )
         assert 'could not be read' in message
         assert 'left in place' in message
@@ -14810,8 +14819,19 @@ class TestCollectUserDeclaredControlKeys:
         assert setup_environment._collect_user_declared_control_keys(us, global_config=None) == frozenset()
 
 
-def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+def _run_main_recording_steps(
+    config: dict[str, Any],
+    pin_scan: setup_environment._ProfilePinScan | None = None,
+    installed_version: str | None = '2.1.80',
+    extra_args: tuple[str, ...] = (),
+    probe: MagicMock | None = None,
+) -> tuple[list[str], dict[str, Any]]:
     """Run main() on config with every external step mocked, recording the control-writing steps.
+
+    pin_scan replaces the installed-profile registry scan (no other profile
+    pins by default), installed_version is what the installed-version
+    probe reports, probe replaces that probe outright, and extra_args are
+    appended to the command line.
 
     Returns:
         The names of the recorded steps in call order and, per step, the
@@ -14831,7 +14851,11 @@ def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[s
         patch('setup_environment.load_config_from_source', return_value=(config, 'test.yaml')),
         patch('setup_environment.validate_all_config_files', return_value=(True, [])),
         patch('setup_environment._other_profile_pins',
-              return_value=setup_environment._ProfilePinScan([], False)),
+              return_value=pin_scan or setup_environment._ProfilePinScan([], False, [])),
+        patch(
+            'setup_environment._installed_claude_version',
+            probe if probe is not None else MagicMock(return_value=installed_version),
+        ),
         patch('setup_environment.install_claude', record('install_claude')),
         patch('setup_environment.install_ide_extensions', return_value=True),
         patch('setup_environment.install_dependencies', return_value=[]),
@@ -14852,7 +14876,7 @@ def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[s
         patch('setup_environment.write_profile_settings_to_settings'),
         patch('setup_environment.is_admin', return_value=True),
         patch('pathlib.Path.mkdir'),
-        patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
+        patch('sys.argv', ['setup_environment.py', 'test', '--yes', *extra_args]),
     ]
     with contextlib.ExitStack() as stack:
         for active_patch in patches:
@@ -14960,6 +14984,206 @@ class TestMainForwardsDeclaredControlKeys:
         _, cleanup_kwargs = captured['_run_stale_controls_cleanup']
         assert cleanup_kwargs['machine_pinned'] is False
         assert cleanup_kwargs['user_declared_keys'] == expected
+
+
+class TestInstalledClaudeVersion:
+    """_installed_claude_version() reports only a Claude Code installation that actually runs."""
+
+    def test_reports_the_parsed_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: '/usr/bin/claude')
+        monkeypatch.setattr(
+            setup_environment.subprocess, 'run',
+            lambda *_a, **_kw: subprocess.CompletedProcess([], 0, '2.1.280 (Claude Code)\n', ''),
+        )
+        assert setup_environment._installed_claude_version() == '2.1.280'
+
+    def test_missing_binary_is_not_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: None)
+        assert setup_environment._installed_claude_version() is None
+
+    @pytest.mark.parametrize(
+        'failure',
+        [
+            OSError(8, 'Exec format error'),
+            subprocess.TimeoutExpired(['claude', '--version'], 30),
+        ],
+        ids=['cannot-execute', 'times-out'],
+    )
+    def test_binary_that_does_not_run_is_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, failure: Exception,
+    ) -> None:
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: '/usr/bin/claude')
+
+        def raise_failure(*_a: object, **_kw: object) -> subprocess.CompletedProcess[str]:
+            raise failure
+
+        monkeypatch.setattr(setup_environment.subprocess, 'run', raise_failure)
+        assert setup_environment._installed_claude_version() is None
+
+    @pytest.mark.parametrize(
+        ('returncode', 'stdout'),
+        [(1, '2.1.280 (Claude Code)'), (0, 'no version here')],
+        ids=['failure-exit', 'no-version'],
+    )
+    def test_failing_or_unparseable_probe_is_not_installed(
+        self, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str,
+    ) -> None:
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: '/usr/bin/claude')
+        monkeypatch.setattr(
+            setup_environment.subprocess, 'run',
+            lambda *_a, **_kw: subprocess.CompletedProcess([], returncode, stdout, ''),
+        )
+        assert setup_environment._installed_claude_version() is None
+
+
+class TestInstalledClaudeVersionParity:
+    """The setup probe and install_claude.py read the same version from the same binary output.
+
+    The kept installation is requested at the probed version, so ensure_claude()
+    leaves it alone only when both parsers agree exactly.
+    """
+
+    @pytest.mark.parametrize(
+        'stdout',
+        [
+            '2.1.280 (Claude Code)\n',
+            '1.0.128\n',
+            '@anthropic-ai/claude-code/2.0.14 linux-x64 node-v22.1.0\n',
+            '2.2.0-beta.1 (Claude Code)\n',
+        ],
+    )
+    def test_both_parsers_agree(self, monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+        import install_claude
+
+        def fake_run(*_a: object, **_kw: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess([], 0, stdout, '')
+
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: '/usr/bin/claude')
+        monkeypatch.setattr(setup_environment.subprocess, 'run', fake_run)
+        monkeypatch.setattr(install_claude.subprocess, 'run', fake_run)
+
+        installer_version, is_corrupt = install_claude._probe_claude_version('/usr/bin/claude')
+        assert is_corrupt is False
+        assert setup_environment._installed_claude_version() == installer_version
+
+
+class TestDecideClaudeInstall:
+    """_decide_claude_install() never moves the binary off another installed profile's pin."""
+
+    NO_PIN = setup_environment._ProfilePinScan([], False, [])
+    BASE_PIN = setup_environment._ProfilePinScan(['base'], False, ['2.1.85'])
+
+    def test_pinned_run_installs_its_own_pin(self) -> None:
+        decision = setup_environment._decide_claude_install('2.1.90', self.BASE_PIN, installed_version='2.1.80')
+        assert decision == ('2.1.90', False, None, None, False)
+
+    def test_unpinned_run_without_other_pins_installs_latest(self) -> None:
+        decision = setup_environment._decide_claude_install(None, self.NO_PIN, installed_version='2.1.80')
+        assert decision == (None, False, None, None, False)
+
+    def test_working_installation_is_kept_at_its_version(self) -> None:
+        decision = setup_environment._decide_claude_install(None, self.BASE_PIN, installed_version='2.1.80')
+        assert (decision.version, decision.kept) == ('2.1.80', True)
+        assert decision.reason == 'another installed profile pins a version'
+        assert decision.note is not None
+        assert "('base')" in decision.note
+        assert 'keeping the installed Claude Code 2.1.80' in decision.note
+        assert decision.note_is_warning is False
+
+    def test_working_installation_is_kept_when_the_registry_is_unreadable(self) -> None:
+        scan = setup_environment._ProfilePinScan([], True, [])
+        decision = setup_environment._decide_claude_install(None, scan, installed_version='2.1.80')
+        assert (decision.version, decision.kept) == ('2.1.80', True)
+        assert decision.reason == 'a profile manifest could not be read'
+        assert decision.note is not None
+        assert 'could not be read' in decision.note
+
+    def test_missing_installation_gets_the_agreed_pin(self) -> None:
+        scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85'])
+        decision = setup_environment._decide_claude_install(None, scan, installed_version=None)
+        assert (decision.version, decision.kept, decision.note_is_warning) == ('2.1.85', False, False)
+        assert decision.note is not None
+        assert "installing version 2.1.85, which another installed profile pins ('alpha', 'base')." in decision.note
+
+    def test_missing_installation_gets_the_one_known_pin_when_a_manifest_is_unreadable(self) -> None:
+        scan = setup_environment._ProfilePinScan(['base'], True, ['2.1.85'])
+        decision = setup_environment._decide_claude_install(None, scan, installed_version=None)
+        assert (decision.version, decision.kept, decision.note_is_warning) == ('2.1.85', False, True)
+        assert decision.note is not None
+        assert 'could not be read' in decision.note
+
+    def test_missing_installation_with_conflicting_pins_gets_latest_with_warning(self) -> None:
+        scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85', '2.1.90'])
+        decision = setup_environment._decide_claude_install(None, scan, installed_version=None)
+        assert (decision.version, decision.kept, decision.note_is_warning) == (None, False, True)
+        assert decision.note is not None
+        assert 'different versions (2.1.85, 2.1.90)' in decision.note
+
+    def test_missing_installation_with_no_known_pin_gets_latest_with_warning(self) -> None:
+        scan = setup_environment._ProfilePinScan([], True, [])
+        decision = setup_environment._decide_claude_install(None, scan, installed_version=None)
+        assert (decision.version, decision.kept, decision.note_is_warning) == (None, False, True)
+        assert decision.reason == 'a profile manifest could not be read'
+
+
+class TestMainStepOneWithPinnedSibling:
+    """main() Step 1 of an unpinned run on a machine where another profile pins a version."""
+
+    CONFIG: dict[str, Any] = {'name': 'Unpinned Sibling', 'user-settings': {'model': 'claude-opus-4'}}
+    BASE_PIN = setup_environment._ProfilePinScan(['base'], False, ['2.1.85'])
+
+    def test_working_installation_is_requested_at_its_own_version(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        calls, captured = _run_main_recording_steps(dict(self.CONFIG), pin_scan=self.BASE_PIN)
+        assert calls[0] == 'install_claude'
+        (install_version,), install_kwargs = captured['install_claude']
+        assert install_version == '2.1.80'
+        assert install_kwargs == {'keep_installed': True}
+        captured_output = capsys.readouterr()
+        out = captured_output.out + captured_output.err
+        assert 'Step 1: Keeping the installed Claude Code' in out
+        assert 'Claude Code: keep the installed version 2.1.80 (another installed profile pins a version)' in out
+        assert 'Claude Code installation: Kept at 2.1.80 (another installed profile pins a version)' in out
+
+    def test_missing_installation_is_installed_at_the_agreed_pin(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        calls, captured = _run_main_recording_steps(
+            dict(self.CONFIG), pin_scan=self.BASE_PIN, installed_version=None,
+        )
+        assert calls[0] == 'install_claude'
+        (install_version,), _ = captured['install_claude']
+        assert install_version == '2.1.85'
+        captured_output = capsys.readouterr()
+        out = captured_output.out + captured_output.err
+        assert 'Claude Code: install (version: 2.1.85) (another installed profile pins a version)' in out
+
+    def test_skip_install_does_not_probe_the_binary(self) -> None:
+        probe = MagicMock(return_value='2.1.80')
+        with patch('setup_environment.find_command', return_value='/usr/bin/claude'):
+            calls, _ = _run_main_recording_steps(
+                dict(self.CONFIG), pin_scan=self.BASE_PIN, extra_args=('--skip-install',), probe=probe,
+            )
+        assert 'install_claude' not in calls
+        probe.assert_not_called()
+
+    def test_warning_reaches_the_installation_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
+        scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85', '2.1.90'])
+        _run_main_recording_steps(dict(self.CONFIG), pin_scan=scan, installed_version=None)
+        captured_output = capsys.readouterr()
+        out = captured_output.out + captured_output.err
+        assert 'Claude Code: install (version: latest)' in out
+        assert (
+            'Warning: No working Claude Code installation was found and the installed profiles pin different versions'
+            in out
+        )
+
+    def test_unpinned_run_without_pinned_siblings_still_upgrades(self) -> None:
+        calls, captured = _run_main_recording_steps(dict(self.CONFIG))
+        assert calls[0] == 'install_claude'
+        (install_version,), _ = captured['install_claude']
+        assert install_version is None
 
 
 class TestPropagateInstallMethod:

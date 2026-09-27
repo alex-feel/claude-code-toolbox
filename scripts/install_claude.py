@@ -2985,7 +2985,7 @@ def _ensure_local_bin_in_path_unix() -> bool:
     return True
 
 
-def install_claude_native_windows(version: str | None = None) -> bool:
+def install_claude_native_windows(version: str | None = None, *, exact_version_only: bool = False) -> bool:
     """Install Claude Code using native installer on Windows.
 
     Uses a hybrid approach with multiple fallback methods:
@@ -3001,6 +3001,10 @@ def install_claude_native_windows(version: str | None = None) -> bool:
         version: Specific version to install (e.g., "2.0.14", "latest", "stable").
                  If None, installs stable channel. Supports semantic versions
                  and pre-release tags (e.g., "2.0.0-beta").
+        exact_version_only: When True, a specific version is installed only
+            natively by the direct download; neither winget nor the official
+            installer (which installs the latest release) is used as a
+            fallback, and the call returns False instead.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -3082,6 +3086,15 @@ def install_claude_native_windows(version: str | None = None) -> bool:
                 _warn_npm_removal_failed()
             return True  # Still successful if found somewhere
         error('Installation verification failed')
+        return False
+
+    # A winget installation is not a native one, so it cannot complete the
+    # native installation exact_version_only asks for.
+    if exact_version_only:
+        warning(
+            f'The direct download of version {version} failed; winget and the official '
+            'installer, which installs the latest release, are not used here',
+        )
         return False
 
     # Direct download failed -- try winget with version
@@ -3444,7 +3457,7 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
         return False
 
 
-def install_claude_native_macos(version: str | None = None) -> bool:
+def install_claude_native_macos(version: str | None = None, *, exact_version_only: bool = False) -> bool:
     """Install Claude Code using native installer on macOS.
 
     Implements a hybrid approach with GCS direct download fallback:
@@ -3454,6 +3467,10 @@ def install_claude_native_macos(version: str | None = None) -> bool:
     Args:
         version: Specific version to install (e.g., "2.0.76"). If None or
                  "latest", installs latest stable version via native installer.
+        exact_version_only: When True, a specific version is installed only
+            by the direct download; the official installer, which installs
+            the latest release, is never used as a fallback and the call
+            returns False instead.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -3527,6 +3544,12 @@ def install_claude_native_macos(version: str | None = None) -> bool:
             return False
 
         # GCS download failed - fall back to native installer with "latest"
+        if exact_version_only:
+            warning(
+                f'No exact-version installation method succeeded for version {version}; '
+                'the official installer, which installs the latest release, is not used here',
+            )
+            return False
         warning(f'Direct download failed for version {version}, falling back to native installer')
         info('Note: Falling back to latest version due to installer limitations')
         return _install_claude_native_macos_installer(version='latest')
@@ -3636,7 +3659,7 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
         return False
 
 
-def install_claude_native_linux(version: str | None = None) -> bool:
+def install_claude_native_linux(version: str | None = None, *, exact_version_only: bool = False) -> bool:
     """Install Claude Code using native installer on Linux.
 
     Implements a hybrid approach with GCS direct download fallback:
@@ -3648,6 +3671,10 @@ def install_claude_native_linux(version: str | None = None) -> bool:
     Args:
         version: Specific version to install (e.g., "2.0.76"). If None or
                  "latest", installs latest stable version via native installer.
+        exact_version_only: When True, a specific version is installed only
+            by the direct download; the official installer, which installs
+            the latest release, is never used as a fallback and the call
+            returns False instead.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -3723,12 +3750,18 @@ def install_claude_native_linux(version: str | None = None) -> bool:
         return False
 
     # GCS download failed - fall back to native installer with "latest"
+    if exact_version_only:
+        warning(
+            f'No exact-version installation method succeeded for version {version}; '
+            'the official installer, which installs the latest release, is not used here',
+        )
+        return False
     warning(f'Direct download failed for version {version}, falling back to native installer')
     info('Note: Falling back to latest version due to installer limitations')
     return _install_claude_native_linux_installer(version='latest')
 
 
-def install_claude_native_cross_platform(version: str | None = None) -> bool:
+def install_claude_native_cross_platform(version: str | None = None, *, exact_version_only: bool = False) -> bool:
     """Install Claude Code using native installer (cross-platform dispatcher).
 
     Dispatches to platform-specific native installation functions based on
@@ -3744,6 +3777,10 @@ def install_claude_native_cross_platform(version: str | None = None) -> bool:
         version: Specific version to install. If None, installs stable version.
                  Supports semantic versions (x.y.z) and pre-release tags.
                  Passed to platform-specific installer scripts.
+        exact_version_only: When True, a specific version is installed only
+            by the direct download of exactly that version; neither winget
+            nor the official installer (which installs the latest release)
+            is used as a fallback, and the call returns False instead.
 
     Returns:
         True if installation succeeded, False otherwise.
@@ -3755,11 +3792,11 @@ def install_claude_native_cross_platform(version: str | None = None) -> bool:
     system = platform.system()
 
     if system == 'Windows':
-        return install_claude_native_windows(version)
+        return install_claude_native_windows(version, exact_version_only=exact_version_only)
     if system == 'Darwin':
-        return install_claude_native_macos(version)
+        return install_claude_native_macos(version, exact_version_only=exact_version_only)
     # Linux and other Unix-like systems
-    return install_claude_native_linux(version)
+    return install_claude_native_linux(version, exact_version_only=exact_version_only)
 
 
 def _verify_upgrade_version(expected_version: str, method_label: str) -> tuple[bool, str | None]:
@@ -4002,8 +4039,14 @@ def ensure_claude() -> bool:
                     # Store current version before migration
                     pre_migration_version = current_version
 
-                    # Try native installation WITH the requested version
-                    if install_claude_native_cross_platform(version=requested_version):
+                    # Try native installation WITH the requested version. The
+                    # installed version already matches, so only the direct
+                    # download of exactly that version may run: the official
+                    # installer's latest-release fallback would move the binary,
+                    # and a winget installation is not a native one.
+                    if install_claude_native_cross_platform(
+                        version=requested_version, exact_version_only=True,
+                    ):
                         # Verify native installation succeeded
                         post_install, _, post_source = verify_claude_installation()
 
