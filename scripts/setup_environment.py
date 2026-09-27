@@ -4448,17 +4448,17 @@ def cleanup_stale_auto_update_controls(
 
     Implements write-remove symmetry: writes go to specific locations
     via scope-based routing, while removal sweeps the locations that can
-    hold artifacts from prior configurations. Two guards bound the sweep:
+    hold artifacts from prior configurations. Three guards bound the sweep:
 
     - The sweep runs only when NO installed profile pins a version. The
       controls are machine-global, so while this run or any other profile
       recorded in the profile manifests pins a version, every location
       keeps its controls.
     - settings.json files additionally keep each AUTO_UPDATE_ENV_CONTROLS
-      key (DISABLE_AUTOUPDATER, DISABLE_UPDATES) the current YAML itself
-      declares (the removal counterpart of WARN-but-Respect on the write
-      side). Each key is decided independently: declaring one never keeps
-      or removes the other.
+      key (DISABLE_AUTOUPDATER, DISABLE_UPDATES) the current YAML sets to a
+      non-null value in user-settings.env (the removal counterpart of
+      WARN-but-Respect on the write side). Each key is decided
+      independently: declaring one never keeps or removes the other.
     - .claude.json files likewise keep autoUpdates: false when the current
       YAML sets it to false in global-config.
 
@@ -4475,7 +4475,7 @@ def cleanup_stale_auto_update_controls(
         return
 
     # Nothing on the machine pins a version: remove auto-update controls
-    # from EVERYWHERE, preserving user-declared settings.json keys
+    # from EVERYWHERE, preserving the keys user_declared_keys names
     claude_dir = home_dir / '.claude'
     stale_env_keys = tuple(
         key for key, _ in AUTO_UPDATE_ENV_CONTROLS if key not in user_declared_keys
@@ -4804,7 +4804,7 @@ def cleanup_stale_ide_extension_controls(
       recorded in the profile manifests pins a version, every location
       keeps its controls.
     - settings.json files additionally keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
-      when the current YAML itself declares the key in user-settings.env,
+      when the current YAML sets it to a non-null value in user-settings.env,
       and .claude.json files keep autoInstallIdeExtension: false when the
       YAML sets it to false in global-config (the removal counterpart of
       WARN-but-Respect on the write side).
@@ -4822,7 +4822,7 @@ def cleanup_stale_ide_extension_controls(
         return
 
     # Nothing on the machine pins a version: remove IDE extension controls
-    # from EVERYWHERE, preserving user-declared settings.json keys
+    # from EVERYWHERE, preserving the keys user_declared_keys names
     claude_dir = home_dir / '.claude'
 
     if IDE_SKIP_AUTO_INSTALL_KEY not in user_declared_keys:
