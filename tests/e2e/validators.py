@@ -1243,7 +1243,7 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         )
 
     # name should match the primary command name, or be None for the base profile
-    expected_name = cmd_names[0] if is_isolated else None
+    expected_name = cmd_names[0] if isinstance(cmd_names, list) and cmd_names else None
     if data['name'] != expected_name:
         errors.append(
             f"Manifest name: expected {expected_name!r}, got {data['name']!r}",

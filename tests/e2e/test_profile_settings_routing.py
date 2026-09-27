@@ -605,10 +605,11 @@ class TestAutoUpdateEnvSurvival:
     """Verify the auto-update user-settings.env injection survives Step 14 then Step 18.
 
     When version pinning is active, apply_auto_update_settings() injects
-    DISABLE_AUTOUPDATER into user_settings.env (one of its three targets).
-    Step 14 (write_user_settings) writes that entry to settings.json.env.
-    The subsequent Step 18 profile-settings write carries only statusLine and
-    hooks, so it must not touch the env block that Step 14 wrote.
+    DISABLE_AUTOUPDATER and DISABLE_UPDATES into user_settings.env (one of
+    its three targets). Step 14 (write_user_settings) writes those entries
+    to settings.json.env. The subsequent Step 18 profile-settings write
+    carries only statusLine and hooks, so it must not touch the env block
+    that Step 14 wrote.
     """
 
     def test_disable_autoupdater_survives_step14_then_step18(self, tmp_path: Path) -> None:
@@ -633,8 +634,30 @@ class TestAutoUpdateEnvSurvival:
         assert content['model'] == 'sonnet'
         assert content['statusLine']['type'] == 'command'
 
-    def test_ide_and_auto_update_env_targets_both_survive(self, tmp_path: Path) -> None:
-        """Both env auto-control targets written by Step 14 survive Step 18."""
+    def test_disable_updates_survives_step14_then_step18(self, tmp_path: Path) -> None:
+        """DISABLE_UPDATES written by Step 14 survives the Step 18 delta write."""
+        claude_dir = tmp_path
+        hooks_dir = claude_dir / 'hooks'
+        hooks_dir.mkdir()
+
+        # Step 14: user-settings carrying the injected env target
+        write_user_settings(
+            {'model': 'sonnet', 'env': {'DISABLE_UPDATES': '1'}},
+            claude_dir,
+        )
+
+        # Step 18: profile delta has statusLine only (no env)
+        delta = _build_profile_settings({'statusLine': {'file': 'status.py'}}, hooks_dir)
+        assert 'env' not in delta
+        write_profile_settings_to_settings(delta, claude_dir)
+
+        content = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))
+        assert content['env']['DISABLE_UPDATES'] == '1'
+        assert content['model'] == 'sonnet'
+        assert content['statusLine']['type'] == 'command'
+
+    def test_all_auto_control_env_targets_survive(self, tmp_path: Path) -> None:
+        """All three env auto-control targets written by Step 14 survive Step 18."""
         claude_dir = tmp_path
         hooks_dir = claude_dir / 'hooks'
         hooks_dir.mkdir()
@@ -643,6 +666,7 @@ class TestAutoUpdateEnvSurvival:
             {
                 'env': {
                     'DISABLE_AUTOUPDATER': '1',
+                    'DISABLE_UPDATES': '1',
                     'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': 'true',
                 },
             },
@@ -666,5 +690,6 @@ class TestAutoUpdateEnvSurvival:
 
         content = json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))
         assert content['env']['DISABLE_AUTOUPDATER'] == '1'
+        assert content['env']['DISABLE_UPDATES'] == '1'
         assert content['env']['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == 'true'
         assert 'PreToolUse' in content['hooks']

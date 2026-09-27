@@ -3978,6 +3978,17 @@ AUTO_UPDATE_KEY = 'autoUpdates'
 AUTO_UPDATE_DISABLED_VALUE = False
 DISABLE_AUTOUPDATER_KEY = 'DISABLE_AUTOUPDATER'
 DISABLE_AUTOUPDATER_VALUE = '1'
+DISABLE_UPDATES_KEY = 'DISABLE_UPDATES'
+DISABLE_UPDATES_VALUE = '1'
+# Environment controls a version pin writes, in injection order.
+# DISABLE_AUTOUPDATER stops the background updater; DISABLE_UPDATES also
+# blocks manual `claude update` and `claude install`. Both are written
+# because Claude Code releases before 2.1.118 recognize only
+# DISABLE_AUTOUPDATER.
+AUTO_UPDATE_ENV_CONTROLS: tuple[tuple[str, str], ...] = (
+    (DISABLE_AUTOUPDATER_KEY, DISABLE_AUTOUPDATER_VALUE),
+    (DISABLE_UPDATES_KEY, DISABLE_UPDATES_VALUE),
+)
 
 # Installation manifest written once per toolbox-managed profile: the base
 # profile writes ~/.claude/manifest.json and each isolated profile writes
@@ -4112,9 +4123,9 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
     """Read which installed profiles OTHER than this run's pin a Claude Code version.
 
     One machine has one Claude Code binary, so the controls that hold it at
-    a pinned version (DISABLE_AUTOUPDATER, autoUpdates, and their IDE
-    extension counterparts) are machine-global. A run may therefore remove
-    them only when no installed profile still needs them.
+    a pinned version (DISABLE_AUTOUPDATER, DISABLE_UPDATES, autoUpdates, and
+    their IDE extension counterparts) are machine-global. A run may
+    therefore remove them only when no installed profile still needs them.
 
     Every toolbox-managed profile records its own pin in a manifest: the
     base profile in ~/.claude/manifest.json, each isolated profile in
@@ -4203,12 +4214,14 @@ def apply_auto_update_settings(
 ]:
     """Apply automatic auto-update settings based on version pinning.
 
-    When this run pins a specific version, disables auto-updates across all
-    three available targets. When nothing on the machine pins a version,
-    removes auto-injected controls. When another installed profile pins a
-    version, the machine-global controls stay in force and no removal is
-    scheduled, because that profile shares the one Claude Code binary this
-    machine has.
+    When this run pins a specific version, blocks both the background
+    updater and manual updates across all three available targets:
+    autoUpdates in global-config, plus DISABLE_AUTOUPDATER and
+    DISABLE_UPDATES in user-settings.env and os-env-variables. When
+    nothing on the machine pins a version, removes auto-injected controls.
+    When another installed profile pins a version, the machine-global
+    controls stay in force and no removal is scheduled, because that
+    profile shares the one Claude Code binary this machine has.
 
     Operates on in-memory dicts ONLY -- has no knowledge of command-names,
     file paths, or environment isolation. The existing write routing
@@ -4263,10 +4276,12 @@ def _inject_auto_update_controls(
 ]:
     """Inject auto-update disable controls into all three target dicts.
 
-    Injection is gated on key MEMBERSHIP, not on value: an explicit user
-    null (a YAML deletion request, legal in every target) is a user
-    declaration and is respected with a warning (WARN-but-Respect), never
-    overwritten.
+    global-config receives autoUpdates; user-settings.env and
+    os-env-variables each receive every AUTO_UPDATE_ENV_CONTROLS key, in
+    tuple order. Injection is gated on key MEMBERSHIP, not on value, per
+    key: an explicit user null (a YAML deletion request, legal in every
+    target) is a user declaration and is respected with a warning
+    (WARN-but-Respect), never overwritten.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with
@@ -4287,7 +4302,7 @@ def _inject_auto_update_controls(
             f'Respecting user value.',
         )
 
-    # Target 2: user_settings.env.DISABLE_AUTOUPDATER = "1"
+    # Target 2: user_settings.env.<key> = "1" for each environment control
     if user_settings is None:
         user_settings = {}
     env_raw = user_settings.get('env')
@@ -4295,32 +4310,34 @@ def _inject_auto_update_controls(
         env_raw = {}
         user_settings['env'] = env_raw
     env_section = cast(dict[str, Any], env_raw)
-    if DISABLE_AUTOUPDATER_KEY not in env_section:
-        env_section[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
-        auto_injected.append(f'user-settings.env.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(env_section[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
-        pass  # Already matches intent
-    else:
-        warnings_list.append(
-            f'User set user-settings.env.{DISABLE_AUTOUPDATER_KEY} to {env_section[DISABLE_AUTOUPDATER_KEY]!r} '
-            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
-            f'Respecting user value.',
-        )
+    for key, value in AUTO_UPDATE_ENV_CONTROLS:
+        if key not in env_section:
+            env_section[key] = value
+            auto_injected.append(f'user-settings.env.{key}: "{value}"')
+        elif str(env_section[key]) == value:
+            pass  # Already matches intent
+        else:
+            warnings_list.append(
+                f'User set user-settings.env.{key} to {env_section[key]!r} '
+                f'(auto-update intent is {value!r} for pinned version). '
+                f'Respecting user value.',
+            )
 
-    # Target 3: os_env_variables.DISABLE_AUTOUPDATER = "1"
+    # Target 3: os_env_variables.<key> = "1" for each environment control
     if os_env_variables is None:
         os_env_variables = {}
-    if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
-        os_env_variables[DISABLE_AUTOUPDATER_KEY] = DISABLE_AUTOUPDATER_VALUE
-        auto_injected.append(f'os-env-variables.{DISABLE_AUTOUPDATER_KEY}: "{DISABLE_AUTOUPDATER_VALUE}"')
-    elif str(os_env_variables[DISABLE_AUTOUPDATER_KEY]) == DISABLE_AUTOUPDATER_VALUE:
-        pass  # Already matches intent
-    else:
-        warnings_list.append(
-            f'User set os-env-variables.{DISABLE_AUTOUPDATER_KEY} to {os_env_variables[DISABLE_AUTOUPDATER_KEY]!r} '
-            f'(auto-update intent is {DISABLE_AUTOUPDATER_VALUE!r} for pinned version). '
-            f'Respecting user value.',
-        )
+    for key, value in AUTO_UPDATE_ENV_CONTROLS:
+        if key not in os_env_variables:
+            os_env_variables[key] = value
+            auto_injected.append(f'os-env-variables.{key}: "{value}"')
+        elif str(os_env_variables[key]) == value:
+            pass  # Already matches intent
+        else:
+            warnings_list.append(
+                f'User set os-env-variables.{key} to {os_env_variables[key]!r} '
+                f'(auto-update intent is {value!r} for pinned version). '
+                f'Respecting user value.',
+            )
 
     return global_config, user_settings, os_env_variables
 
@@ -4343,20 +4360,22 @@ def _remove_auto_update_controls(
     the write side). Stale on-disk artifacts from a prior pinned run are
     removed by the Step 16 stale-controls sweep instead.
 
-    The OS-level variable has no filesystem sweep, so when the user does
-    not declare DISABLE_AUTOUPDATER in os-env-variables, a deletion entry
-    (None) is scheduled here and set_all_os_env_variables() removes any
-    stale OS-level variable left by a prior pinned run. Deleting an
-    absent variable is a safe no-op on all platforms.
+    The OS-level variables have no filesystem sweep, so for each
+    AUTO_UPDATE_ENV_CONTROLS key the user does not declare in
+    os-env-variables, a deletion entry (None) is scheduled here and
+    set_all_os_env_variables() removes any stale OS-level variable left by
+    a prior pinned run. Deleting an absent variable is a safe no-op on all
+    platforms.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with the
-        OS-level deletion entry scheduled.
+        OS-level deletion entries scheduled.
     """
     if os_env_variables is None:
         os_env_variables = {}
-    if DISABLE_AUTOUPDATER_KEY not in os_env_variables:
-        os_env_variables[DISABLE_AUTOUPDATER_KEY] = None
+    for key, _ in AUTO_UPDATE_ENV_CONTROLS:
+        if key not in os_env_variables:
+            os_env_variables[key] = None
 
     return global_config, user_settings, os_env_variables
 
@@ -4377,11 +4396,12 @@ def _collect_user_declared_control_keys(
 
     Returns:
         Frozen set containing each managed control key (DISABLE_AUTOUPDATER,
-        CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in user-settings.env.
+        DISABLE_UPDATES, CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL) declared in
+        user-settings.env.
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
-    for key in (DISABLE_AUTOUPDATER_KEY, IDE_SKIP_AUTO_INSTALL_KEY):
+    for key in (DISABLE_AUTOUPDATER_KEY, DISABLE_UPDATES_KEY, IDE_SKIP_AUTO_INSTALL_KEY):
         if isinstance(env_section, dict) and key in env_section:
             declared.add(key)
     return frozenset(declared)
@@ -4390,7 +4410,8 @@ def _collect_user_declared_control_keys(
 def cleanup_stale_auto_update_controls(
     home_dir: Path,
     machine_pinned: bool,
-    user_declared: bool,
+    *,
+    user_declared_keys: frozenset[str],
 ) -> None:
     """Remove stale auto-update controls from filesystem locations.
 
@@ -4402,9 +4423,11 @@ def cleanup_stale_auto_update_controls(
       controls are machine-global, so while this run or any other profile
       recorded in the profile manifests pins a version, every location
       keeps its controls.
-    - settings.json files additionally keep DISABLE_AUTOUPDATER when the
-      current YAML itself declares the key (the removal counterpart of
-      WARN-but-Respect on the write side).
+    - settings.json files additionally keep each AUTO_UPDATE_ENV_CONTROLS
+      key (DISABLE_AUTOUPDATER, DISABLE_UPDATES) the current YAML itself
+      declares (the removal counterpart of WARN-but-Respect on the write
+      side). Each key is decided independently: declaring one never keeps
+      or removes the other.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
@@ -4412,8 +4435,8 @@ def cleanup_stale_auto_update_controls(
         home_dir: User home directory.
         machine_pinned: Whether any installed profile pins a Claude Code
             version -- this run's own pin or another profile's.
-        user_declared: Whether the current resolved YAML declares
-            DISABLE_AUTOUPDATER in user-settings.env.
+        user_declared_keys: Control keys the current resolved YAML
+            declares in user-settings.env.
     """
     if machine_pinned:
         return
@@ -4421,18 +4444,21 @@ def cleanup_stale_auto_update_controls(
     # Nothing on the machine pins a version: remove auto-update controls
     # from EVERYWHERE, preserving user-declared settings.json keys
     claude_dir = home_dir / '.claude'
+    stale_env_keys = tuple(
+        key for key, _ in AUTO_UPDATE_ENV_CONTROLS if key not in user_declared_keys
+    )
 
-    if not user_declared:
-        # 1. Clean DISABLE_AUTOUPDATER from ~/.claude/settings.json
-        _cleanup_settings_json_autoupdater(claude_dir / 'settings.json')
+    if stale_env_keys:
+        # 1. Clean the undeclared environment controls from ~/.claude/settings.json
+        _cleanup_settings_json_env_controls(claude_dir / 'settings.json', stale_env_keys)
 
-        # 2. Clean DISABLE_AUTOUPDATER from ALL ~/.claude/*/settings.json
+        # 2. Clean the undeclared environment controls from ALL ~/.claude/*/settings.json
         if claude_dir.is_dir():
             for subdir in claude_dir.iterdir():
                 if subdir.is_dir():
                     settings_path = subdir / 'settings.json'
                     if settings_path.exists():
-                        _cleanup_settings_json_autoupdater(settings_path)
+                        _cleanup_settings_json_env_controls(settings_path, stale_env_keys)
 
     # 3. Clean autoUpdates: false from ~/.claude.json
     _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
@@ -4446,26 +4472,40 @@ def cleanup_stale_auto_update_controls(
                     _cleanup_claude_json_auto_updates(claude_json_path)
 
 
-def _cleanup_settings_json_autoupdater(settings_path: Path) -> None:
-    """Remove stale DISABLE_AUTOUPDATER from a settings.json file via merge."""
+def _cleanup_settings_json_env_controls(settings_path: Path, keys: tuple[str, ...]) -> None:
+    """Remove stale environment controls from a settings.json file via merge.
+
+    Every listed key present in the file's env section is deleted in one
+    null-as-delete merge write, and an env section left empty is dropped.
+
+    Args:
+        settings_path: Path to the settings.json file.
+        keys: Environment control keys to remove.
+    """
     if not settings_path.exists():
         return
     try:
         content = json.loads(settings_path.read_text(encoding='utf-8'))
+        if not isinstance(content, dict):
+            return
         env_section = content.get('env')
-        if isinstance(env_section, dict) and DISABLE_AUTOUPDATER_KEY in env_section:
-            # Use _write_merged_json with null-as-delete
-            cleanup_dict: dict[str, Any] = {'env': {DISABLE_AUTOUPDATER_KEY: None}}
-            ok, merged = _write_merged_json(settings_path, cleanup_dict)
-            if ok and merged.get('env') == {}:
-                # Clean empty env: {} after removal
-                merged.pop('env')
-                settings_path.write_text(
-                    json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
-                    encoding='utf-8',
-                )
-            if ok:
-                info(f'Cleaned stale {DISABLE_AUTOUPDATER_KEY} from {settings_path}')
+        if not isinstance(env_section, dict):
+            return
+        present = [key for key in keys if key in env_section]
+        if not present:
+            return
+        # Use _write_merged_json with null-as-delete
+        cleanup_dict: dict[str, Any] = {'env': dict.fromkeys(present)}
+        ok, merged = _write_merged_json(settings_path, cleanup_dict)
+        if ok and merged.get('env') == {}:
+            # Clean empty env: {} after removal
+            merged.pop('env')
+            settings_path.write_text(
+                json.dumps(merged, indent=2, ensure_ascii=False) + '\n',
+                encoding='utf-8',
+            )
+        if ok:
+            info(f'Cleaned stale {", ".join(present)} from {settings_path}')
     except (OSError, json.JSONDecodeError, ValueError):
         pass  # Best-effort cleanup; non-fatal
 
@@ -4480,7 +4520,7 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
         return
     try:
         content = json.loads(claude_json_path.read_text(encoding='utf-8'))
-        if content.get(AUTO_UPDATE_KEY) is False:
+        if isinstance(content, dict) and content.get(AUTO_UPDATE_KEY) is False:
             # Use _write_merged_json with null-as-delete
             cleanup_dict: dict[str, Any] = {AUTO_UPDATE_KEY: None}
             ok, _ = _write_merged_json(claude_json_path, cleanup_dict)
@@ -4508,7 +4548,7 @@ def _run_stale_controls_cleanup(
     cleanup_stale_auto_update_controls(
         home_dir=home,
         machine_pinned=machine_pinned,
-        user_declared=DISABLE_AUTOUPDATER_KEY in user_declared_keys,
+        user_declared_keys=user_declared_keys,
     )
     cleanup_stale_ide_extension_controls(
         home_dir=home,
@@ -4697,7 +4737,7 @@ def _cleanup_settings_json_ide_skip(settings_path: Path) -> None:
         return
     try:
         content = json.loads(settings_path.read_text(encoding='utf-8'))
-        env_section = content.get('env')
+        env_section = content.get('env') if isinstance(content, dict) else None
         if isinstance(env_section, dict) and IDE_SKIP_AUTO_INSTALL_KEY in env_section:
             # Use _write_merged_json with null-as-delete
             cleanup_dict: dict[str, Any] = {'env': {IDE_SKIP_AUTO_INSTALL_KEY: None}}
@@ -4725,7 +4765,7 @@ def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
         return
     try:
         content = json.loads(claude_json_path.read_text(encoding='utf-8'))
-        if content.get(IDE_AUTO_INSTALL_KEY) is False:
+        if isinstance(content, dict) and content.get(IDE_AUTO_INSTALL_KEY) is False:
             # Use _write_merged_json with null-as-delete
             cleanup_dict: dict[str, Any] = {IDE_AUTO_INSTALL_KEY: None}
             ok, _ = _write_merged_json(claude_json_path, cleanup_dict)

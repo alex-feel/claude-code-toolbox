@@ -68,6 +68,10 @@ CLAUDE_NPM_PACKAGE = '@anthropic-ai/claude-code'
 CLAUDE_INSTALLER_URL = 'https://claude.ai/install.ps1'
 CLAUDE_GITHUB_RELEASES_API = 'https://api.github.com/repos/anthropics/claude-code/releases/latest'
 CLAUDE_NPM_SLOWBUFFER_FIXED_VERSION: str | None = None  # Update when Anthropic fixes #9628
+# Claude Code prints this and exits 0 when DISABLE_UPDATES blocks `claude install`
+# or `claude update`. The official installer scripts run `claude install` and
+# report success on its exit 0, so an exit-0 installer run can have installed nothing.
+CLAUDE_UPDATES_DISABLED_MESSAGE = 'Updates are disabled by your administrator'
 
 # Shell config marker block constants
 SHELL_CONFIG_MARKER_START = '# >>> claude-code-toolbox >>>'
@@ -3078,18 +3082,48 @@ def install_claude_native_windows(version: str | None = None) -> bool:
     return _install_claude_native_windows_installer(version='latest')
 
 
+def _installer_refused_by_disable_updates(result: subprocess.CompletedProcess[str]) -> bool:
+    """Check whether an official installer run carries the DISABLE_UPDATES refusal.
+
+    Args:
+        result: The completed installer process.
+
+    Returns:
+        True when stdout or stderr contains CLAUDE_UPDATES_DISABLED_MESSAGE.
+    """
+    return any(
+        CLAUDE_UPDATES_DISABLED_MESSAGE in stream
+        for stream in (result.stdout, result.stderr)
+        if stream
+    )
+
+
+def _warn_installer_refused_by_disable_updates() -> None:
+    """Report an official installer run whose `claude install` step was refused."""
+    warning(
+        'The official native installer installed nothing: DISABLE_UPDATES blocks '
+        'the `claude install` step it runs',
+    )
+    info('Claude Code reads DISABLE_UPDATES from the environment and from the env block of its settings files')
+
+
 def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
     """Install Claude Code using the official PowerShell installer script.
 
     Internal function that executes the native installer. Should be called
     with version="latest" to bypass the Anthropic installer bug.
 
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification or recovery, so the caller moves on to its remaining methods.
+
     Args:
         version: Version argument to pass to installer. Use "latest" to
                  bypass the version-check bug on fresh installations.
 
     Returns:
-        True if installation succeeded and was verified, False otherwise.
+        True if installation succeeded and was verified, False otherwise
+        (including a run refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3169,6 +3203,9 @@ def _install_claude_native_windows_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():
@@ -3273,12 +3310,16 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
     """Execute the official macOS shell installer from claude.ai.
 
     Downloads and runs the shell installer script, optionally with a version.
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification, so the caller moves on to its remaining methods.
 
     Args:
         version: Version to install. Use 'latest' for the latest stable version.
 
     Returns:
-        True if installation succeeded, False otherwise.
+        True if installation succeeded, False otherwise (including a run
+        refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3329,6 +3370,9 @@ def _install_claude_native_macos_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():
@@ -3458,12 +3502,16 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
     """Execute the official Linux shell installer from claude.ai.
 
     Downloads and runs the shell installer script, optionally with a version.
+    An installer run that exits 0 while carrying the DISABLE_UPDATES refusal
+    installed nothing: it is reported with a warning and returns False without
+    verification, so the caller moves on to its remaining methods.
 
     Args:
         version: Version to install. Use 'latest' for the latest stable version.
 
     Returns:
-        True if installation succeeded, False otherwise.
+        True if installation succeeded, False otherwise (including a run
+        refused by DISABLE_UPDATES).
 
     Note:
         All network errors are caught internally and result in False return.
@@ -3514,6 +3562,9 @@ def _install_claude_native_linux_installer(version: str = 'latest') -> bool:
             os.unlink(temp_path)
 
         if result.returncode == 0:
+            if _installer_refused_by_disable_updates(result):
+                _warn_installer_refused_by_disable_updates()
+                return False
             success('Claude Code installed via native installer')
             # Log installer output for diagnostics
             if result.stdout and result.stdout.strip():

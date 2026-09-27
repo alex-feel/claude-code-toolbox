@@ -1,8 +1,8 @@
-"""E2E tests exercising the real Claude CLI for MCP configuration.
+"""E2E tests exercising the real Claude CLI.
 
-These tests run `claude mcp` config commands (which require no
-authentication) against a fully isolated CLAUDE_CONFIG_DIR, verifying the
-contracts the idempotent MCP configuration depends on:
+These tests run `claude mcp` config commands and a refused `claude install`
+(none of which require authentication) against a fully isolated
+CLAUDE_CONFIG_DIR, verifying the contracts the toolbox depends on:
 
 - serialization parity: _build_expected_mcp_entry() predicts exactly what
   `claude mcp add` writes per scope and transport, so a binary-version drift
@@ -11,9 +11,13 @@ contracts the idempotent MCP configuration depends on:
   cycle, preserving per-project disabled-server state and the mcpOAuth
   credential entry keyed by name plus a hash of the server's
   type/url/headers (`claude mcp remove` deletes that entry for http/sse
-  servers, which is what de-authenticated unchanged servers before);
+  servers, so a remove/add cycle de-authenticates an unchanged server);
 - reconfiguration: a changed config still lands on disk, and a stale
-  same-name entry at another scope is cleaned up.
+  same-name entry at another scope is cleaned up;
+- updates-disabled refusal: under DISABLE_UPDATES, from the environment or
+  from the settings-file env block, `claude install` exits 0 and prints
+  install_claude.CLAUDE_UPDATES_DISABLED_MESSAGE, which is how the official
+  installer helpers recognize a run that installed nothing.
 
 Skipped when the binary is absent; CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1
 (set in CI) turns absence into a failure instead of a silent skip.
@@ -30,10 +34,16 @@ from typing import Any
 
 import pytest
 
+from scripts import install_claude
 from scripts import setup_environment
 
 _REQUIRE_REAL_BINARY = os.environ.get('CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY') == '1'
 _CLAUDE_CMD = setup_environment.find_command('claude')
+# DISABLE_UPDATES exists from Claude Code 2.1.118 on
+_DISABLE_UPDATES_MIN_VERSION = (2, 1, 118)
+# A closed local port: any network attempt fails immediately
+_DEAD_PROXY = 'http://127.0.0.1:9'
+_CONTRACT_INSTALL_TARGET = '0.0.0-toolbox-contract'
 
 pytestmark = [
     pytest.mark.real_binary,
@@ -173,7 +183,7 @@ def test_rerun_skips_and_preserves_state(isolated_claude_env: dict[str, Path]) -
     first_stats = _configure(servers, config_dir)
     assert first_stats['unchanged_count'] == 0
 
-    # Seed the states the remove/add cycle used to destroy: an OAuth
+    # Seed the states a remove/add cycle destroys: an OAuth
     # credential under the real derived key, and a per-project disabled list
     config = _read_global_config(config_dir)
     oauth_key = _derive_mcp_oauth_key('e2e-http', config['mcpServers']['e2e-http'])
@@ -300,3 +310,84 @@ def test_project_scope_parity_and_skip(isolated_claude_env: dict[str, Path]) -> 
     second_stats = _configure([server], config_dir)
     assert second_stats['unchanged_count'] == 1
     assert mcp_json.read_bytes() == snapshot
+
+
+def _offline_install_env(config_dir: Path, home_dir: Path) -> dict[str, str]:
+    """Build a child environment in which `claude install` cannot change anything real.
+
+    DISABLE_UPDATES and NO_PROXY are removed, every proxy variable (both
+    cases) points at a closed local port, and the home directory is an empty
+    temporary one, so an install attempt fails before any download and any
+    local install step stays inside the test directory even without the
+    DISABLE_UPDATES gate.
+
+    Returns:
+        The environment mapping for subprocess.run().
+    """
+    home_dir.mkdir(exist_ok=True)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.upper() not in {'DISABLE_UPDATES', 'NO_PROXY'}
+    }
+    for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY'):
+        env[name] = _DEAD_PROXY
+        env[name.lower()] = _DEAD_PROXY
+    env['CLAUDE_CONFIG_DIR'] = str(config_dir)
+    env['HOME'] = str(home_dir)
+    env['USERPROFILE'] = str(home_dir)
+    return env
+
+
+def _run_claude(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    assert _CLAUDE_CMD is not None
+    return subprocess.run(
+        [str(_CLAUDE_CMD), *args],
+        capture_output=True, encoding='utf-8', errors='replace', env=env,
+        check=False, timeout=120,
+    )
+
+
+def _skip_without_disable_updates(env: dict[str, str]) -> None:
+    """Skip when the binary predates DISABLE_UPDATES."""
+    result = _run_claude(['--version'], env)
+    version = install_claude.parse_version(result.stdout.strip())
+    assert version is not None, f'unparsable claude --version output: {result.stdout!r}'
+    if version < _DISABLE_UPDATES_MIN_VERSION:
+        pytest.skip(f'claude {result.stdout.strip()} predates DISABLE_UPDATES')
+
+
+def test_install_refused_by_disable_updates_in_environment(
+    isolated_claude_env: dict[str, Path], tmp_path: Path,
+) -> None:
+    """DISABLE_UPDATES in the environment makes `claude install` print the refusal and exit 0."""
+    env = _offline_install_env(isolated_claude_env['config_dir'], tmp_path / 'home')
+    _skip_without_disable_updates(env)
+    env['DISABLE_UPDATES'] = '1'
+
+    result = _run_claude(['install', _CONTRACT_INSTALL_TARGET], env)
+
+    assert result.returncode == 0, f'stdout={result.stdout!r} stderr={result.stderr!r}'
+    assert install_claude.CLAUDE_UPDATES_DISABLED_MESSAGE in result.stdout, (
+        f'stdout={result.stdout!r} stderr={result.stderr!r}'
+    )
+
+
+def test_install_refused_by_disable_updates_in_settings_file(
+    isolated_claude_env: dict[str, Path], tmp_path: Path,
+) -> None:
+    """DISABLE_UPDATES only in the settings-file env block refuses `claude install` the same way."""
+    config_dir = isolated_claude_env['config_dir']
+    env = _offline_install_env(config_dir, tmp_path / 'home')
+    _skip_without_disable_updates(env)
+    assert 'DISABLE_UPDATES' not in {key.upper() for key in env}
+    (config_dir / 'settings.json').write_text(
+        json.dumps({'env': {'DISABLE_UPDATES': '1'}}), encoding='utf-8',
+    )
+
+    result = _run_claude(['install', _CONTRACT_INSTALL_TARGET], env)
+
+    assert result.returncode == 0, f'stdout={result.stdout!r} stderr={result.stderr!r}'
+    assert install_claude.CLAUDE_UPDATES_DISABLED_MESSAGE in result.stdout, (
+        f'stdout={result.stdout!r} stderr={result.stderr!r}'
+    )
