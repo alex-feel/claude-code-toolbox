@@ -14823,12 +14823,15 @@ def _run_main_recording_steps(
     config: dict[str, Any],
     pin_scan: setup_environment._ProfilePinScan | None = None,
     installed_version: str | None = '2.1.80',
+    extra_args: tuple[str, ...] = (),
+    probe: MagicMock | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     """Run main() on config with every external step mocked, recording the control-writing steps.
 
     pin_scan replaces the installed-profile registry scan (no other profile
-    pins by default) and installed_version is what the installed-version
-    probe reports.
+    pins by default), installed_version is what the installed-version
+    probe reports, probe replaces that probe outright, and extra_args are
+    appended to the command line.
 
     Returns:
         The names of the recorded steps in call order and, per step, the
@@ -14849,7 +14852,10 @@ def _run_main_recording_steps(
         patch('setup_environment.validate_all_config_files', return_value=(True, [])),
         patch('setup_environment._other_profile_pins',
               return_value=pin_scan or setup_environment._ProfilePinScan([], False, [])),
-        patch('setup_environment._installed_claude_version', return_value=installed_version),
+        patch(
+            'setup_environment._installed_claude_version',
+            probe if probe is not None else MagicMock(return_value=installed_version),
+        ),
         patch('setup_environment.install_claude', record('install_claude')),
         patch('setup_environment.install_ide_extensions', return_value=True),
         patch('setup_environment.install_dependencies', return_value=[]),
@@ -14870,7 +14876,7 @@ def _run_main_recording_steps(
         patch('setup_environment.write_profile_settings_to_settings'),
         patch('setup_environment.is_admin', return_value=True),
         patch('pathlib.Path.mkdir'),
-        patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
+        patch('sys.argv', ['setup_environment.py', 'test', '--yes', *extra_args]),
     ]
     with contextlib.ExitStack() as stack:
         for active_patch in patches:
@@ -15030,6 +15036,37 @@ class TestInstalledClaudeVersion:
         assert setup_environment._installed_claude_version() is None
 
 
+class TestInstalledClaudeVersionParity:
+    """The setup probe and install_claude.py read the same version from the same binary output.
+
+    The kept installation is requested at the probed version, so ensure_claude()
+    leaves it alone only when both parsers agree exactly.
+    """
+
+    @pytest.mark.parametrize(
+        'stdout',
+        [
+            '2.1.280 (Claude Code)\n',
+            '1.0.128\n',
+            '@anthropic-ai/claude-code/2.0.14 linux-x64 node-v22.1.0\n',
+            '2.2.0-beta.1 (Claude Code)\n',
+        ],
+    )
+    def test_both_parsers_agree(self, monkeypatch: pytest.MonkeyPatch, stdout: str) -> None:
+        import install_claude
+
+        def fake_run(*_a: object, **_kw: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess([], 0, stdout, '')
+
+        monkeypatch.setattr(setup_environment, 'find_command', lambda _cmd: '/usr/bin/claude')
+        monkeypatch.setattr(setup_environment.subprocess, 'run', fake_run)
+        monkeypatch.setattr(install_claude.subprocess, 'run', fake_run)
+
+        installer_version, is_corrupt = install_claude._probe_claude_version('/usr/bin/claude')
+        assert is_corrupt is False
+        assert setup_environment._installed_claude_version() == installer_version
+
+
 class TestDecideClaudeInstall:
     """_decide_claude_install() never moves the binary off another installed profile's pin."""
 
@@ -15108,13 +15145,27 @@ class TestMainStepOneWithPinnedSibling:
         assert 'Claude Code: keep the installed version 2.1.80 (another installed profile pins a version)' in out
         assert 'Claude Code installation: Kept at 2.1.80 (another installed profile pins a version)' in out
 
-    def test_missing_installation_is_installed_at_the_agreed_pin(self) -> None:
+    def test_missing_installation_is_installed_at_the_agreed_pin(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         calls, captured = _run_main_recording_steps(
             dict(self.CONFIG), pin_scan=self.BASE_PIN, installed_version=None,
         )
         assert calls[0] == 'install_claude'
         (install_version,), _ = captured['install_claude']
         assert install_version == '2.1.85'
+        captured_output = capsys.readouterr()
+        out = captured_output.out + captured_output.err
+        assert 'Claude Code: install (version: 2.1.85) (another installed profile pins a version)' in out
+
+    def test_skip_install_does_not_probe_the_binary(self) -> None:
+        probe = MagicMock(return_value='2.1.80')
+        with patch('setup_environment.find_command', return_value='/usr/bin/claude'):
+            calls, _ = _run_main_recording_steps(
+                dict(self.CONFIG), pin_scan=self.BASE_PIN, extra_args=('--skip-install',), probe=probe,
+            )
+        assert 'install_claude' not in calls
+        probe.assert_not_called()
 
     def test_warning_reaches_the_installation_summary(self, capsys: pytest.CaptureFixture[str]) -> None:
         scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85', '2.1.90'])

@@ -2403,3 +2403,90 @@ class TestEnsureLocalBinInPathUnix:
         finally:
             # Restore PATH
             os.environ['PATH'] = original_path
+
+
+class TestExactVersionOnlyInstall:
+    """With exact_version_only, a specific version is never replaced by the latest-release installer."""
+
+    @pytest.mark.parametrize(
+        ('system', 'platform_name', 'installer_attr', 'native_function'),
+        [
+            ('Darwin', 'darwin', '_install_claude_native_macos_installer', 'install_claude_native_macos'),
+            ('Linux', 'linux', '_install_claude_native_linux_installer', 'install_claude_native_linux'),
+        ],
+    )
+    def test_unix_exact_version_does_not_fall_back_to_latest(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        system: str,
+        platform_name: str,
+        installer_attr: str,
+        native_function: str,
+    ) -> None:
+        monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+        monkeypatch.setattr(install_claude.sys, 'platform', platform_name)
+        monkeypatch.setattr(install_claude, '_download_claude_direct_from_gcs', MagicMock(return_value=False))
+        latest_installer = MagicMock(return_value=True)
+        monkeypatch.setattr(install_claude, installer_attr, latest_installer)
+
+        assert getattr(install_claude, native_function)('2.1.80', exact_version_only=True) is False
+        latest_installer.assert_not_called()
+
+        assert getattr(install_claude, native_function)('2.1.80') is True
+        latest_installer.assert_called_once_with(version='latest')
+
+    def test_windows_exact_version_does_not_fall_back_to_latest(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(install_claude.platform, 'system', lambda: 'Windows')
+        monkeypatch.setattr(install_claude, '_cleanup_old_claude_files', lambda: None)
+        monkeypatch.setattr(install_claude, '_download_claude_direct_from_gcs', MagicMock(return_value=False))
+        monkeypatch.setattr(install_claude, '_install_claude_winget', MagicMock(return_value=False))
+        latest_installer = MagicMock(return_value=True)
+        monkeypatch.setattr(install_claude, '_install_claude_native_windows_installer', latest_installer)
+
+        assert install_claude.install_claude_native_windows('2.1.80', exact_version_only=True) is False
+        latest_installer.assert_not_called()
+
+        assert install_claude.install_claude_native_windows('2.1.80') is True
+        latest_installer.assert_called_once_with(version='latest')
+
+    @pytest.mark.parametrize('system', ['Windows', 'Darwin', 'Linux'])
+    def test_dispatcher_forwards_exact_version_only(self, monkeypatch: pytest.MonkeyPatch, system: str) -> None:
+        monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+        target = {
+            'Windows': 'install_claude_native_windows',
+            'Darwin': 'install_claude_native_macos',
+            'Linux': 'install_claude_native_linux',
+        }[system]
+        native = MagicMock(return_value=True)
+        monkeypatch.setattr(install_claude, target, native)
+
+        install_claude.install_claude_native_cross_platform('2.1.80', exact_version_only=True)
+
+        native.assert_called_once_with('2.1.80', exact_version_only=True)
+
+    def test_same_version_npm_migration_keeps_npm_when_no_exact_method_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An npm install already at the requested version is never moved to the latest release."""
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_INSTALL_METHOD', 'auto')
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_VERSION', '2.1.80')
+        monkeypatch.setattr(install_claude.platform, 'system', lambda: 'Linux')
+        monkeypatch.setattr(install_claude.sys, 'platform', 'linux')
+        monkeypatch.setattr(install_claude, 'get_claude_version', MagicMock(return_value='2.1.80'))
+        monkeypatch.setattr(
+            install_claude, 'verify_claude_installation',
+            MagicMock(return_value=(True, '/usr/lib/node_modules/.bin/claude', 'npm')),
+        )
+        monkeypatch.setattr(install_claude, '_download_claude_direct_from_gcs', MagicMock(return_value=False))
+        latest_installer = MagicMock(return_value=True)
+        monkeypatch.setattr(install_claude, '_install_claude_native_linux_installer', latest_installer)
+        warn_failed = MagicMock()
+        monkeypatch.setattr(install_claude, '_warn_migration_failed', warn_failed)
+        config = MagicMock()
+        monkeypatch.setattr(install_claude, 'update_install_method_config', config)
+
+        assert install_claude.ensure_claude() is True
+
+        latest_installer.assert_not_called()
+        warn_failed.assert_called_once_with('/usr/lib/node_modules/.bin/claude')
+        config.assert_called_with('global')

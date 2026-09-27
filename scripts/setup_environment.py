@@ -8454,7 +8454,8 @@ def display_installation_summary(
         _print(f'  * Claude Code: keep the installed version {plan.claude_code_version} ({plan.claude_install_reason})')
     else:
         version_str = plan.claude_code_version or 'latest'
-        _print(f'  * Claude Code: install (version: {version_str})')
+        reason_str = f' ({plan.claude_install_reason})' if plan.claude_install_reason else ''
+        _print(f'  * Claude Code: install (version: {version_str}){reason_str}')
     if not plan.skip_install and plan.claude_install_warning:
         _print(f'    {Colors.YELLOW}Warning: {plan.claude_install_warning}{Colors.NC}')
     if plan.install_nodejs:
@@ -14716,14 +14717,15 @@ def main() -> None:
         machine_pinned = claude_code_version_normalized is not None or other_profile_pinned
         if claude_code_version_normalized is None and other_profile_pinned:
             info(_pinned_elsewhere_message(profile_pin_scan))
-        # Only an unpinned run next to a pinned profile needs to know what is
-        # installed, so the probe does not run a binary on any other run.
+        # Only an unpinned run that installs next to a pinned profile needs to
+        # know what is installed, so the probe does not run a binary on any
+        # other run.
         claude_install_decision = _decide_claude_install(
             claude_code_version_normalized,
             profile_pin_scan,
             installed_version=(
                 _installed_claude_version()
-                if claude_code_version_normalized is None and other_profile_pinned
+                if claude_code_version_normalized is None and other_profile_pinned and not args.skip_install
                 else None
             ),
         )
