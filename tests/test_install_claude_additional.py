@@ -2439,12 +2439,14 @@ class TestExactVersionOnlyInstall:
         monkeypatch.setattr(install_claude.platform, 'system', lambda: 'Windows')
         monkeypatch.setattr(install_claude, '_cleanup_old_claude_files', lambda: None)
         monkeypatch.setattr(install_claude, '_download_claude_direct_from_gcs', MagicMock(return_value=False))
-        monkeypatch.setattr(install_claude, '_install_claude_winget', MagicMock(return_value=False))
+        winget = MagicMock(return_value=False)
+        monkeypatch.setattr(install_claude, '_install_claude_winget', winget)
         latest_installer = MagicMock(return_value=True)
         monkeypatch.setattr(install_claude, '_install_claude_native_windows_installer', latest_installer)
 
         assert install_claude.install_claude_native_windows('2.1.80', exact_version_only=True) is False
         latest_installer.assert_not_called()
+        winget.assert_not_called()
 
         assert install_claude.install_claude_native_windows('2.1.80') is True
         latest_installer.assert_called_once_with(version='latest')

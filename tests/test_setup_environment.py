@@ -15137,8 +15137,9 @@ class TestMainStepOneWithPinnedSibling:
     ) -> None:
         calls, captured = _run_main_recording_steps(dict(self.CONFIG), pin_scan=self.BASE_PIN)
         assert calls[0] == 'install_claude'
-        (install_version,), _ = captured['install_claude']
+        (install_version,), install_kwargs = captured['install_claude']
         assert install_version == '2.1.80'
+        assert install_kwargs == {'keep_installed': True}
         captured_output = capsys.readouterr()
         out = captured_output.out + captured_output.err
         assert 'Step 1: Keeping the installed Claude Code' in out
@@ -15173,7 +15174,10 @@ class TestMainStepOneWithPinnedSibling:
         captured_output = capsys.readouterr()
         out = captured_output.out + captured_output.err
         assert 'Claude Code: install (version: latest)' in out
-        assert 'Warning: Claude Code is not installed and the installed profiles pin different versions' in out
+        assert (
+            'Warning: No working Claude Code installation was found and the installed profiles pin different versions'
+            in out
+        )
 
     def test_unpinned_run_without_pinned_siblings_still_upgrades(self) -> None:
         calls, captured = _run_main_recording_steps(dict(self.CONFIG))

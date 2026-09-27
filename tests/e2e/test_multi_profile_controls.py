@@ -202,8 +202,8 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
     @patch('scripts.setup_environment._installed_claude_version')
     @patch('scripts.setup_environment.is_admin', return_value=True)
     @pytest.mark.parametrize(
-        ('installed_version', 'expected_install'),
-        [('2.1.80', '2.1.80'), (None, PINNED_VERSION)],
+        ('installed_version', 'expected_install', 'expected_kept'),
+        [('2.1.80', '2.1.80', True), (None, PINNED_VERSION, False)],
         ids=['installed-binary-kept', 'missing-binary-gets-the-pin'],
     )
     def test_unpinned_isolated_run_does_not_move_the_pinned_binary(
@@ -223,6 +223,7 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
         mock_load: MagicMock,
         installed_version: str | None,
         expected_install: str,
+        expected_kept: bool,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
         del mock_is_admin, mock_register, mock_env_loader, mock_os_env
@@ -251,7 +252,7 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
             setup_environment.main()
             mock_exit.assert_not_called()
 
-        mock_install.assert_called_once_with(expected_install)
+        mock_install.assert_called_once_with(expected_install, keep_installed=expected_kept)
         manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
         assert manifest['claude_code_version'] is None
 

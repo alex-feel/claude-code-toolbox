@@ -3002,9 +3002,9 @@ def install_claude_native_windows(version: str | None = None, *, exact_version_o
                  If None, installs stable channel. Supports semantic versions
                  and pre-release tags (e.g., "2.0.0-beta").
         exact_version_only: When True, a specific version is installed only
-            by methods that install exactly that version; the official
-            installer, which installs the latest release, is never used as
-            a fallback and the call returns False instead.
+            natively by the direct download; neither winget nor the official
+            installer (which installs the latest release) is used as a
+            fallback, and the call returns False instead.
 
     Returns:
         True if installation succeeded and was verified, False otherwise.
@@ -3088,6 +3088,15 @@ def install_claude_native_windows(version: str | None = None, *, exact_version_o
         error('Installation verification failed')
         return False
 
+    # A winget installation is not a native one, so it cannot complete the
+    # native installation exact_version_only asks for.
+    if exact_version_only:
+        warning(
+            f'The direct download of version {version} failed; winget and the official '
+            'installer, which installs the latest release, are not used here',
+        )
+        return False
+
     # Direct download failed -- try winget with version
     info(f'Direct download failed for version {version}, trying winget...')
     if _install_claude_winget(version=version):
@@ -3095,12 +3104,6 @@ def install_claude_native_windows(version: str | None = None, *, exact_version_o
 
     # winget also failed -- fall back to native installer with "latest"
     warning(f'winget installation of version {version} also failed.')
-    if exact_version_only:
-        warning(
-            f'No exact-version installation method succeeded for version {version}; '
-            'the official installer, which installs the latest release, is not used here',
-        )
-        return False
     warning('Falling back to native installer with "latest" version.')
     info('Note: This will install the latest version instead of the requested version.')
 

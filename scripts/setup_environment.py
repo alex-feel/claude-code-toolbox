@@ -4337,7 +4337,7 @@ def _decide_claude_install(
             kept=False,
             reason=reason,
             note=(
-                f'Claude Code is not installed; installing version {pinned}, '
+                f'No working Claude Code installation was found; installing version {pinned}, '
                 f'which another installed profile pins ({names}).{unreadable}'
             ),
             note_is_warning=scan.undetermined,
@@ -4351,7 +4351,7 @@ def _decide_claude_install(
         version=None,
         kept=False,
         reason=reason,
-        note=f'Claude Code is not installed and {cause}; installing the latest release.',
+        note=f'No working Claude Code installation was found and {cause}; installing the latest release.',
         note_is_warning=True,
     )
 
@@ -11009,7 +11009,7 @@ def process_skills(
 # Every exception raised inside install_claude() is caught by its own
 # catch-all handler and reported as a False return, so the docstring carries
 # no Raises section; DOC501 cannot see the catch-all.
-def install_claude(version: str | None = None) -> bool:
+def install_claude(version: str | None = None, *, keep_installed: bool = False) -> bool:
     """Install Claude Code if needed.
 
     When install_claude.py sits beside this file (the PyPI wheel ships both
@@ -11021,6 +11021,8 @@ def install_claude(version: str | None = None) -> bool:
     Args:
         version: Specific Claude Code version to install (e.g., "1.0.128").
                 If None, installs the latest version.
+        keep_installed: Whether version is the version already installed,
+                so the installer runs to keep it rather than to change it.
 
     Returns:
         True if installation succeeded, False otherwise.
@@ -11043,7 +11045,10 @@ def install_claude(version: str | None = None) -> bool:
         return False
 
     if version:
-        info(f'Installing Claude Code version {version}...')
+        if keep_installed:
+            info(f'Running the installer to keep Claude Code version {version}...')
+        else:
+            info(f'Installing Claude Code version {version}...')
         # Set environment variable for the installer scripts to use
         os.environ['CLAUDE_CODE_TOOLBOX_VERSION'] = version
     else:
@@ -14941,7 +14946,7 @@ def main() -> None:
                     warning(claude_install_decision.note)
                 else:
                     info(claude_install_decision.note)
-            if not install_claude(claude_install_decision.version):
+            if not install_claude(claude_install_decision.version, keep_installed=claude_install_decision.kept):
                 raise Exception('Claude Code installation failed')
         else:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
