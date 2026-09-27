@@ -14575,13 +14575,13 @@ class TestOtherProfilePins:
 
     def test_missing_claude_dir_reports_no_pin(self, tmp_path: Path) -> None:
         scan = setup_environment._other_profile_pins(tmp_path / 'nonexistent', None)
-        assert scan == ([], False)
+        assert scan == ([], False, [])
         assert scan.other_profile_pinned is False
 
     def test_no_manifests_reports_no_pin(self, tmp_path: Path) -> None:
         (tmp_path / '.claude' / 'some-cmd').mkdir(parents=True)
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], False)
+        assert scan == ([], False, [])
 
     def test_invalid_json_is_undetermined(self, tmp_path: Path) -> None:
         """An unparseable manifest leaves the pin unknown, so the controls stay."""
@@ -14589,7 +14589,7 @@ class TestOtherProfilePins:
         claude_dir.mkdir(parents=True)
         (claude_dir / 'manifest.json').write_text('{not json', encoding='utf-8')
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
         assert scan.other_profile_pinned is True
 
     def test_non_object_manifest_is_undetermined(self, tmp_path: Path) -> None:
@@ -14597,7 +14597,7 @@ class TestOtherProfilePins:
         claude_dir.mkdir(parents=True)
         (claude_dir / 'manifest.json').write_text('["not", "an", "object"]', encoding='utf-8')
         scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
 
     def test_unreadable_manifest_is_undetermined(self, tmp_path: Path) -> None:
         """An OSError reading an existing manifest must not read as 'no pin'."""
@@ -14613,31 +14613,31 @@ class TestOtherProfilePins:
         (tmp_path / '.claude').mkdir(parents=True)
         with patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
             scan = setup_environment._other_profile_pins(tmp_path, 'some-cmd')
-        assert scan == ([], True)
+        assert scan == ([], True, [])
         assert scan.other_profile_pinned is True
 
     def test_base_manifest_pin_seen_by_isolated_run(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
         scan = setup_environment._other_profile_pins(tmp_path, 'claude-personal')
-        assert scan == (['base'], False)
+        assert scan == (['base'], False, ['2.1.85'])
         assert scan.other_profile_pinned is True
 
     def test_isolated_manifest_pin_seen_by_base_run(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False, ['2.1.85'])
 
     def test_own_isolated_manifest_is_excluded(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
 
     def test_own_base_manifest_is_excluded(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False, [])
 
     def test_own_manifest_excluded_by_name_not_by_location(self, tmp_path: Path) -> None:
         """A profile relocated by CLAUDE_CONFIG_DIR is matched by its recorded name."""
         self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
 
     def test_unpinned_manifests_do_not_count(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -14648,7 +14648,7 @@ class TestOtherProfilePins:
         (legacy / 'manifest.json').write_text(
             json.dumps({'name': 'legacy'}), encoding='utf-8',
         )
-        assert setup_environment._other_profile_pins(tmp_path, 'current') == ([], False)
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == ([], False, [])
 
     def test_multiple_pinned_profiles_are_sorted(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -14656,13 +14656,22 @@ class TestOtherProfilePins:
         self._write_manifest(claude_dir / 'zeta', 'zeta', '2.1.85')
         self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
         scan = setup_environment._other_profile_pins(tmp_path, 'current')
-        assert scan == (['alpha', 'base', 'zeta'], False)
+        assert scan == (['alpha', 'base', 'zeta'], False, ['2.1.85'])
+
+    def test_pinned_versions_are_distinct_and_sorted(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, ' 2.1.90 ')
+        self._write_manifest(claude_dir / 'alpha', 'alpha', '2.1.85')
+        self._write_manifest(claude_dir / 'beta', 'beta', '2.1.85')
+        self._write_manifest(claude_dir / 'current', 'current', '2.1.99')
+        scan = setup_environment._other_profile_pins(tmp_path, 'current')
+        assert scan == (['alpha', 'base', 'beta'], False, ['2.1.85', '2.1.90'])
 
     def test_whitespace_only_name_is_treated_as_base(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
         self._write_manifest(claude_dir, '   ', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False)
-        assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False)
+        assert setup_environment._other_profile_pins(tmp_path, None) == ([], False, [])
+        assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False, ['2.1.85'])
 
 
 class TestPinnedElsewhereMessage:
@@ -14670,14 +14679,14 @@ class TestPinnedElsewhereMessage:
 
     def test_names_the_pinned_profiles(self) -> None:
         message = setup_environment._pinned_elsewhere_message(
-            setup_environment._ProfilePinScan(['base', 'claude-personal'], False),
+            setup_environment._ProfilePinScan(['base', 'claude-personal'], False, ['2.1.85']),
         )
         assert "('base', 'claude-personal')" in message
         assert 'left in place' in message
 
     def test_explains_an_unreadable_registry(self) -> None:
         message = setup_environment._pinned_elsewhere_message(
-            setup_environment._ProfilePinScan([], True),
+            setup_environment._ProfilePinScan([], True, []),
         )
         assert 'could not be read' in message
         assert 'left in place' in message
@@ -14810,8 +14819,15 @@ class TestCollectUserDeclaredControlKeys:
         assert setup_environment._collect_user_declared_control_keys(us, global_config=None) == frozenset()
 
 
-def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+def _run_main_recording_steps(
+    config: dict[str, Any],
+    pin_scan: setup_environment._ProfilePinScan | None = None,
+    claude_path: str | None = '/usr/bin/claude',
+) -> tuple[list[str], dict[str, Any]]:
     """Run main() on config with every external step mocked, recording the control-writing steps.
+
+    pin_scan replaces the installed-profile registry scan (no other profile
+    pins by default) and claude_path is what the claude lookup returns.
 
     Returns:
         The names of the recorded steps in call order and, per step, the
@@ -14827,11 +14843,15 @@ def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[s
             return return_value
         return MagicMock(side_effect=side_effect)
 
+    real_find_command = setup_environment.find_command
     patches = [
         patch('setup_environment.load_config_from_source', return_value=(config, 'test.yaml')),
         patch('setup_environment.validate_all_config_files', return_value=(True, [])),
         patch('setup_environment._other_profile_pins',
-              return_value=setup_environment._ProfilePinScan([], False)),
+              return_value=pin_scan or setup_environment._ProfilePinScan([], False, [])),
+        patch('setup_environment.find_command', side_effect=lambda cmd, *args, **kwargs: (
+            claude_path if cmd == 'claude' else real_find_command(cmd, *args, **kwargs)
+        )),
         patch('setup_environment.install_claude', record('install_claude')),
         patch('setup_environment.install_ide_extensions', return_value=True),
         patch('setup_environment.install_dependencies', return_value=[]),
@@ -14960,6 +14980,87 @@ class TestMainForwardsDeclaredControlKeys:
         _, cleanup_kwargs = captured['_run_stale_controls_cleanup']
         assert cleanup_kwargs['machine_pinned'] is False
         assert cleanup_kwargs['user_declared_keys'] == expected
+
+
+class TestDecideClaudeInstall:
+    """_decide_claude_install() never moves the binary off another installed profile's pin."""
+
+    NO_PIN = setup_environment._ProfilePinScan([], False, [])
+    BASE_PIN = setup_environment._ProfilePinScan(['base'], False, ['2.1.85'])
+
+    def test_pinned_run_installs_its_own_pin(self) -> None:
+        decision = setup_environment._decide_claude_install('2.1.90', self.BASE_PIN, claude_installed=True)
+        assert decision == (True, '2.1.90', None, False)
+
+    def test_unpinned_run_without_other_pins_installs_latest(self) -> None:
+        decision = setup_environment._decide_claude_install(None, self.NO_PIN, claude_installed=True)
+        assert decision == (True, None, None, False)
+
+    def test_installed_binary_is_kept_while_another_profile_pins(self) -> None:
+        decision = setup_environment._decide_claude_install(None, self.BASE_PIN, claude_installed=True)
+        assert decision.install is False
+        assert decision.note is not None
+        assert "('base')" in decision.note
+        assert 'keeping the installed Claude Code' in decision.note
+        assert decision.note_is_warning is False
+
+    def test_installed_binary_is_kept_when_the_registry_is_unreadable(self) -> None:
+        scan = setup_environment._ProfilePinScan([], True, [])
+        decision = setup_environment._decide_claude_install(None, scan, claude_installed=True)
+        assert decision.install is False
+        assert decision.note is not None
+        assert 'could not be read' in decision.note
+
+    def test_missing_binary_installs_the_agreed_pin(self) -> None:
+        scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85'])
+        decision = setup_environment._decide_claude_install(None, scan, claude_installed=False)
+        assert decision.install is True
+        assert decision.version == '2.1.85'
+        assert decision.note_is_warning is False
+        assert decision.note is not None
+        assert "installing version 2.1.85, which another installed profile pins ('alpha', 'base')" in decision.note
+
+    def test_missing_binary_with_conflicting_pins_installs_latest_with_warning(self) -> None:
+        scan = setup_environment._ProfilePinScan(['alpha', 'base'], False, ['2.1.85', '2.1.90'])
+        decision = setup_environment._decide_claude_install(None, scan, claude_installed=False)
+        assert (decision.install, decision.version, decision.note_is_warning) == (True, None, True)
+        assert decision.note is not None
+        assert 'different versions (2.1.85, 2.1.90)' in decision.note
+
+    def test_missing_binary_with_unreadable_registry_installs_latest_with_warning(self) -> None:
+        scan = setup_environment._ProfilePinScan(['base'], True, ['2.1.85'])
+        decision = setup_environment._decide_claude_install(None, scan, claude_installed=False)
+        assert (decision.install, decision.version, decision.note_is_warning) == (True, None, True)
+        assert decision.note is not None
+        assert 'could not be read' in decision.note
+
+
+class TestMainStepOneWithPinnedSibling:
+    """main() Step 1 of an unpinned run on a machine where another profile pins a version."""
+
+    CONFIG: dict[str, Any] = {'name': 'Unpinned Sibling', 'user-settings': {'model': 'claude-opus-4'}}
+    BASE_PIN = setup_environment._ProfilePinScan(['base'], False, ['2.1.85'])
+
+    def test_installed_binary_is_not_reinstalled_or_upgraded(self, capsys: pytest.CaptureFixture[str]) -> None:
+        calls, _ = _run_main_recording_steps(dict(self.CONFIG), pin_scan=self.BASE_PIN)
+        assert 'install_claude' not in calls
+        captured_output = capsys.readouterr()
+        out = captured_output.out + captured_output.err
+        assert 'Step 1: Keeping the installed Claude Code' in out
+        assert 'Claude Code: keep the installed version (another installed profile pins a version)' in out
+        assert 'Claude Code installation: Kept (another installed profile pins a version)' in out
+
+    def test_missing_binary_is_installed_at_the_agreed_pin(self) -> None:
+        calls, captured = _run_main_recording_steps(dict(self.CONFIG), pin_scan=self.BASE_PIN, claude_path=None)
+        assert calls[0] == 'install_claude'
+        (install_version,), _ = captured['install_claude']
+        assert install_version == '2.1.85'
+
+    def test_unpinned_run_without_pinned_siblings_still_upgrades(self) -> None:
+        calls, captured = _run_main_recording_steps(dict(self.CONFIG))
+        assert calls[0] == 'install_claude'
+        (install_version,), _ = captured['install_claude']
+        assert install_version is None
 
 
 class TestPropagateInstallMethod:

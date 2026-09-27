@@ -185,6 +185,82 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         assert settings['env'] == CONTROLLED_SETTINGS_ENV
 
 
+class TestUnpinnedIsolatedRunKeepsPinnedBinary:
+    """Scenario (d): an unpinned isolated run never moves the binary the pinned base profile holds."""
+
+    @patch('scripts.setup_environment.load_config_from_source')
+    @patch('scripts.setup_environment.validate_all_config_files')
+    @patch('scripts.setup_environment.install_claude', return_value=True)
+    @patch('scripts.setup_environment.install_dependencies', return_value=[])
+    @patch('scripts.setup_environment.process_resources')
+    @patch('scripts.setup_environment.process_skills')
+    @patch('scripts.setup_environment.configure_all_mcp_servers')
+    @patch('scripts.setup_environment.set_all_os_env_variables', return_value=True)
+    @patch('scripts.setup_environment.generate_env_loader_files', return_value={})
+    @patch('scripts.setup_environment.create_launcher_script')
+    @patch('scripts.setup_environment.register_global_command', return_value=True)
+    @patch('scripts.setup_environment.find_command')
+    @patch('scripts.setup_environment.is_admin', return_value=True)
+    @pytest.mark.parametrize(
+        ('claude_path', 'expected_install'),
+        [('/usr/bin/claude', None), (None, PINNED_VERSION)],
+        ids=['installed-binary-kept', 'missing-binary-gets-the-pin'],
+    )
+    def test_unpinned_isolated_run_does_not_move_the_pinned_binary(
+        self,
+        mock_is_admin: MagicMock,
+        mock_find_cmd: MagicMock,
+        mock_register: MagicMock,
+        mock_launcher: MagicMock,
+        mock_env_loader: MagicMock,
+        mock_os_env: MagicMock,
+        mock_mcp: MagicMock,
+        mock_skills: MagicMock,
+        mock_resources: MagicMock,
+        mock_deps: MagicMock,
+        mock_install: MagicMock,
+        mock_validate: MagicMock,
+        mock_load: MagicMock,
+        claude_path: str | None,
+        expected_install: str | None,
+        e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        del mock_is_admin, mock_register, mock_env_loader, mock_os_env
+        del mock_skills, mock_resources, mock_deps
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+
+        _write_profile_manifest(claude_dir, None, PINNED_VERSION)
+        _seed_base_profile_controls(claude_dir, home)
+
+        profile_dir = claude_dir / 'claude-personal'
+        mock_launcher.return_value = (profile_dir / 'launch.sh', profile_dir / 'launch.sh')
+        mock_find_cmd.side_effect = lambda cmd, *_args, **_kwargs: (
+            claude_path if cmd == 'claude' else f'/usr/bin/{cmd}'
+        )
+        config: dict[str, Any] = {
+            'name': 'Personal Profile',
+            'command-names': ['claude-personal'],
+            'command-defaults': {},
+            'user-settings': {'theme': 'dark'},
+        }
+        mock_load.return_value = (config, 'personal.yaml')
+        mock_validate.return_value = (True, [])
+        mock_mcp.return_value = (True, [], empty_mcp_stats())
+
+        with patch('sys.argv', ['setup_environment.py', 'personal', '--yes']), \
+             patch('sys.exit') as mock_exit:
+            setup_environment.main()
+            mock_exit.assert_not_called()
+
+        if expected_install is None:
+            mock_install.assert_not_called()
+        else:
+            mock_install.assert_called_once_with(expected_install)
+        manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
+        assert manifest['claude_code_version'] is None
+
+
 class TestSingleUnpinnedProfile:
     """Scenario (c): with no pinned profile anywhere, the full sweep still runs."""
 

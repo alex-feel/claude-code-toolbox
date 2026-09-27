@@ -890,6 +890,7 @@ class InstallationPlan:
     claude_code_version: str | None = None
     install_nodejs: bool = False
     skip_install: bool = False
+    keep_installed_claude: bool = False
     os_env_variables: dict[str, Any] | None = None
     user_settings: dict[str, Any] | None = None
     global_config: dict[str, Any] | None = None
@@ -4051,16 +4052,19 @@ class _ProfilePin(NamedTuple):
         pinned: Whether the profile records a Claude Code version pin.
         undetermined: Whether the manifest exists but could not be read or
             parsed, leaving that profile's pin unknown.
+        version: The pinned Claude Code version, None when the profile does
+            not pin one or its pin is unknown.
     """
 
     name: str | None
     pinned: bool
     undetermined: bool
+    version: str | None
 
 
 # A manifest that exists but cannot be read or parsed carries no name and no
 # readable pin, so it answers the pin question with "unknown" instead of "no".
-_UNDETERMINED_PIN = _ProfilePin(name=None, pinned=False, undetermined=True)
+_UNDETERMINED_PIN = _ProfilePin(name=None, pinned=False, undetermined=True, version=None)
 
 
 class _ProfilePinScan(NamedTuple):
@@ -4072,10 +4076,13 @@ class _ProfilePinScan(NamedTuple):
             profile).
         undetermined: Whether any part of the registry could not be read,
             leaving at least one profile's pin unknown.
+        pinned_versions: Sorted distinct Claude Code versions those
+            profiles pin.
     """
 
     pinned_profiles: list[str]
     undetermined: bool
+    pinned_versions: list[str]
 
     @property
     def other_profile_pinned(self) -> bool:
@@ -4116,10 +4123,12 @@ def _read_profile_pin(manifest_path: Path) -> _ProfilePin | None:
     name_raw = content.get('name')
     name = name_raw.strip() or None if isinstance(name_raw, str) else None
     pin = content.get(MANIFEST_VERSION_PIN_KEY)
+    version = pin.strip() or None if isinstance(pin, str) else None
     return _ProfilePin(
         name=name,
-        pinned=isinstance(pin, str) and bool(pin.strip()),
+        pinned=version is not None,
         undetermined=False,
+        version=version,
     )
 
 
@@ -4167,6 +4176,7 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
         undetermined = True
 
     pinned: set[str] = set()
+    versions: set[str] = set()
     for manifest_path in manifest_paths:
         profile = _read_profile_pin(manifest_path)
         if profile is None:
@@ -4176,9 +4186,10 @@ def _other_profile_pins(home_dir: Path, primary_command_name: str | None) -> _Pr
             continue
         if profile.name == primary_command_name:
             continue  # This run's own profile
-        if profile.pinned:
+        if profile.pinned and profile.version is not None:
             pinned.add(profile.name or 'base')
-    return _ProfilePinScan(sorted(pinned), undetermined)
+            versions.add(profile.version)
+    return _ProfilePinScan(sorted(pinned), undetermined, sorted(versions))
 
 
 def _pinned_elsewhere_message(scan: _ProfilePinScan) -> str:
@@ -4200,6 +4211,95 @@ def _pinned_elsewhere_message(scan: _ProfilePinScan) -> str:
             'pin on another profile cannot be ruled out'
         )
     return f'{reason}; auto-update and IDE extension controls are left in place.'
+
+
+class _ClaudeInstallDecision(NamedTuple):
+    """How Step 1 treats the machine's Claude Code binary for this run.
+
+    Attributes:
+        install: Whether Step 1 runs the installer; False keeps the
+            installed binary exactly as it is.
+        version: Version to install, None for the latest release.
+        note: Explanation to print with Step 1, None when there is nothing
+            to explain.
+        note_is_warning: Whether note is printed as a warning.
+    """
+
+    install: bool
+    version: str | None
+    note: str | None
+    note_is_warning: bool
+
+
+def _decide_claude_install(
+    claude_code_version_normalized: str | None,
+    scan: _ProfilePinScan,
+    *,
+    claude_installed: bool,
+) -> _ClaudeInstallDecision:
+    """Decide what Step 1 does with the one Claude Code binary this machine has.
+
+    A pinned run installs its own pin, and an unpinned run on a machine
+    where no other profile pins a version installs or upgrades to the
+    latest release. An unpinned run while another installed profile pins
+    a version must not move the binary off that pin: an installed binary
+    is kept as it is (no upgrade, no npm-to-native migration), and a
+    missing one is installed at the version the pinning profiles agree on.
+    When they pin different versions, or a manifest could not be read, no
+    version can be chosen for them, so a missing binary is installed at
+    the latest release with a warning.
+
+    Args:
+        claude_code_version_normalized: This run's pinned version, or None.
+        scan: Registry scan of the OTHER installed profiles.
+        claude_installed: Whether a Claude Code executable is installed.
+
+    Returns:
+        The Step 1 decision.
+    """
+    if claude_code_version_normalized is not None or not scan.other_profile_pinned:
+        return _ClaudeInstallDecision(
+            install=True, version=claude_code_version_normalized, note=None, note_is_warning=False,
+        )
+
+    names = ', '.join(f"'{name}'" for name in scan.pinned_profiles)
+    if claude_installed:
+        if scan.pinned_profiles:
+            reason = f'Another installed profile pins a Claude Code version ({names})'
+        else:
+            reason = (
+                'An installed profile manifest could not be read, so a version '
+                'pin on another profile cannot be ruled out'
+            )
+        return _ClaudeInstallDecision(
+            install=False,
+            version=None,
+            note=f'{reason}; keeping the installed Claude Code instead of upgrading it.',
+            note_is_warning=False,
+        )
+
+    if not scan.undetermined and len(scan.pinned_versions) == 1:
+        agreed = scan.pinned_versions[0]
+        return _ClaudeInstallDecision(
+            install=True,
+            version=agreed,
+            note=(
+                f'Claude Code is not installed; installing version {agreed}, '
+                f'which another installed profile pins ({names}).'
+            ),
+            note_is_warning=False,
+        )
+
+    if scan.undetermined:
+        reason = 'an installed profile manifest could not be read'
+    else:
+        reason = f"the installed profiles pin different versions ({', '.join(scan.pinned_versions)})"
+    return _ClaudeInstallDecision(
+        install=True,
+        version=None,
+        note=f'Claude Code is not installed and {reason}; installing the latest release.',
+        note_is_warning=True,
+    )
 
 
 def apply_auto_update_settings(
@@ -8296,6 +8396,8 @@ def display_installation_summary(
     _print()
     if plan.skip_install:
         _print('  * Claude Code: skip (--skip-install)')
+    elif plan.keep_installed_claude:
+        _print('  * Claude Code: keep the installed version (another installed profile pins a version)')
     else:
         version_str = plan.claude_code_version or 'latest'
         _print(f'  * Claude Code: install (version: {version_str})')
@@ -14558,6 +14660,11 @@ def main() -> None:
         machine_pinned = claude_code_version_normalized is not None or other_profile_pinned
         if claude_code_version_normalized is None and other_profile_pinned:
             info(_pinned_elsewhere_message(profile_pin_scan))
+        claude_install_decision = _decide_claude_install(
+            claude_code_version_normalized,
+            profile_pin_scan,
+            claude_installed=find_command('claude') is not None,
+        )
 
         # Apply automatic auto-update settings based on version pinning
         (
@@ -14697,6 +14804,9 @@ def main() -> None:
             selection=selection,
         )
         plan.auto_injected_items = auto_injected_items
+        plan.keep_installed_claude = not claude_install_decision.install
+        if claude_install_decision.install:
+            plan.claude_code_version = claude_install_decision.version
 
         auto_confirm = args.yes
         dry_run = args.dry_run
@@ -14755,9 +14865,18 @@ def main() -> None:
         skills_dir = artifact_base_dir / 'skills'
 
         # Step 1: Install Claude Code if needed (MUST be first - provides uv, git bash, node)
-        if not args.skip_install:
+        if not args.skip_install and not claude_install_decision.install:
+            print(f'{Colors.CYAN}Step 1: Keeping the installed Claude Code...{Colors.NC}')
+            if claude_install_decision.note:
+                info(claude_install_decision.note)
+        elif not args.skip_install:
             print(f'{Colors.CYAN}Step 1: Installing Claude Code...{Colors.NC}')
-            if not install_claude(claude_code_version_normalized):
+            if claude_install_decision.note:
+                if claude_install_decision.note_is_warning:
+                    warning(claude_install_decision.note)
+                else:
+                    info(claude_install_decision.note)
+            if not install_claude(claude_install_decision.version):
                 raise Exception('Claude Code installation failed')
         else:
             print(f'{Colors.CYAN}Step 1: Skipping Claude Code installation (already installed){Colors.NC}')
@@ -15254,7 +15373,13 @@ def main() -> None:
 
         print(f'{Colors.YELLOW}Summary:{Colors.NC}')
         print(f'   * Environment: {environment_name}')
-        print(f"   * Claude Code installation: {'Skipped' if args.skip_install else 'Completed'}")
+        if args.skip_install:
+            claude_install_status = 'Skipped'
+        elif not claude_install_decision.install:
+            claude_install_status = 'Kept (another installed profile pins a version)'
+        else:
+            claude_install_status = 'Completed'
+        print(f'   * Claude Code installation: {claude_install_status}')
         print(f'   * Agents: {len(agents)} installed')
         print(f'   * Slash commands: {len(commands)} installed')
         print(f'   * Rules: {len(rules)} installed')
