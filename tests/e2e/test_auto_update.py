@@ -338,6 +338,27 @@ class TestUnpinnedRemovalSemantics:
             'Undeclared stale DISABLE_UPDATES must be removed by the unpinned sweep'
 
 
+class TestUnpinnedNullEnvControlFlow:
+    """A null user-settings.env control is a deletion request the Step 16 sweep carries out everywhere."""
+
+    def test_null_env_control_does_not_shield_a_stale_copy(self, e2e_isolated_home: dict[str, Path]) -> None:
+        home = e2e_isolated_home['home']
+        base_settings = home / '.claude' / 'settings.json'
+        sibling_settings = home / '.claude' / 'sibling' / 'settings.json'
+        sibling_settings.parent.mkdir(parents=True)
+        for path in (base_settings, sibling_settings):
+            path.write_text(json.dumps({'env': {'DISABLE_UPDATES': '1', 'KEEP': 'x'}}))
+
+        declared = setup_environment._collect_user_declared_control_keys(
+            {'env': {'DISABLE_UPDATES': None}}, global_config=None,
+        )
+        setup_environment._run_stale_controls_cleanup(machine_pinned=False, user_declared_keys=declared)
+
+        for path in (base_settings, sibling_settings):
+            assert json.loads(path.read_text()) == {'env': {'KEEP': 'x'}}, \
+                f'A null DISABLE_UPDATES must not keep the stale value in {path}'
+
+
 class TestUnpinnedDeclaredGlobalConfigFlow:
     """Step 15 writes the YAML global-config, then the Step 16 sweep runs on the same machine."""
 

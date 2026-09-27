@@ -14746,9 +14746,20 @@ class TestCollectUserDeclaredControlKeys:
         assert result == frozenset({'DISABLE_AUTOUPDATER'})
 
     def test_detects_disable_updates_in_user_settings_env(self) -> None:
-        us: dict[str, Any] = {'env': {'DISABLE_UPDATES': None}}
+        us: dict[str, Any] = {'env': {'DISABLE_UPDATES': '1'}}
         result = setup_environment._collect_user_declared_control_keys(us, global_config=None)
         assert result == frozenset({'DISABLE_UPDATES'})
+
+    def test_null_env_controls_are_deletion_requests_not_declarations(self) -> None:
+        """A null env control asks for deletion, so it must not shield a stale copy from the sweep."""
+        us: dict[str, Any] = {
+            'env': {
+                'DISABLE_AUTOUPDATER': None,
+                'DISABLE_UPDATES': None,
+                'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None,
+            },
+        }
+        assert setup_environment._collect_user_declared_control_keys(us, global_config=None) == frozenset()
 
     def test_detects_ide_skip_in_user_settings_env(self) -> None:
         us: dict[str, Any] = {'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}
