@@ -338,6 +338,45 @@ class TestUnpinnedRemovalSemantics:
             'Undeclared stale DISABLE_UPDATES must be removed by the unpinned sweep'
 
 
+class TestUnpinnedDeclaredGlobalConfigFlow:
+    """Step 15 writes the YAML global-config, then the Step 16 sweep runs on the same machine."""
+
+    @staticmethod
+    def _run_steps_15_16(home: Path, global_config: dict[str, Any]) -> tuple[Path, Path]:
+        """Seed a sibling profile's stale control, write global-config, sweep; return both .claude.json paths."""
+        sibling = home / '.claude' / 'sibling' / '.claude.json'
+        sibling.parent.mkdir(parents=True)
+        sibling.write_text(json.dumps({'autoUpdates': False}))
+
+        declared = setup_environment._collect_user_declared_control_keys(None, global_config=global_config)
+        gc, _, _, _, _ = setup_environment.apply_auto_update_settings(
+            None, global_config, {}, {},
+            other_profile_pinned=False,
+        )
+        assert gc is not None
+        setup_environment.write_global_config(gc)
+        setup_environment._run_stale_controls_cleanup(machine_pinned=False, user_declared_keys=declared)
+        return home / '.claude.json', sibling
+
+    def test_declared_false_survives_the_sweep(self, e2e_isolated_home: dict[str, Path]) -> None:
+        """A global-config autoUpdates: false written by Step 15 is not removed by Step 16."""
+        claude_json, sibling = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': False})
+
+        assert json.loads(claude_json.read_text())['autoUpdates'] is False, \
+            'The declared autoUpdates: false must survive the unpinned sweep'
+        assert json.loads(sibling.read_text()) == {'autoUpdates': False}
+
+    def test_declared_true_leaves_the_sweep_free_to_clear_stale_copies(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """A global-config autoUpdates: true does not shield another profile's stale false."""
+        claude_json, sibling = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': True})
+
+        assert json.loads(claude_json.read_text())['autoUpdates'] is True
+        assert 'autoUpdates' not in json.loads(sibling.read_text()), \
+            "A stale autoUpdates: false in another profile's .claude.json must be removed"
+
+
 class TestPinnedBaseFlowSequence:
     """Verify the pinned non-isolated write sequence keeps env controls on disk."""
 

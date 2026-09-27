@@ -4408,9 +4408,11 @@ def _collect_user_declared_control_keys(
     Must be called BEFORE apply_auto_update_settings() and
     apply_ide_extension_settings() so that auto-injected values are not
     mistaken for user declarations. The Step 16 unpinned sweep preserves
-    user-declared environment keys in settings.json files and user-declared
-    global-config keys in .claude.json files (the removal counterpart of
-    WARN-but-Respect on the write side).
+    user-declared environment keys in settings.json files and a
+    global-config key the YAML sets to false in .claude.json files (the
+    removal counterpart of WARN-but-Respect on the write side). false is
+    the only value the .claude.json sweeps remove, so a global-config key
+    set to anything else leaves them free to clear stale copies.
 
     Args:
         user_settings: User settings dict from the YAML user-settings section.
@@ -4420,7 +4422,8 @@ def _collect_user_declared_control_keys(
         Frozen set containing each managed environment control key (every
         AUTO_UPDATE_ENV_CONTROLS key plus CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL)
         declared in user-settings.env and each managed global-config key
-        (autoUpdates, autoInstallIdeExtension) declared in global-config.
+        (autoUpdates, autoInstallIdeExtension) that global-config sets to
+        false.
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
@@ -4428,7 +4431,7 @@ def _collect_user_declared_control_keys(
         if isinstance(env_section, dict) and key in env_section:
             declared.add(key)
     for key in (AUTO_UPDATE_KEY, IDE_AUTO_INSTALL_KEY):
-        if global_config is not None and key in global_config:
+        if global_config is not None and global_config.get(key) is False:
             declared.add(key)
     return frozenset(declared)
 
@@ -4454,8 +4457,8 @@ def cleanup_stale_auto_update_controls(
       declares (the removal counterpart of WARN-but-Respect on the write
       side). Each key is decided independently: declaring one never keeps
       or removes the other.
-    - .claude.json files likewise keep autoUpdates when the current YAML
-      declares it in global-config.
+    - .claude.json files likewise keep autoUpdates: false when the current
+      YAML sets it to false in global-config.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
@@ -4801,8 +4804,8 @@ def cleanup_stale_ide_extension_controls(
       keeps its controls.
     - settings.json files additionally keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
       when the current YAML itself declares the key in user-settings.env,
-      and .claude.json files keep autoInstallIdeExtension when the YAML
-      declares it in global-config (the removal counterpart of
+      and .claude.json files keep autoInstallIdeExtension: false when the
+      YAML sets it to false in global-config (the removal counterpart of
       WARN-but-Respect on the write side).
 
     Called AFTER all write steps in main() as a post-write cleanup pass.

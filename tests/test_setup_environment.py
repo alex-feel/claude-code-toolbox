@@ -14768,14 +14768,20 @@ class TestCollectUserDeclaredControlKeys:
             'DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
         })
 
-    def test_detects_global_config_controls(self) -> None:
-        gc: dict[str, Any] = {'autoUpdates': False, 'autoInstallIdeExtension': None, 'theme': 'dark'}
+    def test_detects_global_config_controls_set_to_false(self) -> None:
+        gc: dict[str, Any] = {'autoUpdates': False, 'autoInstallIdeExtension': False, 'theme': 'dark'}
         result = setup_environment._collect_user_declared_control_keys(None, global_config=gc)
         assert result == frozenset({'autoUpdates', 'autoInstallIdeExtension'})
 
+    @pytest.mark.parametrize('value', [True, None, 'false', 0])
+    def test_global_config_controls_not_set_to_false_are_not_declarations(self, value: object) -> None:
+        """Only false shields the .claude.json sweeps, which remove nothing but false."""
+        gc: dict[str, Any] = {'autoUpdates': value, 'autoInstallIdeExtension': value}
+        assert setup_environment._collect_user_declared_control_keys(None, global_config=gc) == frozenset()
+
     def test_combines_env_and_global_config_declarations(self) -> None:
         us: dict[str, Any] = {'env': {'DISABLE_UPDATES': '1'}}
-        gc: dict[str, Any] = {'autoUpdates': True}
+        gc: dict[str, Any] = {'autoUpdates': False}
         result = setup_environment._collect_user_declared_control_keys(us, global_config=gc)
         assert result == frozenset({'DISABLE_UPDATES', 'autoUpdates'})
 
@@ -14791,6 +14797,59 @@ class TestCollectUserDeclaredControlKeys:
     def test_ignores_unrelated_keys(self) -> None:
         us: dict[str, Any] = {'env': {'OTHER': 'x'}}
         assert setup_environment._collect_user_declared_control_keys(us, global_config=None) == frozenset()
+
+
+def _run_main_recording_steps(config: dict[str, Any]) -> tuple[list[str], dict[str, Any]]:
+    """Run main() on config with every external step mocked, recording the control-writing steps.
+
+    Returns:
+        The names of the recorded steps in call order and, per step, the
+        (args, kwargs) of its last call.
+    """
+    calls: list[str] = []
+    captured: dict[str, Any] = {}
+
+    def record(name: str, return_value: object = True) -> MagicMock:
+        def side_effect(*args: object, **kwargs: object) -> object:
+            calls.append(name)
+            captured[name] = (args, kwargs)
+            return return_value
+        return MagicMock(side_effect=side_effect)
+
+    patches = [
+        patch('setup_environment.load_config_from_source', return_value=(config, 'test.yaml')),
+        patch('setup_environment.validate_all_config_files', return_value=(True, [])),
+        patch('setup_environment._other_profile_pins',
+              return_value=setup_environment._ProfilePinScan([], False)),
+        patch('setup_environment.install_claude', record('install_claude')),
+        patch('setup_environment.install_ide_extensions', return_value=True),
+        patch('setup_environment.install_dependencies', return_value=[]),
+        patch('setup_environment.process_resources', return_value=True),
+        patch('setup_environment.process_skills', return_value=True),
+        patch('setup_environment.configure_all_mcp_servers',
+              return_value=(True, [], empty_mcp_stats())),
+        patch('setup_environment.set_all_os_env_variables', record('set_all_os_env_variables')),
+        patch('setup_environment.write_user_settings', record('write_user_settings')),
+        patch('setup_environment.write_global_config', record('write_global_config')),
+        patch('setup_environment._run_stale_controls_cleanup',
+              record('_run_stale_controls_cleanup', None)),
+        patch('setup_environment.create_profile_config', record('create_profile_config')),
+        patch('setup_environment.download_hook_files', return_value=True),
+        patch('setup_environment.create_launcher_script',
+              return_value=(Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))),
+        patch('setup_environment.register_global_command', return_value=True),
+        patch('setup_environment.write_profile_settings_to_settings'),
+        patch('setup_environment.is_admin', return_value=True),
+        patch('pathlib.Path.mkdir'),
+        patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
+    ]
+    with contextlib.ExitStack() as stack:
+        for active_patch in patches:
+            stack.enter_context(active_patch)
+        mock_exit = stack.enter_context(patch('sys.exit'))
+        setup_environment.main()
+        mock_exit.assert_not_called()
+    return calls, captured
 
 
 class TestPinnedInstallOrdering:
@@ -14831,16 +14890,6 @@ class TestPinnedInstallOrdering:
         command_names: list[str] | None,
         expected_order: list[str],
     ) -> None:
-        calls: list[str] = []
-        captured: dict[str, Any] = {}
-
-        def record(name: str, return_value: object = True) -> MagicMock:
-            def side_effect(*args: object, **kwargs: object) -> object:
-                calls.append(name)
-                captured[name] = (args, kwargs)
-                return return_value
-            return MagicMock(side_effect=side_effect)
-
         config: dict[str, Any] = {
             'name': 'Pinned Ordering',
             'claude-code-version': '2.1.85',
@@ -14849,39 +14898,7 @@ class TestPinnedInstallOrdering:
         if command_names:
             config['command-names'] = command_names
 
-        patches = [
-            patch('setup_environment.load_config_from_source', return_value=(config, 'test.yaml')),
-            patch('setup_environment.validate_all_config_files', return_value=(True, [])),
-            patch('setup_environment._other_profile_pins',
-                  return_value=setup_environment._ProfilePinScan([], False)),
-            patch('setup_environment.install_claude', record('install_claude')),
-            patch('setup_environment.install_ide_extensions', return_value=True),
-            patch('setup_environment.install_dependencies', return_value=[]),
-            patch('setup_environment.process_resources', return_value=True),
-            patch('setup_environment.process_skills', return_value=True),
-            patch('setup_environment.configure_all_mcp_servers',
-                  return_value=(True, [], empty_mcp_stats())),
-            patch('setup_environment.set_all_os_env_variables', record('set_all_os_env_variables')),
-            patch('setup_environment.write_user_settings', record('write_user_settings')),
-            patch('setup_environment.write_global_config', record('write_global_config')),
-            patch('setup_environment._run_stale_controls_cleanup',
-                  record('_run_stale_controls_cleanup', None)),
-            patch('setup_environment.create_profile_config', record('create_profile_config')),
-            patch('setup_environment.download_hook_files', return_value=True),
-            patch('setup_environment.create_launcher_script',
-                  return_value=(Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))),
-            patch('setup_environment.register_global_command', return_value=True),
-            patch('setup_environment.write_profile_settings_to_settings'),
-            patch('setup_environment.is_admin', return_value=True),
-            patch('pathlib.Path.mkdir'),
-            patch('sys.argv', ['setup_environment.py', 'test', '--yes']),
-        ]
-        with contextlib.ExitStack() as stack:
-            for active_patch in patches:
-                stack.enter_context(active_patch)
-            mock_exit = stack.enter_context(patch('sys.exit'))
-            setup_environment.main()
-            mock_exit.assert_not_called()
+        calls, captured = _run_main_recording_steps(config)
 
         assert calls == expected_order
 
@@ -14903,6 +14920,35 @@ class TestPinnedInstallOrdering:
             (user_settings, _), _ = captured['write_user_settings']
         assert user_settings['env']['DISABLE_UPDATES'] == '1'
         assert user_settings['env']['DISABLE_AUTOUPDATER'] == '1'
+
+
+class TestMainForwardsDeclaredControlKeys:
+    """main() hands the Step 16 sweep the controls the resolved YAML declares, collected before injection."""
+
+    @pytest.mark.parametrize(
+        ('global_config', 'expected'),
+        [
+            ({'autoUpdates': False}, frozenset({'DISABLE_UPDATES', 'autoUpdates'})),
+            ({'autoUpdates': True}, frozenset({'DISABLE_UPDATES'})),
+        ],
+        ids=['declared-false', 'declared-true'],
+    )
+    def test_unpinned_run_forwards_declared_keys(
+        self,
+        global_config: dict[str, Any],
+        expected: frozenset[str],
+    ) -> None:
+        config: dict[str, Any] = {
+            'name': 'Unpinned Declarations',
+            'user-settings': {'env': {'DISABLE_UPDATES': '1'}},
+            'global-config': global_config,
+        }
+
+        _, captured = _run_main_recording_steps(config)
+
+        _, cleanup_kwargs = captured['_run_stale_controls_cleanup']
+        assert cleanup_kwargs['machine_pinned'] is False
+        assert cleanup_kwargs['user_declared_keys'] == expected
 
 
 class TestPropagateInstallMethod:
