@@ -2331,16 +2331,24 @@ def install_claude_npm(upgrade: bool = False, version: str | None = None) -> boo
 
     error(f"Failed to {'upgrade' if upgrade else 'install'} Claude Code via npm")
     info('Manual installation options:')
-    info(f'  1. Run with sudo: sudo npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  2. Configure npm user directory:')
-    info('       npm config set prefix ~/.npm-global')
-    info('       export PATH=~/.npm-global/bin:$PATH')
-    info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
-    info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
-    if _disable_updates_refusal_observed:
-        _info_official_installer_blocked(4, 'curl -fsSL https://claude.ai/install.sh | bash')
+    if platform.system() == 'Windows':
+        info(f'  1. Run manually: npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  2. Force native installer only: $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"')
+        installer_item = 3
+        installer_command = f'irm {CLAUDE_INSTALLER_URL} | iex'
     else:
-        info('  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash')
+        info(f'  1. Run with sudo: sudo npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  2. Configure npm user directory:')
+        info('       npm config set prefix ~/.npm-global')
+        info('       export PATH=~/.npm-global/bin:$PATH')
+        info(f'       npm install -g {CLAUDE_NPM_PACKAGE}')
+        info('  3. Force native installer only: CLAUDE_CODE_TOOLBOX_INSTALL_METHOD=native')
+        installer_item = 4
+        installer_command = 'curl -fsSL https://claude.ai/install.sh | bash'
+    if _disable_updates_refusal_observed:
+        _info_official_installer_blocked(installer_item, installer_command)
+    else:
+        info(f'  {installer_item}. Install native directly: {installer_command}')
     return False
 
 

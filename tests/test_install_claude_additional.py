@@ -2157,10 +2157,17 @@ def _run_ensure_claude_all_methods_failing(
     return captured.out + captured.err
 
 
-def _run_npm_install_failing(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> str:
-    """Run install_claude_npm() on Linux with the plain and sudo installs failing and return its output."""
-    monkeypatch.setattr(install_claude.platform, 'system', lambda: 'Linux')
-    monkeypatch.setattr(install_claude, 'find_command', MagicMock(return_value='/usr/bin/npm'))
+def _run_npm_install_failing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    system: str = 'Linux',
+) -> str:
+    """Run install_claude_npm() with the plain (and, off Windows, sudo) installs failing and return its output."""
+    monkeypatch.setattr(install_claude.platform, 'system', lambda: system)
+    # The Windows branch may prepend the Node.js directory to PATH; restore it afterwards.
+    monkeypatch.setenv('PATH', os.environ.get('PATH', ''))
+    npm_path = 'C:/Program Files/nodejs/npm.cmd' if system == 'Windows' else '/usr/bin/npm'
+    monkeypatch.setattr(install_claude, 'find_command', MagicMock(return_value=npm_path))
     monkeypatch.setattr(install_claude, 'needs_sudo_for_npm', MagicMock(return_value=False))
     failed = subprocess.CompletedProcess([], 1, '', 'permission denied')
     monkeypatch.setattr(install_claude, 'run_command', MagicMock(return_value=failed))
@@ -2248,6 +2255,41 @@ class TestTroubleshootingAfterDisableUpdatesRefusal:
 
         assert '  4. Install native directly: curl -fsSL https://claude.ai/install.sh | bash' in combined
         assert 'DISABLE_UPDATES' not in combined
+
+    def test_npm_failure_on_windows_recommends_windows_commands(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """On Windows the npm failure help offers the PowerShell installer and no Unix-only steps."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', False)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys, system='Windows')
+
+        assert f'  1. Run manually: npm install -g {install_claude.CLAUDE_NPM_PACKAGE}' in combined
+        assert '  2. Force native installer only: $env:CLAUDE_CODE_TOOLBOX_INSTALL_METHOD="native"' in combined
+        assert f'  3. Install native directly: irm {install_claude.CLAUDE_INSTALLER_URL} | iex' in combined
+        assert 'install.sh' not in combined
+        assert 'sudo' not in combined
+        assert 'export PATH' not in combined
+
+    def test_npm_failure_on_windows_after_refusal_reports_blocked_installer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """After a refusal on Windows the unblock guidance names the PowerShell installer command."""
+        monkeypatch.setattr(install_claude, '_disable_updates_refusal_observed', True)
+
+        combined = _run_npm_install_failing(monkeypatch, capsys, system='Windows')
+
+        assert 'Install native directly' not in combined
+        assert f'  3. {_BLOCKED_INSTALLER_GUIDANCE[0]}' in combined
+        assert (
+            f'remove DISABLE_UPDATES first, then run: irm {install_claude.CLAUDE_INSTALLER_URL} | iex'
+            in combined
+        )
+        assert 'install.sh' not in combined
 
     def test_npm_failure_after_refusal_reports_blocked_installer(
         self,

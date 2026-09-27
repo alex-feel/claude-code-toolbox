@@ -4400,27 +4400,35 @@ def _remove_auto_update_controls(
 
 def _collect_user_declared_control_keys(
     user_settings: dict[str, Any] | None,
+    *,
+    global_config: dict[str, Any] | None,
 ) -> frozenset[str]:
     """Identify which managed control keys the resolved YAML itself declares.
 
     Must be called BEFORE apply_auto_update_settings() and
     apply_ide_extension_settings() so that auto-injected values are not
     mistaken for user declarations. The Step 16 unpinned sweep preserves
-    user-declared keys in settings.json files (the removal counterpart of
+    user-declared environment keys in settings.json files and user-declared
+    global-config keys in .claude.json files (the removal counterpart of
     WARN-but-Respect on the write side).
 
     Args:
         user_settings: User settings dict from the YAML user-settings section.
+        global_config: Global config dict from the YAML global-config section.
 
     Returns:
-        Frozen set containing each managed control key (every
+        Frozen set containing each managed environment control key (every
         AUTO_UPDATE_ENV_CONTROLS key plus CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL)
-        declared in user-settings.env.
+        declared in user-settings.env and each managed global-config key
+        (autoUpdates, autoInstallIdeExtension) declared in global-config.
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
     for key in (*(name for name, _ in AUTO_UPDATE_ENV_CONTROLS), IDE_SKIP_AUTO_INSTALL_KEY):
         if isinstance(env_section, dict) and key in env_section:
+            declared.add(key)
+    for key in (AUTO_UPDATE_KEY, IDE_AUTO_INSTALL_KEY):
+        if global_config is not None and key in global_config:
             declared.add(key)
     return frozenset(declared)
 
@@ -4446,6 +4454,8 @@ def cleanup_stale_auto_update_controls(
       declares (the removal counterpart of WARN-but-Respect on the write
       side). Each key is decided independently: declaring one never keeps
       or removes the other.
+    - .claude.json files likewise keep autoUpdates when the current YAML
+      declares it in global-config.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
@@ -4454,7 +4464,7 @@ def cleanup_stale_auto_update_controls(
         machine_pinned: Whether any installed profile pins a Claude Code
             version -- this run's own pin or another profile's.
         user_declared_keys: Control keys the current resolved YAML
-            declares in user-settings.env.
+            declares in user-settings.env or global-config.
     """
     if machine_pinned:
         return
@@ -4478,16 +4488,17 @@ def cleanup_stale_auto_update_controls(
                     if settings_path.exists():
                         _cleanup_settings_json_env_controls(settings_path, stale_env_keys)
 
-    # 3. Clean autoUpdates: false from ~/.claude.json
-    _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
+    if AUTO_UPDATE_KEY not in user_declared_keys:
+        # 3. Clean autoUpdates: false from ~/.claude.json
+        _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
 
-    # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
-    if claude_dir.is_dir():
-        for subdir in claude_dir.iterdir():
-            if subdir.is_dir():
-                claude_json_path = subdir / '.claude.json'
-                if claude_json_path.exists():
-                    _cleanup_claude_json_auto_updates(claude_json_path)
+        # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    claude_json_path = subdir / '.claude.json'
+                    if claude_json_path.exists():
+                        _cleanup_claude_json_auto_updates(claude_json_path)
 
 
 def _cleanup_settings_json_env_controls(settings_path: Path, keys: tuple[str, ...]) -> None:
@@ -4558,7 +4569,8 @@ def _run_stale_controls_cleanup(
         machine_pinned: Whether any installed profile pins a Claude Code
             version -- this run's own pin or another profile's.
         user_declared_keys: Control keys the current resolved YAML declares
-            (computed before injection by _collect_user_declared_control_keys()).
+            in user-settings.env or global-config (computed before injection
+            by _collect_user_declared_control_keys()).
     """
     print()
     print(f'{Colors.CYAN}Step 16: Cleaning stale auto-update and IDE extension controls...{Colors.NC}')
@@ -4571,7 +4583,7 @@ def _run_stale_controls_cleanup(
     cleanup_stale_ide_extension_controls(
         home_dir=home,
         machine_pinned=machine_pinned,
-        user_declared=IDE_SKIP_AUTO_INSTALL_KEY in user_declared_keys,
+        user_declared_keys=user_declared_keys,
     )
 
 
@@ -4654,7 +4666,9 @@ def _inject_ide_extension_controls(
     Injection is gated on key MEMBERSHIP, not on value: an explicit user
     null (a YAML deletion request, legal in every target) is a user
     declaration and is respected with a warning (WARN-but-Respect), never
-    overwritten.
+    overwritten. A user CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL value Claude Code
+    reads as enabled (any ENV_CONTROL_TRUTHY_VALUES spelling) already
+    matches the intent and produces no warning.
 
     Returns:
         Tuple of (global_config, user_settings, os_env_variables) with
@@ -4686,7 +4700,7 @@ def _inject_ide_extension_controls(
     if IDE_SKIP_AUTO_INSTALL_KEY not in env_section:
         env_section[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
         auto_injected.append(f'user-settings.env.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(env_section[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
+    elif _env_control_enabled(env_section[IDE_SKIP_AUTO_INSTALL_KEY]):
         pass  # Already matches intent
     else:
         warnings_list.append(
@@ -4701,7 +4715,7 @@ def _inject_ide_extension_controls(
     if IDE_SKIP_AUTO_INSTALL_KEY not in os_env_variables:
         os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = IDE_SKIP_AUTO_INSTALL_VALUE
         auto_injected.append(f'os-env-variables.{IDE_SKIP_AUTO_INSTALL_KEY}: "{IDE_SKIP_AUTO_INSTALL_VALUE}"')
-    elif str(os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY]) == IDE_SKIP_AUTO_INSTALL_VALUE:
+    elif _env_control_enabled(os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY]):
         pass  # Already matches intent
     else:
         warnings_list.append(
@@ -4772,7 +4786,8 @@ def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
 def cleanup_stale_ide_extension_controls(
     home_dir: Path,
     machine_pinned: bool,
-    user_declared: bool,
+    *,
+    user_declared_keys: frozenset[str],
 ) -> None:
     """Remove stale IDE extension auto-install controls from filesystem locations.
 
@@ -4785,8 +4800,10 @@ def cleanup_stale_ide_extension_controls(
       recorded in the profile manifests pins a version, every location
       keeps its controls.
     - settings.json files additionally keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
-      when the current YAML itself declares the key (the removal
-      counterpart of WARN-but-Respect on the write side).
+      when the current YAML itself declares the key in user-settings.env,
+      and .claude.json files keep autoInstallIdeExtension when the YAML
+      declares it in global-config (the removal counterpart of
+      WARN-but-Respect on the write side).
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
@@ -4794,8 +4811,8 @@ def cleanup_stale_ide_extension_controls(
         home_dir: User home directory.
         machine_pinned: Whether any installed profile pins a Claude Code
             version -- this run's own pin or another profile's.
-        user_declared: Whether the current resolved YAML declares
-            CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL in user-settings.env.
+        user_declared_keys: Control keys the current resolved YAML
+            declares in user-settings.env or global-config.
     """
     if machine_pinned:
         return
@@ -4804,7 +4821,7 @@ def cleanup_stale_ide_extension_controls(
     # from EVERYWHERE, preserving user-declared settings.json keys
     claude_dir = home_dir / '.claude'
 
-    if not user_declared:
+    if IDE_SKIP_AUTO_INSTALL_KEY not in user_declared_keys:
         # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
         _cleanup_settings_json_env_controls(claude_dir / 'settings.json', (IDE_SKIP_AUTO_INSTALL_KEY,))
 
@@ -4816,16 +4833,17 @@ def cleanup_stale_ide_extension_controls(
                     if settings_path.exists():
                         _cleanup_settings_json_env_controls(settings_path, (IDE_SKIP_AUTO_INSTALL_KEY,))
 
-    # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
-    _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
+    if IDE_AUTO_INSTALL_KEY not in user_declared_keys:
+        # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
+        _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
 
-    # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
-    if claude_dir.is_dir():
-        for subdir in claude_dir.iterdir():
-            if subdir.is_dir():
-                claude_json_path = subdir / '.claude.json'
-                if claude_json_path.exists():
-                    _cleanup_claude_json_ide_auto_install(claude_json_path)
+        # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
+        if claude_dir.is_dir():
+            for subdir in claude_dir.iterdir():
+                if subdir.is_dir():
+                    claude_json_path = subdir / '.claude.json'
+                    if claude_json_path.exists():
+                        _cleanup_claude_json_ide_auto_install(claude_json_path)
 
 
 def _vscode_target_platform() -> str | None:
@@ -14516,9 +14534,10 @@ def main() -> None:
 
         # Record which managed control keys the resolved YAML itself declares.
         # Computed BEFORE injection so auto-injected values are excluded; the
-        # Step 16 unpinned sweep preserves user-declared settings.json keys.
+        # Step 16 unpinned sweep preserves user-declared settings.json and
+        # .claude.json keys.
         user_declared_control_keys = _collect_user_declared_control_keys(
-            user_settings,
+            user_settings, global_config=global_config,
         )
 
         # The machine has one Claude Code binary, so the auto-update and

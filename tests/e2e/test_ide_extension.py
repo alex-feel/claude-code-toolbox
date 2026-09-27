@@ -161,7 +161,7 @@ class TestIdeStaleCleanup:
 
         # Run cleanup with not-pinned (no isolation, no user-declared key)
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, machine_pinned=False, user_declared=False,
+            home, machine_pinned=False, user_declared_keys=frozenset(),
         )
 
         # Verify all cleaned
@@ -228,7 +228,7 @@ class TestIdeUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, machine_pinned=False, user_declared=True,
+            home, machine_pinned=False, user_declared_keys=frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'}),
         )
 
         data = json.loads(settings_path.read_text())
