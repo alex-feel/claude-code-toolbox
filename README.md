@@ -1,8 +1,6 @@
-# Claude Code Toolbox
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner.png" alt="Claude Code Toolbox - automated installers and environment configuration framework for Claude Code with one-line setup across Windows, macOS, and Linux" width="100%">
-</p>
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/.github/images/banner.png" alt="Claude Code Toolbox" width="100%">
+</h1>
 
 [![GitHub License](https://img.shields.io/github/license/alex-feel/claude-code-toolbox)](https://github.com/alex-feel/claude-code-toolbox/blob/main/LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/alex-feel/claude-code-toolbox)
 
