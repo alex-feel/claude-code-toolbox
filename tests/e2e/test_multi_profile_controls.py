@@ -199,17 +199,17 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
     @patch('scripts.setup_environment.generate_env_loader_files', return_value={})
     @patch('scripts.setup_environment.create_launcher_script')
     @patch('scripts.setup_environment.register_global_command', return_value=True)
-    @patch('scripts.setup_environment.find_command')
+    @patch('scripts.setup_environment._installed_claude_version')
     @patch('scripts.setup_environment.is_admin', return_value=True)
     @pytest.mark.parametrize(
-        ('claude_path', 'expected_install'),
-        [('/usr/bin/claude', None), (None, PINNED_VERSION)],
+        ('installed_version', 'expected_install'),
+        [('2.1.80', '2.1.80'), (None, PINNED_VERSION)],
         ids=['installed-binary-kept', 'missing-binary-gets-the-pin'],
     )
     def test_unpinned_isolated_run_does_not_move_the_pinned_binary(
         self,
         mock_is_admin: MagicMock,
-        mock_find_cmd: MagicMock,
+        mock_installed_version: MagicMock,
         mock_register: MagicMock,
         mock_launcher: MagicMock,
         mock_env_loader: MagicMock,
@@ -221,8 +221,8 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
         mock_install: MagicMock,
         mock_validate: MagicMock,
         mock_load: MagicMock,
-        claude_path: str | None,
-        expected_install: str | None,
+        installed_version: str | None,
+        expected_install: str,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
         del mock_is_admin, mock_register, mock_env_loader, mock_os_env
@@ -235,9 +235,7 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
 
         profile_dir = claude_dir / 'claude-personal'
         mock_launcher.return_value = (profile_dir / 'launch.sh', profile_dir / 'launch.sh')
-        mock_find_cmd.side_effect = lambda cmd, *_args, **_kwargs: (
-            claude_path if cmd == 'claude' else f'/usr/bin/{cmd}'
-        )
+        mock_installed_version.return_value = installed_version
         config: dict[str, Any] = {
             'name': 'Personal Profile',
             'command-names': ['claude-personal'],
@@ -253,10 +251,7 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
             setup_environment.main()
             mock_exit.assert_not_called()
 
-        if expected_install is None:
-            mock_install.assert_not_called()
-        else:
-            mock_install.assert_called_once_with(expected_install)
+        mock_install.assert_called_once_with(expected_install)
         manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
         assert manifest['claude_code_version'] is None
 
