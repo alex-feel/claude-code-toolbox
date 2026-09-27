@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.4.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.1...v7.4.2) (2026-09-27)
+
+
+### Bug Fixes
+
+* block manual updates for a pinned Claude Code version ([a8e8c3a](https://github.com/alex-feel/claude-code-toolbox/commit/a8e8c3aee312b6beda1cd28fc367537297025cf7))
+* keep a binary another installed profile pins during an unpinned setup ([60bc91b](https://github.com/alex-feel/claude-code-toolbox/commit/60bc91b98c4952efb148814cb972961966fe4bb0))
+
 ## [7.4.1](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.0...v7.4.1) (2026-09-13)
 
 
