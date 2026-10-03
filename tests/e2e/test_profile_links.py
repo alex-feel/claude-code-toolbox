@@ -48,6 +48,7 @@ def configs(tmp_path: Path) -> Path:
     for relative, content in (
         ('agents/core.md', '# core agent\n'),
         ('agents/extra.md', '# extra agent\n'),
+        ('commands/cmd.md', '# command\n'),
         ('rules/rule.md', '# rule\n'),
         ('skills/SKILL.md', '---\nname: tool-skill\n---\n# skill\n'),
         ('hooks/hook.py', 'print("hook")\n'),
@@ -64,6 +65,7 @@ def _aegis() -> dict[str, Any]:
     return {
         'name': 'Aegis Like',
         'agents': ['agents/core.md'],
+        'slash-commands': ['commands/cmd.md'],
         'rules': ['rules/rule.md'],
         'skills': [{'name': 'tool-skill', 'base': 'skills/', 'files': ['SKILL.md']}],
         'hooks': {
@@ -133,6 +135,8 @@ class TestLinkCreation:
         cfg = _install_source(configs)
         claude_dir = e2e_isolated_home['claude_dir']
         source_dir = claude_dir / 'aegis-1'
+        source_command = source_dir / 'commands' / 'cmd.md'
+        command_stat_before = (source_command.stat().st_mtime_ns, source_command.read_bytes())
         capsys.readouterr()
 
         _install_dependent(cfg, 'aegis-2')
@@ -147,6 +151,12 @@ class TestLinkCreation:
                 assert (profile_dir / entry).is_symlink() is False, 'Windows uses a junction, not a symlink'
         assert (profile_dir / 'agents' / 'core.md').is_file(), 'the content is reachable through the link'
         assert (source_dir / 'agents' / 'core.md').is_file()
+        assert _links_to(profile_dir / 'commands', source_dir / 'commands')
+        linked_command = profile_dir / 'commands' / 'cmd.md'
+        assert (linked_command.stat().st_mtime_ns, linked_command.read_bytes()) == command_stat_before, (
+            'the slash command is the source file itself, not a fresh download'
+        )
+        assert (source_command.stat().st_mtime_ns, source_command.read_bytes()) == command_stat_before
         for own in ('config.json', 'manifest.json', 'resolved-config.yaml', 'launch.sh'):
             assert (profile_dir / own).is_file(), own
             assert not _is_link(profile_dir / own), own
@@ -163,6 +173,7 @@ class TestLinkCreation:
         assert 'Configuration: applied from profile "aegis-1" (resolved-config.yaml), components as installed there' in output
         for message in (
             'Agents are linked from profile "aegis-1"; nothing to install',
+            'Slash commands are linked from profile "aegis-1"; nothing to install',
             'Rules are linked from profile "aegis-1"; nothing to install',
             'Skills are linked from profile "aegis-1"; nothing to install',
             'The system prompt is linked from profile "aegis-1"; nothing to install',
@@ -398,7 +409,7 @@ class TestConversions:
 
         output = _output(capsys)
         stamp = output.split('agents.unlinked-')[1].split('\n')[0].strip()
-        assert output.count('[MOVE ASIDE]') == 6, 'agents, rules, skills, hooks, prompts and projects are listed'
+        assert output.count('[MOVE ASIDE]') == 7, 'agents, commands, rules, skills, hooks, prompts and projects are listed'
         assert f'agents: {lab / "agents"} (1 item) -> {lab / f"agents.unlinked-{stamp}"}' in output
         assert (
             f'projects: {lab / "projects"} (2 items) -> {lab / f"projects.unlinked-{stamp}"}; '
@@ -412,7 +423,7 @@ class TestConversions:
 
         output = _output(capsys)
         moved = sorted(entry.name.split('.unlinked-')[0] for entry in lab.iterdir() if '.unlinked-' in entry.name)
-        assert moved == ['agents', 'hooks', 'projects', 'prompts', 'rules', 'skills']
+        assert moved == ['agents', 'commands', 'hooks', 'projects', 'prompts', 'rules', 'skills']
         agents_aside = next(entry for entry in lab.iterdir() if entry.name.startswith('agents.unlinked-'))
         assert (agents_aside / 'core.md').is_file(), 'the moved directory keeps its content'
         projects_aside = next(entry for entry in lab.iterdir() if entry.name.startswith('projects.unlinked-'))
@@ -436,10 +447,11 @@ class TestConversions:
 
         output = _output(capsys)
         assert '* agents: [unlink] the link is removed; this run installs the real directory' in output
-        for entry in ('agents', 'rules', 'skills', 'hooks', 'prompts'):
+        for entry in ('agents', 'commands', 'rules', 'skills', 'hooks', 'prompts'):
             assert (profile_dir / entry).is_dir(), entry
             assert not _is_link(profile_dir / entry), entry
         assert (profile_dir / 'agents' / 'core.md').is_file()
+        assert (profile_dir / 'commands' / 'cmd.md').is_file()
         assert (profile_dir / 'skills' / 'tool-skill' / 'SKILL.md').is_file()
         assert (claude_dir / 'aegis-1' / 'agents' / 'core.md').is_file(), 'unlinking never touches the source'
         assert read_manifest(profile_dir)['link'] is None
