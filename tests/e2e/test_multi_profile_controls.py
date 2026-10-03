@@ -50,7 +50,6 @@ def _write_profile_manifest(directory: Path, name: str | None, pin: str | None) 
             'config_source_url': None,
             'config_source_type': 'repo',
             'installed_at': '2026-01-01T00:00:00+00:00',
-            'last_checked_at': None,
             'command_names': [name] if name else [],
         }),
         encoding='utf-8',

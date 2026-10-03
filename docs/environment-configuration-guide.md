@@ -253,11 +253,11 @@ post-install-notes: |
 
 #### `version`
 
-Configuration version for update checking. Extracted from the root config before inheritance resolution.
+Configuration version. Setup records it as `version` in the profile manifest (`manifest.json`).
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present.
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names`; validation rejects `version` without it.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -273,7 +273,7 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Must be alphanumeric, hyphens, and underscores only
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
-- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Manifest, launcher, and command registration steps are skipped. The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
+- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, recording `name` as `null`, an empty `command_names` list, the configuration `version`, and the `claude-code-version` pin as `claude_code_version`; setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
 ```yaml
@@ -2359,7 +2359,7 @@ If the named configuration is not found, verify the name matches a YAML file in 
 
 ### version requires command-names
 
-The `version` field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
+Validation accepts the `version` field only together with `command-names`. Either add `command-names` or remove `version`.
 
 ### merge-keys requires inherit
 

@@ -486,13 +486,13 @@ def _mock_install_method_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _mock_manifest_and_stale_marker(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent write_manifest and cleanup_stale_marker from writing to real ~/.claude/.
+def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent write_manifest from writing to real ~/.claude/.
 
-    These functions write manifest.json and stale.marker under the profile
-    directory -- ~/.claude/{cmd}/ for an isolated profile, ~/.claude/ for the
-    base profile -- which is caught by _guard_real_home_writes. Tests that need
-    to exercise these functions directly should provide their own mocks.
+    write_manifest writes manifest.json under the profile directory --
+    ~/.claude/{cmd}/ for an isolated profile, ~/.claude/ for the base
+    profile -- which is caught by _guard_real_home_writes. Tests that need to
+    exercise it directly capture the real function at import time.
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
@@ -501,7 +501,6 @@ def _mock_manifest_and_stale_marker(request: pytest.FixtureRequest, monkeypatch:
     try:
         import setup_environment
         monkeypatch.setattr(setup_environment, 'write_manifest', lambda *_a, **_kw: True)
-        monkeypatch.setattr(setup_environment, 'cleanup_stale_marker', lambda *_a, **_kw: None)
     except (ImportError, AttributeError):
         pass
 

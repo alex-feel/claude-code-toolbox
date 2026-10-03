@@ -1433,9 +1433,9 @@ class EnvironmentConfig(BaseModel):
     )
     version: str | None = Field(
         None,
-        description='Configuration version for update checking. '
-        'Semantic versioning string (e.g., "1.0.0"). Optional; configs without '
-        'this field skip all version checking.',
+        description='Configuration version recorded in the profile manifest. '
+        'Semantic versioning string (e.g., "1.0.0"). Optional; the manifest '
+        'records null without it.',
     )
     inherit: str | list[str | InheritEntry] | None = Field(
         None,

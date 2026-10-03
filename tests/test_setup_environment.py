@@ -36,6 +36,7 @@ from tests.conftest import empty_mcp_stats
 _real_cleanup_stale_auto_update_controls = setup_environment.cleanup_stale_auto_update_controls
 _real_cleanup_stale_ide_extension_controls = setup_environment.cleanup_stale_ide_extension_controls
 _real_propagate_install_method = setup_environment._propagate_install_method
+_real_write_manifest = setup_environment.write_manifest
 
 
 class TestColors:
@@ -5466,6 +5467,69 @@ class TestCreateLauncherScript:
             assert launcher.exists()
             assert os.access(launcher, os.X_OK)
 
+    @pytest.mark.parametrize(
+        ('system', 'expected_files'),
+        [
+            ('Windows', {'start.ps1', 'start.cmd', 'launch.sh'}),
+            ('Linux', {'launch.sh'}),
+            ('Darwin', {'launch.sh'}),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ('system_prompt_file', 'mode'),
+        [(None, 'replace'), ('prompt.md', 'replace'), ('prompt.md', 'append')],
+    )
+    def test_launchers_start_claude_without_update_check(
+        self,
+        tmp_path: Path,
+        system: str,
+        expected_files: set[str],
+        system_prompt_file: str | None,
+        mode: str,
+    ) -> None:
+        """No launcher variant references an update marker or prints a notice."""
+        with patch('platform.system', return_value=system):
+            result = setup_environment.create_launcher_script(
+                tmp_path, 'test-env', system_prompt_file, mode,
+            )
+        assert result is not None
+
+        generated = {path.name: path for path in tmp_path.iterdir() if path.is_file()}
+        assert set(generated) == expected_files
+        for path in generated.values():
+            content = path.read_text(encoding='utf-8')
+            for fragment in (
+                'update-available', 'UPDATE_MARKER', '[UPDATE]',
+                'configuration is available', 'Re-run the installer',
+            ):
+                assert fragment not in content, f'{path.name} contains {fragment!r}'
+
+
+class TestWriteManifest:
+    """Tests for write_manifest(), the per-profile installation record."""
+
+    @pytest.mark.parametrize(
+        ('command_name', 'command_names'),
+        [('test-env', ['test-env', 'te']), (None, [])],
+    )
+    def test_manifest_records_exactly_the_profile_fields(
+        self, tmp_path: Path, command_name: str | None, command_names: list[str],
+    ) -> None:
+        """The manifest holds the configuration metadata and nothing else."""
+        assert _real_write_manifest(
+            tmp_path, command_name, '1.2.0', 'test.yaml', 'repo', None, command_names, '2.1.85',
+        )
+
+        data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
+        assert set(data) == {
+            'name', 'version', 'claude_code_version', 'config_source',
+            'config_source_url', 'config_source_type', 'installed_at', 'command_names',
+        }
+        assert data['name'] == command_name
+        assert data['version'] == '1.2.0'
+        assert data['claude_code_version'] == '2.1.85'
+        assert data['command_names'] == command_names
+
 
 class TestRegisterGlobalCommand:
     """Test global command registration."""
@@ -5702,12 +5766,10 @@ class TestMainFunction:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_success(
         self,
         mock_mkdir,
-        mock_cleanup_stale_marker,
         mock_write_manifest,
         mock_is_admin,
         mock_register,
@@ -5722,7 +5784,7 @@ class TestMainFunction:
     ):
         """Test successful main flow."""
         # Verify mock configuration is available
-        del mock_cleanup_stale_marker, mock_write_manifest  # Required for isolation
+        del mock_write_manifest  # Required for isolation
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         mock_load.return_value = (
@@ -5780,13 +5842,11 @@ class TestMainFunction:
     @patch('setup_environment.find_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
-    def test_main_skip_install(self, mock_mkdir, mock_cleanup_stale, mock_write_manifest, mock_is_admin, mock_find, mock_load):
+    def test_main_skip_install(self, mock_mkdir, mock_write_manifest, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
         assert mock_is_admin.return_value is True  # Verify admin check is mocked
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
@@ -6041,12 +6101,10 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_reports_failed_dependencies_and_exits_nonzero(
         self,
         mock_mkdir: MagicMock,
-        mock_cleanup_stale_marker: MagicMock,
         mock_write_manifest: MagicMock,
         mock_is_admin: MagicMock,
         mock_register: MagicMock,
@@ -6060,7 +6118,7 @@ class TestDownloadFailureTracking:
         mock_load: MagicMock,
     ) -> None:
         """Test that main() lists failed dependencies and exits with code 1."""
-        del mock_mkdir, mock_cleanup_stale_marker, mock_write_manifest, mock_is_admin
+        del mock_mkdir, mock_write_manifest, mock_is_admin
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
@@ -10472,7 +10530,6 @@ class TestCommandNames:
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.write_user_settings')
     @patch('setup_environment.write_global_config')
     @patch('setup_environment.generate_env_loader_files')
@@ -10483,7 +10540,6 @@ class TestCommandNames:
         mock_gen_env_loader,
         mock_write_global,
         mock_write_user,
-        mock_cleanup_stale,
         mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
@@ -10502,7 +10558,6 @@ class TestCommandNames:
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         assert mock_write_user is not None
         assert mock_write_global is not None
         assert mock_gen_env_loader is not None
@@ -10549,7 +10604,6 @@ class TestCommandNames:
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.write_user_settings')
     @patch('setup_environment.write_global_config')
     @patch('setup_environment.generate_env_loader_files')
@@ -10560,7 +10614,6 @@ class TestCommandNames:
         mock_gen_env_loader,
         mock_write_global,
         mock_write_user,
-        mock_cleanup_stale,
         mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
@@ -10579,7 +10632,6 @@ class TestCommandNames:
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         assert mock_write_user is not None
         assert mock_write_global is not None
         assert mock_gen_env_loader is not None

@@ -13149,11 +13149,11 @@ def write_manifest(
 ) -> bool:
     """Write installation manifest for the environment configuration.
 
-    Creates manifest.json containing metadata about the installed
-    configuration. Version checking hooks read it to determine whether
-    configuration updates are available, and _other_profile_pins() reads
-    the recorded Claude Code version pin across profiles to decide whether
-    the machine-global auto-update controls are still needed.
+    Creates manifest.json recording the profile's primary command name
+    (None for the base profile), the configuration version and source, all
+    command names, and the Claude Code version the profile pins.
+    _other_profile_pins() reads the recorded pin across profiles to decide
+    whether the machine-global auto-update controls are still needed.
 
     Args:
         config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/
@@ -13181,7 +13181,6 @@ def write_manifest(
         'config_source_url': config_source_url,
         'config_source_type': config_source_type,
         'installed_at': datetime.now(UTC).isoformat(),
-        'last_checked_at': None,
         'command_names': command_names,
     }
 
@@ -13193,49 +13192,6 @@ def write_manifest(
     except Exception as e:
         warning(f'Failed to write manifest: {e}')
         return False
-
-
-def cleanup_stale_marker(config_base_dir: Path) -> None:
-    """Remove stale update-available marker file during re-installation.
-
-    When setup_environment.py runs, any existing update marker is no longer valid
-    because the user is actively installing/updating the configuration.
-
-    Args:
-        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
-    """
-    marker_path = config_base_dir / 'update-available.json'
-    if marker_path.exists():
-        try:
-            marker_path.unlink()
-            info(f'Removed stale update marker: {marker_path.name}')
-        except OSError as e:
-            warning(f'Failed to remove stale update marker: {e}')
-
-
-def _get_update_check_snippet(update_marker_path: str, command_name: str = '') -> str:
-    """Generate bash snippet for configuration update notification.
-
-    Produces a shell script fragment that checks for the update marker file
-    and prints a colored warning if a new configuration version is available.
-
-    Args:
-        update_marker_path: Shell-evaluable path to the update marker file
-            (e.g., "$HOME/.claude/mycmd/update-available.json")
-        command_name: Optional command name for display in the notification
-
-    Returns:
-        Bash script snippet that checks for update marker file.
-    """
-    display_name = f'the {command_name} ' if command_name else ''
-    return f'''# Check for configuration update notification
-UPDATE_MARKER="{update_marker_path}"
-if [ -f "$UPDATE_MARKER" ]; then
-  echo -e "\\\\033[1;33m[UPDATE] A new version of {display_name}configuration is available.\\\\033[0m"
-  echo -e "\\\\033[1;33m         Re-run the installer to update.\\\\033[0m"
-fi
-
-'''
 
 
 def create_launcher_script(
@@ -13437,11 +13393,6 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
-                # Inject update check snippet before mode-specific logic
-                shared_sh_content += _get_update_check_snippet(
-                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
-                )
-
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -13512,9 +13463,6 @@ fi
 '''
             else:
                 # No system prompt, only settings
-                update_snippet = _get_update_check_snippet(
-                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
-                )
                 shared_sh_content = f'''#!/usr/bin/env bash
 set -euo pipefail
 
@@ -13537,7 +13485,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
 fi
 
-{update_snippet}exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -13638,11 +13586,6 @@ get_file_size() {{
 SAFE_PROMPT_SIZE=4096
 
 '''
-                # Inject update check snippet before mode-specific logic
-                launcher_content += _get_update_check_snippet(
-                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
-                )
-
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -13720,9 +13663,6 @@ else
 fi
 '''
             else:
-                update_snippet_unix = _get_update_check_snippet(
-                    f'$HOME/.claude/{command_name}/update-available.json', command_name,
-                )
                 launcher_content = f'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
@@ -13743,7 +13683,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
 fi
 
-{update_snippet_unix}echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
 claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
@@ -15185,7 +15125,6 @@ def main() -> None:
             # Step 19: Write installation manifest
             print()
             print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
-            cleanup_stale_marker(artifact_base_dir)
             config_source_type = classify_config_source(config_source)
             config_source_url = resolve_config_source_url(config_source, config_source_type)
             write_manifest(
