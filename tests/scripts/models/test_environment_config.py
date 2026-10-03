@@ -1596,8 +1596,6 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '1.0.0',
-            'command-names': ['test-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '1.0.0'
 
@@ -1606,8 +1604,6 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '2.1.0-beta.1',
-            'command-names': ['test-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '2.1.0-beta.1'
 
@@ -1616,8 +1612,6 @@ class TestVersionValidation:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '1.0.0+build.123',
-            'command-names': ['test-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.version == '1.0.0+build.123'
 
@@ -1964,49 +1958,57 @@ class TestMCPServerStdioArgs:
         assert len(config.mcp_servers) == 1
 
 
-class TestVersionRequiresCommandNames:
-    """Tests for version + command-names cross-field validation."""
+class TestKeysIndependentOfCommandNames:
+    """version and command-defaults validate with or without command-names."""
 
-    def test_version_without_command_names_raises(self) -> None:
-        """version without command-names raises ValueError."""
-        with pytest.raises(ValidationError, match='version requires command-names'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'version': '1.0.0',
-            })
+    def test_version_without_command_names_valid(self) -> None:
+        """version without command-names passes; the base manifest records it."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'version': '1.0.0',
+        })
+        assert config.version == '1.0.0'
+        assert config.command_names == []
 
-    def test_version_with_empty_command_names_raises(self) -> None:
-        """version with empty command-names list raises ValueError."""
-        with pytest.raises(ValidationError, match='version requires command-names'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'version': '1.0.0',
-                'command-names': [],
-            })
+    def test_version_with_empty_command_names_valid(self) -> None:
+        """version with an empty command-names list passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'version': '1.0.0',
+            'command-names': [],
+        })
+        assert config.version == '1.0.0'
 
-    def test_version_with_command_names_valid(self) -> None:
-        """version with command-names passes validation."""
+    def test_command_defaults_without_command_names_valid(self) -> None:
+        """command-defaults without command-names passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'command-defaults': {'system-prompt': 'prompts/p.md', 'mode': 'append'},
+        })
+        assert config.command_defaults is not None
+        assert config.command_defaults.system_prompt == 'prompts/p.md'
+        assert config.command_defaults.mode == 'append'
+        assert config.command_names == []
+
+    def test_command_names_without_command_defaults_valid(self) -> None:
+        """command-names without command-defaults passes."""
+        config = EnvironmentConfig.model_validate({
+            'name': 'Test',
+            'command-names': ['my-cmd'],
+        })
+        assert config.command_names == ['my-cmd']
+        assert config.command_defaults is None
+
+    def test_all_three_together_valid(self) -> None:
+        """command-names, command-defaults and version together pass."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'version': '1.0.0',
             'command-names': ['my-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
+            'command-defaults': {'system-prompt': 'prompts/p.md'},
         })
         assert config.version == '1.0.0'
-
-    def test_no_version_without_command_names_valid(self) -> None:
-        """Omitting version without command-names is valid."""
-        config = EnvironmentConfig.model_validate({'name': 'Test'})
-        assert config.version is None
-
-    def test_no_version_with_command_names_valid(self) -> None:
-        """command-names without version is valid (version is optional)."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'command-names': ['my-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
-        })
-        assert config.version is None
+        assert config.command_defaults is not None
 
 
 class TestLinkProjectsDirRequiresCommandNames:
@@ -2035,7 +2037,6 @@ class TestLinkProjectsDirRequiresCommandNames:
             'name': 'Test',
             'link-projects-dir': True,
             'command-names': ['my-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
         })
         assert config.link_projects_dir is True
 
@@ -2125,7 +2126,6 @@ class TestProfileMCPRequiresCommandNames:
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
             'command-names': ['my-cmd'],
-            'command-defaults': {'system-prompt': 'test.md'},
             'mcp-servers': [
                 {'name': 'my-server', 'scope': 'profile', 'command': 'python -m server'},
             ],

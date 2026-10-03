@@ -1428,7 +1428,8 @@ class EnvironmentConfig(BaseModel):
     command_defaults: CommandDefaults | None = Field(
         None,
         alias='command-defaults',
-        description='Command launch defaults',
+        description='System prompt and mode the launcher of an isolated profile applies. '
+        'A base install has no launcher, so there the system prompt does not reach Claude Code.',
     )
     status_line: StatusLine | None = Field(
         None,
@@ -1757,48 +1758,6 @@ class EnvironmentConfig(BaseModel):
                 raise ValueError(f'Environment variable {name} value cannot contain null bytes')
 
         return v
-
-    @model_validator(mode='after')
-    def validate_command_names_and_defaults(self) -> 'EnvironmentConfig':
-        """Ensure command-names and command-defaults are both present or both absent."""
-        has_command_names = bool(self.command_names)  # Empty list or None is falsy
-        has_command_defaults = self.command_defaults is not None
-
-        if has_command_names != has_command_defaults:
-            if has_command_names and not has_command_defaults:
-                raise ValueError(
-                    'command-names requires command-defaults to be specified. '
-                    'Either provide both command-names and command-defaults, or omit both.',
-                )
-            raise ValueError(
-                'command-defaults requires command-names to be specified. '
-                'Either provide both command-names and command-defaults, or omit both.',
-            )
-
-        return self
-
-    @model_validator(mode='after')
-    def validate_version_requires_command_names(self) -> 'EnvironmentConfig':
-        """Validate that version requires command-names to be present.
-
-        The version field drives the update notification printed by the
-        profile launcher scripts, which are only created when command-names
-        is specified. Without command-names, version has no functional effect.
-
-        Returns:
-            The validated EnvironmentConfig instance.
-
-        Raises:
-            ValueError: If version is set without command-names.
-        """
-        if self.version is not None and not self.command_names:
-            raise ValueError(
-                'version requires command-names to be specified. '
-                'The version field drives the update notification printed by '
-                'the profile launcher scripts, which are only created when '
-                'command-names is present. Either add command-names or remove version.',
-            )
-        return self
 
     @model_validator(mode='after')
     def validate_link_projects_dir_requires_command_names(self) -> 'EnvironmentConfig':

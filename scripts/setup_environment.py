@@ -1012,6 +1012,8 @@ class InstallationPlan:
     # Settings
     system_prompt: str | None = None
     system_prompt_mode: str = 'replace'
+    # The resolved command-defaults section (empty when not declared)
+    command_defaults: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
     command_names: list[str] = field(default_factory=lambda: list[str]())
     # 'cli', 'env', or 'yaml' (see CommandNames); None without command names
     command_names_origin: str | None = None
@@ -1075,6 +1077,42 @@ class InstallationPlan:
             or self.sensitive_paths
             or self.hooks_events,
         )
+
+    @property
+    def command_defaults_isolated_only(self) -> bool:
+        """Whether the run declares command-defaults that no launcher of it applies.
+
+        Only the launcher of an isolated profile passes the system prompt to
+        Claude Code, so in a run without command names the prompt file is
+        installed but never reaches Claude Code.
+        """
+        return bool(self.command_defaults) and not self.command_names
+
+
+# Printed by both installation summaries for a run whose command-defaults
+# no launcher applies (InstallationPlan.command_defaults_isolated_only).
+COMMAND_DEFAULTS_ISOLATED_ONLY_NOTE = (
+    'command-defaults applies only to isolated installs, whose launcher passes the '
+    'system prompt to Claude Code; this run has no command names'
+)
+
+
+def system_prompt_completion_line(mode: str, *, isolated: bool) -> str:
+    """Render the system prompt row of the closing summary.
+
+    Args:
+        mode: The command-defaults mode, 'append' or 'replace'.
+        isolated: Whether the run installs an isolated profile, whose
+            launcher applies the system prompt.
+
+    Returns:
+        The row text, without its bullet.
+    """
+    if not isolated:
+        return f'System prompt: not applied ({COMMAND_DEFAULTS_ISOLATED_ONLY_NOTE})'
+    if mode == 'append':
+        return 'System prompt: appending to default'
+    return 'System prompt: replacing default'
 
 
 class Colors:
@@ -8787,6 +8825,7 @@ def collect_installation_plan(
         dependency_commands=dependency_commands,
         system_prompt=system_prompt,
         system_prompt_mode=system_prompt_mode,
+        command_defaults=cmd_defaults,
         command_names=command_names,
         claude_code_version=config.get('claude-code-version'),
         install_nodejs=bool(config.get('install-nodejs')),
@@ -8947,6 +8986,8 @@ def display_installation_summary(
     settings_items: list[str] = []
     if plan.system_prompt:
         settings_items.append(f'System prompt: {plan.system_prompt_mode}')
+    if plan.command_defaults_isolated_only:
+        settings_items.append(f'{Colors.YELLOW}{COMMAND_DEFAULTS_ISOLATED_ONLY_NOTE}{Colors.NC}')
     if plan.os_env_variables:
         if plan.command_names:
             os_level, loader = partition_os_env_variables(plan.os_env_variables, isolated=True)
@@ -16096,25 +16137,6 @@ def main() -> None:
             # settings.json content.
             hooks = config.get('hooks', {})
 
-            # Warn about command-defaults.system-prompt without command-names.
-            # System prompts are applied by the launcher via --system-prompt /
-            # --append-system-prompt CLI flags; without command-names there is
-            # no launcher to consume the prompt file, so it would be silently
-            # unused at runtime.
-            if system_prompt:
-                warning(
-                    f"command-defaults.system-prompt is set to '{system_prompt}' "
-                    f'but command-names is not specified.',
-                )
-                warning(
-                    'System prompts are applied by the launcher; without command-names '
-                    'there is no launcher, so the system prompt will NOT be applied.',
-                )
-                warning(
-                    "Add 'command-names: [your-name]' to enable isolated environment "
-                    'with launcher-based system prompt injection.',
-                )
-
             # Step 17: Download hook scripts, helper modules, and the
             # status-line file + config to ~/.claude/hooks/. The status-line
             # file and its config must be listed in hooks.files per the
@@ -16273,10 +16295,7 @@ def main() -> None:
         if files_to_download:
             print(f'   * Files downloaded: {len(files_to_download)} processed')
         if system_prompt:
-            if mode == 'append':
-                print('   * System prompt: appending to default')
-            else:  # mode == 'replace'
-                print('   * System prompt: replacing default')
+            print(f'   * {system_prompt_completion_line(mode, isolated=bool(command_names))}')
         if mcp_stats['combined_count'] > 0:
             # Servers with BOTH global AND profile scope
             profile_only = mcp_stats['profile_count'] - mcp_stats['combined_count']

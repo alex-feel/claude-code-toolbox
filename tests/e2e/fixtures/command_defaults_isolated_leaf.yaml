@@ -1,0 +1,7 @@
+# Installs command_defaults_base.yaml as an isolated profile: the only key it
+# adds is command-names, so the system prompt and mode come from the parent.
+name: "Command Defaults Isolated"
+inherit: command_defaults_base.yaml
+
+command-names:
+  - "defaults-probe"

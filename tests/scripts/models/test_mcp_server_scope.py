@@ -142,7 +142,6 @@ class TestEnvironmentConfigWithProfileScope:
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
             'command-names': ['test-cmd'],
-            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'profile-server',
                 'transport': 'http',
@@ -159,7 +158,6 @@ class TestEnvironmentConfigWithProfileScope:
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
             'command-names': ['test-cmd'],
-            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'profile-server',
                 'command': 'echo hello',
@@ -175,7 +173,6 @@ class TestEnvironmentConfigWithProfileScope:
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
             'command-names': ['test-cmd'],
-            'command-defaults': {},
             'mcp-servers': [
                 {
                     'name': 'user-server',
@@ -206,7 +203,6 @@ class TestEnvironmentConfigWithProfileScope:
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
             'command-names': ['test-cmd'],
-            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'sse-profile-server',
                 'transport': 'sse',
@@ -289,7 +285,6 @@ class TestCombinedScopeSupport:
         config = EnvironmentConfig.model_validate({
             'name': 'Test Environment',
             'command-names': ['test-cmd'],
-            'command-defaults': {},
             'mcp-servers': [{
                 'name': 'combined-server',
                 'transport': 'http',
