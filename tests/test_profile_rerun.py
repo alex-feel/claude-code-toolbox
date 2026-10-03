@@ -886,7 +886,10 @@ class TestEnvironmentNameChangeGuard:
         assert 'from p, old to p, new' in decide.call_args.kwargs['title']
         assert decide.call_args.kwargs['remedy'] == [
             'Pass --command-names p,new to change them.',
-            'Clear CLAUDE_CODE_TOOLBOX_COMMAND_NAMES to keep p, old.',
+            (
+                'Clear CLAUDE_CODE_TOOLBOX_COMMAND_NAMES (unset CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, or '
+                'Remove-Item Env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES in PowerShell) to keep p, old.'
+            ),
         ]
 
     @pytest.mark.parametrize(

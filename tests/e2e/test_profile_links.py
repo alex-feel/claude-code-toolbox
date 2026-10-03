@@ -918,6 +918,45 @@ class TestEnvironmentValues:
         assert '[env]' in output.split('Links (from profile "aegis-1"):')[1].split('\n')[0]
         assert read_manifest(claude_dir / 'aegis-2')['link']['origins'] == {'dirs': 'env', 'source': 'env'}
 
+    def test_leftover_variables_are_named_by_the_source_and_base_refusals(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With the one-liner's variables still set, re-running the source or the base names them and how to clear them."""
+        cfg = write_config(configs, 'aegis.yaml', _aegis())
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        _install_source(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        source_installed_at = read_manifest(claude_dir / 'aegis-1')['installed_at']
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'all')
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_LINK_FROM', 'aegis-1')
+        clear = (
+            'clear CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM (unset CLAUDE_CODE_TOOLBOX_LINK_DIRS '
+            'CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, '
+            'Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell)'
+        )
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes']) == 1
+
+        output = _output(capsys)
+        assert (
+            'Profile "aegis-1" cannot link from itself: CLAUDE_CODE_TOOLBOX_LINK_FROM=aegis-1 names the profile this '
+            f'run installs; {clear} to re-run "aegis-1" as installed, or name another profile in --link-from.'
+        ) in output
+        assert read_manifest(claude_dir / 'aegis-1')['installed_at'] == source_installed_at, 'nothing ran'
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 1
+
+        output = _output(capsys)
+        assert (
+            f'CLAUDE_CODE_TOOLBOX_LINK_DIRS={",".join(LINKABLE_PROFILE_DIRS)} needs an isolated profile: pass '
+            '--command-names NAME (or set CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside '
+            f'~/.claude/NAME, or {clear} to run the base profile without links; the base profile cannot link.'
+        ) in output
+        assert not any(_is_link(claude_dir / entry) for entry in LINKABLE_PROFILE_DIRS if (claude_dir / entry).exists())
+
     def test_environment_value_that_changes_the_links_is_guarded(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:

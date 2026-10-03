@@ -390,8 +390,36 @@ class TestLinkRules:
         )
         assert errors == [
             (
-                'link-dirs projects needs an isolated profile: pass --command-names NAME (or set '
+                '--link-dirs projects needs an isolated profile: pass --command-names NAME (or set '
                 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside ~/.claude/NAME; the base '
+                'profile cannot link.'
+            ),
+        ]
+
+    def test_base_profile_refusal_names_the_configuration_key_and_the_variable(self) -> None:
+        """The message names the value the way it was given, with the remedy that undoes that source."""
+        from_yaml = link_request_errors(
+            LinkSpec(['projects'], 'base', 'yaml', 'default'), None, primary_command_name=None, this_identity='x',
+            typed_selectors=False,
+        )
+        assert from_yaml == [
+            (
+                'link-dirs [projects] needs an isolated profile: pass --command-names NAME (or set '
+                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside ~/.claude/NAME, or remove '
+                'link-dirs from the configuration; the base profile cannot link.'
+            ),
+        ]
+        from_environment = link_request_errors(
+            LinkSpec(['skills', 'projects'], 'aegis-1', 'env', 'env'), None, primary_command_name=None,
+            this_identity='x', typed_selectors=False,
+        )
+        assert from_environment == [
+            (
+                'CLAUDE_CODE_TOOLBOX_LINK_DIRS=skills,projects needs an isolated profile: pass --command-names NAME '
+                '(or set CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside ~/.claude/NAME, or clear '
+                'CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM (unset CLAUDE_CODE_TOOLBOX_LINK_DIRS '
+                'CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, '
+                'Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell) to run the base profile without links; the base '
                 'profile cannot link.'
             ),
         ]
@@ -401,7 +429,80 @@ class TestLinkRules:
             LinkSpec(['projects'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path), primary_command_name='Aegis-1',
             this_identity='x', typed_selectors=False,
         )
-        assert errors == ['Profile "Aegis-1" cannot link from itself; name another profile in --link-from.']
+        assert errors == [
+            (
+                'Profile "Aegis-1" cannot link from itself: --link-from aegis-1 names the profile this run installs; '
+                'name another profile in --link-from.'
+            ),
+        ]
+
+    def test_self_link_refusal_names_the_variable_or_the_configuration_key(self, tmp_path: Path) -> None:
+        """A leftover variable gets the clear remedy; a configuration meant for the dependents gets --link-dirs none."""
+        from_environment = link_request_errors(
+            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'aegis-1', 'env', 'env'), self._source(tmp_path),
+            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+        )
+        assert from_environment == [
+            (
+                'Profile "aegis-1" cannot link from itself: CLAUDE_CODE_TOOLBOX_LINK_FROM=aegis-1 names the profile '
+                'this run installs; clear CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM (unset '
+                'CLAUDE_CODE_TOOLBOX_LINK_DIRS CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item '
+                'Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell) to re-run '
+                '"aegis-1" as installed, or name another profile in --link-from.'
+            ),
+        ]
+        from_yaml = link_request_errors(
+            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'aegis-1', 'yaml', 'yaml'), self._source(tmp_path),
+            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+        )
+        assert from_yaml == [
+            (
+                'Profile "aegis-1" cannot link from itself: link-from aegis-1 names the profile this run installs; '
+                'pass --link-dirs none to install "aegis-1" without links, as the source the configuration\'s other '
+                'profiles link from, or name another profile in --link-from.'
+            ),
+        ]
+
+    def test_content_rule_refusals_add_the_clear_remedy_for_environment_values(self, tmp_path: Path) -> None:
+        """Every content-rule message ends with how to clear a variable the value came from."""
+        errors = link_request_errors(
+            LinkSpec(['skills'], 'aegis-1', 'cli', 'env'), self._source(tmp_path), primary_command_name='p1',
+            this_identity='other', typed_selectors=True,
+        )
+        assert len(errors) == 2
+        suffix = (
+            ' Or clear CLAUDE_CODE_TOOLBOX_LINK_FROM (unset CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item '
+            'Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell) to run without links.'
+        )
+        assert all(err.endswith(suffix) for err in errors), errors
+        assert 'link only between installs of one configuration' in errors[0]
+        assert 'drop --select, --with and --without' in errors[1]
+
+    def test_unknown_source_names_the_value_and_its_variable(self, tmp_path: Path) -> None:
+        (tmp_path / '.claude').mkdir()
+        typed, typed_errors = setup_environment.resolve_link_source(LinkSpec(['projects'], 'nobody', 'cli', 'cli'), tmp_path)
+        assert typed is None
+        assert typed_errors == [
+            (
+                f'--link-from nobody names the profile "nobody", but no profile of that name is installed '
+                f'({tmp_path / ".claude" / "nobody"} does not exist); install it first, or name an installed profile.'
+            ),
+        ]
+        _, env_errors = setup_environment.resolve_link_source(LinkSpec(['projects'], 'nobody', 'cli', 'env'), tmp_path)
+        assert env_errors == [
+            (
+                f'CLAUDE_CODE_TOOLBOX_LINK_FROM=nobody names the profile "nobody", but no profile of that name is '
+                f'installed ({tmp_path / ".claude" / "nobody"} does not exist); install it first, name an installed '
+                'profile, or clear CLAUDE_CODE_TOOLBOX_LINK_FROM (unset CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item '
+                'Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell) to run without links.'
+            ),
+        ]
+
+    def test_clear_variables_text(self) -> None:
+        assert setup_environment.clear_variables_text(['A']) == 'A (unset A, or Remove-Item Env:A in PowerShell)'
+        assert setup_environment.clear_variables_text(['A', 'B', 'C']) == (
+            'A, B and C (unset A B C, or Remove-Item Env:A, Env:B, Env:C in PowerShell)'
+        )
 
     def test_projects_needs_no_manifest_and_no_identity(self, tmp_path: Path) -> None:
         source = self._source(tmp_path, manifest=False)

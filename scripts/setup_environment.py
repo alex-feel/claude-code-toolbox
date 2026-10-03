@@ -13665,6 +13665,21 @@ LINK_FROM_SOURCES: dict[str, str] = {
 }
 
 
+def clear_variables_text(variables: list[str]) -> str:
+    """Name environment variables with the bash and PowerShell commands that clear them.
+
+    Args:
+        variables: The variable names, at least one.
+
+    Returns:
+        The names, followed in parentheses by the unset and Remove-Item
+        commands, for a remedy such as ``Clear <text> to ...``.
+    """
+    names = variables[-1] if len(variables) == 1 else f'{", ".join(variables[:-1])} and {variables[-1]}'
+    powershell = ', '.join(f'Env:{variable}' for variable in variables)
+    return f'{names} (unset {" ".join(variables)}, or Remove-Item {powershell} in PowerShell)'
+
+
 def parse_link_dirs(value: object, source: str) -> tuple[list[str], list[str]]:
     """Parse a link-dirs value into the entries it names.
 
@@ -13773,6 +13788,65 @@ class LinkSpec(NamedTuple):
 
 
 NO_LINKS = LinkSpec([], LINK_SOURCE_BASE, 'default', 'default')
+
+
+def link_dirs_value_text(spec: LinkSpec) -> str:
+    """Name a run's link-dirs value the way it was given, for a message.
+
+    Args:
+        spec: The run's links.
+
+    Returns:
+        The flag with its value, the variable with its value, the
+        configuration key with its list, or the remembered value.
+    """
+    entries = ','.join(spec.dirs)
+    if spec.dirs_remembered:
+        return f'the remembered link-dirs value ({", ".join(spec.dirs)})'
+    if spec.dirs_origin == 'env':
+        return f'{LINK_DIRS_SOURCES["env"]}={entries}'
+    if spec.dirs_origin == 'yaml':
+        return f'{LINK_DIRS_SOURCES["yaml"]} [{", ".join(spec.dirs)}]'
+    return f'{LINK_DIRS_SOURCES["cli"]} {entries}'
+
+
+def link_source_value_text(spec: LinkSpec) -> str:
+    """Name a run's link-from value the way it was given, for a message.
+
+    Args:
+        spec: The run's links.
+
+    Returns:
+        The flag with its value, the variable with its value, the
+        configuration key with its value, or the remembered value.
+    """
+    if spec.source_remembered:
+        return f'the remembered link-from value ({spec.source})'
+    if spec.source_origin == 'env':
+        return f'{LINK_FROM_SOURCES["env"]}={spec.source}'
+    if spec.source_origin == 'yaml':
+        return f'{LINK_FROM_SOURCES["yaml"]} {spec.source}'
+    return f'{LINK_FROM_SOURCES["cli"]} {spec.source}'
+
+
+def link_environment_variables(spec: LinkSpec) -> list[str]:
+    """List the link variables a run's values came from, so a refusal can say how to clear them.
+
+    Args:
+        spec: The run's links.
+
+    Returns:
+        CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM,
+        each when its value was read from the environment for this run.
+    """
+    return [
+        variable
+        for variable, origin, remembered in (
+            (LINK_DIRS_SOURCES['env'], spec.dirs_origin, spec.dirs_remembered),
+            (LINK_FROM_SOURCES['env'], spec.source_origin, spec.source_remembered),
+        )
+        if origin == 'env' and not remembered
+    ]
 
 
 def manifest_link(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -13990,7 +14064,7 @@ def guard_environment_link_change(
         question=f'Change the links of profile "{profile_name}" to {_format_names(spec.dirs)} from {spec.source}?',
         remedy=[
             f'Pass --link-dirs {",".join(spec.dirs) or LINK_NONE_TOKEN} --link-from {spec.source} to change them.',
-            f'Clear {LINK_DIRS_SOURCES["env"]} and {LINK_FROM_SOURCES["env"]} to keep '
+            f'Clear {clear_variables_text([LINK_DIRS_SOURCES["env"], LINK_FROM_SOURCES["env"]])} to keep '
             f'{_format_names(recorded_dirs)} from {recorded_source}.',
         ],
     )
@@ -15320,9 +15394,15 @@ def resolve_link_source(spec: LinkSpec, home_dir: Path) -> tuple[LinkSource | No
     primary = None if spec.source == LINK_SOURCE_BASE else spec.source
     directory = profile_directory(home_dir, primary)
     if primary is not None and not directory.is_dir():
+        variables = link_environment_variables(spec)
+        remedy = (
+            f'install it first, name an installed profile, or clear {clear_variables_text(variables)} to run '
+            'without links' if variables
+            else 'install it first, or name an installed profile'
+        )
         return None, [
-            f'--link-from names the profile "{spec.source}", but no profile of that name is installed '
-            f'({directory} does not exist); install it first, or name an installed profile.',
+            f'{link_source_value_text(spec)} names the profile "{spec.source}", but no profile of that name is '
+            f'installed ({directory} does not exist); {remedy}.',
         ]
     try:
         manifest = read_profile_manifest(directory / MANIFEST_FILENAME)
@@ -15353,20 +15433,75 @@ def link_request_errors(
             or came from the environment.
 
     Returns:
-        One message per violated rule; empty when the links are allowed.
+        One message per violated rule, each naming the value by where it
+        came from (the flag, the variable with the commands that clear it,
+        the configuration key, or the remembered value); empty when the
+        links are allowed.
     """
     if not spec.dirs:
         return []
+    variables = link_environment_variables(spec)
+    clear_remedy = f'clear {clear_variables_text(variables)}' if variables else None
     if primary_command_name is None:
+        remedies = [
+            'pass --command-names NAME (or set CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside '
+            '~/.claude/NAME',
+        ]
+        if clear_remedy:
+            remedies.append(f'{clear_remedy} to run the base profile without links')
+        elif spec.dirs_origin == 'yaml' and not spec.dirs_remembered:
+            remedies.append(f'remove {LINK_DIRS_SOURCES["yaml"]} from the configuration')
         return [
-            f'link-dirs {",".join(spec.dirs)} needs an isolated profile: pass --command-names NAME (or set '
-            'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside ~/.claude/NAME; the base '
-            'profile cannot link.',
+            f'{link_dirs_value_text(spec)} needs an isolated profile: {", or ".join(remedies)}; the base profile '
+            'cannot link.',
         ]
     if spec.source != LINK_SOURCE_BASE and spec.source.casefold() == primary_command_name.casefold():
-        return [f'Profile "{primary_command_name}" cannot link from itself; name another profile in --link-from.']
+        remedies = []
+        if clear_remedy:
+            remedies.append(f'{clear_remedy} to re-run "{primary_command_name}" as installed')
+        elif spec.source_origin == 'yaml' and not spec.source_remembered:
+            remedies.append(
+                f'pass --link-dirs {LINK_NONE_TOKEN} to install "{primary_command_name}" without links, as the '
+                "source the configuration's other profiles link from",
+            )
+        remedies.append('name another profile in --link-from')
+        return [
+            f'Profile "{primary_command_name}" cannot link from itself: {link_source_value_text(spec)} names the '
+            f'profile this run installs; {", or ".join(remedies)}.',
+        ]
     if source is None:
         return []
+    errors = _content_link_errors(
+        spec, source, primary_command_name=primary_command_name, this_identity=this_identity,
+        typed_selectors=typed_selectors,
+    )
+    if clear_remedy:
+        return [f'{err} Or {clear_remedy} to run without links.' for err in errors]
+    return errors
+
+
+def _content_link_errors(
+    spec: LinkSpec,
+    source: LinkSource,
+    *,
+    primary_command_name: str,
+    this_identity: str | None,
+    typed_selectors: bool,
+) -> list[str]:
+    """Check the rules of a content link against its resolved source.
+
+    Args:
+        spec: The run's links.
+        source: The resolved link source.
+        primary_command_name: This run's primary command name.
+        this_identity: The identity of the configuration this run was
+            given, or None when it is unknown.
+        typed_selectors: Whether --select, --with or --without was typed
+            or came from the environment.
+
+    Returns:
+        One message per violated rule; empty when the links are allowed.
+    """
     errors: list[str] = []
     if spec.links_content:
         content = ', '.join(spec.content_dirs)
@@ -17674,7 +17809,7 @@ def guard_environment_name_change(
         question=f'Change the command names of profile "{profile_name}" to {_format_names(names.names)}?',
         remedy=[
             f'Pass --command-names {",".join(names.names)} to change them.',
-            f'Clear {variable} to keep {_format_names(recorded)}.',
+            f'Clear {clear_variables_text([variable])} to keep {_format_names(recorded)}.',
         ],
     )
 
@@ -17718,8 +17853,7 @@ def guard_configuration_switch(
     # The remedy undoes the source the configuration came from
     if from_environment:
         keep_remedy = (
-            'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
-            'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile '
+            f'Clear {clear_variables_text(["CLAUDE_CODE_TOOLBOX_ENV_CONFIG"])} and re-run the profile '
             f'with its own configuration: --profile {profile_name}.'
         )
     else:

@@ -2485,7 +2485,11 @@ The `merge-keys` directive controls merge semantics during inheritance resolutio
 
 ### link-dirs needs an isolated profile
 
-Links live inside an isolated profile's directory, so a configuration that declares `link-dirs`, or a run given `--link-dirs`, needs `command-names` or `--command-names NAME`. Add one, or remove `link-dirs`.
+Links live inside an isolated profile's directory, so a configuration that declares `link-dirs`, or a run given `--link-dirs`, needs `command-names` or `--command-names NAME`. Add one, or remove `link-dirs`. The message names the value the way it was given; when it came from `CLAUDE_CODE_TOOLBOX_LINK_DIRS`, left in the shell by an earlier one-liner, the message also says how to clear the link variables (`unset`, or `Remove-Item Env:` in PowerShell) so `--profile base` runs without links.
+
+### Profile "NAME" cannot link from itself
+
+A profile is never its own link source. The usual cause is the one-liner's variables still set in the shell: after `CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'` and `CLAUDE_CODE_TOOLBOX_LINK_FROM='aegis-1'` installed a dependent, `--profile aegis-1` in the same shell reads them for the source itself. The message names the variable and how to clear both (`unset CLAUDE_CODE_TOOLBOX_LINK_DIRS CLAUDE_CODE_TOOLBOX_LINK_FROM`, or `Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, Env:CLAUDE_CODE_TOOLBOX_LINK_FROM` in PowerShell); a fresh shell works too. When the configuration's own `link-from` names the profile being installed, pass `--link-dirs none` for that run: the configuration's link keys are meant for the profiles that link from it.
 
 ### Content entries link only between installs of one configuration
 
