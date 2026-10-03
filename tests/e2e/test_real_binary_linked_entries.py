@@ -11,11 +11,17 @@ stream-json init message, in the hook's marker file, or as a session file at
 the link target. A negative control per entry (the entry absent) shows the
 sentinel missing, so every positive assertion is discriminating.
 
-prompts is proven through the toolbox launcher create_launcher_script()
-writes, which passes the file with --system-prompt-file (replace mode) or
---append-system-prompt-file (append mode); projects is proven by a session
-written through the link landing at the link target and resuming from a
-second profile that links the same target.
+hooks is proven with what an installed hooks/ holds beside the script: the
+helper module the script imports from its own directory, the
+project-overrides/ file it reads next to itself, and the uv script lockfile
+uv reads beside it under UV_LOCKED=1 (a lockfile made stale after locking
+blocks the turn through every link kind, which a lockfile uv could not find
+would not do). prompts is proven through the toolbox launcher
+create_launcher_script() writes, which passes the file with
+--system-prompt-file (replace mode) or --append-system-prompt-file (append
+mode); projects is proven by a session written through the link landing at
+the link target and resuming from a second profile that links the same
+target.
 
 Skipped when the binary is absent; CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1
 (set in CI) turns absence into a failure instead of a silent skip. A
@@ -173,25 +179,62 @@ def test_rule_absent_does_not_load(workspace: Workspace) -> None:
 
 @pytest.mark.parametrize('kind', support.link_kinds())
 def test_hooks_run_through_link(workspace: Workspace, kind: str) -> None:
-    """The hook script under a linked hooks/ runs on SessionStart and UserPromptSubmit.
+    """The hook script under a linked hooks/ runs on SessionStart and UserPromptSubmit with its siblings.
 
     config.json names the script under the profile; the marker the script
-    writes shows that path as ``file`` and the directory the link resolves
-    to as ``realpath``.
+    writes shows that path as ``file`` and ``sys_path0`` and the directory
+    the link resolves to as ``realpath``, and carries the sentinels of the
+    helper module it imported and the project-overrides/ file it read
+    beside itself. The lockfile locked beside the source script is visible
+    beside the profile's script, where uv reads it under UV_LOCKED=1.
     """
     profile = workspace.make_profile(_PROFILE_NAME, kind)
+    profile_hooks = profile.config_dir / 'hooks'
+    assert (profile_hooks / support.HOOK_LOCKFILE).is_file()
 
     run = profile.run(_PROMPT)
 
     _assert_single_turn(run)
     assert run.hook_responses, run.describe()
     assert all(response.get('exit_code') == 0 for response in run.hook_responses), run.describe()
+    # uv found the lockfile beside the script: it warns when there is none
+    assert all('No lockfile found' not in str(response.get('stderr', '')) for response in run.hook_responses), (
+        run.describe()
+    )
     records = workspace.hook_records()
     assert {record['event'] for record in records} == {'SessionStart', 'UserPromptSubmit'}, records
     real_holder = profile.config_dir if kind == 'real' else workspace.source
     for record in records:
-        assert Path(record['file']) == profile.config_dir / 'hooks' / support.HOOK_SCRIPT, record
+        assert Path(record['file']) == profile_hooks / support.HOOK_SCRIPT, record
+        assert Path(record['sys_path0']) == profile_hooks, record
         assert Path(record['realpath']).resolve() == (real_holder / 'hooks' / support.HOOK_SCRIPT).resolve(), record
+        assert record['helper'] == support.HELPER_SENTINEL, record
+        assert record['override'] == support.OVERRIDE_SENTINEL, record
+
+
+@pytest.mark.parametrize('kind', support.link_kinds())
+def test_hooks_stale_lock_blocks_the_prompt(workspace: Workspace, kind: str) -> None:
+    """A lockfile that no longer matches the script stops the hook through every link kind.
+
+    uv reads the lockfile beside the script it is given; under UV_LOCKED=1
+    a stale one exits 2 before the script runs, and exit code 2 on
+    UserPromptSubmit blocks the turn. A lockfile uv could not find beside
+    the linked script would only produce a warning and let the hook run, so
+    the blocked turn proves the lockfile is read through the link.
+    """
+    support.make_hook_lock_stale(workspace.source)
+    profile = workspace.make_profile(_PROFILE_NAME, kind)
+
+    run = profile.run(_PROMPT)
+
+    assert not workspace.hook_records(), run.describe()
+    assert len(run.bodies) == 0, run.describe()
+    errors = [response for response in run.hook_responses if response.get('outcome') == 'error']
+    assert errors, run.describe()
+    assert all(response.get('exit_code') == 2 for response in errors), run.describe()
+    assert all('needs to be updated' in str(response.get('stderr', '')) for response in errors), run.describe()
+    assert run.result is not None, run.describe()
+    assert 'blocked by hook' in str(run.result.get('result', '')), run.describe()
 
 
 def test_hooks_absent_block_the_prompt(workspace: Workspace) -> None:

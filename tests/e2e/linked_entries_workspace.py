@@ -1,11 +1,12 @@
 """Profile layouts the real-binary linked-entries tests run the binary against.
 
 A Workspace is an isolated home holding one source profile that carries
-every linkable entry for real, plus a running fake API. Each Profile it
-creates is ``~/.claude/<name>`` with every entry placed as a copy, a
-symlink or a junction of the source entry, a config.json written by the
-toolbox's own create_profile_config(), and a child environment confined to
-the workspace.
+every linkable entry for real (its hook script locked with
+``uv lock --script`` beside its helper and project-overrides/ file), plus a
+running fake API. Each Profile it creates is ``~/.claude/<name>`` with
+every entry placed as a copy, a symlink or a junction of the source entry,
+a config.json written by the toolbox's own create_profile_config(), and a
+child environment confined to the workspace.
 """
 
 from __future__ import annotations
@@ -145,6 +146,7 @@ def open_workspace(tmp_path: Path) -> Iterator[Workspace]:
     project_dir.mkdir()
     hook_marker = tmp_path / 'hook_marker.jsonl'
     support.write_source_entries(source, hook_marker)
+    support.lock_hook_script(source, support.isolated_home_env(home))
     server = FakeAnthropicServer().start()
     try:
         yield Workspace(home=home, source=source, project_dir=project_dir, hook_marker=hook_marker, server=server)

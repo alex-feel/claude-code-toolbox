@@ -9,7 +9,10 @@ real user state; this module holds what they share:
 
 - write_source_entries(): one sentinel per linkable entry in a source
   profile, so every assertion is discriminating (absent entry, absent
-  sentinel);
+  sentinel); the hooks entry carries what an installed hooks/ holds
+  beside the script: a helper module the script imports, a
+  project-overrides/ file it reads, and a uv script lockfile that
+  lock_hook_script() creates and make_hook_lock_stale() invalidates;
 - place_entry(): copies or links an entry into a profile with the same
   primitives the toolbox uses (os.symlink with target_is_directory, and
   _winapi.CreateJunction on Windows);
@@ -61,6 +64,19 @@ STYLE_NAME = 'sentinel-style'
 PROMPT_FILE = 'sentinel-prompt.md'
 HOOK_SCRIPT = 'sentinel_hook.py'
 HOOK_CONFIG = 'sentinel_hook.json'
+# The files an installed hooks/ holds beside a script: the helper module the
+# script imports from its own directory, the uv script lockfile uv reads
+# beside the script, and the project-overrides/ file the script reads
+# relative to its own directory
+HOOK_HELPER = 'sentinel_hook_helper.py'
+HOOK_LOCKFILE = f'{HOOK_SCRIPT}.lock'
+HOOK_OVERRIDES_DIR = 'project-overrides'
+HOOK_OVERRIDE_FILE = 'sentinel.json'
+HELPER_SENTINEL = 'ZQX-HELPER-3e9a1b'
+OVERRIDE_SENTINEL = 'ZQX-OVERRIDE-5c2d8e'
+HOOK_REQUIRES_PYTHON = '>=3.12'
+# A requires-python the lockfile does not record: a locked run refuses it
+HOOK_STALE_REQUIRES_PYTHON = '>=3.11'
 
 FAKE_API_KEY = 'sk-ant-api03-fake-key-for-e2e-0000000000000000000000'
 
@@ -105,10 +121,14 @@ def link_only_kinds() -> list[str]:
 def write_source_entries(source: Path, hook_marker: Path) -> None:
     """Populate every linkable entry of a source profile with one sentinel.
 
-    The hook script appends one JSON line per invocation to ``hook_marker``
-    (a path outside every linked directory) carrying the event name, its own
-    ``__file__`` and the real path of that file, so a run through a link
-    shows the profile path in ``file`` and the source path in ``realpath``.
+    The hook script carries a PEP 723 header (so uv reads the lockfile
+    lock_hook_script() writes beside it), imports HOOK_HELPER from its own
+    directory and reads HOOK_OVERRIDE_FILE under HOOK_OVERRIDES_DIR next to
+    itself. It appends one JSON line per invocation to ``hook_marker`` (a
+    path outside every linked directory) carrying the event name, its own
+    ``__file__``, the real path of that file, the helper and override
+    sentinels and ``sys.path[0]``, so a run through a link shows the profile
+    path in ``file`` and ``sys_path0`` and the source path in ``realpath``.
 
     Args:
         source: The profile directory that holds the entries for real.
@@ -150,27 +170,97 @@ def write_source_entries(source: Path, hook_marker: Path) -> None:
         f'Sentinel system prompt {SENTINELS["prompts"]}\n', encoding='utf-8',
     )
     (source / 'projects').mkdir()
-    (source / 'hooks').mkdir()
-    (source / 'hooks' / HOOK_SCRIPT).write_text(
+    hooks_dir = source / 'hooks'
+    hooks_dir.mkdir()
+    (hooks_dir / HOOK_SCRIPT).write_text(
+        '# /// script\n'
+        f'# requires-python = "{HOOK_REQUIRES_PYTHON}"\n'
+        '# dependencies = []\n'
+        '# ///\n'
         'import json\n'
         'import os\n'
         'import sys\n'
+        'from pathlib import Path\n'
+        '\n'
+        'import sentinel_hook_helper\n'
         '\n'
         'with open(sys.argv[1], encoding="utf-8") as config_file:\n'
         '    config = json.load(config_file)\n'
+        f'override_path = Path(__file__).parent / "{HOOK_OVERRIDES_DIR}" / "{HOOK_OVERRIDE_FILE}"\n'
+        'override = json.loads(override_path.read_text(encoding="utf-8"))\n'
         'payload = json.load(sys.stdin)\n'
         'record = {\n'
         '    "event": payload.get("hook_event_name"),\n'
         '    "file": __file__,\n'
         '    "realpath": os.path.realpath(__file__),\n'
+        '    "helper": sentinel_hook_helper.HELPER_SENTINEL,\n'
+        '    "override": override["override"],\n'
+        '    "sys_path0": sys.path[0],\n'
         '}\n'
         'with open(config["marker"], "a", encoding="utf-8") as marker:\n'
         '    marker.write(json.dumps(record) + "\\n")\n',
         encoding='utf-8',
     )
-    (source / 'hooks' / HOOK_CONFIG).write_text(
+    (hooks_dir / HOOK_HELPER).write_text(f'HELPER_SENTINEL = "{HELPER_SENTINEL}"\n', encoding='utf-8')
+    (hooks_dir / HOOK_OVERRIDES_DIR).mkdir()
+    (hooks_dir / HOOK_OVERRIDES_DIR / HOOK_OVERRIDE_FILE).write_text(
+        json.dumps({'override': OVERRIDE_SENTINEL}), encoding='utf-8',
+    )
+    (hooks_dir / HOOK_CONFIG).write_text(
         json.dumps({'marker': str(hook_marker)}), encoding='utf-8',
     )
+
+
+def lock_hook_script(source: Path, env: dict[str, str]) -> Path:
+    """Write the uv script lockfile beside the sentinel hook script.
+
+    Runs ``uv lock --script`` the way a configuration author locks a hook
+    before shipping it; the script declares no dependencies, so the lock
+    resolves offline. Claude Code then runs the hook under UV_LOCKED=1
+    (see claude_child_env()), which makes uv refuse a lockfile that no
+    longer matches the script instead of re-resolving.
+
+    Args:
+        source: The profile directory that holds hooks/ for real.
+        env: The environment of the uv process (an isolated home).
+
+    Returns:
+        The lockfile path.
+
+    Raises:
+        RuntimeError: When uv is not installed or the lock fails.
+    """
+    uv = shutil.which('uv')
+    if uv is None:
+        raise RuntimeError('uv is required to lock the sentinel hook script')
+    script = source / 'hooks' / HOOK_SCRIPT
+    completed = subprocess.run(
+        [uv, 'lock', '--script', str(script)], cwd=source, env=env, capture_output=True, encoding='utf-8',
+        errors='replace', check=False, timeout=120,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f'uv lock --script failed ({completed.returncode}): {completed.stdout}{completed.stderr}')
+    return source / 'hooks' / HOOK_LOCKFILE
+
+
+def make_hook_lock_stale(source: Path) -> None:
+    """Change the script's requires-python so the lockfile beside it no longer matches.
+
+    A locked run (UV_LOCKED=1) then exits 2 instead of running the hook, and
+    exit code 2 on UserPromptSubmit blocks the turn; a lockfile uv cannot
+    find at all only produces a warning, so a blocked turn proves the
+    lockfile was read beside the script.
+
+    Args:
+        source: The profile directory that holds hooks/ for real.
+    """
+    script = source / 'hooks' / HOOK_SCRIPT
+    content = script.read_text(encoding='utf-8')
+    stale = content.replace(
+        f'# requires-python = "{HOOK_REQUIRES_PYTHON}"', f'# requires-python = "{HOOK_STALE_REQUIRES_PYTHON}"',
+    )
+    assert stale != content, 'the sentinel hook script must declare HOOK_REQUIRES_PYTHON'
+    script.write_text(stale, encoding='utf-8')
 
 
 def place_entry(source: Path, profile: Path, entry: str, kind: str) -> None:
@@ -352,8 +442,10 @@ def claude_child_env(
 
     On top of isolated_home_env(): the config dir is ``config_dir``, API
     traffic goes to ``api_url`` with a dummy key, nonessential traffic and
-    updates are off, and ``claude_cmd``'s directory is prepended to PATH so
-    the toolbox launcher resolves ``claude`` the way a shell would.
+    updates are off, uv runs hook scripts against their lockfiles
+    (UV_LOCKED=1, so a stale lockfile fails the hook instead of being
+    re-resolved), and ``claude_cmd``'s directory is prepended to PATH so the
+    toolbox launcher resolves ``claude`` the way a shell would.
 
     Args:
         config_dir: Value of CLAUDE_CONFIG_DIR.
@@ -373,6 +465,7 @@ def claude_child_env(
         'DISABLE_AUTOUPDATER': '1',
         'DISABLE_TELEMETRY': '1',
         'DISABLE_ERROR_REPORTING': '1',
+        'UV_LOCKED': '1',
     })
     if claude_cmd is not None:
         env['PATH'] = os.pathsep.join([str(Path(claude_cmd).parent), env.get('PATH', '')])
@@ -403,7 +496,9 @@ def profile_config_sections(hooks_enabled: bool) -> tuple[dict[str, Any], dict[s
     The hooks section is the YAML shape of a toolbox configuration: the
     sentinel hook runs on SessionStart and on UserPromptSubmit with its
     config file as the argument, so config.json carries exactly the command
-    string an installed profile would.
+    string an installed profile would; the helper module is declared under
+    ``hooks.helpers``, which installs it beside the script and never
+    registers it as a command.
 
     Args:
         hooks_enabled: Whether the hook events are declared.
@@ -415,6 +510,7 @@ def profile_config_sections(hooks_enabled: bool) -> tuple[dict[str, Any], dict[s
     if hooks_enabled:
         profile_config['hooks'] = {
             'files': [f'hooks/{HOOK_SCRIPT}', f'hooks/{HOOK_CONFIG}'],
+            'helpers': [f'hooks/{HOOK_HELPER}'],
             'events': [
                 {'event': 'SessionStart', 'type': 'command', 'command': HOOK_SCRIPT, 'config': HOOK_CONFIG},
                 {'event': 'UserPromptSubmit', 'type': 'command', 'command': HOOK_SCRIPT, 'config': HOOK_CONFIG},

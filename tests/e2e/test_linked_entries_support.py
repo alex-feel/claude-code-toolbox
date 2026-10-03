@@ -102,6 +102,61 @@ def test_write_source_entries_puts_one_sentinel_per_entry(tmp_path: Path) -> Non
     assert json.loads((source / 'hooks' / support.HOOK_CONFIG).read_text(encoding='utf-8')) == {'marker': str(marker)}
 
 
+def test_write_source_entries_gives_the_hook_its_siblings(tmp_path: Path) -> None:
+    """The hook script declares PEP 723 metadata, imports the helper and reads the override beside itself."""
+    source = tmp_path / 'source'
+    source.mkdir()
+
+    support.write_source_entries(source, tmp_path / 'marker.jsonl')
+
+    hooks_dir = source / 'hooks'
+    script = (hooks_dir / support.HOOK_SCRIPT).read_text(encoding='utf-8')
+    assert script.startswith('# /// script\n')
+    assert f'# requires-python = "{support.HOOK_REQUIRES_PYTHON}"' in script
+    assert '# dependencies = []' in script
+    assert f'import {support.HOOK_HELPER.removesuffix(".py")}' in script
+    assert f'"{support.HOOK_OVERRIDES_DIR}" / "{support.HOOK_OVERRIDE_FILE}"' in script
+    helper = (hooks_dir / support.HOOK_HELPER).read_text(encoding='utf-8')
+    assert support.HELPER_SENTINEL in helper
+    override = json.loads((hooks_dir / support.HOOK_OVERRIDES_DIR / support.HOOK_OVERRIDE_FILE).read_text(encoding='utf-8'))
+    assert override == {'override': support.OVERRIDE_SENTINEL}
+    assert support.HELPER_SENTINEL not in script
+    assert support.OVERRIDE_SENTINEL not in script
+    assert not (hooks_dir / support.HOOK_LOCKFILE).exists()
+
+
+def test_lock_hook_script_writes_the_lockfile_beside_the_script(tmp_path: Path) -> None:
+    """uv lock --script records the declared requires-python in <script>.lock next to the script."""
+    source = tmp_path / 'source'
+    source.mkdir()
+    support.write_source_entries(source, tmp_path / 'marker.jsonl')
+
+    lockfile = support.lock_hook_script(source, support.isolated_home_env(tmp_path / 'home'))
+
+    assert lockfile == source / 'hooks' / support.HOOK_LOCKFILE
+    assert lockfile.is_file()
+    assert f'requires-python = "{support.HOOK_REQUIRES_PYTHON}"' in lockfile.read_text(encoding='utf-8')
+
+
+def test_make_hook_lock_stale_changes_only_requires_python(tmp_path: Path) -> None:
+    """The stale rewrite swaps the requires-python line and leaves the lockfile and the rest of the script alone."""
+    source = tmp_path / 'source'
+    source.mkdir()
+    support.write_source_entries(source, tmp_path / 'marker.jsonl')
+    lockfile = support.lock_hook_script(source, support.isolated_home_env(tmp_path / 'home'))
+    script = source / 'hooks' / support.HOOK_SCRIPT
+    before_script = script.read_text(encoding='utf-8')
+    before_lock = lockfile.read_text(encoding='utf-8')
+
+    support.make_hook_lock_stale(source)
+
+    after_script = script.read_text(encoding='utf-8')
+    assert f'# requires-python = "{support.HOOK_STALE_REQUIRES_PYTHON}"' in after_script
+    assert f'# requires-python = "{support.HOOK_REQUIRES_PYTHON}"' not in after_script
+    assert after_script.replace(support.HOOK_STALE_REQUIRES_PYTHON, support.HOOK_REQUIRES_PYTHON) == before_script
+    assert lockfile.read_text(encoding='utf-8') == before_lock
+
+
 def test_command_description_carries_no_sentinel(tmp_path: Path) -> None:
     """The command's description is sentinel-free, so the sentinel proves invocation, not listing."""
     source = tmp_path / 'source'
@@ -224,6 +279,7 @@ def test_claude_child_env_isolates_the_session(tmp_path: Path, monkeypatch: pyte
     assert env['CLAUDE_CONFIG_DIR'] == str(config_dir)
     assert env['HOME'] == env['USERPROFILE'] == home.as_posix()
     assert env['DISABLE_AUTOUPDATER'] == '1'
+    assert env['UV_LOCKED'] == '1'
     assert env['PATH'].split(':' if sys.platform != 'win32' else ';')[0] == str(claude_cmd.parent)
     for name in ('APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TEMP', 'TMP', 'TMPDIR'):
         assert Path(env[name]).is_dir(), name
@@ -259,6 +315,8 @@ def test_profile_config_sections_declare_both_hook_events() -> None:
     events = profile_config['hooks']['events']
     assert [event['event'] for event in events] == ['SessionStart', 'UserPromptSubmit']
     assert all(event['command'] == support.HOOK_SCRIPT and event['config'] == support.HOOK_CONFIG for event in events)
+    assert profile_config['hooks']['files'] == [f'hooks/{support.HOOK_SCRIPT}', f'hooks/{support.HOOK_CONFIG}']
+    assert profile_config['hooks']['helpers'] == [f'hooks/{support.HOOK_HELPER}']
     assert user_settings == {'outputStyle': support.STYLE_NAME}
     assert support.profile_config_sections(False) == ({}, {'outputStyle': support.STYLE_NAME})
 
