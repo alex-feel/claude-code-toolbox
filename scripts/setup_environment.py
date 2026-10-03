@@ -42,6 +42,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Literal
 from typing import NamedTuple
 from typing import TextIO
 from typing import TypeVar
@@ -582,6 +583,49 @@ def execute_parallel_safe(
     return execute_parallel(items, safe_func, max_workers, stagger_delay=stagger_delay)
 
 
+class EnvTwin(NamedTuple):
+    """A CLAUDE_CODE_TOOLBOX_* environment variable that stands in for an argument.
+
+    Attributes:
+        variable: Environment variable name.
+        dest: argparse destination the variable fills when the argument is
+            absent.
+        kind: 'switch' for a store_true flag that only the exact value '1'
+            turns on; 'value' for a string argument that any non-empty value
+            fills.
+    """
+
+    variable: str
+    dest: str
+    kind: Literal['switch', 'value']
+
+
+# Every environment variable that stands in for a command-line argument. This
+# table is the single source for the fallbacks resolve_args() applies and for
+# the variables request_admin_elevation() forwards: the elevated process does
+# not inherit the environment of the process that requested elevation.
+ENV_TWINS: tuple[EnvTwin, ...] = (
+    EnvTwin('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'config', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL', 'yes', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_DRY_RUN', 'dry_run', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL', 'skip_install', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_NO_ADMIN', 'no_admin', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_ENV_AUTH', 'auth', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_SELECT', 'select', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_WITH', 'with_', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_WITHOUT', 'without', 'value'),
+)
+
+# Variables the elevated process needs that no argument stands in for: the
+# repository credentials and the Claude Code version the installer pins.
+UAC_FORWARDED_ENV_VARS: tuple[str, ...] = (
+    'GITHUB_TOKEN',
+    'GITLAB_TOKEN',
+    'REPO_TOKEN',
+    'CLAUDE_CODE_TOOLBOX_VERSION',
+)
+
+
 # Windows UAC elevation helper functions
 def is_admin() -> bool:
     """Check if running with admin privileges on Windows.
@@ -646,25 +690,13 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
     try:
         import ctypes
 
-        # Collect critical environment variables to pass to elevated process
+        # The elevated process does not inherit this environment, so every
+        # argument twin and every credential travels as an --env-VAR=value
+        # argument that restore_env_vars_from_args() puts back
         env_vars_to_pass: list[str] = []
-        critical_env_vars = [
-            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
-            'GITHUB_TOKEN',
-            'GITLAB_TOKEN',
-            'REPO_TOKEN',
-            'CLAUDE_CODE_TOOLBOX_VERSION',
-            'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL',
-            'CLAUDE_CODE_TOOLBOX_DRY_RUN',
-            'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL',
-            'CLAUDE_CODE_TOOLBOX_NO_ADMIN',
-            'CLAUDE_CODE_TOOLBOX_ENV_AUTH',
-            'CLAUDE_CODE_TOOLBOX_SELECT',
-            'CLAUDE_CODE_TOOLBOX_WITH',
-            'CLAUDE_CODE_TOOLBOX_WITHOUT',
-        ]
+        forwarded_env_vars = [twin.variable for twin in ENV_TWINS] + list(UAC_FORWARDED_ENV_VARS)
 
-        for var_name in critical_env_vars:
+        for var_name in forwarded_env_vars:
             var_value = os.environ.get(var_name)
             if var_value:
                 # Don't escape here - we'll handle escaping when building the params string
@@ -14268,13 +14300,21 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
 
     Applies --env KEY=VALUE overrides to the process environment FIRST,
     so every env-var read below (and every later consumer, including
-    child processes) sees them. CLI flags take precedence over
-    environment variables. For boolean flags (store_true), argparse
-    defaults to False when the flag is absent, so the env var acts as a
-    fallback for piped invocations where CLI flags cannot be passed.
+    child processes) sees them. Every fallback comes from ENV_TWINS, and
+    CLI arguments take precedence over their environment variables:
 
-    args.auth carries the CLAUDE_CODE_TOOLBOX_ENV_AUTH value (settable
-    via --env), or None when the variable is empty or unset.
+    - A switch twin turns its store_true flag on only with the exact
+      value '1'; argparse leaves the flag False when it is absent, so the
+      variable is the channel for piped invocations that cannot pass flags.
+    - A value twin fills its argument only when the argument is absent.
+      An empty export (a common CI-template default) counts as absent
+      instead of aborting the run over a flag the user never passed; an
+      explicit CLI value, empty or not, is kept.
+
+    args.origins maps every value argument that ended up set to 'cli' or
+    'env'. args.auth carries CLAUDE_CODE_TOOLBOX_ENV_AUTH, which has no
+    flag, or None. args.config carries the positional configuration or
+    CLAUDE_CODE_TOOLBOX_ENV_CONFIG.
 
     Called immediately after parse_args() and before any flag-dependent
     logic (admin checks, confirmation gates, installation flow).
@@ -14286,21 +14326,20 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
         Modified args namespace with environment variables merged.
     """
     _apply_env_overrides(getattr(args, 'env_vars', None))
-    args.yes = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
-    args.dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
-    args.skip_install = args.skip_install or os.environ.get('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL') == '1'
-    args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
-    args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH') or None
-    # 'or None' treats an empty-string export (a common CI-template
-    # default) as absent, matching every other toolbox env var, instead of
-    # aborting the run with an error about a flag the user never passed;
-    # an explicit CLI --select '' still errors through argparse
-    if args.select is None:
-        args.select = os.environ.get('CLAUDE_CODE_TOOLBOX_SELECT') or None
-    if args.with_ is None:
-        args.with_ = os.environ.get('CLAUDE_CODE_TOOLBOX_WITH') or None
-    if args.without is None:
-        args.without = os.environ.get('CLAUDE_CODE_TOOLBOX_WITHOUT') or None
+    origins: dict[str, str] = {}
+    for twin in ENV_TWINS:
+        env_value = os.environ.get(twin.variable)
+        if twin.kind == 'switch':
+            setattr(args, twin.dest, bool(getattr(args, twin.dest, False)) or env_value == '1')
+            continue
+        if getattr(args, twin.dest, None) is not None:
+            origins[twin.dest] = 'cli'
+        elif env_value:
+            setattr(args, twin.dest, env_value)
+            origins[twin.dest] = 'env'
+        else:
+            setattr(args, twin.dest, None)
+    args.origins = origins
     return args
 
 
@@ -14398,8 +14437,8 @@ def main() -> None:
             info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
             sys.exit(1)
 
-    # Get configuration from args or environment
-    config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')
+    # The positional configuration, or CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    config_name = args.config
 
     if not config_name:
         error('No configuration specified!')
