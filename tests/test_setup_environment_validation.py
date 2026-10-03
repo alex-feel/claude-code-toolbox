@@ -1172,7 +1172,6 @@ class TestMainFlowWithValidation:
     @patch('argparse.ArgumentParser.parse_args')
     @patch('pathlib.Path.mkdir')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_profile_config')
     @patch('setup_environment.create_launcher_script')
@@ -1183,7 +1182,6 @@ class TestMainFlowWithValidation:
         mock_launcher: MagicMock,
         mock_profile: MagicMock,
         mock_mcp: MagicMock,
-        mock_cleanup_stale: MagicMock,
         mock_write_manifest: MagicMock,
         mock_mkdir: MagicMock,
         mock_args: MagicMock,
@@ -1193,7 +1191,7 @@ class TestMainFlowWithValidation:
     ) -> None:
         """Test that main exits on validation failure."""
         # Prevent real filesystem writes (mocked sys.exit does not halt execution)
-        del mock_mkdir, mock_write_manifest, mock_cleanup_stale
+        del mock_mkdir, mock_write_manifest
         mock_mcp.return_value = (True, [], empty_mcp_stats())
         mock_profile.return_value = True
         mock_launcher.return_value = (Path('/tmp/launcher.sh'), Path('/tmp/launcher.sh'))
@@ -1247,7 +1245,6 @@ class TestMainFlowWithValidation:
     @patch('setup_environment.load_config_from_source')
     @patch('argparse.ArgumentParser.parse_args')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.configure_all_mcp_servers')
     @patch('setup_environment.create_profile_config')
     @patch('setup_environment.create_launcher_script')
@@ -1260,7 +1257,6 @@ class TestMainFlowWithValidation:
         mock_launcher: MagicMock,
         mock_profile: MagicMock,
         mock_mcp: MagicMock,
-        mock_cleanup_stale: MagicMock,
         mock_write_manifest: MagicMock,
         mock_args: MagicMock,
         mock_load: MagicMock,
@@ -1270,7 +1266,7 @@ class TestMainFlowWithValidation:
         mock_download: MagicMock,
     ) -> None:
         """Test that main continues when validation succeeds."""
-        del mock_mkdir, mock_write_manifest, mock_cleanup_stale  # Prevent real filesystem writes
+        del mock_mkdir, mock_write_manifest  # Prevent real filesystem writes
         # Setup mocks
         mock_args.return_value = MagicMock(
             config='test',

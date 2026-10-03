@@ -256,7 +256,7 @@ class TestManifestFile:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify manifest contains all required fields."""
+        """Verify manifest contains exactly the expected field set."""
         from scripts.setup_environment import write_manifest
 
         paths = e2e_isolated_home
@@ -277,13 +277,10 @@ class TestManifestFile:
         manifest_path = claude_dir / 'manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
 
-        required_fields = [
-            'name', 'version', 'claude_code_version', 'config_source',
-            'config_source_url', 'config_source_type', 'installed_at',
-            'last_checked_at', 'command_names',
-        ]
-        missing = [f for f in required_fields if f not in data]
-        assert not missing, f'Missing fields in manifest: {missing}'
+        assert sorted(data) == sorted(EXPECTED_JSON_KEYS['manifest']), (
+            f'Manifest fields {sorted(data)} differ from '
+            f"{sorted(EXPECTED_JSON_KEYS['manifest'])}"
+        )
 
     def test_manifest_source_classification(
         self,

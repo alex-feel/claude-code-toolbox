@@ -4,7 +4,7 @@
 
 name: "E2E Test Environment"
 
-# Configuration version for update checking
+# Configuration version recorded in the profile manifest
 version: "1.0.0"
 
 # Selective merge keys (no-op without inherit; exercises warning path)

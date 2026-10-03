@@ -253,11 +253,11 @@ post-install-notes: |
 
 #### `version`
 
-Configuration version for update checking. Extracted from the root config before inheritance resolution.
+Configuration version. Setup records it as `version` in the profile manifest (`manifest.json`).
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names` to be specified -- setting `version` without `command-names` produces a validation error because the version field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present.
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names`; validation rejects `version` without it.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -2349,7 +2349,7 @@ If the named configuration is not found, verify the name matches a YAML file in 
 
 ### version requires command-names
 
-The `version` field drives the update notification printed by the profile launcher scripts, which are only created when `command-names` is present. Either add `command-names` or remove `version`.
+Validation accepts the `version` field only together with `command-names`. Either add `command-names` or remove `version`.
 
 ### merge-keys requires inherit
 
