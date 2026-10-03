@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from scripts import setup_environment
 from tests.e2e import linked_entries_support as support
@@ -58,7 +59,12 @@ class Profile:
 
         The launcher is created exactly as an install creates it and run with
         bash (Git Bash on Windows), so the system prompt reaches claude the
-        way it does for an installed command.
+        way it does for an installed command. The launcher spells a profile
+        below the home relative to the home it finds at run time, so it is
+        rendered against the isolated home the child runs with; rendering it
+        against the real home would point it at a different directory
+        whenever the temporary directory lies inside the real home, as it
+        does on Windows.
 
         Args:
             mode: The command-defaults mode, 'replace' or 'append'.
@@ -67,7 +73,9 @@ class Profile:
         Returns:
             The parsed run.
         """
-        created = setup_environment.create_launcher_script(self.config_dir, self.name, support.PROMPT_FILE, mode)
+        isolated_home = self.config_dir.parent.parent
+        with patch.object(setup_environment, 'get_real_user_home', return_value=isolated_home):
+            created = setup_environment.create_launcher_script(self.config_dir, self.name, support.PROMPT_FILE, mode)
         assert created is not None
         bash = setup_environment.find_bash_windows() if sys.platform == 'win32' else shutil.which('bash')
         assert bash is not None, 'bash is required to run the toolbox launcher'
