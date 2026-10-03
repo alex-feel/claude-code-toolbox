@@ -76,12 +76,15 @@ try {
     Invoke-WebRequest -Uri $setupScriptUrl -OutFile $setupScript -UseBasicParsing
     Invoke-WebRequest -Uri $installScriptUrl -OutFile $installScript -UseBasicParsing
 
-    # Resolve the config with the same precedence as the Python script:
-    # a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    # Check that a configuration is present the way the Python script
+    # resolves it: a non-flag first argument, else
+    # CLAUDE_CODE_TOOLBOX_ENV_CONFIG. The check only decides whether to go
+    # on; the arguments reach the Python script exactly as typed, and the
+    # variable stays a variable, which is how the script tells a typed
+    # configuration from one set in the environment.
     $forwardArgs = @($args)
     if ($forwardArgs.Count -gt 0 -and -not ([string]$forwardArgs[0]).StartsWith('-')) {
         $config = [string]$forwardArgs[0]
-        $forwardArgs = @($forwardArgs | Select-Object -Skip 1)
     } else {
         $config = $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG
     }
@@ -113,23 +116,17 @@ try {
         Write-Host "[INFO] Re-running an installed profile from its manifest" -ForegroundColor Yellow
     }
 
-    # All remaining user arguments pass through to the Python script
-    # verbatim, so the wrapper and the Python interface stay identical.
-    # Authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN,
-    # CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python script.
+    # Every user argument passes through to the Python script verbatim, so
+    # the wrapper and the Python interface stay identical. The configuration
+    # variable and the authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN,
+    # REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the
+    # Python script.
 
     # Run with uv (it will handle Python 3.12 installation automatically)
     # Script runs from stable location so Python can resolve module imports
     Push-Location $toolboxDir
     try {
-        # Built step by step: an if expression that yields an empty array
-        # assigns $null, which the splat below would pass as one empty argument
-        $allArgs = @()
-        if ($config) {
-            $allArgs += $config
-        }
-        $allArgs += $forwardArgs
-        & uv run --no-project --python 3.12 setup_environment.py @allArgs
+        & uv run --no-project --python 3.12 setup_environment.py @forwardArgs
         $exitCode = $LASTEXITCODE
     } finally {
         Pop-Location

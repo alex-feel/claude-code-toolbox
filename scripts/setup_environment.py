@@ -3440,30 +3440,77 @@ def remembered_component_delta(manifest: dict[str, Any] | None) -> tuple[dict[st
     return values, str(origin)
 
 
-def apply_remembered_component_delta(args: argparse.Namespace, manifest: dict[str, Any] | None) -> None:
+def apply_remembered_component_delta(
+    args: argparse.Namespace,
+    manifest: dict[str, Any] | None,
+    component_names: list[str],
+    *,
+    profile_name: str,
+    manifest_path: Path | None,
+) -> list[str]:
     """Fill the selectors of a run that gave none from the profile's remembered delta.
 
     A remembered delta counts as supplied selectors: the picker does not
     run, and the summary marks the selection [remembered]. The recorded
     origin is kept in args.origins['components'] so the manifest records it
-    again.
+    again. The delta is checked against the configuration's current
+    components before the selector validation sees it, because nobody typed
+    it for this run: a remembered --without naming a component the
+    configuration no longer declares has no install effect, so the name is
+    dropped with a warning and the cleaned delta is what the manifest
+    records next; a remembered --select or --with naming one would change
+    what gets installed, so the run refuses and names the manifest.
 
     Args:
         args: Arguments after resolve_args().
         manifest: The manifest of the profile the run installs into, or
             None when the profile is new.
+        component_names: The names the configuration's components declare.
+        profile_name: The profile's display name.
+        manifest_path: The manifest the delta came from, named in an error.
+
+    Returns:
+        The errors a remembered --select or --with produced, empty when the
+        delta applies.
     """
     if any(getattr(args, dest) is not None for dest in ('select', 'with_', 'without')):
-        return
+        return []
     delta, origin = remembered_component_delta(manifest)
     if delta is None:
-        return
+        return []
+    known = set(component_names) | RESERVED_COMPONENT_NAMES
+    errors: list[str] = []
+    cleaned: dict[str, str | None] = {}
+    for key, flag in (('select', '--select'), ('with', '--with'), ('without', '--without')):
+        tokens = _parse_csv(delta.get(key)) or []
+        unknown = [token for token in tokens if token not in known]
+        if not unknown:
+            cleaned[key] = delta.get(key)
+        elif key == 'without':
+            for name in unknown:
+                warning(
+                    f"components: the remembered selection of profile {profile_name} names '{name}', "
+                    'which the configuration no longer declares; dropped [remembered]',
+                )
+            kept = [token for token in tokens if token in known]
+            cleaned[key] = ','.join(kept) if kept else None
+        else:
+            names = ', '.join(f"'{name}'" for name in unknown)
+            errors.append(
+                f'components: the remembered selection of profile {profile_name} (recorded in {manifest_path}) '
+                f'names {names} in {flag}, which the configuration no longer declares; pass {flag} explicitly '
+                'to replace the remembered selection, or --select all.',
+            )
+    if errors:
+        return errors
     for key, dest in (('select', 'select'), ('with', 'with_'), ('without', 'without')):
-        value = delta.get(key)
+        value = cleaned.get(key)
         if value:
             setattr(args, dest, value)
             args.origins[dest] = 'remembered'
-    args.origins['components'] = origin
+    if any(cleaned.values()):
+        args.origins['components'] = origin
+    return []
 
 
 def _component_claim_sets(
@@ -13069,6 +13116,10 @@ PROFILE_SOURCES: dict[str, str] = {
 # The --profile value that refreshes every installed profile
 ALL_PROFILES = 'all'
 
+# The hidden argument --profile all passes to each child run: the parent's
+# report covers every installed profile, so a child lists none as unrefreshed
+REFRESH_ALL_CHILD_FLAG = '--refresh-all-child'
+
 # The second --command-names entry that drops every alias of a profile:
 # NAME,none installs the profile NAME under that one command
 DROP_ALIASES_TOKEN = 'none'
@@ -14618,12 +14669,17 @@ def machine_wide_download_records(
     return records
 
 
+# The prefix of a settings record that names one env entry instead of a
+# top-level key: 'env.FOO' is the FOO variable of the settings env object
+SETTINGS_ENV_ENTRY_PREFIX = 'env.'
+
+
 def written_settings_keys(
     user_settings: dict[str, Any] | None,
     status_line: object,
     hooks: object,
 ) -> list[str]:
-    """List the top-level settings keys a run writes.
+    """List the settings keys a run writes.
 
     Args:
         user_settings: The resolved user-settings section, or None.
@@ -14631,15 +14687,41 @@ def written_settings_keys(
         hooks: The resolved hooks section, or None.
 
     Returns:
-        Sorted keys: every non-null user-settings key, statusLine when a
+        Sorted keys: every non-null top-level user-settings key except env,
+        one 'env.<VAR>' entry per non-null env variable, statusLine when a
         status line is configured, hooks when events are.
     """
-    keys = {key for key, value in (user_settings or {}).items() if value is not None}
+    keys: set[str] = set()
+    for key, value in (user_settings or {}).items():
+        if value is None:
+            continue
+        if key == 'env' and isinstance(value, dict):
+            keys.update(
+                f'{SETTINGS_ENV_ENTRY_PREFIX}{variable}'
+                for variable, entry in cast(dict[str, Any], value).items()
+                if entry is not None
+            )
+            continue
+        keys.add(key)
     if status_line:
         keys.add('statusLine')
     if isinstance(hooks, dict) and cast(dict[str, Any], hooks).get('events'):
         keys.add('hooks')
     return sorted(keys)
+
+
+def _is_machine_wide_control_record(key: str) -> bool:
+    """Report whether a settings or OS record names a machine-wide binary control.
+
+    Args:
+        key: An os_env_written entry or a settings_keys_written entry.
+
+    Returns:
+        True for a MACHINE_WIDE_ENV_CONTROLS variable, bare or as an env
+        entry. Those controls belong to the pin gate and the Step 16
+        sweep, never to the residue of a configuration switch.
+    """
+    return key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX) in MACHINE_WIDE_ENV_CONTROLS
 
 
 def mcp_server_records(mcp_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -14668,12 +14750,18 @@ class ProfileResidue(NamedTuple):
         mcp_servers: (name, scopes) of recorded MCP servers the new
             configuration does not declare, non-profile scopes only.
         os_env: OS environment variables the previous run set and the new
-            configuration does not.
-        settings_keys: Top-level settings keys of a base profile the previous
-            run wrote and the new configuration does not.
+            configuration does not, the machine-wide binary controls
+            excluded.
+        settings_keys: Settings keys of a base profile the previous run
+            wrote and the new configuration does not: top-level keys, and
+            'env.<VAR>' entries other than the machine-wide binary controls.
         destinations: Recorded destinations outside ~/.claude the new
             configuration does not install, whose file still holds the
-            recorded content.
+            recorded content and which no other installed profile records.
+        kept_destinations: (path, profile names) of recorded destinations
+            outside ~/.claude the new configuration does not install but
+            another installed profile still records; they are listed and
+            never removed.
     """
 
     files: list[Path]
@@ -14681,6 +14769,7 @@ class ProfileResidue(NamedTuple):
     os_env: list[str]
     settings_keys: list[str]
     destinations: list[Path]
+    kept_destinations: list[tuple[Path, list[str]]]
 
     def __bool__(self) -> bool:
         return any((self.files, self.mcp_servers, self.os_env, self.settings_keys, self.destinations))
@@ -14690,9 +14779,43 @@ class ProfileResidue(NamedTuple):
         rendered = [f'file: {path}' for path in self.files]
         rendered.extend(f'MCP server: {name} (scope: {", ".join(scopes)})' for name, scopes in self.mcp_servers)
         rendered.extend(f'OS environment variable: {key}' for key in self.os_env)
-        rendered.extend(f'settings.json key: {key}' for key in self.settings_keys)
+        for key in self.settings_keys:
+            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
+                rendered.append(f'settings.json env variable: {key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)}')
+            else:
+                rendered.append(f'settings.json key: {key}')
         rendered.extend(f'file outside ~/.claude: {path}' for path in self.destinations)
+        rendered.extend(
+            f'file outside ~/.claude kept: {path} (recorded by profile {", ".join(names)})'
+            for path, names in self.kept_destinations
+        )
         return rendered
+
+
+def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[str, list[str]]:
+    """Map each destination outside ~/.claude to the other installed profiles that record it.
+
+    Args:
+        home_dir: User home directory.
+        profile_dir: The directory of the profile being switched, whose own
+            manifest is left out.
+
+    Returns:
+        Normalized destination path to the display names of the profiles
+        whose manifests record it.
+    """
+    own_key = _normalize_config_dir_key(str(profile_dir))
+    recorded: dict[str, list[str]] = {}
+    for profile in installed_profiles(home_dir):
+        if profile.manifest is None or _normalize_config_dir_key(str(profile.directory)) == own_key:
+            continue
+        for record in cast(list[object], profile.manifest.get('machine_wide_destinations') or []):
+            if not isinstance(record, dict):
+                continue
+            dest = cast(dict[str, Any], record).get('dest')
+            if isinstance(dest, str) and dest:
+                recorded.setdefault(_normalize_config_dir_key(dest), []).append(profile.name)
+    return recorded
 
 
 def profile_residue(
@@ -14746,13 +14869,22 @@ def profile_residue(
         if name and name not in new_servers and scopes:
             servers.append((name, scopes))
 
+    # The machine-wide binary controls are never residue: the pin gate and
+    # the Step 16 sweep decide their removal, and a run that drops a pin
+    # while another installed profile still pins must leave them in place
     os_env: list[str] = []
     settings_keys: list[str] = []
     if not isolated:
         new_env = {key for key, value in (config.get('os-env-variables') or {}).items() if value is not None}
-        os_env = [key for key in _strings('os_env_written') if key not in new_env]
+        os_env = [
+            key for key in _strings('os_env_written')
+            if key not in new_env and not _is_machine_wide_control_record(key)
+        ]
         new_keys = set(written_settings_keys(config.get('user-settings'), config.get('status-line'), config.get('hooks')))
-        settings_keys = [key for key in _strings('settings_keys_written') if key not in new_keys]
+        settings_keys = [
+            key for key in _strings('settings_keys_written')
+            if key not in new_keys and not _is_machine_wide_control_record(key)
+        ]
 
     new_downloads = [
         cast(dict[str, Any], entry)
@@ -14764,7 +14896,11 @@ def profile_residue(
         for record in machine_wide_download_records(new_downloads, config_source, base_url, claude_dir)
         if record['dest']
     }
+    # A destination another installed profile records is that profile's
+    # file too, so a switch lists it as kept instead of removing it
+    recorded_elsewhere = _destinations_recorded_elsewhere(claude_dir.parent, profile_dir)
     destinations: list[Path] = []
+    kept_destinations: list[tuple[Path, list[str]]] = []
     for record in cast(list[object], manifest.get('machine_wide_destinations') or []):
         if not isinstance(record, dict):
             continue
@@ -14773,9 +14909,14 @@ def profile_residue(
         if not isinstance(dest, str) or _normalize_config_dir_key(dest) in new_destinations:
             continue
         path = Path(dest)
-        if path.is_file() and _sha256_of_file(path) == record_dict.get('sha256'):
+        if not path.is_file():
+            continue
+        holders = recorded_elsewhere.get(_normalize_config_dir_key(dest))
+        if holders:
+            kept_destinations.append((path, holders))
+        elif _sha256_of_file(path) == record_dict.get('sha256'):
             destinations.append(path)
-    return ProfileResidue(files, servers, os_env, settings_keys, destinations)
+    return ProfileResidue(files, servers, os_env, settings_keys, destinations, kept_destinations)
 
 
 def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude_dir: Path) -> None:
@@ -14816,7 +14957,25 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
     if residue.os_env:
         set_all_os_env_variables(dict.fromkeys(residue.os_env))
     if residue.settings_keys:
-        written, _ = _write_merged_json(claude_dir / 'settings.json', dict.fromkeys(residue.settings_keys))
+        # One null-as-delete write: top-level keys, and each recorded env
+        # entry on its own, so the env object keeps every other variable
+        settings_path = claude_dir / 'settings.json'
+        deletions: dict[str, Any] = {}
+        env_deletions: dict[str, None] = {}
+        for key in residue.settings_keys:
+            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
+                env_deletions[key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)] = None
+            else:
+                deletions[key] = None
+        if env_deletions:
+            deletions['env'] = env_deletions
+        written, merged = _write_merged_json(settings_path, deletions)
+        if written and merged.get('env') == {}:
+            merged.pop('env')
+            try:
+                settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+            except OSError as e:
+                warning(f'Cannot drop the emptied env object of {settings_path}: {e}')
         if written:
             success(f'Removed settings.json key(s): {", ".join(residue.settings_keys)}')
         else:
@@ -16387,12 +16546,27 @@ def guard_configuration_switch(
     """
     if old_identity == new_identity:
         return False
-    given = 'the configuration argument' if args.origins.get('config') == 'cli' else 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG'
+    from_environment = args.origins.get('config') == 'env'
+    given = 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if from_environment else 'the configuration argument'
     old_source = manifest.get('config_source')
-    lines = ['The previous configuration leaves behind:'] + [f'  {line}' for line in residue.lines()] if residue else [
-        'The previous configuration leaves nothing behind.',
-    ]
+    rendered = [f'  {line}' for line in residue.lines()]
+    lines = (
+        ['The previous configuration leaves behind:', *rendered] if residue
+        else ['The previous configuration leaves nothing behind.', *rendered]
+    )
     accepted = '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1' if args.switch_config else None
+    # The remedy undoes the source the configuration came from
+    if from_environment:
+        keep_remedy = (
+            'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
+            'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile '
+            f'with its own configuration: --profile {profile_name}.'
+        )
+    else:
+        keep_remedy = (
+            'Drop the configuration argument and re-run the profile with its own configuration: '
+            f'--profile {profile_name}.'
+        )
     guard_decision(
         args,
         title=(
@@ -16406,7 +16580,7 @@ def guard_configuration_switch(
                 'Pass --switch-config (or set CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1) to accept the switch '
                 'and remove what the previous configuration left.'
             ),
-            f'Re-run the profile with its own configuration instead: --profile {profile_name}.',
+            keep_remedy,
         ],
         accepted_by=accepted,
     )
@@ -16552,24 +16726,86 @@ def child_run_environment() -> dict[str, str]:
     return env
 
 
+def read_resolved_config_snapshot(profile_dir: Path) -> dict[str, Any] | None:
+    """Read the configuration a profile's last run installed.
+
+    Args:
+        profile_dir: The profile directory holding resolved-config.yaml.
+
+    Returns:
+        The snapshot, or None when the file is missing, unreadable, or not
+        a YAML mapping.
+    """
+    try:
+        content = yaml.safe_load((profile_dir / RESOLVED_CONFIG_FILENAME).read_text(encoding='utf-8'))
+    except (OSError, yaml.YAMLError):
+        return None
+    return cast(dict[str, Any], content) if isinstance(content, dict) else None
+
+
+def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argparse.Namespace) -> list[str]:
+    """List why a --profile all run needs administrator rights before any child starts.
+
+    Elevation is decided once, in the parent: a child relaunched through
+    UAC opens its own window and exits 0, so the parent would report it as
+    refreshed while it still runs. Without --skip-install every profile
+    installs Claude Code, which needs elevation; with it, each profile's
+    resolved-config.yaml decides, and a profile whose snapshot cannot be
+    read counts as needing it.
+
+    Args:
+        profiles: The installed profiles the run refreshes.
+        args: Arguments after resolve_args().
+
+    Returns:
+        The union of reasons, in profile order; empty off Windows, when the
+        process already holds administrator rights, under --no-admin, and
+        under --dry-run (a preview never elevates).
+    """
+    if args.no_admin or args.dry_run or platform.system() != 'Windows' or is_admin():
+        return []
+    if not args.skip_install:
+        return admin_elevation_reasons({}, args)
+    reasons: list[str] = []
+    for profile in profiles:
+        snapshot = read_resolved_config_snapshot(profile.directory)
+        if snapshot is None:
+            reasons.append(
+                f'Profile "{profile.name}": {RESOLVED_CONFIG_FILENAME} is missing or unreadable, '
+                'so its run may need elevation',
+            )
+            continue
+        reasons.extend(reason for reason in admin_elevation_reasons(snapshot, args) if reason not in reasons)
+    return reasons
+
+
 def refresh_all_profiles(args: argparse.Namespace) -> int:
     """Re-run every installed profile, the base first, each in its own child run.
 
-    The parent asks for consent once (or takes --yes); every child runs
-    with --yes plus the parent's --dry-run, --skip-install and --no-admin,
-    and the report at the end names each profile with its result and the
-    --profile command that retries a failed one.
+    The parent decides elevation once: when any profile's run needs
+    administrator rights the parent lacks, it relaunches itself through UAC
+    before asking for consent, so every child inherits the rights and none
+    opens a window of its own. The parent then asks for consent once (or
+    takes --yes); every child runs with --yes, --refresh-all-child, the
+    parent's --dry-run and --skip-install, and --no-admin (a dry run
+    forwards the parent's --no-admin instead, so each child still prints
+    what a real run would elevate for). The report at the end names each
+    profile with its result and the --profile command that retries a
+    failed one.
 
     Args:
         args: Arguments after resolve_args().
 
     Returns:
-        The exit code: 1 when any child failed or the request was invalid,
-        0 otherwise.
+        The exit code: 1 when any child failed, the request was invalid, or
+        elevation was denied; 0 otherwise.
     """
     conflicts = [
         name for name, present in (
-            ('a configuration', bool(args.config)),
+            (
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if args.origins.get('config') == 'env' else 'a configuration',
+                bool(args.config),
+            ),
             ('--command-names', args.command_names is not None),
             ('--select', args.select is not None),
             ('--with', args.with_ is not None),
@@ -16591,6 +16827,26 @@ def refresh_all_profiles(args: argparse.Namespace) -> int:
         return 1
     print()
     info(f'Refreshing {len(profiles)} installed profile(s): {", ".join(profile.name for profile in profiles)}')
+    elevation_reasons = refresh_all_elevation_reasons(profiles, args)
+    if elevation_reasons:
+        print()
+        print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+        print(f'{Colors.YELLOW}     Administrator Privileges Required{Colors.NC}')
+        print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+        print()
+        info('Refreshing the installed profiles requires administrator privileges for:')
+        for reason in elevation_reasons:
+            info(f'  - {reason}')
+        print()
+        info('Requesting administrator elevation...')
+        info('A new window will open with administrator privileges.')
+        info('Please look for the UAC dialog and click "Yes" to continue.')
+        print()
+        request_admin_elevation()
+        # If we reach here, elevation was denied
+        error('Administrator elevation was denied')
+        error('Please run this script as administrator manually, or pass --no-admin to skip elevation')
+        return 1
     if not args.yes and not args.dry_run:
         if not (sys.stdin.isatty() or _dev_tty_available()):
             print()
@@ -16602,8 +16858,14 @@ def refresh_all_profiles(args: argparse.Namespace) -> int:
         if not _ask_yes_no(f'{Colors.YELLOW}Refresh these {len(profiles)} profile(s)? [y/N]: {Colors.NC}'):
             info('Setup cancelled by user.')
             return 0
-    child_flags = ['--yes']
-    for flag, present in (('--dry-run', args.dry_run), ('--skip-install', args.skip_install), ('--no-admin', args.no_admin)):
+    # A child never decides elevation for itself: the parent did, so a
+    # child that relaunched through UAC could only exit 0 unobserved
+    child_flags = ['--yes', REFRESH_ALL_CHILD_FLAG]
+    for flag, present in (
+        ('--dry-run', args.dry_run),
+        ('--skip-install', args.skip_install),
+        ('--no-admin', args.no_admin or not args.dry_run),
+    ):
         if present:
             child_flags.append(flag)
     launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
@@ -16724,6 +16986,7 @@ def main() -> None:
         help='Accept a different configuration for an existing profile and remove what the '
         'previous configuration left behind',
     )
+    parser.add_argument(REFRESH_ALL_CHILD_FLAG, dest='refresh_all_child', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
 
@@ -16826,21 +17089,35 @@ def main() -> None:
         # took from the environment. Read before the selectors are validated,
         # so a remembered delta counts as supplied selectors.
         this_identity = config_identity_of(config_source)
+        target_profile = profile_target_name(args, config)
         target_manifest: dict[str, Any] | None = (
-            rerun.manifest if rerun is not None else _read_target_manifest(profile_target_name(args, config), config)
+            rerun.manifest if rerun is not None else _read_target_manifest(target_profile, config)
         )
-        apply_remembered_component_delta(args, target_manifest)
+        components_list: list[dict[str, Any]] = [
+            cast(dict[str, Any], c)
+            for c in config.get('components') or []
+            if isinstance(c, dict)
+        ]
+        remembered_delta_errors = apply_remembered_component_delta(
+            args,
+            target_manifest,
+            [str(c.get('name', '')).strip() for c in components_list],
+            profile_name=profile_display_name(target_profile),
+            manifest_path=(
+                rerun.manifest_path if rerun is not None
+                else resolve_artifact_base_dir(target_profile, config.get('user-settings'))[0] / MANIFEST_FILENAME
+            ),
+        )
+        if remembered_delta_errors:
+            for err in remembered_delta_errors:
+                error(err)
+            sys.exit(1)
 
         # Resolve author-defined component selection at the single choke
         # point: after inheritance resolution and before the admin check and
         # remote file validation, so deselected items never trigger UAC
         # elevation, network fetches, or auth prompts. Downstream consumers
         # re-read config keys fresh, so one in-place filter pass suffices.
-        components_list: list[dict[str, Any]] = [
-            cast(dict[str, Any], c)
-            for c in config.get('components') or []
-            if isinstance(c, dict)
-        ]
         component_errors = validate_components(config)
         hooks_consistency_errors = validate_hooks_files_consistency(config)
         if component_errors or hooks_consistency_errors:
@@ -17947,7 +18224,9 @@ def main() -> None:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
-        unrefreshed = unrefreshed_profile_lines(get_real_user_home(), profile_name)
+        # A child of --profile all lists nothing here: the parent's report
+        # covers every installed profile
+        unrefreshed = [] if args.refresh_all_child else unrefreshed_profile_lines(get_real_user_home(), profile_name)
         if unrefreshed:
             print('   * Installed profiles this run did not refresh:')
             for line in unrefreshed:

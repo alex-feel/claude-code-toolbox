@@ -80,11 +80,13 @@ echo ""
 SETUP_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/setup_environment.py"
 INSTALL_SCRIPT_URL="https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/install_claude.py"
 
-# Resolve the config with the same precedence as the Python script:
-# a non-flag first argument wins over CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+# Check that a configuration is present the way the Python script resolves
+# it: a non-flag first argument, else CLAUDE_CODE_TOOLBOX_ENV_CONFIG. The
+# check only decides whether to go on; the arguments reach the Python
+# script exactly as typed, and the variable stays a variable, which is how
+# the script tells a typed configuration from one set in the environment.
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
     CONFIG="$1"
-    shift
 else
     CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}"
 fi
@@ -109,10 +111,11 @@ if [ -z "$CONFIG" ] && [ "$PROFILE_REQUESTED" -eq 0 ]; then
     exit 1
 fi
 
-# All remaining user arguments pass through to the Python script verbatim,
-# so the wrapper and the Python interface stay identical. Authentication env
-# vars (GITHUB_TOKEN, GITLAB_TOKEN, REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH)
-# are read directly by the Python script.
+# Every user argument passes through to the Python script verbatim, so the
+# wrapper and the Python interface stay identical. The configuration
+# variable and the authentication env vars (GITHUB_TOKEN, GITLAB_TOKEN,
+# REPO_TOKEN, CLAUDE_CODE_TOOLBOX_ENV_AUTH) are read directly by the Python
+# script.
 
 # Download and run the Python scripts with uv
 # Create temp directory to hold both scripts (required for module imports)
@@ -124,11 +127,7 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
    curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
-    if [ -n "$CONFIG" ]; then
-        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" "$@"
-    else
-        uv run --no-project --python 3.12 setup_environment.py "$@"
-    fi
+    uv run --no-project --python 3.12 setup_environment.py "$@"
     EXIT_CODE=$?
 else
     echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"

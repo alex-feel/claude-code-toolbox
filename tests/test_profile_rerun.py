@@ -44,14 +44,16 @@ def _args(
     dry_run: bool = False,
     switch_config: bool = False,
     config: str | None = None,
+    skip_install: bool = False,
+    no_admin: bool = False,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
         config=config,
         yes=yes,
         dry_run=dry_run,
-        skip_install=False,
-        no_admin=False,
+        skip_install=skip_install,
+        no_admin=no_admin,
         env_vars=None,
         select=select,
         with_=with_,
@@ -60,6 +62,7 @@ def _args(
         command_names=command_names,
         profile=profile,
         switch_config=switch_config,
+        refresh_all_child=False,
     )
     cleared = {
         twin.variable: '' for twin in setup_environment.ENV_TWINS
@@ -417,13 +420,23 @@ class TestRememberedValueWarnings:
         assert 'changed from core to core, new' in warnings[0]
 
 
+def _apply_delta(
+    args: argparse.Namespace, manifest: dict[str, Any] | None, names: list[str] | None = None,
+) -> list[str]:
+    """Apply a remembered delta against a registry the way main() does."""
+    return setup_environment.apply_remembered_component_delta(
+        args, manifest, names if names is not None else ['core', 'lab', 'extra'],
+        profile_name='p', manifest_path=Path('/home/.claude/p/manifest.json'),
+    )
+
+
 class TestRememberedComponentDelta:
     """The component delta a run typed is applied to a later run that types none."""
 
     def test_delta_fills_absent_selectors_and_marks_them_remembered(self) -> None:
         manifest = {'components': {'select': 'core', 'with': None, 'without': 'lab'}, 'origins': {'components': 'env'}}
         args = _args()
-        setup_environment.apply_remembered_component_delta(args, manifest)
+        assert _apply_delta(args, manifest) == []
         assert (args.select, args.with_, args.without) == ('core', None, 'lab')
         assert args.origins['select'] == 'remembered'
         assert args.origins['without'] == 'remembered'
@@ -432,8 +445,48 @@ class TestRememberedComponentDelta:
     def test_typed_selectors_are_left_alone(self) -> None:
         manifest = {'components': {'select': 'core', 'with': None, 'without': None}, 'origins': {'components': 'cli'}}
         args = _args(with_='extra')
-        setup_environment.apply_remembered_component_delta(args, manifest)
+        assert _apply_delta(args, manifest) == []
         assert (args.select, args.with_, args.without) == (None, 'extra', None)
+
+    def test_unknown_name_in_a_remembered_without_is_dropped_with_a_warning(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        manifest = {'components': {'select': None, 'with': 'extra', 'without': 'old,lab'}, 'origins': {'components': 'cli'}}
+        args = _args()
+        assert _apply_delta(args, manifest) == []
+        assert (args.select, args.with_, args.without) == (None, 'extra', 'lab')
+        assert args.origins['components'] == 'cli'
+        assert (
+            "components: the remembered selection of profile p names 'old', which the configuration "
+            'no longer declares; dropped [remembered]'
+        ) in capsys.readouterr().out
+
+    def test_remembered_without_naming_only_unknown_components_leaves_no_delta(self) -> None:
+        manifest = {'components': {'select': None, 'with': None, 'without': 'old'}, 'origins': {'components': 'cli'}}
+        args = _args()
+        assert _apply_delta(args, manifest) == []
+        assert (args.select, args.with_, args.without) == (None, None, None)
+        assert 'components' not in args.origins
+
+    @pytest.mark.parametrize(('key', 'flag'), [('with', '--with'), ('select', '--select')])
+    def test_unknown_name_in_a_remembered_select_or_with_is_refused(self, key: str, flag: str) -> None:
+        manifest = {'components': {'select': None, 'with': None, 'without': None, key: 'gone,core'},
+                    'origins': {'components': 'env'}}
+        args = _args()
+        errors = _apply_delta(args, manifest)
+        assert errors == [
+            f"components: the remembered selection of profile p (recorded in {Path('/home/.claude/p/manifest.json')}) "
+            f"names 'gone' in {flag}, which the configuration no longer declares; pass {flag} explicitly to "
+            'replace the remembered selection, or --select all.',
+        ]
+        assert (args.select, args.with_, args.without) == (None, None, None)
+        assert 'components' not in args.origins
+
+    def test_select_sentinels_are_always_known(self) -> None:
+        manifest = {'components': {'select': 'all', 'with': None, 'without': None}, 'origins': {'components': 'cli'}}
+        args = _args()
+        assert _apply_delta(args, manifest, names=[]) == []
+        assert args.select == 'all'
 
     @pytest.mark.parametrize('origin', ['yaml', None])
     def test_author_defaults_are_not_remembered(self, origin: str | None) -> None:
@@ -474,7 +527,7 @@ class TestSelectionRecordsItsDelta:
     def test_remembered_delta_keeps_its_recorded_origin(self) -> None:
         args = _args()
         manifest = {'components': {'select': None, 'with': 'extra', 'without': None}, 'origins': {'components': 'env'}}
-        setup_environment.apply_remembered_component_delta(args, manifest)
+        assert _apply_delta(args, manifest) == []
         selection = setup_environment.resolve_component_selection(COMPONENTS, args)
         assert selection.remembered is True
         assert selection.origin == 'env'
@@ -536,6 +589,10 @@ class TestInstallRecords:
         keys = setup_environment.written_settings_keys({'theme': 'dark', 'gone': None}, {'file': 's.py'}, {'events': [{}]})
         assert keys == ['hooks', 'statusLine', 'theme']
         assert setup_environment.written_settings_keys(None, None, None) == []
+        env_keys = setup_environment.written_settings_keys(
+            {'theme': 'dark', 'env': {'FOO': 'x', 'GONE': None, 'DISABLE_UPDATES': '1'}}, None, None,
+        )
+        assert env_keys == ['env.DISABLE_UPDATES', 'env.FOO', 'theme'], 'env entries are recorded one by one'
         servers = setup_environment.mcp_server_records([
             {'name': 'a', 'scope': ['user', 'profile']}, {'name': 'b'}, {'scope': 'user'},
         ])
@@ -580,6 +637,7 @@ class TestProfileResidue:
             os_env=['OLD_VAR'],
             settings_keys=['model'],
             destinations=[outside],
+            kept_destinations=[],
         )
         assert bool(residue)
         assert residue.lines() == [
@@ -589,6 +647,63 @@ class TestProfileResidue:
             'settings.json key: model',
             f'file outside ~/.claude: {outside}',
         ]
+
+    def test_machine_wide_controls_are_never_residue(self, tmp_path: Path) -> None:
+        """The binary controls belong to the pin gate and the Step 16 sweep, not to a configuration switch."""
+        manifest = {
+            'os_env_written': ['DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL', 'FOO'],
+            'settings_keys_written': ['env.DISABLE_AUTOUPDATER', 'env.DISABLE_UPDATES', 'env.FOO', 'theme'],
+        }
+        config = {'user-settings': {'theme': 'light'}}
+
+        residue = setup_environment.profile_residue(
+            manifest, tmp_path / '.claude', config, isolated=False, config_source='c.yaml', base_url=None,
+            claude_dir=tmp_path / '.claude',
+        )
+
+        assert residue.os_env == ['FOO']
+        assert residue.settings_keys == ['env.FOO']
+        assert residue.lines() == ['OS environment variable: FOO', 'settings.json env variable: FOO']
+
+    def test_destination_another_profile_records_is_kept(self, tmp_path: Path) -> None:
+        """A destination outside ~/.claude that another installed profile records is listed, never removed."""
+        claude_dir = tmp_path / '.claude'
+        profile_dir = claude_dir / 'p'
+        outside = tmp_path / 'shared.txt'
+        outside.write_bytes(b'shared')
+        record = {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)}
+        _manifest(profile_dir, 'p', ['p'], machine_wide_destinations=[record])
+        _manifest(claude_dir / 'other', 'other', ['other'], machine_wide_destinations=[record])
+
+        with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
+            residue = setup_environment.profile_residue(
+                {'machine_wide_destinations': [record]}, profile_dir, {}, isolated=True,
+                config_source='c.yaml', base_url=None, claude_dir=claude_dir,
+            )
+
+        assert residue.destinations == []
+        assert residue.kept_destinations == [(outside, ['other'])]
+        assert not residue, 'a kept destination is nothing to remove'
+        assert residue.lines() == [f'file outside ~/.claude kept: {outside} (recorded by profile other)']
+
+    def test_destination_only_this_profile_records_is_residue(self, tmp_path: Path) -> None:
+        """Without another profile recording it, the destination is removable residue."""
+        claude_dir = tmp_path / '.claude'
+        profile_dir = claude_dir / 'p'
+        outside = tmp_path / 'shared.txt'
+        outside.write_bytes(b'shared')
+        record = {'dest': str(outside), 'source': 's', 'sha256': setup_environment._sha256_of_file(outside)}
+        _manifest(profile_dir, 'p', ['p'], machine_wide_destinations=[record])
+        _manifest(claude_dir / 'other', 'other', ['other'])
+
+        with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
+            residue = setup_environment.profile_residue(
+                {'machine_wide_destinations': [record]}, profile_dir, {}, isolated=True,
+                config_source='c.yaml', base_url=None, claude_dir=claude_dir,
+            )
+
+        assert residue.destinations == [outside]
+        assert residue.kept_destinations == []
 
     def test_isolated_profile_carries_no_settings_or_os_residue(self, tmp_path: Path) -> None:
         manifest = {'os_env_written': ['OLD_VAR'], 'settings_keys_written': ['theme']}
@@ -614,8 +729,12 @@ class TestProfileResidue:
         skill_file.write_text('x', encoding='utf-8')
         outside = tmp_path / 'shared.txt'
         outside.write_bytes(b'x')
+        kept = tmp_path / 'kept.txt'
+        kept.write_bytes(b'x')
         (claude_dir / 'settings.json').write_text(json.dumps({'theme': 'dark', 'model': 'm'}), encoding='utf-8')
-        residue = ProfileResidue([skill_file], [('old-srv', ['user'])], ['OLD_VAR'], ['model'], [outside])
+        residue = ProfileResidue(
+            [skill_file], [('old-srv', ['user'])], ['OLD_VAR'], ['model'], [outside], [(kept, ['other'])],
+        )
 
         with (
             patch.object(setup_environment, 'find_command', return_value='/usr/bin/claude'),
@@ -628,9 +747,35 @@ class TestProfileResidue:
         assert not skill_file.parent.exists(), 'the emptied skill directory is pruned'
         assert (profile_dir / 'skills').exists()
         assert not outside.exists()
+        assert kept.read_bytes() == b'x', 'a destination another profile records is never removed'
         remove_mcp.assert_called_once_with('/usr/bin/claude', 'old-srv', ['user'], None, profile_dir)
         set_env.assert_called_once_with({'OLD_VAR': None})
         assert json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8')) == {'theme': 'dark'}
+
+    def test_remove_residue_deletes_env_entries_one_by_one(self, tmp_path: Path) -> None:
+        """An env entry residue leaves the other variables of the env object in place."""
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir()
+        settings = claude_dir / 'settings.json'
+        settings.write_text(
+            json.dumps({'theme': 'dark', 'env': {'FOO': 'x', 'DISABLE_UPDATES': '1'}}), encoding='utf-8',
+        )
+        residue = ProfileResidue([], [], [], ['env.FOO'], [], [])
+
+        setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
+
+        assert json.loads(settings.read_text(encoding='utf-8')) == {'theme': 'dark', 'env': {'DISABLE_UPDATES': '1'}}
+
+    def test_remove_residue_drops_an_emptied_env_object(self, tmp_path: Path) -> None:
+        claude_dir = tmp_path / '.claude'
+        claude_dir.mkdir()
+        settings = claude_dir / 'settings.json'
+        settings.write_text(json.dumps({'theme': 'dark', 'env': {'FOO': 'x'}, 'model': 'm'}), encoding='utf-8')
+        residue = ProfileResidue([], [], [], ['env.FOO', 'model'], [], [])
+
+        setup_environment.remove_profile_residue(residue, profile_dir=claude_dir, claude_dir=claude_dir)
+
+        assert json.loads(settings.read_text(encoding='utf-8')) == {'theme': 'dark'}
 
 
 class TestGuardDecision:
@@ -716,24 +861,34 @@ class TestConfigurationSwitchGuard:
         with patch.object(setup_environment, 'guard_decision') as decide:
             switched = setup_environment.guard_configuration_switch(
                 _args(), manifest={}, profile_name='p', old_identity='a', new_identity='a', new_source='a',
-                residue=ProfileResidue([], [], [], [], []),
+                residue=ProfileResidue([], [], [], [], [], []),
             )
         assert switched is False
         decide.assert_not_called()
 
+    CLI_REMEDY = 'Drop the configuration argument and re-run the profile with its own configuration: --profile p.'
+    ENV_REMEDY = (
+        'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
+        'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile with its own '
+        'configuration: --profile p.'
+    )
+
     @pytest.mark.parametrize(
-        ('args', 'expected_given', 'expected_accepted'),
+        ('args', 'expected_given', 'expected_accepted', 'expected_remedy'),
         [
-            (_args(config='b.yaml', yes=True), 'the configuration argument', None),
-            (_args(env={'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'b.yaml'}, yes=True), 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', None),
+            (_args(config='b.yaml', yes=True), 'the configuration argument', None, CLI_REMEDY),
+            (
+                _args(env={'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'b.yaml'}, yes=True),
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', None, ENV_REMEDY,
+            ),
             (_args(config='b.yaml', switch_config=True), 'the configuration argument',
-             '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1'),
+             '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1', CLI_REMEDY),
         ],
     )
     def test_switch_names_the_source_and_the_residue(
-        self, args: argparse.Namespace, expected_given: str, expected_accepted: str | None,
+        self, args: argparse.Namespace, expected_given: str, expected_accepted: str | None, expected_remedy: str,
     ) -> None:
-        residue = ProfileResidue([Path('/p/agents/old.md')], [], [], [], [])
+        residue = ProfileResidue([Path('/p/agents/old.md')], [], [], [], [], [])
         with patch.object(setup_environment, 'guard_decision') as decide:
             switched = setup_environment.guard_configuration_switch(
                 args, manifest={'config_source': 'a.yaml'}, profile_name='p', old_identity='a', new_identity='b',
@@ -746,7 +901,19 @@ class TestConfigurationSwitchGuard:
         )
         assert kwargs['lines'] == ['The previous configuration leaves behind:', f'  file: {Path("/p/agents/old.md")}']
         assert kwargs['accepted_by'] == expected_accepted
-        assert '--profile p' in kwargs['remedy'][1]
+        assert kwargs['remedy'][1] == expected_remedy, 'the remedy undoes the source the configuration came from'
+
+    def test_kept_destinations_are_listed_even_without_residue(self) -> None:
+        residue = ProfileResidue([], [], [], [], [], [(Path('/opt/tool.txt'), ['other'])])
+        with patch.object(setup_environment, 'guard_decision') as decide:
+            setup_environment.guard_configuration_switch(
+                _args(config='b.yaml', yes=True), manifest={'config_source': 'a.yaml'}, profile_name='p',
+                old_identity='a', new_identity='b', new_source='b.yaml', residue=residue,
+            )
+        assert decide.call_args.kwargs['lines'] == [
+            'The previous configuration leaves nothing behind.',
+            f'  file outside ~/.claude kept: {Path("/opt/tool.txt")} (recorded by profile other)',
+        ]
 
 
 class TestDroppedWrappers:
@@ -860,6 +1027,11 @@ class TestRefreshAllProfiles:
         assert setup_environment.refresh_all_profiles(_args('x', config='c.yaml', profile='all', yes=True)) == 1
         assert 'cannot be combined with a configuration, --command-names' in capsys.readouterr().err
 
+    def test_configuration_variable_is_named_in_the_conflict(self, capsys: pytest.CaptureFixture[str]) -> None:
+        args = _args(env={'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'c.yaml'}, profile='all', yes=True)
+        assert setup_environment.refresh_all_profiles(args) == 1
+        assert 'cannot be combined with CLAUDE_CODE_TOOLBOX_ENV_CONFIG;' in capsys.readouterr().err
+
     def test_no_profiles(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         with patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path), \
                 patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
@@ -892,7 +1064,7 @@ class TestRefreshAllProfiles:
         assert [argv[argv.index('--profile') + 1] for argv, _ in calls] == ['base', 'a', 'b']
         for argv, env in calls:
             assert argv[:2] == [sys.executable, '/repo/scripts/setup_environment.py']
-            assert argv[-2:] == ['--yes', '--dry-run']
+            assert argv[-3:] == ['--yes', '--refresh-all-child', '--dry-run']
             assert 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES' not in env
             assert 'CLAUDE_CONFIG_DIR' not in env
             assert env['GITHUB_TOKEN'] == 't'
@@ -900,6 +1072,44 @@ class TestRefreshAllProfiles:
         assert '* base: ok' in out
         assert '* a: failed (exit code 1); retry with --profile a' in out
         assert '* b: ok' in out
+
+    @pytest.mark.parametrize(
+        ('parent', 'expected_flags'),
+        [
+            (_args(profile='all', yes=True), ['--yes', '--refresh-all-child', '--no-admin']),
+            (
+                _args(profile='all', yes=True, skip_install=True),
+                ['--yes', '--refresh-all-child', '--skip-install', '--no-admin'],
+            ),
+            (_args(profile='all', yes=True, no_admin=True), ['--yes', '--refresh-all-child', '--no-admin']),
+            (_args(profile='all', dry_run=True), ['--yes', '--refresh-all-child', '--dry-run']),
+            (
+                _args(profile='all', dry_run=True, no_admin=True),
+                ['--yes', '--refresh-all-child', '--dry-run', '--no-admin'],
+            ),
+        ],
+    )
+    def test_children_never_decide_elevation_for_themselves(
+        self, parent: argparse.Namespace, expected_flags: list[str], tmp_path: Path,
+    ) -> None:
+        """A real run's child always carries --no-admin; a dry run forwards the parent's flag only."""
+        self._profiles(tmp_path)
+        calls: list[list[str]] = []
+
+        def _run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0)
+
+        with (
+            patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py']),
+        ):
+            assert setup_environment.refresh_all_profiles(parent) == 0
+        assert len(calls) == 3
+        for argv in calls:
+            assert argv[argv.index('--profile') + 2:] == expected_flags
 
     def test_packaged_entry_point_starts_children_through_the_cli_module(self, tmp_path: Path) -> None:
         self._profiles(tmp_path)
@@ -918,7 +1128,43 @@ class TestRefreshAllProfiles:
         ):
             assert setup_environment.refresh_all_profiles(_args(profile='all', yes=True)) == 0
         assert calls[0][:4] == [sys.executable, '-m', 'cc_toolbox.cli', 'setup']
-        assert calls[0][4:] == ['--profile', 'base', '--yes']
+        assert calls[0][4:] == ['--profile', 'base', '--yes', '--refresh-all-child', '--no-admin']
+
+    def test_elevation_is_requested_once_before_consent_and_children(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """When a profile's run needs administrator rights, the parent relaunches before anything else."""
+        self._profiles(tmp_path)
+        with (
+            patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+            patch.object(setup_environment, 'refresh_all_elevation_reasons', return_value=['Installing Claude Code']),
+            patch.object(setup_environment, 'request_admin_elevation', side_effect=SystemExit(0)) as elevate,
+            patch.object(setup_environment.subprocess, 'run') as run,
+            patch.object(setup_environment, '_ask_yes_no') as ask,
+            pytest.raises(SystemExit) as exc,
+        ):
+            setup_environment.refresh_all_profiles(_args(profile='all'))
+        assert exc.value.code == 0
+        elevate.assert_called_once_with()
+        run.assert_not_called()
+        ask.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'Administrator Privileges Required' in out
+        assert '  - Installing Claude Code' in out
+
+    def test_denied_elevation_fails_the_run(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        self._profiles(tmp_path)
+        with (
+            patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+            patch.object(setup_environment, 'refresh_all_elevation_reasons', return_value=['Installing Claude Code']),
+            patch.object(setup_environment, 'request_admin_elevation', return_value=None),
+            patch.object(setup_environment.subprocess, 'run') as run,
+        ):
+            assert setup_environment.refresh_all_profiles(_args(profile='all', yes=True)) == 1
+        run.assert_not_called()
+        assert 'Administrator elevation was denied' in capsys.readouterr().err
 
     def test_interactive_consent_once(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         self._profiles(tmp_path)
@@ -945,6 +1191,79 @@ class TestRefreshAllProfiles:
         ):
             assert setup_environment.refresh_all_profiles(_args(profile='all')) == 1
         assert 'no interactive terminal available' in capsys.readouterr().err
+
+
+class TestRefreshAllElevationReasons:
+    """The parent of --profile all decides elevation from the profiles it refreshes."""
+
+    def _windows_profiles(self, tmp_path: Path, snapshots: dict[str, dict[str, Any] | None]) -> list[Any]:
+        profiles: list[Any] = []
+        for name, snapshot in snapshots.items():
+            directory = tmp_path / '.claude' / name
+            _manifest(directory, name, [name])
+            if snapshot is not None:
+                (directory / 'resolved-config.yaml').write_text(json.dumps(snapshot), encoding='utf-8')
+            profiles.append(setup_environment.InstalledProfile(name, directory, directory / 'manifest.json', {}))
+        return profiles
+
+    def test_a_full_run_always_installs_claude_code(self, tmp_path: Path) -> None:
+        profiles = self._windows_profiles(tmp_path, {'a': {}})
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'), \
+                patch.object(setup_environment, 'is_admin', return_value=False):
+            reasons = setup_environment.refresh_all_elevation_reasons(profiles, _args(profile='all', yes=True))
+        assert reasons == ['Installing Claude Code (includes Node.js and Git)']
+
+    def test_skip_install_reads_each_snapshot(self, tmp_path: Path) -> None:
+        profiles = self._windows_profiles(tmp_path, {
+            'a': {'dependencies': {'common': ['echo npm install -g fake']}},
+            'b': {'dependencies': {'common': ['echo npm install -g fake', 'uv tool install x']}},
+            'c': {'agents': ['agents/a.md']},
+        })
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'), \
+                patch.object(setup_environment, 'is_admin', return_value=False):
+            reasons = setup_environment.refresh_all_elevation_reasons(
+                profiles, _args(profile='all', yes=True, skip_install=True),
+            )
+        assert reasons == ['Global npm package: echo npm install -g fake'], 'the union lists each reason once'
+
+    def test_no_reason_means_no_elevation(self, tmp_path: Path) -> None:
+        profiles = self._windows_profiles(tmp_path, {'a': {'agents': ['agents/a.md']}})
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'), \
+                patch.object(setup_environment, 'is_admin', return_value=False):
+            reasons = setup_environment.refresh_all_elevation_reasons(
+                profiles, _args(profile='all', yes=True, skip_install=True),
+            )
+        assert reasons == []
+
+    def test_missing_or_unreadable_snapshot_counts_as_needing_elevation(self, tmp_path: Path) -> None:
+        profiles = self._windows_profiles(tmp_path, {'a': None, 'b': {}})
+        (profiles[1].directory / 'resolved-config.yaml').write_text('- not: [a mapping', encoding='utf-8')
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'), \
+                patch.object(setup_environment, 'is_admin', return_value=False):
+            reasons = setup_environment.refresh_all_elevation_reasons(
+                profiles, _args(profile='all', yes=True, skip_install=True),
+            )
+        assert reasons == [
+            'Profile "a": resolved-config.yaml is missing or unreadable, so its run may need elevation',
+            'Profile "b": resolved-config.yaml is missing or unreadable, so its run may need elevation',
+        ]
+
+    @pytest.mark.parametrize(
+        ('args', 'system', 'admin'),
+        [
+            (_args(profile='all', dry_run=True), 'Windows', False),
+            (_args(profile='all', yes=True, no_admin=True), 'Windows', False),
+            (_args(profile='all', yes=True), 'Windows', True),
+            (_args(profile='all', yes=True), 'Linux', False),
+        ],
+    )
+    def test_dry_run_no_admin_an_elevated_process_and_other_platforms_never_elevate(
+        self, args: argparse.Namespace, system: str, admin: bool, tmp_path: Path,
+    ) -> None:
+        profiles = self._windows_profiles(tmp_path, {'a': None})
+        with patch.object(setup_environment.platform, 'system', return_value=system), \
+                patch.object(setup_environment, 'is_admin', return_value=admin):
+            assert setup_environment.refresh_all_elevation_reasons(profiles, args) == []
 
 
 class TestProfileRerunResolution:

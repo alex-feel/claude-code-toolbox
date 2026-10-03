@@ -37,8 +37,16 @@ def run_main(
     interactive: bool = False,
     answers: list[str] | None = None,
     argv0: str = 'setup_environment.py',
+    os_env_writes: list[dict[str, str | None]] | None = None,
 ) -> int:
     """Run main() with the given arguments and return its exit code.
+
+    An interactive run answers every prompt from ``answers`` in order,
+    the numbered component picker included: the questionary tier is
+    unavailable to the run (its checkbox needs a real console), so a
+    configuration with components and no selector shows the numbered
+    picker, whose toggles and confirming Enter come from ``answers`` before
+    the installation confirmation does.
 
     Args:
         argv: Arguments after the program name.
@@ -46,6 +54,8 @@ def run_main(
             from ``answers`` in order.
         answers: The answers an interactive run gives, one per prompt.
         argv0: The program name main() sees.
+        os_env_writes: When given, every dict the run hands to the OS
+            environment writer is appended to it.
 
     Returns:
         The exit code; 0 when main() returns normally.
@@ -59,14 +69,20 @@ def run_main(
     def _read_answer(_prompt: str) -> str:
         return remaining.pop(0) if remaining else ''
 
+    def _record_os_env(env_vars: dict[str, str | None]) -> bool:
+        if os_env_writes is not None:
+            os_env_writes.append(dict(env_vars))
+        return True
+
     # Every run starts from the environment the test prepared: main() exports
     # the profile's CLAUDE_CONFIG_DIR and the IDE auto-install control into
     # its own process, which a real shell never carries into the next run
     with (
         patch.dict(os.environ, {}, clear=False),
+        patch.dict(sys.modules, {'questionary': None}),
         patch('scripts.setup_environment.validate_all_config_files', return_value=(True, [])),
         patch('scripts.setup_environment.cleanup_temp_paths_from_registry', return_value=(0, [])),
-        patch('scripts.setup_environment.set_all_os_env_variables', return_value=True),
+        patch('scripts.setup_environment.set_all_os_env_variables', side_effect=_record_os_env),
         patch('scripts.setup_environment.configure_all_mcp_servers',
               return_value=(True, [], empty_mcp_stats())),
         patch('scripts.setup_environment.find_command', side_effect=_find_command),
