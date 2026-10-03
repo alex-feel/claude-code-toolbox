@@ -334,7 +334,7 @@ Any configuration URL, local file path, or configuration name can be used as the
 The `command-names` key in the configuration determines the global command name. For example, if your configuration specifies `command-names: ["my-env"]`, then you can use:
 
 ```bash
-claude-my-env  # Works in PowerShell, CMD, or Git Bash
+my-env  # Works in PowerShell, CMD, or Git Bash
 ```
 
 ### Troubleshooting
@@ -344,7 +344,7 @@ claude-my-env  # Works in PowerShell, CMD, or Git Bash
 Verify the settings file is being loaded:
 
 ```bash
-claude-my-env --debug 2>&1 | grep -i settings
+my-env --debug 2>&1 | grep -i settings
 ```
 
 #### Path Issues
