@@ -285,15 +285,15 @@ command-names:
 
 ##### Choosing the command names at install time
 
-`--command-names NAME[,ALIAS...]` (environment variable `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`) sets the command names of one run, and it works with every configuration. A configuration without `command-names` installs as the isolated profile `~/.claude/NAME` instead of into the base `~/.claude`. A configuration with `command-names` installs under the names you give in place of its own. The value replaces the configuration's list whole and never merges with it: a single `NAME` is the complete list, with none of the configuration's aliases. The flag wins over the variable, and the variable wins over the configuration. Every source goes through the same validation and reserved names, and setup stops before writing anything when a name fails.
+`--command-names NAME[,ALIAS...]` (environment variable `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`) sets the command names of one run, and it works with every configuration. A configuration without `command-names` becomes the isolated profile `~/.claude/NAME` instead of a base install. A configuration with `command-names` installs under the names you give in place of its own. The value replaces the configuration's list whole and never merges with it: a single `NAME` is the complete list, with none of the configuration's aliases. The flag wins over the variable, and the variable wins over the configuration. Every source goes through the same validation and reserved names, and setup stops before writing anything when a name fails.
 
 ```bash
 # One configuration, several isolated profiles
-uvx cc-toolbox setup aegis.yaml --command-names aegis-1
-uvx cc-toolbox setup aegis.yaml --command-names aegis-2
+uvx cc-toolbox setup my-env.yaml --command-names my-env-1
+uvx cc-toolbox setup my-env.yaml --command-names my-env-2
 
-# A second profile from a configuration that declares its own names: one command, claude-p2
-uvx cc-toolbox setup claude-personal.yaml --command-names claude-p2
+# A second profile from a configuration that declares its own names: one command, my-profile-2
+uvx cc-toolbox setup my-profile.yaml --command-names my-profile-2
 ```
 
 ```powershell
@@ -301,7 +301,9 @@ uvx cc-toolbox setup claude-personal.yaml --command-names claude-p2
 $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='my-env-2'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-The installation summary and the completion summary both mark where the names came from: `Command names: aegis-1 [cli]` before the run and `Global command: aegis-1 registered [cli]` after it for the flag, `[env]` for the variable, `[yaml]` for the configuration. Under `--yes` nobody reviews the installation summary, so the completion summary is where a leftover `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES` shows up. When the configuration defines components, the installation summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
+Setup places these sections into `~/.claude/NAME` itself: agents, slash commands, rules, skills, the system prompt, hook files and their [`hooks.helpers`](#hook-helpers), the launchers, `config.json`, and the profile manifest. Setup uses [`files-to-download`](#files-to-download) destinations and runs [`dependencies`](#dependencies) commands exactly as written, so a destination spelled `~/.claude/...` still lands in the base `~/.claude`, not in the profile. Dependency commands see `CLAUDE_CONFIG_DIR` set to the profile directory, yet a path a command spells out still points where it says. A module that hook scripts import from their own directory therefore belongs in `hooks.helpers`, which follows the scripts into the profile; a `files-to-download` entry aimed at `~/.claude/hooks/` leaves it in the base, out of the profile's reach.
+
+The installation summary and the completion summary both mark where the names came from: `Command names: my-env-1 [cli]` before the run and `Global command: my-env-1 registered [cli]` after it for the flag, `[env]` for the variable, `[yaml]` for the configuration. Under `--yes` nobody reviews the installation summary, so the completion summary is where a leftover `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES` shows up. When the configuration defines components, the installation summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
 
 ##### Names another profile or program holds
 

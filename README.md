@@ -24,7 +24,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Status line** -- custom status bar scripts for real-time session information
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
 - **Component selection** -- author-defined component groups the end user picks at setup time, interactively (checkbox picker) or via `--select`/`--with`/`--without`; unclaimed items stay mandatory
-- **One configuration, many profiles** -- `--command-names NAME[,ALIAS...]` installs any configuration as the isolated profile `~/.claude/NAME` under the names you give, so one YAML file serves as many profiles as you need; a name another profile or program already holds is refused before anything is written
+- **One configuration, many profiles** -- `--command-names NAME[,ALIAS...]` installs any configuration under the names you give, placing its agents, commands, rules, skills, hooks, and launchers in the isolated profile `~/.claude/NAME`, so one YAML file serves as many profiles as you need; `files-to-download` destinations and dependency commands run as written, and a name another profile or program already holds is refused before anything is written
 - **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
 - **File downloads** -- arbitrary files downloaded to specified destinations during setup
