@@ -13134,11 +13134,11 @@ def write_manifest(
 ) -> bool:
     """Write installation manifest for the environment configuration.
 
-    Creates manifest.json recording the installed configuration: its
-    name, version and source, the command names, and the Claude Code version
-    the profile pins. _other_profile_pins() reads the recorded pin across
-    profiles to decide whether the machine-global auto-update controls are
-    still needed.
+    Creates manifest.json recording the profile's primary command name
+    (None for the base profile), the configuration version and source, all
+    command names, and the Claude Code version the profile pins.
+    _other_profile_pins() reads the recorded pin across profiles to decide
+    whether the machine-global auto-update controls are still needed.
 
     Args:
         config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/

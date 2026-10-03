@@ -273,7 +273,7 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Must be alphanumeric, hyphens, and underscores only
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
-- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Manifest, launcher, and command registration steps are skipped. The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
+- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, recording `name` as `null`, an empty `command_names` list, the configuration `version`, and the `claude-code-version` pin as `claude_code_version`; setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
 ```yaml
