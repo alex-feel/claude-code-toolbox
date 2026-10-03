@@ -1,7 +1,8 @@
-# Declares command-defaults and no command-names. Installed as it is, it
-# becomes the base profile, which has no launcher to hand the system prompt
-# to Claude Code; given command names for the run, it becomes an isolated
-# profile whose launcher appends the prompt.
+# Declares command-defaults and no command-names. A run with no command names
+# installs it as the base profile, which has no launcher to hand the system
+# prompt to Claude Code; a run that gets command names from --command-names,
+# CLAUDE_CODE_TOOLBOX_COMMAND_NAMES or a child configuration installs it as an
+# isolated profile whose launcher appends the prompt.
 name: "Command Defaults Without Command Names"
 
 command-defaults:

@@ -1,14 +1,17 @@
 """E2E tests for command-defaults and version installed independently of command-names.
 
 command-defaults reaches Claude Code only through a profile launcher. A
-configuration that declares it without command names still installs, as the
-base profile, and says before consent, in --dry-run and in the closing summary
-that it applies only to isolated installs; installed as an isolated profile,
-the same configuration's launcher hands its system prompt to Claude Code. A
-configuration with command names and no command-defaults installs a launcher
-that passes no system prompt, and a configuration with version and no command
-names records the version in the base profile manifest. The configuration
-model accepts every one of these files.
+configuration that declares it without command names installs, in a run that
+has no command names, as the base profile, and says before consent, in
+--dry-run and in the closing summary that it applies only to isolated
+installs. The same file given command names for the run -- through
+--command-names, through CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, or through a child
+configuration that declares command-names -- installs as an isolated profile
+whose launcher hands the system prompt to Claude Code. A configuration with
+command names and no command-defaults installs a launcher that passes no
+system prompt, and a configuration with version and no command names records
+the version in the base profile manifest. The configuration model accepts
+every one of these files.
 """
 
 from __future__ import annotations
@@ -81,15 +84,16 @@ def _run_setup(config_path: Path, *flags: str) -> None:
         setup_environment.main()
 
 
-def _install(config_path: Path) -> None:
+def _install(config_path: Path, *flags: str) -> None:
     """Validate a configuration with the model, install it with --yes, and assert the run completed.
 
     Args:
         config_path: The configuration file to install.
+        *flags: Command-line flags after --yes.
     """
     EnvironmentConfig.model_validate(_load(config_path))
     with patch('sys.exit') as mock_exit:
-        _run_setup(config_path, '--yes')
+        _run_setup(config_path, '--yes', *flags)
     mock_exit.assert_not_called()
 
 
@@ -189,12 +193,44 @@ class TestCommandDefaultsWithoutCommandNames:
         assert not (claude_dir / 'prompts').exists()
         assert not (claude_dir / 'manifest.json').exists()
 
+    @pytest.mark.parametrize('channel', ['flag', 'env'])
+    def test_command_names_at_install_time_make_the_launcher_append_the_prompt(
+        self,
+        channel: str,
+        e2e_isolated_home: dict[str, Path],
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """--command-names or its variable installs the same file as a profile whose launcher appends the prompt."""
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / 'defaults-probe'
+        if channel == 'flag':
+            flags: tuple[str, ...] = ('--command-names', 'defaults-probe')
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'defaults-probe')
+            flags = ()
+
+        _install(DEFAULTS_BASE, *flags)
+
+        captured = capsys.readouterr()
+        assert setup_environment.COMMAND_DEFAULTS_ISOLATED_ONLY_NOTE not in captured.out
+        assert setup_environment.COMMAND_DEFAULTS_ISOLATED_ONLY_NOTE not in captured.err
+        assert 'System prompt: appending to default' in captured.out.split('Setup Complete', 1)[1]
+        assert (profile_dir / 'prompts' / PROMPT_FILE).is_file()
+        assert not (claude_dir / 'prompts' / PROMPT_FILE).exists()
+        record = _launch_profile(profile_dir, home)
+        assert same_path(record.config_dir, profile_dir), record.config_dir
+        prompt_flags = [arg for arg in record.args if arg in PROMPT_FLAGS]
+        assert prompt_flags == ['--append-system-prompt-file'], record.args
+        assert same_path(record.value_after('--append-system-prompt-file'), profile_dir / 'prompts' / PROMPT_FILE)
+
     def test_isolated_install_launcher_appends_the_prompt(
         self,
         e2e_isolated_home: dict[str, Path],
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Given command names, the same configuration's launcher hands its prompt to Claude Code."""
+        """A child configuration declaring command-names makes the parent's prompt reach its launcher."""
         home = e2e_isolated_home['home']
         profile_dir = e2e_isolated_home['claude_dir'] / 'defaults-probe'
         assert 'command-defaults' not in _load(DEFAULTS_ISOLATED_LEAF)
