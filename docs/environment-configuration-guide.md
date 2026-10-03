@@ -2336,7 +2336,7 @@ hooks:
 | Flag                | Environment Variable                  | Purpose                                                                              |
 |---------------------|---------------------------------------|--------------------------------------------------------------------------------------|
 | `--yes` / `-y`      | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)                                  |
-| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing                                   |
+| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing or requesting admin elevation     |
 | `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                                        |
 | `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                                            |
 | `--env KEY=VALUE`   | --                                    | Set an environment variable for this run (repeatable; any documented variable)       |
@@ -2516,6 +2516,8 @@ export CLAUDE_CODE_TOOLBOX_DRY_RUN=1
 $env:CLAUDE_CODE_TOOLBOX_DRY_RUN='1'; $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
+On Windows, a dry run never requests administrator elevation, so no UAC prompt opens. When the real run would request it, the dry run prints `Dry run: administrator elevation is not requested.` with the same reasons the elevation banner lists (installing Claude Code, `winget ... --scope machine` dependencies, global `npm` dependencies), then shows the installation plan and exits 0.
+
 ### Skip Claude Code installation
 
 To skip the Claude Code installation step (useful when Claude Code is already installed):
@@ -2533,6 +2535,10 @@ export CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1
 ```
 
 ### Skip admin elevation (Windows)
+
+From a terminal without administrator rights, a real run on Windows requests elevation through a UAC prompt when it installs Claude Code (unless `--skip-install` is set) or runs a `winget ... --scope machine` or `npm install -g` dependency. It prints the reasons, then continues in a new elevated window; if elevation is denied, the run exits 1. A dry run never requests elevation (see [Dry-run mode](#dry-run-mode)).
+
+With `--no-admin`, no step of the run requests elevation: the setup installs Claude Code and runs the `winget ... --scope machine` and `npm install -g` dependencies without administrator rights. An operation that needs those rights fails and the run exits 1: a failed Claude Code installation stops the setup, and a failed dependency appears in the error summary at the end of the run.
 
 To prevent the setup from requesting Windows admin elevation:
 
@@ -2572,4 +2578,4 @@ The `global-config` key blocks non-null `oauthAccount` values to prevent OAuth c
 
 ### Installation Confirmation
 
-By default, the setup requires explicit confirmation before installing. Use `--dry-run` to preview the installation plan without making changes. Unknown configuration keys are flagged with `[?]` in the installation summary to help you identify potential typos or unsupported keys.
+By default, the setup requires explicit confirmation before installing. Use `--dry-run` to preview the installation plan without making changes or requesting administrator elevation. Unknown configuration keys are flagged with `[?]` in the installation summary to help you identify potential typos or unsupported keys.

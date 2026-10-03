@@ -2117,6 +2117,54 @@ class TestInstallDependencies:
         assert result == []
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
+    def test_install_dependencies_windows_never_requests_elevation(self) -> None:
+        """Machine-scope winget and global npm commands run in a non-elevated process."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        npm_dep = 'npm install -g typescript'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            failed = setup_environment.install_dependencies({'windows': [winget_dep], 'common': [npm_dep]})
+
+        assert failed == []
+        mock_request.assert_not_called()
+        assert [call.args[0] for call in mock_run.call_args_list] == [
+            ['winget', 'install', 'Some.Tool', '--scope', 'machine'],
+            ['npm', 'install', '-g', 'typescript'],
+        ]
+
+    def test_install_dependencies_windows_unelevated_winget_failure_is_reported(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A machine-scope winget command that fails unelevated is a recorded failure with guidance."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', ''),
+            ),
+        ):
+            failed = setup_environment.install_dependencies(
+                {'windows': [winget_dep], 'common': ['pip install requests']},
+            )
+
+        assert failed == [winget_dep, 'pip install requests']
+        mock_request.assert_not_called()
+        captured = capsys.readouterr()
+        assert f'Failed to install dependency: {winget_dep}' in captured.err
+        assert 'This may have failed due to lack of admin rights' in captured.out + captured.err
+
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
     @patch('setup_environment.expand_tildes_in_command')
@@ -2573,8 +2621,8 @@ class TestInstallNodejsDirectDarwinSudoRouting:
         assert 'sudo installer -pkg' in captured.out
 
 
-class TestCheckAdminNeeded:
-    """Tests for check_admin_needed()."""
+class TestAdminElevationReasons:
+    """Tests for admin_elevation_reasons()."""
 
     @staticmethod
     def _make_args(skip_install: bool = True) -> MagicMock:
@@ -2582,7 +2630,7 @@ class TestCheckAdminNeeded:
         args.skip_install = skip_install
         return args
 
-    def test_returns_false_on_non_windows(self) -> None:
+    def test_returns_nothing_on_non_windows(self) -> None:
         """Non-Windows platforms never need admin."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2590,14 +2638,15 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Linux'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+            assert setup_environment.admin_elevation_reasons(config, self._make_args(skip_install=False)) == []
 
-    def test_returns_true_when_skip_install_false_on_windows(self) -> None:
+    def test_lists_the_claude_code_install_when_not_skipped(self) -> None:
         """Windows needs admin when installation is not skipped."""
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed({}, self._make_args(skip_install=False)) is True
+            reasons = setup_environment.admin_elevation_reasons({}, self._make_args(skip_install=False))
+        assert reasons == ['Installing Claude Code (includes Node.js and Git)']
 
-    def test_detects_admin_needed_for_machine_scope_winget(self) -> None:
+    def test_lists_machine_scope_winget(self) -> None:
         """Windows admin needed for machine-scope winget commands."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2606,9 +2655,10 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args())
+        assert reasons == ['System-wide installation: winget install Something --scope machine']
 
-    def test_detects_admin_needed_for_global_npm(self) -> None:
+    def test_lists_global_npm(self) -> None:
         """Windows admin needed for global npm installs."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2616,9 +2666,26 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args())
+        assert reasons == ['Global npm package: npm install -g typescript']
 
-    def test_no_admin_needed_when_no_elevated_deps(self) -> None:
+    def test_lists_every_reason_in_installation_order(self) -> None:
+        """The Claude Code install comes first, then Windows dependencies, then common ones."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['npm install -g typescript'],
+                'windows': ['winget install Something --scope machine'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args(skip_install=False))
+        assert reasons == [
+            'Installing Claude Code (includes Node.js and Git)',
+            'System-wide installation: winget install Something --scope machine',
+            'Global npm package: npm install -g typescript',
+        ]
+
+    def test_returns_nothing_without_elevated_deps(self) -> None:
         """Windows does not need admin for non-elevated deps."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2627,7 +2694,140 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+            assert setup_environment.admin_elevation_reasons(config, self._make_args()) == []
+
+    def test_ignores_dependencies_of_other_platforms(self) -> None:
+        """Only the Windows and common lists run on Windows, so only they can need admin."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'linux': ['npm install -g typescript'],
+                'macos': ['npm install -g typescript'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.admin_elevation_reasons(config, self._make_args()) == []
+
+
+class TestRequestAdminElevationIfNeeded:
+    """Tests for request_admin_elevation_if_needed()."""
+
+    INSTALL_REASON = 'Installing Claude Code (includes Node.js and Git)'
+    NPM_REASON = 'Global npm package: npm install -g typescript'
+
+    @staticmethod
+    def _make_args(*, dry_run: bool = False, no_admin: bool = False) -> argparse.Namespace:
+        return argparse.Namespace(dry_run=dry_run, no_admin=no_admin, skip_install=False)
+
+    def test_dry_run_reports_the_reasons_without_elevating(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dry run returns after listing what a real run would elevate for."""
+        with (
+            patch.object(
+                setup_environment, 'admin_elevation_reasons',
+                return_value=[self.INSTALL_REASON, self.NPM_REASON],
+            ),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=True))
+
+        mock_request.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'Dry run: administrator elevation is not requested.' in out
+        assert 'A real run requests administrator privileges for:' in out
+        assert f'  - {self.INSTALL_REASON}' in out
+        assert f'  - {self.NPM_REASON}' in out
+        assert 'Administrator Privileges Required' not in out
+
+    def test_real_run_shows_the_banner_and_requests_elevation(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without --dry-run the banner lists the reasons and the UAC relaunch is requested."""
+        with (
+            patch.object(
+                setup_environment, 'admin_elevation_reasons',
+                return_value=[self.INSTALL_REASON, self.NPM_REASON],
+            ),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args())
+
+        # The mocked relaunch returns, which is the denied-elevation path
+        assert exc_info.value.code == 1
+        mock_request.assert_called_once_with()
+        captured = capsys.readouterr()
+        assert 'Administrator Privileges Required' in captured.out
+        assert f'  - {self.INSTALL_REASON}' in captured.out
+        assert f'  - {self.NPM_REASON}' in captured.out
+        assert 'Dry run' not in captured.out
+        assert 'Administrator elevation was denied' in captured.err
+
+    def test_granted_elevation_ends_this_process(self) -> None:
+        """A granted relaunch exits this process before the setup continues."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[self.INSTALL_REASON]),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(
+                setup_environment, 'request_admin_elevation', side_effect=SystemExit(0),
+            ) as mock_request,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args())
+
+        assert exc_info.value.code == 0
+        mock_request.assert_called_once_with()
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_no_admin_skips_the_check_entirely(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--no-admin neither elevates nor reports, real run or dry run."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons') as mock_reasons,
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed(
+                {}, self._make_args(dry_run=dry_run, no_admin=True),
+            )
+
+        mock_reasons.assert_not_called()
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_an_elevated_process_needs_nothing(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Running as administrator already, neither run elevates nor reports."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[self.INSTALL_REASON]),
+            patch.object(setup_environment, 'is_admin', return_value=True),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=dry_run))
+
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_a_run_without_reasons_never_checks_privileges(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Nothing needs admin, so the privilege probe and the relaunch never run."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[]),
+            patch.object(setup_environment, 'is_admin') as mock_is_admin,
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=dry_run))
+
+        mock_is_admin.assert_not_called()
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
 
 
 class TestInstallNodejsIfRequested:
@@ -5322,13 +5522,11 @@ class TestInstallClaude:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system, mock_is_file):
+    def test_install_claude_windows(self, mock_run, mock_urlopen, mock_system, mock_is_file):
         """Test installing Claude on Windows via bootstrap download."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         assert mock_is_file.return_value is False  # No sibling installer: bootstrap path
-        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer'
         mock_urlopen.return_value = mock_response
@@ -5339,7 +5537,24 @@ class TestInstallClaude:
         assert result is True
         mock_run.assert_called_once()
         assert 'powershell' in mock_run.call_args[0][0]
-        mock_is_admin.assert_called()  # Verify is_admin was called
+
+    def test_install_claude_windows_never_requests_elevation(self) -> None:
+        """A non-elevated Windows process runs the installer; elevation is decided before Step 1."""
+        installer = Path(setup_environment.__file__).resolve().parent / 'install_claude.py'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            result = setup_environment.install_claude()
+
+        assert result is True
+        mock_request.assert_not_called()
+        mock_run.assert_called_once_with([sys.executable, str(installer)], capture_output=False)
 
     @patch('platform.system', return_value='Darwin')
     @patch('pathlib.Path.is_file', return_value=False)

@@ -213,7 +213,7 @@ SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
 )
 
 # Mapping from platform.system() return values to dependency config keys.
-# Used by collect_installation_plan(), install_dependencies(), and check_admin_needed()
+# Used by collect_installation_plan(), install_dependencies(), and admin_elevation_reasons()
 # to determine which platform-specific dependencies apply to the current OS.
 PLATFORM_SYSTEM_TO_CONFIG_KEY: dict[str, str] = {
     'Windows': 'windows',
@@ -765,42 +765,92 @@ def _contains_shell_control_chars(command: str) -> bool:
     return any(char in command for char in ';&|<>$`\n')
 
 
-def check_admin_needed(config: dict[str, Any], args: argparse.Namespace) -> bool:
-    """Check if admin rights are needed for the current operation.
+def admin_elevation_reasons(config: dict[str, Any], args: argparse.Namespace) -> list[str]:
+    """List the operations of this run that need administrator rights on Windows.
 
     Args:
         config: Configuration dictionary.
         args: Command line arguments.
 
     Returns:
-        True if admin needed, False otherwise.
+        One description per operation that needs elevation, in installation
+        order; empty off Windows or when no operation needs it.
     """
     if platform.system() != 'Windows':
-        return False
+        return []
 
-    # Check if Claude Code installation is needed
+    reasons: list[str] = []
     if not args.skip_install:
         # Installing Node.js and Git typically requires admin on Windows
-        return True
+        reasons.append('Installing Claude Code (includes Node.js and Git)')
 
-    # Check for dependencies that need admin
     dependencies = config.get('dependencies', {})
     if dependencies:
-        # Check current platform + common dependencies
+        # Current platform + common dependencies, in the order they install
         current_platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
         platform_deps = dependencies.get(current_platform_key, []) if current_platform_key else []
         common_deps = dependencies.get('common', [])
-        all_deps = list(platform_deps) + list(common_deps)
-
-        for dep in all_deps:
-            # Check for commands that typically need admin
+        for dep in list(platform_deps) + list(common_deps):
             if 'winget' in dep and '--scope machine' in dep:
-                return True
-            if _is_global_npm_install(dep):
+                reasons.append(f'System-wide installation: {dep}')
+            elif _is_global_npm_install(dep):
                 # Global npm installs may need admin depending on Node.js installation
-                return True
+                reasons.append(f'Global npm package: {dep}')
 
-    return False
+    return reasons
+
+
+def request_admin_elevation_if_needed(config: dict[str, Any], args: argparse.Namespace) -> None:
+    """Relaunch through UAC when this run needs administrator rights it lacks.
+
+    This is the only place a run requests elevation: the installation steps
+    run in whatever process reaches them. A dry run never relaunches: it lists
+    what the real run would elevate for and returns, so the preview continues
+    to the installation summary. ``--no-admin`` turns the check off for both
+    kinds of run.
+
+    Args:
+        config: Configuration dictionary.
+        args: Command line arguments.
+    """
+    if args.no_admin:
+        return
+    reasons = admin_elevation_reasons(config, args)
+    if not reasons or is_admin():
+        return
+
+    if args.dry_run:
+        print()
+        info('Dry run: administrator elevation is not requested.')
+        info('A real run requests administrator privileges for:')
+        for reason in reasons:
+            info(f'  - {reason}')
+        print()
+        return
+
+    print()
+    print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+    print(f'{Colors.YELLOW}     Administrator Privileges Required{Colors.NC}')
+    print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+    print()
+    info('This configuration requires administrator privileges for:')
+    for reason in reasons:
+        info(f'  - {reason}')
+    print()
+    info('Requesting administrator elevation...')
+    info('A new window will open with administrator privileges.')
+    info('Please look for the UAC dialog and click "Yes" to continue.')
+    print()
+    request_admin_elevation()
+    # If we reach here, elevation was denied
+    error('Administrator elevation was denied')
+    error('Please run this script as administrator manually:')
+    error('  1. Right-click on your terminal')
+    error('  2. Select "Run as administrator"')
+    error('  3. Run the setup command again')
+    error('')
+    error('Alternatively, use --no-admin flag to skip elevation')
+    sys.exit(1)
 
 
 # ANSI color codes for pretty output
@@ -9960,33 +10010,6 @@ def install_dependencies(dependencies: dict[str, list[str]] | None) -> list[str]
 
     info('Installing dependencies...')
 
-    # Check if any dependencies on the current platform need admin
-    if platform.system() == 'Windows' and not is_admin():
-        platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(platform.system())
-        platform_deps = dependencies.get(platform_key, []) if platform_key else []
-        common_deps = dependencies.get('common', [])
-        all_deps = list(platform_deps) + list(common_deps)
-
-        admin_needed_deps = [dep for dep in all_deps if 'winget' in dep and '--scope machine' in dep]
-
-        if admin_needed_deps:
-            warning('Some dependencies require administrator privileges:')
-            for dep in admin_needed_deps:
-                warning(f'  - {dep}')
-            info('')
-            info('Requesting administrator elevation...')
-            request_admin_elevation()
-            # If we reach here, elevation was denied
-            error('Administrator elevation was denied')
-            error('System-wide dependency installation cannot proceed without administrator privileges')
-            error('')
-            error('Options:')
-            error('  1. Run this script as administrator')
-            error('  2. Modify dependencies to use --scope user instead')
-            error('  3. Use --no-admin flag to skip admin-required dependencies')
-            # Installation aborts before any dependency runs, so all of them failed
-            return all_deps
-
     # Get system platform
     system = platform.system()
     current_platform_key = PLATFORM_SYSTEM_TO_CONFIG_KEY.get(system)
@@ -11037,23 +11060,6 @@ def install_claude(version: str | None = None, *, keep_installed: bool = False) 
     Returns:
         True if installation succeeded, False otherwise.
     """  # noqa: DOC501
-    # Check if admin rights needed for Windows installation
-    if platform.system() == 'Windows' and not is_admin():
-        warning('Installing Claude Code requires administrator privileges on Windows')
-        warning('This includes installing Node.js and Git if not already present')
-        info('')
-        info('Requesting administrator elevation...')
-        request_admin_elevation()
-        # If we reach here, elevation was denied
-        error('Administrator elevation was denied')
-        error('Installation cannot proceed without administrator privileges')
-        error('')
-        error('Please run this script as administrator manually:')
-        error('  1. Right-click on your terminal')
-        error('  2. Select "Run as administrator"')
-        error('  3. Run the setup command again')
-        return False
-
     if version:
         if keep_installed:
             info(f'Running the installer to keep Claude Code version {version}...')
@@ -14406,7 +14412,7 @@ def main() -> None:
     parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Show installation plan and exit without installing',
+        help='Show installation plan and exit without installing or requesting admin elevation',
     )
     parser.add_argument(
         '--select',
@@ -14619,46 +14625,8 @@ def main() -> None:
                 )
                 sys.exit(1)
 
-        # Check if admin rights are needed for this configuration
-        if platform.system() == 'Windows' and not args.no_admin and check_admin_needed(config, args) and not is_admin():
-            print()
-            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
-            print(f'{Colors.YELLOW}     Administrator Privileges Required{Colors.NC}')
-            print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
-            print()
-            info('This configuration requires administrator privileges for:')
-
-            if not args.skip_install:
-                info('  - Installing Claude Code (includes Node.js and Git)')
-
-            # Check dependencies
-            dependencies = config.get('dependencies', {})
-            if dependencies:
-                win_deps = dependencies.get('windows', [])
-                common_deps = dependencies.get('common', [])
-                all_deps = win_deps + common_deps
-
-                for dep in all_deps:
-                    if 'winget' in dep and '--scope machine' in dep:
-                        info(f'  - System-wide installation: {dep}')
-                    elif _is_global_npm_install(dep):
-                        info(f'  - Global npm package: {dep}')
-
-            print()
-            info('Requesting administrator elevation...')
-            info('A new window will open with administrator privileges.')
-            info('Please look for the UAC dialog and click "Yes" to continue.')
-            print()
-            request_admin_elevation()
-            # If we reach here, elevation was denied
-            error('Administrator elevation was denied')
-            error('Please run this script as administrator manually:')
-            error('  1. Right-click on your terminal')
-            error('  2. Select "Run as administrator"')
-            error('  3. Run the setup command again')
-            error('')
-            error('Alternatively, use --no-admin flag to skip elevation')
-            sys.exit(1)
+        # Relaunch elevated on Windows when this configuration needs admin rights
+        request_admin_elevation_if_needed(config, args)
 
         environment_name = config.get('name', 'Development')
 
