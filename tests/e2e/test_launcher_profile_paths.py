@@ -38,6 +38,7 @@ from tests.e2e.validators import validate_launcher_profile_spelling
 
 # Relocated profile directories: (id, location relative to 'home' or 'tmp').
 RELOCATED_LAYOUTS = [
+    pytest.param('home', ('.claude-work',), id='direct-child-of-home'),
     pytest.param('home', ('profiles', 'work'), id='below-home'),
     pytest.param('home', ('my profiles (x)', 'work'), id='below-home-spaced'),
     pytest.param('tmp', ('elsewhere', 'work'), id='outside-home'),

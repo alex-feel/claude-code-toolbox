@@ -33,11 +33,20 @@ from tests.e2e.validators import validate_launcher_profile_spelling
 from tests.e2e.validators import validate_manifest
 
 # Profile directory layouts: (id, CLAUDE_CONFIG_DIR value or None, location of
-# the expected profile directory relative to 'home' or 'tmp').
+# the expected profile directory relative to 'home' or 'tmp'). In a value,
+# {home} is the home directory, {home_case} the same directory with the case of
+# every letter swapped, and {tmp} the directory holding the home directory.
 LAYOUTS = [
     pytest.param(None, ('home', ('.claude', GOLDEN_COMMAND)), id='default'),
+    pytest.param('~/.claude-work', ('home', ('.claude-work',)), id='direct-child-of-home'),
     pytest.param('~/profiles/tilde work', ('home', ('profiles', 'tilde work')), id='tilde-below-home'),
     pytest.param('{home}/profiles/work', ('home', ('profiles', 'work')), id='below-home'),
+    pytest.param(
+        '{home_case}/profiles/work',
+        ('home', ('profiles', 'work')),
+        id='below-home-other-case',
+        marks=pytest.mark.skipif(sys.platform != 'win32', reason='Windows paths are case-insensitive'),
+    ),
     pytest.param('{tmp}/elsewhere/work', ('tmp', ('elsewhere', 'work')), id='outside-home'),
     pytest.param('{tmp}/My Profiles (work)/work', ('tmp', ('My Profiles (work)', 'work')), id='outside-home-spaced'),
 ]
@@ -146,8 +155,15 @@ class TestIsolatedInstallLaunchersFollowProfileDirectory:
         local_bin = e2e_isolated_home['local_bin']
         anchor, parts = location
         profile_dir = (home if anchor == 'home' else tmp).joinpath(*parts)
+        # The profile directory as the configuration spells it; the PowerShell
+        # wrappers name start.ps1 by this absolute spelling.
+        configured_dir = profile_dir
         if config_dir is not None:
-            config_dir = config_dir.format(home=home.as_posix(), tmp=tmp.as_posix())
+            config_dir = config_dir.format(
+                home=home.as_posix(), home_case=home.as_posix().swapcase(), tmp=tmp.as_posix(),
+            )
+            configured_dir = Path(config_dir).expanduser()
+            assert configured_dir == profile_dir, f'{config_dir} does not name {profile_dir}'
         config = _config(config_dir)
 
         _run_setup(config)
@@ -159,9 +175,9 @@ class TestIsolatedInstallLaunchersFollowProfileDirectory:
         errors = validate_manifest(profile_dir / 'manifest.json', config)
 
         is_windows = sys.platform == 'win32'
-        spelling = expected_spelling(profile_dir, home)
+        spelling = expected_spelling(configured_dir, home)
         errors.extend(validate_launcher_profile_spelling(
-            profile_dir,
+            configured_dir,
             posix_dir=spelling.posix_dir,
             cmd_dir=spelling.cmd_dir,
             powershell_parent=spelling.powershell_parent,
