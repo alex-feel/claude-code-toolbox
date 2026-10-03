@@ -826,6 +826,8 @@ The toolbox validates `user-settings` against Claude Code's `settings.json` sche
 
 To override the auto-computed isolation directory, set `CLAUDE_CONFIG_DIR` under `user-settings.env` (only meaningful when `command-names` is present). The setup reads and then removes it before writing config.json -- the launcher's `export CLAUDE_CONFIG_DIR` remains the sole authoritative runtime source, so the value is not left in the profile's `env` block.
 
+The setup writes the whole profile into that directory, and the generated launchers and global commands start Claude Code with it: they export it as `CLAUDE_CONFIG_DIR` and read `config.json`, `mcp.json`, the system prompt and the env loaders from it. A directory below your home directory appears in those scripts relative to your home (`$HOME/...` in bash, `%USERPROFILE%\...` in CMD, `$env:USERPROFILE` in PowerShell), so the commands follow the home directory each shell resolves when you run them. A directory anywhere else appears as its absolute path. Spaces and parentheses in the path work in every shell.
+
 ```yaml
 command-names:
   - "my-env"
@@ -1917,12 +1919,12 @@ An isolated command exports `CLAUDE_CONFIG_DIR` for the session it launches, so 
 
 ### Cross-Shell Command Registration (Windows)
 
-On Windows, the setup creates global commands that work across all shells (PowerShell, CMD, Git Bash) through a set of launcher and wrapper scripts:
+On Windows, the setup creates global commands that work across all shells (PowerShell, CMD, Git Bash) through a set of launcher and wrapper scripts. The launchers live in the profile directory, `~/.claude/{command}/` unless a [`CLAUDE_CONFIG_DIR` override](#claude_config_dir-override-isolated-mode) moves it, and every script names that directory:
 
-- Shared POSIX launcher (`~/.claude/{command}/launch.sh`) -- the actual launcher executed by Git Bash
-- PowerShell wrapper (`~/.claude/{command}/start.ps1`) -- invokes launch.sh via Git Bash
-- CMD wrapper (`~/.claude/{command}/start.cmd`) -- invokes launch.sh via Git Bash
-- Global wrappers in `~/.local/bin/` (`{command}`, `{command}.ps1`, `{command}.cmd`) -- entry points that delegate to the above
+- Shared POSIX launcher (`launch.sh`) -- the actual launcher executed by Git Bash
+- PowerShell wrapper (`start.ps1`) -- invokes launch.sh via Git Bash
+- CMD wrapper (`start.cmd`) -- invokes launch.sh via Git Bash
+- Global wrappers in `~/.local/bin/` (`{command}`, `{command}.ps1`, `{command}.cmd`, and the same set for each alias) -- entry points that delegate to the above
 
 For the full technical architecture, see [Cross-Shell Launcher Architecture](cross-shell-launcher-architecture.md).
 
@@ -1973,7 +1975,7 @@ The shared pure builder `_build_profile_settings()` performs status-line command
 
 ### Isolated Mode (command-names present)
 
-When `command-names` is specified, the setup creates an isolated directory `~/.claude/{cmd}/`. The `config.json` file carries the complete `settings.json` content -- the `user-settings` section plus the toolbox-built `statusLine` and `hooks` entries -- and the toolbox does not write the isolated `settings.json`:
+When `command-names` is specified, the setup creates an isolated directory `~/.claude/{cmd}/` (or the directory a [`CLAUDE_CONFIG_DIR` override](#claude_config_dir-override-isolated-mode) names). The `config.json` file carries the complete `settings.json` content -- the `user-settings` section plus the toolbox-built `statusLine` and `hooks` entries -- and the toolbox does not write the isolated `settings.json`:
 
 | File          | Priority (CLI)   | Content                                                         | Writer                    | Step | Semantics                                              |
 |---------------|------------------|-----------------------------------------------------------------|---------------------------|------|--------------------------------------------------------|
