@@ -758,8 +758,8 @@ System prompt configuration for the commands an isolated profile installs.
   - `mode` (str, default: `"replace"`) -- How the prompt is applied:
     - `replace` -- Completely replaces the default system prompt (`--system-prompt` flag, added in Claude Code v2.0.14)
     - `append` -- Appends to Claude's default development prompt (`--append-system-prompt` flag, added in Claude Code v1.0.55)
-- **Isolated install** (`command-names` present): the profile's launcher passes the prompt file from `~/.claude/{cmd}/prompts/` to Claude Code in the configured mode.
-- **Base install** (`command-names` absent): the prompt file is still downloaded to `~/.claude/prompts/`, but a base install has no launcher, so the prompt does not reach Claude Code. The run is not refused: the installation summary and `--dry-run` state that `command-defaults` applies only to isolated installs, and the closing summary reports the system prompt as not applied. See [`command-defaults` Without Command Names](#command-defaults-without-command-names).
+- **Isolated install** (the run has command names, from `command-names`, `--command-names`, or `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`): the profile's launcher passes the prompt file from `~/.claude/{cmd}/prompts/` to Claude Code in the configured mode.
+- **Base install** (none of them gives the run any names): the prompt file is still downloaded to `~/.claude/prompts/`, but a base install has no launcher, so the prompt does not reach Claude Code. The run is not refused: the installation summary and `--dry-run` state that `command-defaults` applies only to isolated installs, and the closing summary reports the system prompt as not applied. See [`command-defaults` Without Command Names](#command-defaults-without-command-names).
 - **Validation:** Valid with or without `command-names`.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:**
@@ -2176,7 +2176,7 @@ The validation walks `config.get('mcp-servers', [])` and matches BOTH the string
 
 ### `command-defaults` Without Command Names
 
-System prompts are applied by the launcher via `--system-prompt` or `--append-system-prompt` CLI flags, and only an isolated install creates a launcher. A configuration that declares `command-defaults` without `command-names` therefore installs normally as the base profile -- the prompt file is downloaded to `~/.claude/prompts/` -- and the same configuration installed with command names applies the prompt through its launcher. When the run has no command names and `command-defaults` is not empty, the installation summary, shown before consent and by `--dry-run`, carries this line under Settings:
+System prompts are applied by the launcher via `--system-prompt` or `--append-system-prompt` CLI flags, and only an isolated install creates a launcher. A run with no command names installs a configuration that declares `command-defaults` without `command-names` as the base profile, and downloads the prompt file to `~/.claude/prompts/`. The same file run with `--command-names NAME` (or `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES=NAME`) installs the isolated profile `~/.claude/NAME`, whose launcher applies the prompt. When the run has no command names and `command-defaults` is not empty, the installation summary, shown before consent and by `--dry-run`, carries this line under Settings:
 
 ```text
 * command-defaults applies only to isolated installs, whose launcher passes the system prompt to Claude Code; this run has no command names
