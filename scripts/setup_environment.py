@@ -13811,10 +13811,10 @@ def register_global_command(
     """Register global command(s) in ~/.local/bin/.
 
     On Windows, creates wrappers for PowerShell (.ps1), CMD (.cmd), and Git Bash
-    in ~/.local/bin/. PowerShell wrappers reference launcher_path (start.ps1);
-    CMD and Git Bash wrappers reference launch_script_path (launch.sh), and the
-    CMD wrappers source the env.cmd loader beside it. Those paths are spelled
-    relative to the home directory when the profile directory lies below the
+    in ~/.local/bin/. PowerShell wrappers name launcher_path (start.ps1) by its
+    absolute path. CMD and Git Bash wrappers reference launch_script_path
+    (launch.sh), and the CMD wrappers source the env.cmd loader beside it; they
+    spell its directory relative to the home directory when it lies below the
     user's home, absolute otherwise.
 
     On Unix, creates symlinks in ~/.local/bin/ pointing to launcher_path.

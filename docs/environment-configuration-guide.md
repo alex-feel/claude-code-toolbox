@@ -684,14 +684,14 @@ Claude-session variables are declared under [`user-settings.env`](#user-settings
 
 When `os-env-variables` are configured, the setup generates Rustup-style env loader files that can be sourced to load the variables into the current shell session. These files contain **only** `os-env-variables` (not `user-settings.env`, which Claude Code reads from `settings.json`/`config.json`).
 
-**Per-command files** (generated when `command-names` is specified):
+**Per-command files** (generated when `command-names` is specified) live in the profile directory: `~/.claude/{cmd}/` by default, or the directory a [`CLAUDE_CONFIG_DIR` override](#claude_config_dir-override-isolated-mode) names.
 
-| File                         | Shell      | Generated When |
-|------------------------------|------------|----------------|
-| `~/.claude/{cmd}/env.sh`     | Bash/Zsh   | Always         |
-| `~/.claude/{cmd}/env.fish`   | Fish       | Fish installed |
-| `~/.claude/{cmd}/env.ps1`    | PowerShell | Windows only   |
-| `~/.claude/{cmd}/env.cmd`    | CMD batch  | Windows only   |
+| File       | Shell      | Generated When |
+|------------|------------|----------------|
+| `env.sh`   | Bash/Zsh   | Always         |
+| `env.fish` | Fish       | Fish installed |
+| `env.ps1`  | PowerShell | Windows only   |
+| `env.cmd`  | CMD batch  | Windows only   |
 
 Loader files are toolbox-owned and rebuilt on every run: variables set to `null` (deletions) are excluded from the exports, and when no active variable remains the files are rewritten header-only so stale exports from a prior run stop being re-applied by the launcher at session start.
 
@@ -826,7 +826,7 @@ The toolbox validates `user-settings` against Claude Code's `settings.json` sche
 
 To override the auto-computed isolation directory, set `CLAUDE_CONFIG_DIR` under `user-settings.env` (only meaningful when `command-names` is present). The setup reads and then removes it before writing config.json -- the launcher's `export CLAUDE_CONFIG_DIR` remains the sole authoritative runtime source, so the value is not left in the profile's `env` block.
 
-The setup writes the whole profile into that directory, and the generated launchers and global commands start Claude Code with it: they export it as `CLAUDE_CONFIG_DIR` and read `config.json`, `mcp.json`, the system prompt and the env loaders from it. A directory below your home directory appears in those scripts relative to your home (`$HOME/...` in bash, `%USERPROFILE%\...` in CMD, `$env:USERPROFILE` in PowerShell), so the commands follow the home directory each shell resolves when you run them. A directory anywhere else appears as its absolute path. Spaces and parentheses in the path work in every shell.
+The setup writes the whole profile into that directory, and the generated launchers and global commands start Claude Code with it: they export it as `CLAUDE_CONFIG_DIR` and read `config.json`, `mcp.json`, the system prompt and the env loaders from it. A directory below your home directory appears in the launchers (`launch.sh`, `start.ps1`, `start.cmd`) and in the CMD and Git Bash global commands relative to your home (`$HOME/...` in bash, `%USERPROFILE%\...` in CMD, `$env:USERPROFILE` in PowerShell), so they follow the home directory each shell resolves when you run them. A directory anywhere else appears as its absolute path. The PowerShell global commands (`~/.local/bin/my-env.ps1` and one per alias) name `start.ps1` by its absolute path, and on Linux and macOS every global command is a symlink to the absolute path of `launch.sh`. Spaces and parentheses in the path work in every shell.
 
 ```yaml
 command-names:
