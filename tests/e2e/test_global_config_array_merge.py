@@ -6,12 +6,13 @@ Two layers touch a global-config array on its way into a .claude.json:
   merge-keys, objects merge member by member while a child array replaces
   the parent's at every depth; without merge-keys the child's section
   replaces the parent's whole.
-- The Step 15 writer merges the resolved section into each target
-  .claude.json separately (the base file and, in an isolated run, the
-  profile's own file) and unions every array at every depth with the
-  array that file already holds (existing elements first, duplicates
-  dropped), because Claude Code keeps arrays of its own there. A YAML
-  array therefore only adds elements; a YAML null deletes the whole key.
+- The Step 15 writer merges the resolved section into the one
+  .claude.json the run owns (~/.claude.json for a base run, the
+  profile's own file for an isolated run) and unions every array at
+  every depth with the array that file already holds (existing elements
+  first, duplicates dropped), because Claude Code keeps arrays of its own
+  there. A YAML array therefore only adds elements; a YAML null deletes
+  the whole key. An isolated run never writes the base file.
 
 The inherit layer composes user-settings differently: its
 permissions.allow/deny/ask arrays are unioned and every other array is
@@ -167,23 +168,24 @@ class TestWriterUnionsArraysWithClaudeJson:
         assert not errors, '\n'.join(errors)
         assert _read_json(claude_json)['editorMode'] == 'vim'
 
-    def test_isolated_run_merges_base_and_profile_claude_json_separately(
+    def test_isolated_run_merges_the_profile_claude_json_and_leaves_the_base_untouched(
         self,
         e2e_isolated_home: dict[str, Path],
         tmp_path: Path,
     ) -> None:
-        """Each .claude.json the run writes is unioned with its own arrays, never copied from the other.
+        """The profile file is unioned with its own arrays; the base file keeps exactly its content.
 
         The base file and the profile file start with different arrays. After
-        the run each one holds its own elements first and the YAML elements
-        after them, so the element order differs between the two files: one
-        merge per file, not one merged result written twice.
+        the run the profile file holds its own elements first and the YAML
+        elements after them, while the base file is byte-for-byte unchanged:
+        one merge into the profile's own file, no write to the base.
         """
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
         base_claude_json = home / '.claude.json'
         profile_claude_json = claude_dir / PROFILE_NAME / '.claude.json'
         _write_json(base_claude_json, {'enabledMcpjsonServers': ['base-cli-server']})
+        base_bytes = base_claude_json.read_bytes()
         _write_json(profile_claude_json, {
             'customApiKeyResponses': {'approved': ['profile-cli-key']},
         })
@@ -198,11 +200,8 @@ class TestWriterUnionsArraysWithClaudeJson:
 
         _run_setup(config_path)
 
-        errors = validate_json_arrays(base_claude_json, {
-            ('enabledMcpjsonServers',): ['base-cli-server', 'yaml-server'],
-            ('customApiKeyResponses', 'approved'): ['yaml-key', 'profile-cli-key'],
-        })
-        errors += validate_json_arrays(profile_claude_json, {
+        assert base_claude_json.read_bytes() == base_bytes, 'An isolated run must not write the base ~/.claude.json'
+        errors = validate_json_arrays(profile_claude_json, {
             ('enabledMcpjsonServers',): ['yaml-server'],
             ('customApiKeyResponses', 'approved'): ['profile-cli-key', 'yaml-key'],
         })

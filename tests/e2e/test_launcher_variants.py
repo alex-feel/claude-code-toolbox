@@ -23,7 +23,7 @@ import pytest
 from scripts import setup_environment
 from scripts.setup_environment import create_launcher_script
 from tests.conftest import empty_mcp_stats
-from tests.e2e.test_launcher_scripts import _find_bash
+from tests.e2e.shells import find_bash
 from tests.e2e.validators import UPDATE_CHECK_FRAGMENTS
 from tests.e2e.validators import validate_launcher_has_no_update_check
 from tests.e2e.validators import validate_launcher_script
@@ -223,7 +223,7 @@ class TestLeftoverUpdateMarker:
             errors.extend(validate_launcher_script(path, cmd))
         assert not errors, '\n'.join(errors)
 
-        bash = _find_bash()
+        bash = find_bash()
         if bash is None:
             pytest.skip('bash unavailable')
         stub_dir = home / 'stub-bin'

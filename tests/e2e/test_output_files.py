@@ -425,16 +425,17 @@ class TestGlobalConfigOutput:
         })
         assert not errors, 'global-config array union failed:\n' + '\n'.join(errors)
 
-    def test_install_method_propagated_to_both_claude_json(
+    def test_install_method_propagated_to_the_isolated_claude_json_only(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify installMethod reaches BOTH .claude.json files in an isolated run.
+        """Verify installMethod reaches the isolated .claude.json while the base file is only read.
 
         The base ~/.claude.json is pre-populated with the value recorded by
         install_claude.py; the propagation step injects it into global-config
-        and the Step 15 dual-write carries it to the isolated profile.
+        and the Step 15 write carries it to the isolated profile. The golden
+        global-config deletes oauthAccount, which must not reach the base file.
         """
         from scripts.setup_environment import _propagate_install_method
         from scripts.setup_environment import write_global_config
@@ -442,9 +443,10 @@ class TestGlobalConfigOutput:
         paths = e2e_isolated_home
         home = paths['home']
 
-        # Pre-populate the base file the way install_claude.py leaves it
+        # Pre-populate the base file the way install_claude.py and a login leave it
         claude_json = home / '.claude.json'
-        claude_json.write_text(json.dumps({'installMethod': 'native'}), encoding='utf-8')
+        base_before = {'installMethod': 'native', 'oauthAccount': {'emailAddress': 'base@example.com'}}
+        claude_json.write_text(json.dumps(base_before), encoding='utf-8')
 
         cmd = golden_config['command-names'][0]
         artifact_dir = home / '.claude' / cmd
@@ -458,10 +460,11 @@ class TestGlobalConfigOutput:
 
         base_data = json.loads(claude_json.read_text(encoding='utf-8'))
         isolated_data = json.loads((artifact_dir / '.claude.json').read_text(encoding='utf-8'))
-        assert base_data['installMethod'] == 'native', \
-            'Base ~/.claude.json must keep installMethod'
+        assert base_data == base_before, \
+            'The base ~/.claude.json must keep its content, the account included'
         assert isolated_data['installMethod'] == 'native', \
-            'Isolated .claude.json must receive installMethod via dual-write'
+            'Isolated .claude.json must receive installMethod from the Step 15 write'
+        assert 'oauthAccount' not in isolated_data
 
 
 class TestRulesOutput:
