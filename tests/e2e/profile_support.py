@@ -17,11 +17,57 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
 from tests.e2e.expected import EXPECTED_FILES
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+CHILD_RUNNER = '''\
+"""Child runner: setup_environment.main() with the machine-wide writers replaced."""
+from unittest.mock import patch
+
+from scripts import setup_environment
+from tests.e2e.fixtures import setup_child
+
+_real_find = setup_environment.find_command
+
+
+def _find(name: str) -> str | None:
+    return '/usr/bin/claude' if name == 'claude' else _real_find(name)
+
+
+with (
+    patch.object(setup_environment, 'find_command', _find),
+    patch.object(setup_environment, 'ensure_local_bin_in_path', lambda: None),
+    patch.object(setup_environment, 'refresh_path_from_registry', lambda: None),
+):
+    setup_child.main()
+'''
+
+
+def write_child_runner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Write the runner a parent run starts its child runs through.
+
+    The runner stands in for sys.argv[0]: a child run executes it with the
+    test interpreter, so every child goes through setup_child.main() with the
+    machine-wide writers replaced and the Claude Code binary stubbed.
+
+    Args:
+        tmp_path: The test's temporary directory.
+        monkeypatch: Sets PYTHONPATH so the child imports the repository.
+
+    Returns:
+        The runner path, to pass as argv0 to run_main().
+    """
+    runner = tmp_path / 'runner.py'
+    runner.write_text(CHILD_RUNNER, encoding='utf-8')
+    monkeypatch.setenv('PYTHONPATH', str(REPO_ROOT))
+    return runner
 
 
 def write_config(directory: Path, name: str, config: dict[str, Any]) -> Path:

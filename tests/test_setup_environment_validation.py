@@ -1212,6 +1212,8 @@ class TestMainFlowWithValidation:
             profile=None,
             switch_config=False,
             refresh_all_child=False,
+            link_dirs=None,
+            link_from=None,
             auth=None,
         )
         mock_load.return_value = (
@@ -1288,6 +1290,8 @@ class TestMainFlowWithValidation:
             profile=None,
             switch_config=False,
             refresh_all_child=False,
+            link_dirs=None,
+            link_from=None,
             auth=None,
         )
         mock_load.return_value = (

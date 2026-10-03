@@ -1225,6 +1225,55 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
     return errors
 
 
+def _link_record_errors(link: object, config: dict[str, Any]) -> list[str]:
+    """Validate the manifest's link record against the configuration's link keys.
+
+    A configuration that declares link-dirs expects a record naming those
+    entries (all expands to every linkable entry), the link-from source (base
+    without the key), and an origin per key; a configuration without
+    link-dirs expects None.
+
+    Args:
+        link: The manifest's link field.
+        config: The configuration the profile was installed from.
+
+    Returns:
+        List of error strings (empty if the record matches).
+    """
+    from scripts.setup_environment import LINKABLE_PROFILE_DIRS
+    from scripts.setup_environment import parse_link_dirs
+
+    raw_dirs = config.get('link-dirs')
+    expected_dirs, parse_errors = parse_link_dirs(raw_dirs, 'link-dirs') if raw_dirs is not None else ([], [])
+    if parse_errors:
+        return [f'Golden link-dirs is invalid: {parse_errors}']
+    if not expected_dirs:
+        return [] if link is None else [f'Manifest link: expected None, got {link!r}']
+    if not isinstance(link, dict):
+        return [f'Manifest link: expected a record for {expected_dirs}, got {link!r}']
+    errors: list[str] = []
+    if set(link) != {'dirs', 'source', 'origins'}:
+        errors.append(f'Manifest link: expected dirs, source and origins, got {sorted(link)}')
+        return errors
+    if link['dirs'] != expected_dirs:
+        errors.append(f"Manifest link.dirs: expected {expected_dirs}, got {link['dirs']!r}")
+    if any(entry not in LINKABLE_PROFILE_DIRS for entry in link['dirs']):
+        errors.append(f"Manifest link.dirs names an unknown entry: {link['dirs']!r}")
+    expected_source = str(config.get('link-from') or 'base')
+    if link['source'] != expected_source:
+        errors.append(f"Manifest link.source: expected {expected_source!r}, got {link['source']!r}")
+    origins = link['origins']
+    if not isinstance(origins, dict) or set(origins) != {'dirs', 'source'}:
+        errors.append(f'Manifest link.origins: expected dirs and source, got {origins!r}')
+    else:
+        errors.extend(
+            f'Manifest link.origins.{key}: unexpected value {origins[key]!r}'
+            for key in ('dirs', 'source')
+            if origins[key] not in ('cli', 'env', 'yaml', 'default')
+        )
+    return errors
+
+
 def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate manifest.json structure and content.
 
@@ -1344,8 +1393,7 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         errors.append(f'Manifest components: expected None or the three selector values, got {components!r}')
     if not isinstance(data['yaml_values'], dict):
         errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
-    if data['link'] is not None:
-        errors.append(f"Manifest link: expected None, got {data['link']!r}")
+    errors.extend(_link_record_errors(data['link'], config))
     record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
     errors.extend(
         f'Manifest {record_key}: expected a list, got {data[record_key]!r}'

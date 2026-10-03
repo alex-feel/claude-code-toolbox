@@ -46,6 +46,8 @@ def _args(
     config: str | None = None,
     skip_install: bool = False,
     no_admin: bool = False,
+    link_dirs: str | None = None,
+    link_from: str | None = None,
 ) -> argparse.Namespace:
     """Build resolved arguments the way main() does."""
     namespace = argparse.Namespace(
@@ -63,6 +65,8 @@ def _args(
         profile=profile,
         switch_config=switch_config,
         refresh_all_child=False,
+        link_dirs=link_dirs,
+        link_from=link_from,
     )
     cleared = {
         twin.variable: '' for twin in setup_environment.ENV_TWINS
@@ -81,6 +85,7 @@ def _manifest(
     components_origin: str = 'yaml',
     config_source: str = 'https://example.com/profile.yaml',
     yaml_values: dict[str, Any] | None = None,
+    link: dict[str, Any] | None = None,
     **records: Any,
 ) -> dict[str, Any]:
     """Write a manifest in the current shape and return it."""
@@ -97,7 +102,7 @@ def _manifest(
         'installed_at': '2026-01-01T00:00:00+00:00',
         'command_names': command_names,
         'components': components,
-        'link': None,
+        'link': link,
         'origins': {'command_names': origin, 'components': components_origin},
         'yaml_values': yaml_values if yaml_values is not None else {'command_names': [], 'components': []},
         'machine_wide_destinations': [],

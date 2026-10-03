@@ -62,6 +62,8 @@ def _empty_namespace() -> argparse.Namespace:
         command_names=None,
         profile=None,
         switch_config=False,
+        link_dirs=None,
+        link_from=None,
     )
 
 
@@ -139,6 +141,8 @@ class TestRegistryShape:
             'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'command_names',
             'CLAUDE_CODE_TOOLBOX_PROFILE': 'profile',
             'CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG': 'switch_config',
+            'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'link_dirs',
+            'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'link_from',
         }
 
 

@@ -1,8 +1,9 @@
-"""E2E tests for --command-names and --profile through the platform bootstrap wrappers.
+"""E2E tests for --command-names, --profile and the link flags through the platform bootstrap wrappers.
 
 The wrappers download setup_environment.py and run it with uv, forwarding
 every user argument verbatim, and leave CLAUDE_CODE_TOOLBOX_ENV_CONFIG,
-CLAUDE_CODE_TOOLBOX_COMMAND_NAMES and CLAUDE_CODE_TOOLBOX_PROFILE in the
+CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, CLAUDE_CODE_TOOLBOX_PROFILE,
+CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM in the
 environment the script reads: a configuration from the variable never
 reaches the command line, which is how the script tells a typed
 configuration from one set in the environment. A --profile re-run needs no
@@ -174,6 +175,57 @@ class TestUnixWrapper:
         assert 'Command names: second [cli]' in output
 
 
+@pytest.mark.parametrize('platform_dir', UNIX_WRAPPERS)
+class TestUnixWrapperLinks:
+    """The bash wrappers hand --link-dirs, --link-from and their variables to the setup script."""
+
+    def test_link_flags_reach_the_setup_script(self, platform_dir: str, tmp_path: Path) -> None:
+        """Typed link flags are forwarded verbatim and the preview lists the link they request."""
+        config = tmp_path / 'profile.yaml'
+        config.write_text(PROFILE_YAML, encoding='utf-8')
+
+        result = _run_unix_wrapper(
+            tmp_path,
+            _unix_wrapper(platform_dir),
+            [
+                str(config), '--skip-install', '--dry-run', '--command-names', 'linked',
+                '--link-dirs', 'projects', '--link-from', 'base',
+            ],
+            {},
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert 'Links (from profile "base"):' in output
+        assert '[cli]' in output.split('Links (from profile "base"):')[1].splitlines()[0]
+        assert f'projects -> {tmp_path / "home" / ".claude" / "projects"} [create]' in output
+        assert not (tmp_path / 'home' / '.claude' / 'linked').exists()
+
+    def test_link_variables_reach_the_setup_script(self, platform_dir: str, tmp_path: Path) -> None:
+        """The one-liner form sets the names and the links through the variables the wrapper leaves in place."""
+        config = tmp_path / 'profile.yaml'
+        config.write_text(PROFILE_YAML, encoding='utf-8')
+
+        result = _run_unix_wrapper(
+            tmp_path,
+            _unix_wrapper(platform_dir),
+            ['--skip-install', '--dry-run'],
+            {
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': str(config),
+                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'linked',
+                'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'projects',
+                'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'base',
+            },
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert 'Command names: linked [env]' in output
+        assert 'Links (from profile "base"):' in output
+        assert '[env]' in output.split('Links (from profile "base"):')[1].splitlines()[0]
+        assert f'projects -> {tmp_path / "home" / ".claude" / "projects"} [create]' in output
+
+
 def _install_profile_manifest(tmp_path: Path, name: str) -> Path:
     """Record an installed profile in the wrapper's home, with a configuration beside it.
 
@@ -311,6 +363,8 @@ function uv {
         config = $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG
         command_names = $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES
         profile = $env:CLAUDE_CODE_TOOLBOX_PROFILE
+        link_dirs = $env:CLAUDE_CODE_TOOLBOX_LINK_DIRS
+        link_from = $env:CLAUDE_CODE_TOOLBOX_LINK_FROM
     }
     $record | ConvertTo-Json | Set-Content -LiteralPath $env:E2E_RECORD -Encoding utf8
     $global:LASTEXITCODE = 0
@@ -331,8 +385,8 @@ def _run_windows_wrapper(
 
     Returns:
         What uv received (``args``, ``config``, ``command_names``,
-        ``profile``), or the wrapper's output under ``output`` when it
-        stopped before running uv.
+        ``profile``, ``link_dirs``, ``link_from``), or the wrapper's output
+        under ``output`` when it stopped before running uv.
     """
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
@@ -341,7 +395,10 @@ def _run_windows_wrapper(
     quoted_args = ' '.join("'" + arg.replace("'", "''") + "'" for arg in args)
     command = f"{WINDOWS_STAND_INS}\n& '{wrapper}' {quoted_args}\nexit $LASTEXITCODE"
     env = {**os.environ, 'USERPROFILE': str(home), 'E2E_RECORD': str(record), **extra_env}
-    for variable in ('CLAUDE_CODE_TOOLBOX_PROFILE', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG'):
+    for variable in (
+        'CLAUDE_CODE_TOOLBOX_PROFILE', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
+        'CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'CLAUDE_CODE_TOOLBOX_LINK_FROM',
+    ):
         env.pop(variable, None)
     env.update(extra_env)
     # PowerShell writes its module analysis cache relative to the working
@@ -402,6 +459,45 @@ class TestWindowsWrapper:
             'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--command-names', 'second', '--dry-run',
         ]
         assert recorded['config'] == 'profile.yaml'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')
+class TestWindowsWrapperLinks:
+    """The PowerShell wrapper hands the link flags and their variables to the setup script."""
+
+    def test_link_flags_are_forwarded_verbatim(self, tmp_path: Path) -> None:
+        """--link-dirs and --link-from typed after the configuration reach setup_environment.py unchanged."""
+        recorded = _run_windows_wrapper(
+            tmp_path,
+            ['aegis', '--command-names', 'aegis-2', '--link-dirs', 'all', '--link-from', 'aegis-1', '--dry-run'],
+            {},
+        )
+
+        assert recorded['args'] == [
+            'run', '--no-project', '--python', '3.12', 'setup_environment.py',
+            'aegis', '--command-names', 'aegis-2', '--link-dirs', 'all', '--link-from', 'aegis-1', '--dry-run',
+        ]
+        assert recorded['link_dirs'] is None
+        assert recorded['link_from'] is None
+
+    def test_one_liner_links_a_profile_from_the_variables(self, tmp_path: Path) -> None:
+        """The iex (irm ...) form with the configuration, the names and the two link variables runs with no arguments."""
+        recorded = _run_windows_wrapper(
+            tmp_path,
+            [],
+            {
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'aegis',
+                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'aegis-2',
+                'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all',
+                'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'aegis-1',
+            },
+        )
+
+        assert recorded['args'] == ['run', '--no-project', '--python', '3.12', 'setup_environment.py']
+        assert recorded['config'] == 'aegis'
+        assert recorded['command_names'] == 'aegis-2'
+        assert recorded['link_dirs'] == 'all'
+        assert recorded['link_from'] == 'aegis-1'
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')

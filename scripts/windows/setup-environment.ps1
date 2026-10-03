@@ -14,6 +14,9 @@
     To install it as the isolated profile ~/.claude/<name> (same as --command-names):
       $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='<name>[,<alias>...]'
 
+    To link entries of that profile from another profile (same as --link-dirs and --link-from):
+      $env:CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'; $env:CLAUDE_CODE_TOOLBOX_LINK_FROM='<source profile>'
+
     To re-run an installed profile from its manifest, no configuration needed (same as --profile):
       $env:CLAUDE_CODE_TOOLBOX_PROFILE='<name>'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 #>

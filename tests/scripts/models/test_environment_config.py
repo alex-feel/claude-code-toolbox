@@ -2011,47 +2011,64 @@ class TestKeysIndependentOfCommandNames:
         assert config.command_defaults is not None
 
 
-class TestLinkProjectsDirRequiresCommandNames:
-    """Tests for link-projects-dir + command-names cross-field validation."""
+class TestLinkKeys:
+    """Tests for the link-dirs and link-from keys."""
 
-    def test_link_projects_dir_without_command_names_raises(self) -> None:
-        """link-projects-dir true without command-names raises ValueError."""
-        with pytest.raises(ValidationError, match='link-projects-dir requires command-names'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'link-projects-dir': True,
-            })
+    @pytest.mark.parametrize('value', [['all'], ['none'], ['projects'], ['skills', 'hooks', 'projects']])
+    def test_link_dirs_accepts_entries_and_sentinels(self, value: list[str]) -> None:
+        """Known entries, all, and none are valid link-dirs values."""
+        config = EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': value})
+        assert config.link_dirs == value
 
-    def test_link_projects_dir_with_empty_command_names_raises(self) -> None:
-        """link-projects-dir true with empty command-names list raises ValueError."""
-        with pytest.raises(ValidationError, match='link-projects-dir requires command-names'):
-            EnvironmentConfig.model_validate({
-                'name': 'Test',
-                'link-projects-dir': True,
-                'command-names': [],
-            })
+    def test_link_dirs_needs_no_command_names(self) -> None:
+        """--command-names supplies the isolated profile at install time, so the model does not require the key."""
+        config = EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['all'], 'link-from': 'aegis-1'})
+        assert config.command_names == []
+        assert config.link_from == 'aegis-1'
 
-    def test_link_projects_dir_with_command_names_valid(self) -> None:
-        """link-projects-dir true with command-names passes validation."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'link-projects-dir': True,
-            'command-names': ['my-cmd'],
-        })
-        assert config.link_projects_dir is True
+    def test_link_dirs_rejects_unknown_entries(self) -> None:
+        """An entry outside the linkable set is refused with the valid names."""
+        with pytest.raises(ValidationError, match='link-dirs names unknown entries: settings'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['settings']})
 
-    def test_link_projects_dir_false_without_command_names_valid(self) -> None:
-        """link-projects-dir false without command-names is valid (falsy is off)."""
-        config = EnvironmentConfig.model_validate({
-            'name': 'Test',
-            'link-projects-dir': False,
-        })
-        assert config.link_projects_dir is False
+    @pytest.mark.parametrize('value', [['all', 'skills'], ['none', 'projects'], ['all', 'none']])
+    def test_link_dirs_sentinel_stands_alone(self, value: list[str]) -> None:
+        """all and none cannot be combined with entries."""
+        with pytest.raises(ValidationError, match='stands alone'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': value})
 
-    def test_no_link_projects_dir_without_command_names_valid(self) -> None:
-        """Omitting link-projects-dir without command-names is valid (defaults to None)."""
+    def test_link_dirs_rejects_duplicates_and_empty_entries(self) -> None:
+        """A repeated or empty entry is refused."""
+        with pytest.raises(ValidationError, match='lists an entry twice'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['skills', 'Skills']})
+        with pytest.raises(ValidationError, match='cannot be empty'):
+            EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['']})
+
+    @pytest.mark.parametrize('value', ['base', 'BASE', 'aegis-1', 'claude_personal'])
+    def test_link_from_accepts_base_and_command_names(self, value: str) -> None:
+        """base and a valid command name are valid sources."""
+        assert EnvironmentConfig.model_validate({'name': 'Test', 'link-from': value}).link_from == value
+
+    @pytest.mark.parametrize(
+        ('value', 'message'),
+        [
+            ('', 'cannot be empty'),
+            ('two words', 'cannot contain spaces'),
+            ('bad/name', 'must be base or a command name'),
+            ('all', 'is reserved'),
+            ('projects', 'is reserved'),
+        ],
+    )
+    def test_link_from_rejects_invalid_sources(self, value: str, message: str) -> None:
+        """An empty, spaced, malformed or reserved source is refused."""
+        with pytest.raises(ValidationError, match=message):
+            EnvironmentConfig.model_validate({'name': 'Test', 'link-from': value})
+
+    def test_absent_link_keys_default_to_none(self) -> None:
+        """Without the keys a configuration links nothing."""
         config = EnvironmentConfig.model_validate({'name': 'Test'})
-        assert config.link_projects_dir is None
+        assert config.link_dirs is None
+        assert config.link_from is None
 
 
 class TestMergeKeysRequiresInherit:

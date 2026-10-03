@@ -8,6 +8,9 @@
 #   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
 # To install it as the isolated profile ~/.claude/<name> (same as --command-names):
 #   export CLAUDE_CODE_TOOLBOX_COMMAND_NAMES=<name>[,<alias>...]
+# To link entries of that profile from another profile (same as --link-dirs and --link-from):
+#   export CLAUDE_CODE_TOOLBOX_LINK_DIRS=all
+#   export CLAUDE_CODE_TOOLBOX_LINK_FROM=<source profile>
 # To re-run an installed profile from its manifest, no configuration needed (same as --profile):
 #   export CLAUDE_CODE_TOOLBOX_PROFILE=<name>
 

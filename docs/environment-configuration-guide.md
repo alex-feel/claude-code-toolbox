@@ -169,7 +169,8 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths                       |
 | [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"`                 |
 | [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies                    |
-| [`link-projects-dir`](#link-projects-dir)             | `bool`                 | No*      | `None`  | Link isolated `projects/` to base `~/.claude/projects/`    |
+| [`link-dirs`](#link-dirs)                             | `list[str]`            | No       | `None`  | Profile entries taken through a link from another profile  |
+| [`link-from`](#link-from)                             | `str`                  | No       | `base`  | The profile the linked entries come from                   |
 | [`dependencies`](#dependencies)                       | `dict`                 | No       | `{}`    | Platform-specific dependency commands                      |
 | [`agents`](#agents)                                   | `list[str]`            | No       | `[]`    | Agent markdown file paths                                  |
 | [`slash-commands`](#slash-commands)                   | `list[str]`            | No       | `[]`    | Slash command file paths                                   |
@@ -185,7 +186,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Raw `settings.json` content (camelCase keys)               |
 | [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration                           |
 
-> `link-projects-dir` requires `command-names`: setting `link-projects-dir: true` without `command-names` produces a validation error, because the projects link only applies to an isolated profile (created only when `command-names` is present).
+> `link-dirs` needs an isolated profile: links live inside `~/.claude/NAME`, so a run without `command-names` (or `--command-names`) that declares `link-dirs` stops with an error naming the flag to add. `link-from` is read only together with `link-dirs`.
 
 ### Configuration key naming
 
@@ -327,22 +328,23 @@ uvx cc-toolbox setup --profile all                           # every installed p
 $env:CLAUDE_CODE_TOOLBOX_PROFILE='my-env-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-Each profile's manifest remembers the command names and the component choice (`--select`, `--with`, `--without`, or a picker choice) the install typed or took from the environment, and the configuration it was installed from. Per key, a re-run ranks its sources: a value typed for this run, an environment value for this run, the remembered value when its recorded origin is the flag or the variable, the configuration's own value, then the default. Values the configuration declares are therefore re-read on every run, and values you typed survive until you type them again. The installation summary and the completion summary mark each value `[cli]`, `[env]`, `[remembered]` or `[yaml]` (`[default]` for a profile selected by name whose configuration lists no names), and a remembered value that overrides a configuration value which changed since the install produces a warning naming both. A remembered component choice counts as supplied selectors, so the picker does not run; pass a selector to change it. The choice is checked against the components the configuration declares today: a remembered `--without` naming a component the configuration dropped is dropped itself, with a warning, and the manifest records the cleaned choice; a remembered `--select` or `--with` naming one stops the run with an error naming the manifest, because applying it would change what gets installed, and `--select` or `--with` passed explicitly (or `--select all`) replaces it.
+Each profile's manifest remembers the command names, the links (`link-dirs` and `link-from`, see [`link-dirs`](#link-dirs)) and the component choice (`--select`, `--with`, `--without`, or a picker choice) the install typed or took from the environment, and the configuration it was installed from. A profile that links content re-runs from its source's `resolved-config.yaml` rather than from a configuration of its own, and every run of the source re-runs it (see [Linked Profiles](#linked-profiles)). Per key, a re-run ranks its sources: a value typed for this run, an environment value for this run, the remembered value when its recorded origin is the flag or the variable, the configuration's own value, then the default. Values the configuration declares are therefore re-read on every run, and values you typed survive until you type them again. The installation summary and the completion summary mark each value `[cli]`, `[env]`, `[remembered]` or `[yaml]` (`[default]` for a profile selected by name whose configuration lists no names), and a remembered value that overrides a configuration value which changed since the install produces a warning naming both. A remembered component choice counts as supplied selectors, so the picker does not run; pass a selector to change it. The choice is checked against the components the configuration declares today: a remembered `--without` naming a component the configuration dropped is dropped itself, with a warning, and the manifest records the cleaned choice; a remembered `--select` or `--with` naming one stops the run with an error naming the manifest, because applying it would change what gets installed, and `--select` or `--with` passed explicitly (or `--select all`) replaces it.
 
-`--profile NAME` takes no configuration, but accepts one: a configuration whose identity equals the manifest's (the same URL, or the same local file by resolved path) proceeds, any other goes through the switch guard below, whose message names the argument or `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`. A `--command-names` value beside `--profile NAME` must start with `NAME`; it then sets the aliases. `--profile base` re-runs the base install and refuses a configuration that now declares `command-names`. `--profile all` lists every installed profile and, on Windows, decides administrator elevation once before anything else: when a profile's run needs it and the terminal is not elevated, the parent relaunches itself through UAC (without `--skip-install` every profile installs Claude Code; with it, each profile's recorded configuration decides, and a profile without a readable `resolved-config.yaml` counts as needing it), so no child opens a window of its own; `--no-admin` and `--dry-run` skip the decision. It then asks once (or takes `--yes`) and runs each profile as its own child process with `--yes`, this run's `--dry-run` and `--skip-install`, and `--no-admin` (a dry run forwards only this run's `--no-admin`, so each child still reports what a real run would elevate for), with every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and `CLAUDE_CONFIG_DIR` removed from the child's environment. The children list no unrefreshed profiles; the report at the end names each profile, its result and the `--profile` command that retries a failed one, and in the window a UAC relaunch opened the run then waits for Enter under the same success or errors banner a single run shows, so the report stays on screen. It cannot be combined with a configuration (positional or `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`) or a selector flag.
+`--profile NAME` takes no configuration, but accepts one: a configuration whose identity equals the manifest's (the same URL, or the same local file by resolved path) proceeds, any other goes through the switch guard below, whose message names the argument or `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`. A `--command-names` value beside `--profile NAME` must start with `NAME`; it then sets the aliases. `--profile base` re-runs the base install and refuses a configuration that now declares `command-names`. `--profile all` lists every installed profile and, on Windows, decides administrator elevation once before anything else: when a profile's run needs it and the terminal is not elevated, the parent relaunches itself through UAC (without `--skip-install` every profile installs Claude Code; with it, each profile's recorded configuration decides, and a profile without a readable `resolved-config.yaml` counts as needing it), so no child opens a window of its own; `--no-admin` and `--dry-run` skip the decision. It then asks once (or takes `--yes`) and runs each profile -- the base first, then by name, every source before the profiles that link content from it -- as its own child process with `--yes`, this run's `--dry-run` and `--skip-install`, and `--no-admin` (a dry run forwards only this run's `--no-admin`, so each child still reports what a real run would elevate for), with every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and `CLAUDE_CONFIG_DIR` removed from the child's environment. The children list no unrefreshed profiles and refresh no dependents, which the parent runs itself; the report at the end names each profile, its result and the `--profile` command that retries a failed one, and in the window a UAC relaunch opened the run then waits for Enter under the same success or errors banner a single run shows, so the report stays on screen. It cannot be combined with a configuration (positional or `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`) or a selector flag.
 
 ##### Guards before any write
 
 Two guards hold a re-run back before anything is written, and `--dry-run` reports them with exit code 1 instead of a plan the real run would not execute:
 
 - **An environment value that would rename a profile.** A `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES` value that differs from the names an installed profile records needs consent: the run stops under `--yes` or without a terminal, and asks when a terminal is available. A typed `--command-names` value proceeds. A variable holding only the primary name selects the profile and changes nothing.
+- **An environment value that would change a profile's links.** A `CLAUDE_CODE_TOOLBOX_LINK_DIRS` or `CLAUDE_CODE_TOOLBOX_LINK_FROM` value that differs from the links an installed profile records needs the same consent; a typed `--link-dirs` or `--link-from` value proceeds.
 - **A different configuration for an existing profile.** The run lists what the previous configuration leaves behind -- profile files it installed that the new one does not, MCP servers, OS environment variables and `settings.json` keys of a base profile (each `env` variable on its own), and destinations outside `~/.claude` whose content is still what that run wrote -- and stops under `--yes` or without a terminal, or asks when a terminal is available. The three Claude Code update controls (`DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`, `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`) are never residue: the version pins of the installed profiles decide them. A destination outside `~/.claude` that another installed profile also records is listed as kept and never removed. The message names what to undo: clear `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` when the configuration came from the variable, drop the configuration argument when it was typed, then re-run with `--profile NAME`. `--switch-config` (`CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1`) accepts the switch; the run then removes the residue before installing the new configuration. A relative local path and its absolute spelling are the same configuration.
 
-After a run, the completion summary lists every other installed profile with its `--profile` command, because one run refreshes one profile. A version pin names the other installed profiles whose binary it holds or moves, and a `files-to-download` destination outside `~/.claude` that a profile of another configuration recorded from a different source is named before consent; an identical file on disk is left untouched.
+After a run, the completion summary lists every other installed profile with its `--profile` command, because one run refreshes one profile and the dependents it refreshed itself. A version pin names the other installed profiles whose binary it holds or moves, and a `files-to-download` destination outside `~/.claude` that a profile of another configuration recorded from a different source is named before consent; an identical file on disk is left untouched.
 
 ##### Profile manifests
 
-Every toolbox-managed profile records its install in `manifest.json` (`~/.claude/manifest.json` for the base profile, `~/.claude/<primary>/manifest.json` for an isolated one) and the configuration it installed in `resolved-config.yaml` beside it: the resolved, component-selected configuration without `command-names`, so the same configuration renders the same bytes whichever profile installed it. The manifest fields: `name` (the primary command name, `null` for the base profile), `version`, `claude_code_version` (the pin), `config_source` (the resolved absolute path or URL), `config_source_url`, `config_source_type`, `config_identity` (the source as compared across runs), `config_digest` (the sha256 of `resolved-config.yaml`), `installed_at`, `command_names`, `components` (the `select`, `with` and `without` values as typed, or `null`), `link` (`null`), `origins` (per key: `cli`, `env`, `yaml` or `default`), `yaml_values` (the configuration's own `command_names` and default `components` at install time), `machine_wide_destinations` (`files-to-download` destinations outside `~/.claude`, each with its source and sha256), `os_env_written`, `settings_keys_written` (top-level `settings.json` keys, and one `env.<VAR>` entry per env variable), `mcp_servers` (name and scopes), and `files_written` (profile-relative paths). A manifest written without `config_identity` is matched by its `config_source_url` when present and otherwise by its resolved `config_source`; when a relative local source cannot be resolved from another directory, the first re-run records the identity of the configuration it is given, with an info line, instead of refusing.
+Every toolbox-managed profile records its install in `manifest.json` (`~/.claude/manifest.json` for the base profile, `~/.claude/<primary>/manifest.json` for an isolated one) and the configuration it installed in `resolved-config.yaml` beside it: the resolved, component-selected configuration without `command-names`, so the same configuration renders the same bytes whichever profile installed it. The manifest fields: `name` (the primary command name, `null` for the base profile), `version`, `claude_code_version` (the pin), `config_source` (the resolved absolute path or URL), `config_source_url`, `config_source_type`, `config_identity` (the source as compared across runs), `config_digest` (the sha256 of `resolved-config.yaml`), `installed_at`, `command_names`, `components` (the `select`, `with` and `without` values as typed, or `null`), `link` (the linked entries, the source and the origin of each, or `null` for a profile that links nothing), `origins` (per key: `cli`, `env`, `yaml` or `default`), `yaml_values` (the configuration's own `command_names`, `link_dirs`, `link_from` and default `components` at install time), `machine_wide_destinations` (`files-to-download` destinations outside `~/.claude`, each with its source and sha256), `os_env_written`, `settings_keys_written` (top-level `settings.json` keys, and one `env.<VAR>` entry per env variable), `mcp_servers` (name and scopes), and `files_written` (profile-relative paths). A manifest written without `config_identity` is matched by its `config_source_url` when present and otherwise by its resolved `config_source`; when a relative local source cannot be resolved from another directory, the first re-run records the identity of the configuration it is given, with an info line, instead of refusing.
 
 #### `base-url`
 
@@ -441,30 +443,44 @@ Install Node.js LTS before processing dependencies. Used when MCP servers or too
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `install-nodejs: true`
 
-#### `link-projects-dir`
+#### `link-dirs`
 
-Link the isolated profile's `projects/` directory to the base `~/.claude/projects/` so that the isolated profile (for example, `aegis`) and the default Claude share the same session history. By default (`None`/`false`), the two are kept separate -- the isolated profile uses its own `~/.claude/{cmd}/projects/` and sees a different set of conversations than the default Claude.
+Entries of the isolated profile's directory that the profile takes through a directory link from another profile instead of installing its own copy: any of `skills`, `agents`, `commands`, `rules`, `hooks`, `output-styles`, `prompts` and `projects`, or `all` for every entry and `none` for no entry. Each link is a symbolic link on Linux and macOS and a directory junction on Windows (made without elevation through `_winapi.CreateJunction`, with `mklink /J` as the fallback), created at Step 3 before any content step, so the profile's sessions, the skills CLI and the setup itself all write through the link into the source.
 
-- **Type:** `bool | None`
-- **Default:** `None` (no link; isolated and default Claude keep separate `projects/` directories)
-- **Requires:** `command-names`. Setting `link-projects-dir: true` without `command-names` produces a validation error, because the link only makes sense for an isolated profile.
-- **Mechanism:** Creates the base `~/.claude/projects/` first if absent, then links `~/.claude/{cmd}/projects/` to it -- a symbolic link on Linux/macOS, a directory junction on Windows (created elevation-free via `_winapi.CreateJunction`, with `mklink /J` as a fallback).
-- **Idempotent and non-clobbering:** An existing correct link is left as-is (no-op). A real, non-empty `projects/` directory in the isolated profile is preserved and the link is skipped (with a warning) to avoid losing any session history already written there. A stale or incorrect link, or an empty real directory, is replaced.
-- **Disabling the link:** Setting `link-projects-dir: false` (or removing the key) on a later run does NOT automatically tear down an existing link. To revert to separate directories, remove the link manually: delete `~/.claude/{cmd}/projects/` (on Windows, removing the junction with `rmdir` deletes only the link, not the shared target's contents).
+- **Type:** `list[str] | None`
+- **Default:** `None` (no links). `--link-dirs ENTRIES` and `CLAUDE_CODE_TOOLBOX_LINK_DIRS` give the value for one run; a typed or environment value replaces the configuration's list whole.
+- **Needs an isolated profile:** links live inside `~/.claude/NAME`, so a run without `command-names` (or `--command-names`) that declares `link-dirs` stops with an error naming the flag to add. The base profile never links.
+- **`projects`:** holds sessions and auto-memory rather than installed content. It links to any profile -- the source needs no manifest -- and leaves the component selection to the profile, so a profile that links only `projects` installs its own content and shares the conversation history of its source, the base `~/.claude/projects/` by default.
+- **Content entries** (every entry but `projects`): the linked profile shows the source's installed content, so it is held to the source's installation. The source must be a profile this setup installed from the same configuration (the identity is the resolved path or URL: the run compares the configuration it was given with the source's manifest and fetches nothing); a profile that links content itself cannot be a source (the error names the profile that holds the entries for real); and the profile takes the source's `resolved-config.yaml` and component selection, so `--select`, `--with` and `--without` are refused and the steps that would install a linked section report that it is linked and install nothing. Such a profile is a dependent of its source: every run of the source refreshes it, and the source refuses to change its own links or configuration while a dependent points at it. See [Linked Profiles](#linked-profiles).
+- **Existing directories:** a link that already points at the right place is kept, a link that points elsewhere is repaired, and an empty real directory is replaced. A real directory with content is converted only by a value typed for this run (`--link-dirs` or the variable): it is moved aside to `<entry>.unlinked-<timestamp>` inside the profile, and the installation summary (and `--dry-run`) lists each such directory with its path and item count before you confirm; for `projects` the row adds that those sessions and auto-memory stop appearing in the profile. A remembered or configuration value never moves a directory aside; the run stops and names the flag that would. A link on disk that no value declares is listed as `[on disk, not declared]` and left alone; `--link-dirs none` typed for the run removes the links and installs real directories.
+- **Remembered:** the manifest records the links, so `--profile NAME` recreates them. A content link is remembered whatever source it came from (the profile reads no `link-dirs` of its own once it follows a source); a `projects`-only link is remembered when it was typed or came from the environment, and the configuration's own value is re-read otherwise. A `CLAUDE_CODE_TOOLBOX_LINK_DIRS` or `CLAUDE_CODE_TOOLBOX_LINK_FROM` value that differs from the recorded links is held back like a renaming variable (see [Guards before any write](#guards-before-any-write)).
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:**
 
 ```yaml
 command-names:
-  - "aegis"
+  - "aegis-2"
 
-command-defaults:
-  system-prompt: "prompts/aegis.md"
-  mode: "append"
-
-# Share session history with the default Claude
-link-projects-dir: true
+# Share sessions and auto-memory with the default Claude
+link-dirs:
+  - projects
 ```
+
+```bash
+# The same for one run, then a second command on the content of an installed profile
+uvx cc-toolbox setup aegis.yaml --command-names aegis-2 --link-dirs projects
+uvx cc-toolbox setup aegis.yaml --command-names aegis-3 --link-dirs all --link-from aegis-2
+```
+
+#### `link-from`
+
+The profile the linked entries come from: `base` for `~/.claude`, or the primary command name of an installed isolated profile (`~/.claude/NAME`). Read only together with `link-dirs`: a `--link-from` or `CLAUDE_CODE_TOOLBOX_LINK_FROM` value with no linked entry is an error naming what to add or clear.
+
+- **Type:** `str | None`
+- **Default:** `base`
+- **Rules:** a profile cannot link from itself, a content source must hold its entries for real, and the value is validated like a command name (see [`link-dirs`](#link-dirs)).
+- **Inheritance:** Standard override (child replaces parent)
+- **Example:** `link-from: aegis-1`
 
 #### `dependencies`
 
@@ -1867,6 +1883,19 @@ A profile's own manifest is matched by the `name` field it records, so a profile
 
 A recorded pin is retired only by re-running that profile's setup with an unpinned configuration. A profile directory left behind -- a renamed command, an abandoned profile -- therefore keeps its pinned manifest, which holds the machine-global controls in force and keeps the Claude Code binary at its installed version on every unpinned run, indefinitely. Delete the stale `~/.claude/{cmd}/` directory, or just its `manifest.json`, to retire a pin whose profile is gone.
 
+### Linked Profiles
+
+A profile whose `link-dirs` names a content entry follows the profile it links from. Its directory holds links in place of those entries; its `config.json`, launchers, wrappers, `.claude.json`, env loaders and manifest are its own; and its configuration is the source's `resolved-config.yaml`: a run of the dependent (`--profile aegis-2`, or the configuration with `--command-names aegis-2`) applies that snapshot as installed in the source, components included, and fetches nothing. The source does the installing. Each run of the source -- `--profile aegis-1`, or `--profile base` for the base profile -- ends with Step 23, which re-runs every profile whose manifest links content from it, by name, as a child process with `--profile NAME --yes --skip-install --no-admin` and the parent's environment minus every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and minus `CLAUDE_CONFIG_DIR`, so the repository tokens and `--env` values of the source run reach the dependents and its selectors and configuration do not. The installation summary names the dependents before you confirm, `--dry-run` lists them and starts none, and the completion summary reports each one. A dependent that fails is named with the `--profile` command that retries it (and, when its configuration installs a global npm package the child could not elevate for, the note to retry from an elevated terminal), the others still run, and the source run exits 1. `--profile all` runs every source before its dependents and refreshes each profile once.
+
+A dependent is checked on every run: after the dependency commands and again at the end, each link must still be a link to its target, or the run stops with the `--profile NAME` command that repairs it; before `config.json` is written, every hook file the events wire must exist through the linked `hooks/`, or the run stops and names the source to re-run first. A deselection in the source is applied by the source; the dependent's own deselection step never touches a linked section. While a dependent points at it, the source refuses to change its own links or configuration (a different configuration, `--link-dirs`, `--link-from`) and names each dependent with the two ways out: re-point it (`--profile NAME --link-from <other profile>`) or unlink it (`--profile NAME --link-dirs none`).
+
+Two profiles can link the same entry from one source. A `projects` link needs none of this: it links to any profile, keeps the profile's own content and selection, and is never refreshed by the source. A content source is always a profile that holds its entries for real; linking from a profile that links content itself is refused with the profile to use instead.
+
+```powershell
+# Windows one-liner: iex (irm ...) takes no arguments, so the configuration, the names and the links come from the variables
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='aegis'; `$env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='aegis-2'; `$env:CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'; `$env:CLAUDE_CODE_TOOLBOX_LINK_FROM='aegis-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+```
+
 ### Automatic IDE Extension Version Management
 
 When `claude-code-version` specifies a pinned version, the setup script also automatically disables IDE extension auto-installation and installs the matching extension version into detected VS Code family IDEs. When the version is `"latest"` or absent, IDE extension controls the YAML does not declare are removed, whether a prior pinned run or anything else set them, while user-declared controls are preserved.
@@ -2002,7 +2031,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 
 1. **Install Claude Code** -- Runs the `install_claude.py` that ships beside the setup script (the PyPI wheel and the bootstrap wrappers stage both files together) under the interpreter already running the setup, on every platform; without a bundled copy, downloads and runs the platform bootstrap script. The installer uses the native installer with npm fallback. Skipped with `--skip-install`. An unpinned run on a machine where another installed profile pins a version requests the installed version instead of the latest release (see [Several Profiles on One Machine](#several-profiles-on-one-machine)).
 2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs, selecting the VSIX build matching the host targetPlatform. Skipped if no version is pinned or `--skip-install` is used. When the pinned version has no matching marketplace extension for the host platform (every download URL returns HTTP 404), the step prints a warning and skips installation, leaving each IDE's current extension in place.
-3. **Create directories** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories.
+3. **Create directories and links** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories, and for a profile with `link-dirs` every link before any content step: a missing link is created, a link that points elsewhere is repaired, and a real directory with content is moved aside only when a value typed for this run asks for it (see [`link-dirs`](#link-dirs)).
 4. **Download custom files** -- Processes `files-to-download` entries.
 5. **Install Node.js** -- If `install-nodejs: true` is set in the config.
 6. **Install dependencies** -- Runs platform-specific dependency commands. Failed global npm installs are retried with sudo on Linux/macOS/WSL when the npm global prefix is not user-writable; every failed dependency is listed in the end-of-run error block and causes exit code 1.
@@ -2021,10 +2050,10 @@ Here is a conceptual overview of what the setup script does when you run it with
 19. **Write manifest** -- Creates the profile's installation tracking manifest: `~/.claude/{cmd}/manifest.json` with `command-names`, `~/.claude/manifest.json` without. Records the run's `claude-code-version` pin so any later run can tell whether another profile still needs the machine-global auto-update controls.
 20. **Create launcher** -- Creates the launcher script for the command. (Only if `command-names` is specified.)
 21. **Register commands** -- Creates global command wrappers. (Only if `command-names` is specified.)
-22. **Link projects directory** -- Links the isolated profile's `projects/` directory to the base `~/.claude/projects/`. (Only if `command-names` is specified and `link-projects-dir: true`.)
-23. **Remove deselected components** -- Uninstalls previously installed artifacts of deselected components: MCP servers, skill directories, agent/command/rule/hook/downloaded files, and shared-settings hook entries. Runs in BOTH modes (as Step 23 with `command-names`, as Step 22 without) and only when the selection deselects at least one claimed item.
+22. **Remove deselected components** -- Uninstalls previously installed artifacts of deselected components: MCP servers, skill directories, agent/command/rule/hook/downloaded files, and shared-settings hook entries. Runs in both modes, only when the selection deselects at least one claimed item, and never touches a linked section.
+23. **Refresh dependent profiles** -- Re-runs every installed profile that links content from this one, each as its own child run (see [Linked Profiles](#linked-profiles)). `--dry-run` lists the dependents and starts none; the children of `--profile all` leave the refresh to the parent.
 
-Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 20-22 are skipped if `command-names` is not specified. Step 22 additionally requires `link-projects-dir: true`.
+Step 17 is skipped if no hooks, hook files, or status-line file are configured. In non-isolated mode, Step 18 is a no-op if the profile delta is empty -- no `status-line` or `hooks` declared at YAML root level. Steps 20-21 are skipped if `command-names` is not specified. In a profile that links content, Steps 8-12 and 17 report each linked section as linked and install nothing for it, and the links are verified after Step 6 and after Step 22.
 
 ## Profile-Level Settings Routing
 
@@ -2263,8 +2292,9 @@ base-url: "https://raw.githubusercontent.com/myorg/my-configs/main"
 # Install Node.js for MCP servers that need npx
 install-nodejs: true
 
-# Share session history between this isolated profile and the default Claude
-link-projects-dir: true
+# Share sessions and auto-memory with the default Claude
+link-dirs:
+  - projects
 
 # Platform-specific dependencies
 dependencies:
@@ -2397,6 +2427,8 @@ hooks:
 | `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)                                | Comma-separated names                  |
 | `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`)                       | Comma-separated names                  |
 | `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`    | Command names of this run, replacing `command-names` (`--command-names`) | Comma-separated names, primary first   |
+| `CLAUDE_CODE_TOOLBOX_LINK_DIRS`        | Profile entries linked from another profile (`--link-dirs`)              | Comma-separated entries, `all`, `none` |
+| `CLAUDE_CODE_TOOLBOX_LINK_FROM`        | The profile the linked entries come from (`--link-from`)                 | `base` or a profile's primary name     |
 
 ### Authentication
 
@@ -2423,6 +2455,8 @@ hooks:
 | `--command-names NAME[,ALIAS...]` | `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`   | Install as the isolated profile `~/.claude/NAME` under these names; `NAME,none`: no aliases   |
 | `--profile NAME`                  | `CLAUDE_CODE_TOOLBOX_PROFILE`         | Re-run the installed profile `NAME` from its manifest with no configuration (`base`, `all`)   |
 | `--switch-config`                 | `CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG`   | Accept another configuration for an existing profile and remove what the previous one left    |
+| `--link-dirs ENTRIES`             | `CLAUDE_CODE_TOOLBOX_LINK_DIRS`       | Link these entries of the isolated profile from another profile (`all`, `none`)               |
+| `--link-from SOURCE`              | `CLAUDE_CODE_TOOLBOX_LINK_FROM`       | The profile the linked entries come from: `base`, or an installed profile's primary name      |
 
 CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`. In PowerShell, quote a comma-separated flag value (`--command-names 'main,alias'`), because PowerShell reads an unquoted `main,alias` as an array. The bootstrap wrappers hand your arguments to the setup script exactly as typed and never put `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` on the command line, so the script knows whether a configuration was typed or set in the environment; they require a configuration (a first non-flag argument or the variable) unless `--profile` or `CLAUDE_CODE_TOOLBOX_PROFILE` is given, in which case they run the setup script without one.
 
@@ -2448,9 +2482,21 @@ If the named configuration is not found, verify the name matches a YAML file in 
 
 The `merge-keys` directive controls merge semantics during inheritance resolution. Without `inherit`, there is no parent configuration to merge from. Either add `inherit` or remove `merge-keys`. Note: an empty `merge-keys: []` without `inherit` is permitted.
 
-### link-projects-dir requires command-names
+### link-dirs needs an isolated profile
 
-The `link-projects-dir` flag links an isolated profile's `projects/` directory to the base `~/.claude/projects/`, and isolated profiles exist only when `command-names` is present. Either add `command-names` or remove `link-projects-dir`.
+Links live inside an isolated profile's directory, so a configuration that declares `link-dirs`, or a run given `--link-dirs`, needs `command-names` or `--command-names NAME`. Add one, or remove `link-dirs`.
+
+### Content entries link only between installs of one configuration
+
+Every entry but `projects` shows the source's installed content, so the profile that links it must be installed from the configuration the source was installed from (the same resolved path or URL). Run the setup with that configuration, or link only `projects`.
+
+### Profile "NAME" is the link source of other profiles
+
+A profile that other profiles link content from keeps its links and its configuration until each dependent is re-pointed (`--profile DEP --link-from <other profile>`) or unlinked (`--profile DEP --link-dirs none`); the message lists both commands for each dependent.
+
+### Profile "NAME" no longer holds every link it was installed with
+
+A dependency command, or something outside the setup, replaced a link with a real directory or re-pointed it. Re-run the profile with `--profile NAME`: the remembered value repairs a link that points elsewhere, and a real directory with content is moved aside only when `--link-dirs` is passed for the run.
 
 ### CLAUDE_CONFIG_DIR is set for a configuration without command-names
 

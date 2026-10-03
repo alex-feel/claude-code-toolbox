@@ -27,7 +27,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Isolated profiles** -- `command-names` installs a configuration as a separate profile under `~/.claude/{cmd}/` with its own commands, settings, `.claude.json`, MCP registrations, and environment loaders; an isolated install leaves the base profile's `settings.json` and `.claude.json` alone, apart from the `installMethod` record the Claude Code installer keeps in `~/.claude.json`, and names every write outside the profile before you confirm: the binary and its `installMethod` record, a version pin and its IDE extension, the update controls, the command wrappers, project-scope MCP servers, `files-to-download` destinations outside the profile, and the dependency commands
 - **One configuration, many profiles** -- `--command-names NAME[,ALIAS...]` installs any configuration under the names you give, placing its agents, commands, rules, skills, hooks, and launchers in the isolated profile `~/.claude/NAME`, so one YAML file serves as many profiles as you need; `NAME,none` installs it under one command, `files-to-download` destinations and dependency commands run as written, and a name another profile or program already holds is refused before anything is written
 - **Re-runs that remember** -- an update is the install command run again: `--profile NAME` re-runs an installed profile from its manifest with no configuration argument (`base` for the base profile, `all` for every installed profile, each in its own run), the configuration plus the primary name does the same, and both keep the aliases and the component choice the install typed while re-reading everything the configuration declares; a leftover environment variable or a different configuration for an existing profile is held back until you consent, and `--switch-config` accepts the switch and removes what the previous configuration left behind
-- **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
+- **Linked profiles** -- `--link-dirs` and `--link-from` (or the `link-dirs` and `link-from` keys) take entries of an isolated profile's directory -- `skills`, `agents`, `commands`, `rules`, `hooks`, `output-styles`, `prompts`, `projects` -- through a directory link from another profile: link `projects` to share sessions and auto-memory with the base profile or any other, or link `all` to run a second command on the content of a profile installed from the same configuration, which then follows every re-run of its source
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
 - **File downloads** -- arbitrary files downloaded to specified destinations during setup
 - **Private repository support** -- GitHub and GitLab authentication with token-based access
@@ -127,6 +127,12 @@ uvx cc-toolbox setup --profile my-env-2
 
 # Update every installed profile, the base first
 uvx cc-toolbox setup --profile all
+
+# A profile that shares the sessions and auto-memory of the base profile
+uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' --command-names my-env-3 --link-dirs projects
+
+# A second command on the content of my-env-2, refreshed whenever my-env-2 is
+uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' --command-names my-env-4 --link-dirs all --link-from my-env-2
 ```
 
 For a persistent `cc-toolbox` command, install it once with `uv tool install cc-toolbox` (or `pipx install cc-toolbox`).

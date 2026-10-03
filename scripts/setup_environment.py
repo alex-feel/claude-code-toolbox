@@ -119,7 +119,8 @@ KNOWN_CONFIG_KEYS: frozenset[str] = frozenset({
     'base-url',
     'claude-code-version',
     'install-nodejs',
-    'link-projects-dir',
+    'link-dirs',
+    'link-from',
     'dependencies',
     'description',
     'agents',
@@ -183,6 +184,42 @@ RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({
     'prompts',
     'projects',
 })
+
+# The entries of a Claude Code configuration home an isolated profile can take
+# through a directory link from another profile, in display order. Every entry
+# but projects holds installed content; projects holds sessions and auto-memory.
+# Inline copy of LINKABLE_PROFILE_DIRS in scripts/models/environment_config.py
+# (standalone script policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_linkable_profile_dirs_parity.py.
+LINKABLE_PROFILE_DIRS: tuple[str, ...] = (
+    'skills',
+    'agents',
+    'commands',
+    'rules',
+    'hooks',
+    'output-styles',
+    'prompts',
+    'projects',
+)
+
+# The linkable entry that holds sessions and auto-memory rather than installed
+# content; it links to any source, needs no manifest there, and leaves the
+# component selection to the profile
+SESSIONS_PROFILE_DIR = 'projects'
+
+# The linkable entries that hold installed content; they link only between
+# installs of one configuration, and a profile that links one takes its
+# configuration and component selection from the source
+CONTENT_PROFILE_DIRS: tuple[str, ...] = tuple(
+    entry for entry in LINKABLE_PROFILE_DIRS if entry != SESSIONS_PROFILE_DIR
+)
+
+# The link-dirs values that stand for every linkable entry and for none
+LINK_ALL_TOKEN = 'all'
+LINK_NONE_TOKEN = 'none'
+
+# The link-from value that names the base profile ~/.claude, and its default
+LINK_SOURCE_BASE = 'base'
 
 # Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
 # other name at configuration load time. _build_hooks_json() warns (rather
@@ -646,6 +683,8 @@ ENV_TWINS: tuple[EnvTwin, ...] = (
     EnvTwin('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'command_names', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_PROFILE', 'profile', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG', 'switch_config', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'link_dirs', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_LINK_FROM', 'link_from', 'value'),
 )
 
 # Twins a child run started by --profile all keeps: the repository credential
@@ -1090,6 +1129,16 @@ class InstallationPlan:
 
     # Removal plan for deselected components (empty lists when nothing is dropped)
     deselected_items: dict[str, list[Any]] | None = None
+
+    # The links of an isolated run and what Step 3 does to them; None for a
+    # base run
+    link_spec: 'LinkSpec | None' = None
+    link_plan: 'LinkPlan | None' = None
+    # The profile whose resolved-config.yaml this run applies, when the run
+    # links content; its component selection is the source's
+    linked_from: str | None = None
+    # The profiles that link content from this one, refreshed after the run
+    dependents: list[str] = field(default_factory=lambda: list[str]())
 
     # Writes of an isolated run that reach beyond its profile directory,
     # each named before consent
@@ -3838,6 +3887,7 @@ def execute_deselection_cleanup(
     skills_dir: Path,
     hooks_dir: Path,
     is_isolated: bool,
+    linked_entries: frozenset[str] = frozenset(),
 ) -> None:
     """Remove previously installed artifacts of deselected components.
 
@@ -3845,9 +3895,11 @@ def execute_deselection_cleanup(
     deselects a component uninstalls what an earlier run installed. A
     removal target that a surviving item of the same section also installs
     to (a basename collision) is skipped with a notice, so cleanup never
-    deletes a file the current run keeps. Every removal is tolerant:
-    absent targets are skipped silently (a first run has nothing to
-    remove) and failures degrade to warnings.
+    deletes a file the current run keeps. A section whose directory is a
+    link to another profile is skipped whole, because its files belong to
+    that profile. Every removal is tolerant: absent targets are skipped
+    silently (a first run has nothing to remove) and failures degrade to
+    warnings.
 
     Args:
         deselected: Removal plan from collect_deselected_items().
@@ -3862,6 +3914,8 @@ def execute_deselection_cleanup(
             The isolated config.json is rebuilt atomically each run, so
             hook reconciliation applies only to the shared settings.json
             of non-isolated runs.
+        linked_entries: The profile entries that are links to another
+            profile; nothing inside them is removed.
     """
     import shutil as _shutil
 
@@ -3881,12 +3935,15 @@ def execute_deselection_cleanup(
             items = surviving_config.get(section) or []
         return {_installed_resource_name(item) for item in cast(list[object], items)}
 
-    for section, target_dir, description in (
-        ('agents', agents_dir, 'agent'),
-        ('slash-commands', commands_dir, 'slash command'),
-        ('rules', rules_dir, 'rule'),
-        ('hooks-files', hooks_dir, 'hook file'),
+    for section, target_dir, description, entry in (
+        ('agents', agents_dir, 'agent', 'agents'),
+        ('slash-commands', commands_dir, 'slash command', 'commands'),
+        ('rules', rules_dir, 'rule', 'rules'),
+        ('hooks-files', hooks_dir, 'hook file', 'hooks'),
     ):
+        if entry in linked_entries and deselected[section]:
+            info(f'Keeping the {description} files: {entry}/ is linked to another profile')
+            continue
         surviving = _surviving_names(section)
         for item in deselected[section]:
             name = _installed_resource_name(item)
@@ -3913,6 +3970,7 @@ def execute_deselection_cleanup(
             if isinstance(item, dict)
         ) if resolved is not None
     }
+    linked_dirs = [skills_dir.parent / name for name in linked_entries]
     for entry in deselected['files-to-download']:
         if isinstance(entry, dict):
             target = _download_target(cast(dict[str, Any], entry))
@@ -3921,9 +3979,14 @@ def execute_deselection_cleanup(
             if target in surviving_targets:
                 info(f"Keeping file '{target.name}': a selected entry deploys to the same path")
                 continue
+            if any(_relative_inside(target, linked_dir) is not None for linked_dir in linked_dirs):
+                info(f"Keeping file '{target.name}': it lies inside an entry linked to another profile")
+                continue
             _remove_file(target, 'file')
 
-    for skill in deselected['skills']:
+    if 'skills' in linked_entries and deselected['skills']:
+        info('Keeping the skill directories: skills/ is linked to another profile')
+    for skill in deselected['skills'] if 'skills' not in linked_entries else []:
         if isinstance(skill, dict):
             name = str(cast(dict[str, Any], skill).get('name') or '').strip()
             if name:
@@ -7788,6 +7851,47 @@ def _resolve_config_file_paths(config: dict[str, Any], config_source: str) -> di
     return result
 
 
+def _is_local_config_spec(config_spec: str) -> bool:
+    """Report whether a configuration specification names a local file.
+
+    Args:
+        config_spec: The configuration as given: a URL, a path, or a name.
+
+    Returns:
+        True for a path (separators, a leading dot, an absolute path, or an
+        existing file); False for a URL or a repository configuration name.
+    """
+    return (
+        '/' in config_spec
+        or '\\' in config_spec
+        or config_spec.startswith(('./', '.\\', '../', '..\\'))
+        or os.path.isabs(config_spec)
+        or os.path.exists(config_spec)
+    )
+
+
+def config_identity_of_spec(config_spec: str) -> str | None:
+    """Return the identity a configuration specification resolves to, without loading it.
+
+    Mirrors load_config_from_source(): a URL is its own identity, a local
+    path resolves to its absolute form, and a repository name resolves to
+    the URL the loader fetches.
+
+    Args:
+        config_spec: The configuration as given.
+
+    Returns:
+        The identity config_identity_of() would return for the resolved
+        source, or None when the name resolves to no URL.
+    """
+    if config_spec.startswith(('http://', 'https://')):
+        return config_identity_of(config_spec)
+    if _is_local_config_spec(config_spec):
+        return config_identity_of(str(Path(config_spec).resolve()))
+    url = resolve_config_source_url(config_spec, 'repo')
+    return config_identity_of(url) if url else None
+
+
 def load_config_from_source(config_spec: str, auth_param: str | None = None) -> tuple[dict[str, Any], str]:
     """Load configuration from URL, local path, or repository.
 
@@ -7831,13 +7935,7 @@ def load_config_from_source(config_spec: str, auth_param: str | None = None) -> 
             raise
 
     # Source 2: Local file (has path separators, starts with . or exists)
-    if (
-        '/' in config_spec
-        or '\\' in config_spec
-        or config_spec.startswith(('./', '.\\', '../', '..\\'))
-        or os.path.isabs(config_spec)
-        or os.path.exists(config_spec)
-    ):
+    if _is_local_config_spec(config_spec):
         # Normalize path
         config_path = Path(config_spec).resolve()
 
@@ -9225,12 +9323,41 @@ def display_installation_summary(
     if plan.command_names:
         names_marker = origin_marker(plan.command_names_origin, remembered=plan.command_names_remembered)
         settings_items.append(f"Command names: {', '.join(plan.command_names)}{names_marker}")
+    if plan.linked_from:
+        settings_items.append(
+            f'Configuration: applied from profile "{plan.linked_from}" ({RESOLVED_CONFIG_FILENAME}), '
+            f'components as installed there',
+        )
 
     if settings_items:
         _print()
         _print(f'{Colors.BOLD}Settings:{Colors.NC}')
         for item in settings_items:
             _print(f'  * {item}')
+
+    # Links of an isolated run: every entry Step 3 creates, keeps, repairs,
+    # converts or removes, and every link on disk no value declares; a
+    # conversion names each directory it moves aside before consent
+    link_plan = plan.link_plan
+    if link_plan is not None and link_plan.actions:
+        _print()
+        if plan.link_spec is not None and plan.link_spec.dirs:
+            marker = origin_marker(plan.link_spec.dirs_origin, remembered=plan.link_spec.dirs_remembered)
+            _print(f'{Colors.BOLD}Links (from profile "{plan.link_spec.source}"):{Colors.NC}{marker}')
+        else:
+            _print(f'{Colors.BOLD}Links:{Colors.NC}')
+        for row in link_plan.rows():
+            _print(f'  * {row}')
+        for row in link_plan.move_aside_rows():
+            _print(f'  {Colors.YELLOW}[MOVE ASIDE]{Colors.NC} {row}')
+
+    # Profiles that link content from this one: each is re-run after this run
+    # from this run's resolved-config.yaml; a dry run starts none
+    if plan.dependents:
+        _print()
+        _print(f'{Colors.BOLD}Dependents (profiles linking content from this one, refreshed after this run):{Colors.NC}')
+        for name in plan.dependents:
+            _print(f'  * {name} (--profile {name} --yes --skip-install --no-admin)')
 
     # Dependency commands (highlighted in yellow -- most dangerous)
     if plan.dependency_commands:
@@ -13482,6 +13609,350 @@ def remembered_value_warnings(
     return warnings
 
 
+# Where each origin of a run's link values is set, as messages name it
+LINK_DIRS_SOURCES: dict[str, str] = {
+    'cli': '--link-dirs',
+    'env': 'CLAUDE_CODE_TOOLBOX_LINK_DIRS',
+    'yaml': 'link-dirs',
+}
+LINK_FROM_SOURCES: dict[str, str] = {
+    'cli': '--link-from',
+    'env': 'CLAUDE_CODE_TOOLBOX_LINK_FROM',
+    'yaml': 'link-from',
+}
+
+
+def parse_link_dirs(value: object, source: str) -> tuple[list[str], list[str]]:
+    """Parse a link-dirs value into the entries it names.
+
+    Accepts a comma-separated string (the flag and its variable) or a list
+    (the configuration key). Entries are matched without regard to case and
+    returned in LINKABLE_PROFILE_DIRS order; all stands for every entry and
+    none for no entry, each only on its own.
+
+    Args:
+        value: The value to parse.
+        source: The flag, variable, or configuration key it came from, named
+            in every message.
+
+    Returns:
+        The entries and the validation errors (empty when the value is usable).
+    """
+    if isinstance(value, str):
+        tokens = [token.strip() for token in value.split(',')]
+    elif isinstance(value, list):
+        tokens = [str(token).strip() for token in cast(list[object], value)]
+    else:
+        return [], [f'Invalid {source} value: expected a comma-separated list of entries, got {type(value).__name__}']
+    lowered = [token.casefold() for token in tokens]
+    if any(not token for token in lowered):
+        return [], [f'{source} lists an empty entry; use all, none, or any of: {", ".join(LINKABLE_PROFILE_DIRS)}']
+    sentinels = [token for token in lowered if token in (LINK_ALL_TOKEN, LINK_NONE_TOKEN)]
+    if sentinels and len(lowered) > 1:
+        return [], [f'{source} "{sentinels[0]}" stands alone: it cannot be combined with other entries']
+    if lowered == [LINK_ALL_TOKEN]:
+        return list(LINKABLE_PROFILE_DIRS), []
+    if lowered == [LINK_NONE_TOKEN]:
+        return [], []
+    unknown = [token for token in tokens if token.casefold() not in LINKABLE_PROFILE_DIRS]
+    if unknown:
+        return [], [
+            f'{source} names unknown entries: {", ".join(unknown)}; '
+            f'use all, none, or any of: {", ".join(LINKABLE_PROFILE_DIRS)}',
+        ]
+    if len(set(lowered)) != len(lowered):
+        return [], [f'{source} lists an entry twice']
+    wanted = set(lowered)
+    return [entry for entry in LINKABLE_PROFILE_DIRS if entry in wanted], []
+
+
+def link_source_errors(name: str, source: str) -> list[str]:
+    """Validate a link-from value: base, or a command name of an installed profile.
+
+    Args:
+        name: The value to validate.
+        source: The flag, variable, or configuration key it came from.
+
+    Returns:
+        One error message per problem; empty when the value is usable.
+    """
+    if name.strip().casefold() == LINK_SOURCE_BASE:
+        return []
+    return command_name_errors([name], source)
+
+
+class LinkSpec(NamedTuple):
+    """The links of a run and where each value came from.
+
+    Attributes:
+        dirs: The linked entries in LINKABLE_PROFILE_DIRS order; empty when
+            the profile links nothing.
+        source: The display name of the profile the links come from: base,
+            or the primary command name of an isolated profile.
+        dirs_origin: 'cli', 'env', 'yaml', or 'default' (nothing linked); for
+            a remembered value, the origin the manifest recorded.
+        source_origin: The same for the source.
+        dirs_remembered: Whether the entries came from the profile's manifest.
+        source_remembered: Whether the source came from the profile's manifest.
+    """
+
+    dirs: list[str]
+    source: str
+    dirs_origin: str
+    source_origin: str
+    dirs_remembered: bool = False
+    source_remembered: bool = False
+
+    @property
+    def content_dirs(self) -> list[str]:
+        """The linked entries that hold installed content."""
+        return [entry for entry in self.dirs if entry != SESSIONS_PROFILE_DIR]
+
+    @property
+    def links_content(self) -> bool:
+        """Whether the profile takes its configuration from the source."""
+        return bool(self.content_dirs)
+
+    @property
+    def typed(self) -> bool:
+        """Whether the entries were typed for this run or came from its environment."""
+        return not self.dirs_remembered and self.dirs_origin in ('cli', 'env')
+
+    def record(self) -> dict[str, Any] | None:
+        """The manifest's link field: None when nothing is linked."""
+        if not self.dirs:
+            return None
+        return {
+            'dirs': list(self.dirs),
+            'source': self.source,
+            'origins': {'dirs': self.dirs_origin, 'source': self.source_origin},
+        }
+
+
+NO_LINKS = LinkSpec([], LINK_SOURCE_BASE, 'default', 'default')
+
+
+def manifest_link(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Read the link record of a manifest, or None when it records no link."""
+    if manifest is None:
+        return None
+    record = manifest.get('link')
+    if not isinstance(record, dict):
+        return None
+    record_dict = cast(dict[str, Any], record)
+    dirs = record_dict.get('dirs')
+    if not isinstance(dirs, list) or not dirs:
+        return None
+    return record_dict
+
+
+def remembered_link(manifest: dict[str, Any] | None) -> tuple[tuple[list[str], str] | None, tuple[str, str] | None]:
+    """Read the link values a profile manifest remembers.
+
+    A content link is remembered whatever its origin, because a profile that
+    links content takes its configuration from the source and reads no
+    link-dirs of its own; a projects-only link, like every other value, is
+    remembered only when it was typed or came from the environment.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The remembered (entries, origin) and (source, origin), each None
+        when not remembered.
+    """
+    record = manifest_link(manifest)
+    if record is None:
+        return None, None
+    entries, errors = parse_link_dirs([str(item) for item in cast(list[object], record['dirs'])], 'manifest link')
+    if errors or not entries:
+        return None, None
+    origins = record.get('origins')
+    dirs_origin = str(cast(dict[str, Any], origins).get('dirs') or 'yaml') if isinstance(origins, dict) else 'yaml'
+    source_origin = str(cast(dict[str, Any], origins).get('source') or 'default') if isinstance(origins, dict) else 'default'
+    source = str(record.get('source') or LINK_SOURCE_BASE)
+    links_content = any(entry != SESSIONS_PROFILE_DIR for entry in entries)
+    dirs = (entries, dirs_origin) if links_content or dirs_origin in ('cli', 'env') else None
+    source_value = (source, source_origin) if links_content or source_origin in ('cli', 'env') else None
+    return dirs, source_value
+
+
+def resolve_link_spec(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
+) -> tuple[LinkSpec, list[str]]:
+    """Determine the links of a run and validate them.
+
+    Per key the sources rank: a value typed for this run, an environment
+    value for this run, the value the profile's manifest remembers, the
+    configuration's own key, then the default (no links, from base).
+
+    Args:
+        args: Arguments after resolve_args(), which records in args.origins
+            where args.link_dirs and args.link_from came from.
+        config: The resolved configuration; an empty dict when the run has
+            not loaded one yet.
+        manifest: The manifest of the profile the run installs into, or
+            None when the profile is new.
+
+    Returns:
+        The link spec and the validation errors (empty when it is usable).
+    """
+    errors: list[str] = []
+    remembered_dirs, remembered_source = remembered_link(manifest)
+
+    dirs: list[str] = []
+    dirs_origin = 'default'
+    dirs_remembered = False
+    if args.link_dirs is not None:
+        dirs_origin = args.origins['link_dirs']
+        dirs, dirs_errors = parse_link_dirs(args.link_dirs, LINK_DIRS_SOURCES[dirs_origin])
+        errors.extend(dirs_errors)
+    elif remembered_dirs is not None:
+        dirs, dirs_origin = remembered_dirs
+        dirs_remembered = True
+    elif config.get('link-dirs') is not None:
+        dirs_origin = 'yaml'
+        dirs, dirs_errors = parse_link_dirs(config.get('link-dirs'), LINK_DIRS_SOURCES['yaml'])
+        errors.extend(dirs_errors)
+
+    source = LINK_SOURCE_BASE
+    source_origin = 'default'
+    source_remembered = False
+    if args.link_from is not None:
+        source_origin = args.origins['link_from']
+        source = str(args.link_from).strip()
+        errors.extend(link_source_errors(source, LINK_FROM_SOURCES[source_origin]))
+    elif remembered_source is not None:
+        source, source_origin = remembered_source
+        source_remembered = True
+    elif config.get('link-from') is not None:
+        source_origin = 'yaml'
+        raw = config.get('link-from')
+        if isinstance(raw, str):
+            source = raw.strip()
+            errors.extend(link_source_errors(source, LINK_FROM_SOURCES['yaml']))
+        else:
+            errors.append(f'Invalid link-from value: expected a profile name, got {type(raw).__name__}')
+    if source.casefold() == LINK_SOURCE_BASE:
+        source = LINK_SOURCE_BASE
+    if not dirs and not errors and source_origin in ('cli', 'env') and not source_remembered:
+        errors.append(
+            f'{LINK_FROM_SOURCES[source_origin]} names the profile "{source}", but no entry is linked; pass '
+            f'--link-dirs ENTRIES (or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to link from it, or clear '
+            f'{LINK_FROM_SOURCES[source_origin]}.',
+        )
+    if not dirs:
+        dirs_origin = 'default' if dirs_origin == 'default' else dirs_origin
+    return LinkSpec(dirs, source, dirs_origin, source_origin, dirs_remembered, source_remembered), errors
+
+
+def yaml_link_values(config: dict[str, Any]) -> dict[str, Any]:
+    """Read the configuration's own link values, as the manifest records them.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The entries the configuration's link-dirs names (unparsed values
+        kept as written) and its link-from, or None for each absent key.
+    """
+    raw_dirs = config.get('link-dirs')
+    dirs: list[str] | None = None
+    if raw_dirs is not None:
+        dirs, _errors = parse_link_dirs(raw_dirs, 'link-dirs')
+    raw_source = config.get('link-from')
+    return {'link_dirs': dirs, 'link_from': str(raw_source) if raw_source is not None else None}
+
+
+def remembered_link_warnings(spec: LinkSpec, config: dict[str, Any], manifest: dict[str, Any] | None) -> list[str]:
+    """Warn when a remembered link value overrides a configuration value that changed.
+
+    Args:
+        spec: The run's link spec.
+        config: The configuration this run read.
+        manifest: The manifest the remembered values came from.
+
+    Returns:
+        One warning per remembered key whose configuration value differs
+        from the value the manifest recorded at install time.
+    """
+    if manifest is None or not (spec.dirs_remembered or spec.source_remembered):
+        return []
+    recorded = manifest.get('yaml_values')
+    if not isinstance(recorded, dict):
+        return []
+    recorded_values = cast(dict[str, Any], recorded)
+    now = yaml_link_values(config)
+    warnings: list[str] = []
+    if spec.dirs_remembered and 'link_dirs' in recorded_values and recorded_values['link_dirs'] != now['link_dirs']:
+        then = recorded_values['link_dirs']
+        then_text = ', '.join(str(item) for item in cast(list[object], then)) if isinstance(then, list) else 'none'
+        warnings.append(
+            f"link-dirs: using the remembered value {_format_names(spec.dirs)} [remembered]; the configuration's "
+            f"link-dirs changed from {then_text or 'none'} to {_format_names(now['link_dirs'] or [])} since the "
+            'profile was installed. Pass --link-dirs to replace the remembered value.',
+        )
+    if spec.source_remembered and 'link_from' in recorded_values and recorded_values['link_from'] != now['link_from']:
+        warnings.append(
+            f"link-from: using the remembered value {spec.source} [remembered]; the configuration's link-from "
+            f"changed from {recorded_values['link_from'] or 'none'} to {now['link_from'] or 'none'} since the "
+            'profile was installed. Pass --link-from to replace the remembered value.',
+        )
+    return warnings
+
+
+def guard_environment_link_change(
+    args: argparse.Namespace,
+    spec: LinkSpec,
+    manifest: dict[str, Any] | None,
+    profile_name: str,
+) -> None:
+    """Hold a run back when the environment would change a profile's links.
+
+    A typed value proceeds; a value from CLAUDE_CODE_TOOLBOX_LINK_DIRS or
+    CLAUDE_CODE_TOOLBOX_LINK_FROM that differs from the links the profile's
+    manifest records needs consent, because a leftover variable must not
+    re-link or unlink a profile silently.
+
+    Args:
+        args: Arguments after resolve_args().
+        spec: The run's effective links.
+        manifest: The manifest of the profile the run installs into.
+        profile_name: The profile's display name.
+    """
+    record = manifest_link(manifest)
+    if manifest is None:
+        return
+    recorded_dirs = [str(item) for item in cast(list[object], record['dirs'])] if record else []
+    recorded_source = str(record.get('source') or LINK_SOURCE_BASE) if record else LINK_SOURCE_BASE
+    changed: list[str] = []
+    if spec.dirs_origin == 'env' and not spec.dirs_remembered and spec.dirs != recorded_dirs:
+        changed.append(
+            f'{LINK_DIRS_SOURCES["env"]} changes the linked entries of profile "{profile_name}" from '
+            f'{_format_names(recorded_dirs)} to {_format_names(spec.dirs)}.',
+        )
+    if spec.source_origin == 'env' and not spec.source_remembered and spec.dirs and spec.source != recorded_source:
+        changed.append(
+            f'{LINK_FROM_SOURCES["env"]} changes the link source of profile "{profile_name}" from '
+            f'{recorded_source} to {spec.source}.',
+        )
+    if not changed:
+        return
+    guard_decision(
+        args,
+        title=changed[0],
+        lines=changed[1:],
+        question=f'Change the links of profile "{profile_name}" to {_format_names(spec.dirs)} from {spec.source}?',
+        remedy=[
+            f'Pass --link-dirs {",".join(spec.dirs) or LINK_NONE_TOKEN} --link-from {spec.source} to change them.',
+            f'Clear {LINK_DIRS_SOURCES["env"]} and {LINK_FROM_SOURCES["env"]} to keep '
+            f'{_format_names(recorded_dirs)} from {recorded_source}.',
+        ],
+    )
+
+
 # The first lines of the wrappers register_global_command() writes on
 # Windows, by file suffix; each names the command the wrapper serves. A Unix
 # wrapper is a symlink to the profile's launcher instead (see
@@ -14377,10 +14848,12 @@ def create_profile_config(
 
 RESOLVED_CONFIG_FILENAME = 'resolved-config.yaml'
 
-# Top-level configuration keys that name the profile instead of describing
-# what it installs. A profile's resolved-config.yaml leaves them out, so the
-# snapshot of a configuration is the same whichever profile installed it.
-PROFILE_IDENTITY_CONFIG_KEYS: tuple[str, ...] = ('command-names',)
+# Top-level configuration keys that name the profile and its links instead of
+# describing what it installs. A profile's resolved-config.yaml leaves them
+# out, so the snapshot of a configuration is the same whichever profile
+# installed it, and a profile that applies a source's snapshot takes no links
+# from it.
+PROFILE_IDENTITY_CONFIG_KEYS: tuple[str, ...] = ('command-names', 'link-dirs', 'link-from')
 
 # Where each remembered value of a profile came from, as the manifest records
 # it and the summaries mark it. 'yaml' is the configuration's own value (for
@@ -14605,6 +15078,287 @@ def manifest_config_identity(manifest: dict[str, Any]) -> str | None:
     if os.path.isabs(source) or Path(source).exists():
         return config_identity_of(source)
     return None
+
+
+def content_dependents(home_dir: Path, source_name: str) -> list[InstalledProfile]:
+    """List the installed profiles that link content from a profile.
+
+    Args:
+        home_dir: User home directory.
+        source_name: The display name of the source: base, or a primary
+            command name.
+
+    Returns:
+        The dependents in sorted directory order; the base profile never
+        links, so it is never a dependent.
+    """
+    dependents: list[InstalledProfile] = []
+    for profile in installed_profiles(home_dir):
+        record = manifest_link(profile.manifest)
+        if record is None or profile.name == 'base':
+            continue
+        if str(record.get('source') or LINK_SOURCE_BASE).casefold() != source_name.casefold():
+            continue
+        if any(str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])):
+            dependents.append(profile)
+    return dependents
+
+
+def dependents_remedy(dependents: list[InstalledProfile]) -> list[str]:
+    """Name the commands that re-point or unlink each content dependent."""
+    return [
+        f'  --profile {profile.name} --link-from <other profile>   (re-point), or '
+        f'--profile {profile.name} --link-dirs {LINK_NONE_TOKEN}   (unlink)'
+        for profile in dependents
+    ]
+
+
+def wired_hook_file_names(config: dict[str, Any]) -> list[str]:
+    """List the hooks-directory files the configuration's hook events and status line run.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The query-stripped basenames of every command hook's ``command``
+        (when it names a hooks.files entry) and ``config``, and of the
+        status line's ``file`` and ``config``, each once, in order.
+    """
+    hooks = config.get('hooks')
+    hooks_dict = cast(dict[str, Any], hooks) if isinstance(hooks, dict) else {}
+    listed = {_installed_resource_name(item) for item in cast(list[object], hooks_dict.get('files') or [])}
+    names: list[str] = []
+
+    def _add(reference: object) -> None:
+        if isinstance(reference, str) and reference.strip():
+            name = _installed_resource_name(reference)
+            if name not in names:
+                names.append(name)
+
+    for event in cast(list[object], hooks_dict.get('events') or []):
+        if not isinstance(event, dict):
+            continue
+        event_dict = cast(dict[str, Any], event)
+        if event_dict.get('type', 'command') != 'command':
+            continue
+        command = event_dict.get('command')
+        if isinstance(command, str) and _installed_resource_name(command) in listed:
+            _add(command)
+        _add(event_dict.get('config'))
+    status_line = config.get('status-line')
+    if isinstance(status_line, dict):
+        status_dict = cast(dict[str, Any], status_line)
+        _add(status_dict.get('file'))
+        _add(status_dict.get('config'))
+    return names
+
+
+def missing_wired_hook_files(config: dict[str, Any], hooks_dir: Path) -> list[str]:
+    """Name the wired hook files absent from a hooks directory.
+
+    Args:
+        config: The resolved configuration.
+        hooks_dir: The profile's hooks directory, a link in a dependent.
+
+    Returns:
+        The absolute paths that do not exist as files.
+    """
+    return [str(hooks_dir / name) for name in wired_hook_file_names(config) if not (hooks_dir / name).is_file()]
+
+
+def order_profiles_source_first(profiles: list[InstalledProfile]) -> list[InstalledProfile]:
+    """Order installed profiles so every link source runs before its content dependents.
+
+    Args:
+        profiles: The profiles installed_profiles() lists.
+
+    Returns:
+        The base profile first, then the profiles that link no content in
+        their listed order, then the content dependents in their listed order.
+    """
+    def _links_content(profile: InstalledProfile) -> bool:
+        record = manifest_link(profile.manifest)
+        return record is not None and any(
+            str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])
+        )
+
+    return [p for p in profiles if not _links_content(p)] + [p for p in profiles if _links_content(p)]
+
+
+class DependentResult(NamedTuple):
+    """The outcome of one dependent profile's refresh.
+
+    Attributes:
+        name: The dependent's display name.
+        code: Its exit code.
+        needs_elevation: Whether the run failed on a machine where its
+            dependency commands need administrator rights the parent lacks.
+    """
+
+    name: str
+    code: int
+    needs_elevation: bool
+
+    def line(self) -> str:
+        """Render the result for the reports."""
+        if self.code == 0:
+            return f'{self.name}: ok'
+        remedy = f'retry with --profile {self.name}'
+        if self.needs_elevation:
+            remedy += ' from an elevated terminal (a global npm install needs administrator rights the run could not request)'
+        return f'{self.name}: failed (exit code {self.code}); {remedy}'
+
+
+def refresh_dependents(dependents: list[InstalledProfile]) -> list[DependentResult]:
+    """Re-run every profile that links content from this one, each in its own child run.
+
+    A child runs ``--profile <dependent> --yes --skip-install --no-admin``
+    through the same program this run started from (the script, or the
+    packaged entry point), with every argument twin except the repository
+    credential and CLAUDE_CONFIG_DIR removed from its environment, so a
+    variable set for the source cannot change what a dependent installs.
+    ``--skip-install`` because the source just installed the one binary,
+    ``--no-admin`` so no child relaunches through UAC and exits 0
+    unobserved. Every dependent runs whatever the others returned.
+
+    Args:
+        dependents: The profiles to refresh, from content_dependents().
+
+    Returns:
+        One result per dependent, in order.
+    """
+    launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
+    env = child_run_environment()
+    results: list[DependentResult] = []
+    for profile in dependents:
+        print()
+        print(f'{Colors.CYAN}=== Dependent profile {profile.name} ==={Colors.NC}')
+        try:
+            code = subprocess.run(
+                [*launch, '--profile', profile.name, '--yes', '--skip-install', '--no-admin'], env=env, check=False,
+            ).returncode
+        except OSError as e:
+            error(f'Cannot start the run of profile "{profile.name}": {e}')
+            code = 1
+        needs_elevation = False
+        if code != 0 and platform.system() == 'Windows' and not is_admin():
+            snapshot = read_resolved_config_snapshot(profile.directory) or {}
+            needs_elevation = bool(admin_elevation_reasons(snapshot, argparse.Namespace(skip_install=True)))
+        results.append(DependentResult(profile.name, code, needs_elevation))
+    return results
+
+
+class LinkSource(NamedTuple):
+    """The profile a run links from.
+
+    Attributes:
+        name: Its display name.
+        directory: Its profile directory.
+        manifest: Its manifest, or None when it has none (allowed for a
+            projects-only link).
+    """
+
+    name: str
+    directory: Path
+    manifest: dict[str, Any] | None
+
+
+def resolve_link_source(spec: LinkSpec, home_dir: Path) -> tuple[LinkSource | None, list[str]]:
+    """Locate the profile a run links from.
+
+    Args:
+        spec: The run's links.
+        home_dir: User home directory.
+
+    Returns:
+        The source and the errors: an uninstalled source, or a manifest that
+        exists but cannot be read.
+    """
+    primary = None if spec.source == LINK_SOURCE_BASE else spec.source
+    directory = profile_directory(home_dir, primary)
+    if primary is not None and not directory.is_dir():
+        return None, [
+            f'--link-from names the profile "{spec.source}", but no profile of that name is installed '
+            f'({directory} does not exist); install it first, or name an installed profile.',
+        ]
+    try:
+        manifest = read_profile_manifest(directory / MANIFEST_FILENAME)
+    except ValueError as e:
+        return None, [f'The manifest of the link source "{spec.source}" cannot be read: {e}']
+    return LinkSource(spec.source, directory, manifest), []
+
+
+def link_request_errors(
+    spec: LinkSpec,
+    source: LinkSource | None,
+    *,
+    primary_command_name: str | None,
+    this_identity: str | None,
+    typed_selectors: bool,
+) -> list[str]:
+    """Check the link rules a run must satisfy before any write.
+
+    Args:
+        spec: The run's links.
+        source: The resolved link source, or None when spec links nothing
+            or the source could not be resolved.
+        primary_command_name: This run's primary command name, None for
+            the base profile.
+        this_identity: The identity of the configuration this run was
+            given, or None when it is unknown.
+        typed_selectors: Whether --select, --with or --without was typed
+            or came from the environment.
+
+    Returns:
+        One message per violated rule; empty when the links are allowed.
+    """
+    if not spec.dirs:
+        return []
+    if primary_command_name is None:
+        return [
+            f'link-dirs {",".join(spec.dirs)} needs an isolated profile: pass --command-names NAME (or set '
+            'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) so the links are created inside ~/.claude/NAME; the base '
+            'profile cannot link.',
+        ]
+    if spec.source != LINK_SOURCE_BASE and spec.source.casefold() == primary_command_name.casefold():
+        return [f'Profile "{primary_command_name}" cannot link from itself; name another profile in --link-from.']
+    if source is None:
+        return []
+    errors: list[str] = []
+    if spec.links_content:
+        content = ', '.join(spec.content_dirs)
+        if source.manifest is None:
+            errors.append(
+                f'Content entries ({content}) link only from a profile installed by this setup, and "{source.name}" '
+                f'has no manifest ({source.directory / MANIFEST_FILENAME}); install it with this setup first, or link '
+                f'only {SESSIONS_PROFILE_DIR}.',
+            )
+            return errors
+        source_identity = manifest_config_identity(source.manifest)
+        source_config = source.manifest.get('config_source')
+        if this_identity is None or source_identity != this_identity:
+            errors.append(
+                f'Content entries ({content}) link only between installs of one configuration: profile '
+                f'"{source.name}" was installed from {source_config}, and this run was given a different '
+                f'configuration. Run the setup with that configuration (the identity is its resolved path or URL), '
+                f'or link only {SESSIONS_PROFILE_DIR}.',
+            )
+        source_record = manifest_link(source.manifest)
+        source_links_content = source_record is not None and any(
+            str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], source_record['dirs'])
+        )
+        if source_links_content and source_record is not None:
+            upstream = str(source_record.get('source') or LINK_SOURCE_BASE)
+            errors.append(
+                f'Profile "{source.name}" links content from profile "{upstream}" itself, and content links go only '
+                f'to a profile that holds its entries for real; use --link-from {upstream}.',
+            )
+        if typed_selectors:
+            errors.append(
+                f'A profile that links content ({content}) takes the component selection of profile "{source.name}"; '
+                'drop --select, --with and --without (and their variables).',
+            )
+    return errors
 
 
 def _relative_inside(target: Path, directory: Path) -> Path | None:
@@ -15068,6 +15822,7 @@ def write_manifest(
     settings_keys_written: list[str] | None = None,
     mcp_servers: list[dict[str, Any]] | None = None,
     files_written: list[str] | None = None,
+    link: dict[str, Any] | None = None,
 ) -> bool:
     """Write the installation manifest of a profile.
 
@@ -15111,6 +15866,9 @@ def write_manifest(
         settings_keys_written: Top-level settings keys this run wrote
         mcp_servers: MCP servers this run registered, with their scopes
         files_written: Profile-relative paths of the files this run installs
+        link: The profile's links as LinkSpec.record() renders them (the
+            linked entries, the source profile, and the origin of each), or
+            None when the profile links nothing
 
     Returns:
         True if manifest was written successfully, False otherwise.
@@ -15134,7 +15892,7 @@ def write_manifest(
         'installed_at': datetime.now(UTC).isoformat(),
         'command_names': command_names,
         'components': components,
-        'link': None,
+        'link': link,
         'origins': origins if origins is not None else {
             'command_names': 'yaml' if command_names else None,
             'components': 'yaml',
@@ -15988,114 +16746,356 @@ def _is_windows_reparse_point(link_path: Path) -> bool:
     return bool(attrs & stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _link_targets_base(link_path: Path, base_projects: Path) -> bool:
-    """Return True if the existing link at link_path resolves to base_projects.
+def _strip_extended_path_prefix(path: str) -> str:
+    """Remove the Windows extended-length prefix a junction target is stored with.
+
+    Args:
+        path: A path as os.readlink() returns it.
+
+    Returns:
+        The path without a leading ``\\\\?\\`` (or ``\\\\?\\UNC\\``) prefix.
+    """
+    if path.startswith('\\\\?\\UNC\\'):
+        return '\\\\' + path[8:]
+    if path.startswith('\\\\?\\'):
+        return path[4:]
+    return path
+
+
+def _same_real_directory(first: str | Path, second: str | Path) -> bool:
+    """Report whether two paths name the same directory once links, short names and case are resolved."""
+    try:
+        return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
+    except OSError:
+        return False
+
+
+def _link_points_to(link_path: Path, target: Path) -> bool:
+    """Return True if the existing link at link_path resolves to target.
+
+    A junction records its target with the extended-length prefix and may
+    spell it with 8.3 short names, so both sides are compared through
+    os.path.realpath() and os.path.normcase(). A junction os.readlink()
+    cannot read is resolved through the link path itself.
 
     Args:
         link_path: The link (symlink or junction) to inspect.
-        base_projects: The expected target directory.
+        target: The expected target directory.
 
     Returns:
-        True if the link resolves to base_projects, False otherwise.
+        True if the link resolves to target, False otherwise.
     """
     try:
-        return Path(os.readlink(link_path)).resolve() == base_projects.resolve()
+        recorded = _strip_extended_path_prefix(os.readlink(link_path))
     except OSError:
-        # Some junctions are not readable via os.readlink on all configurations;
-        # fall back to resolving the path itself.
-        try:
-            return link_path.resolve() == base_projects.resolve()
-        except OSError:
-            return False
+        recorded = None
+    if recorded is not None and _same_real_directory(recorded, target):
+        return True
+    return _same_real_directory(link_path, target)
 
 
-def link_projects_directory(artifact_base_dir: Path) -> bool:
-    """Link an isolated profile's projects/ dir to the base ~/.claude/projects/.
-
-    Creates the base ~/.claude/projects/ first if absent, then creates a link at
-    artifact_base_dir/projects pointing to it: a symlink on Unix, a directory
-    junction on Windows (elevation-free). Idempotent and non-clobbering: an
-    existing correct link is a no-op; a real non-empty directory is preserved
-    (warn + skip) to protect any session history already written there.
+def _is_directory_link(path: Path) -> bool:
+    """Report whether a path is a directory link: a reparse point on Windows, a symlink elsewhere.
 
     Args:
-        artifact_base_dir: The isolated profile's base directory
-            (e.g. ~/.claude/{command_name}).
+        path: The path to inspect.
 
     Returns:
-        True on success or benign skip; False on failure (non-fatal to setup).
+        True for a junction or symlink at the path, False for anything else.
     """
-    is_windows = platform.system() == 'Windows'
+    if platform.system() == 'Windows':
+        return _is_windows_reparse_point(path)
+    return path.is_symlink()
 
+
+def _remove_directory_link(link_path: Path) -> None:
+    """Remove a directory link and nothing of its target.
+
+    Args:
+        link_path: The junction or symlink to remove.
+    """
+    if platform.system() == 'Windows':
+        os.rmdir(link_path)
+    else:
+        link_path.unlink()
+
+
+def _final_real_directory(path: Path) -> Path:
+    """Return the real directory a path stands for, following every link on the way.
+
+    Args:
+        path: A directory, a link to one, or a link to a link.
+
+    Returns:
+        The resolved directory, so a new link never points at another link.
+    """
     try:
-        base_projects = get_real_user_home() / '.claude' / 'projects'
-        link_path = artifact_base_dir / 'projects'
-        base_projects.mkdir(parents=True, exist_ok=True)
+        return path.resolve()
+    except OSError:
+        return path
 
-        # Resolve the current state of link_path: existing correct link (no-op),
-        # stale/incorrect link (replace), real non-empty dir (preserve), real
-        # empty dir (replace), or absent (create).
-        is_link = _is_windows_reparse_point(link_path) if is_windows else link_path.is_symlink()
-        if is_link:
-            if _link_targets_base(link_path, base_projects):
-                info(f'projects/ already linked to {base_projects} (no-op)')
-                return True
-            # Stale or incorrect link: remove only the link, never its target.
-            if is_windows:
-                os.rmdir(link_path)
+
+def link_profile_directory(link_path: Path, target: Path) -> None:
+    """Create a directory link at link_path pointing at target.
+
+    Creates the target first if absent, then the link: a symlink on Unix, a
+    directory junction on Windows (elevation-free). _winapi.CreateJunction is
+    the primary mechanism, with mklink /J as a last-resort fallback; _winapi
+    is a private CPython module retained for this purpose. link_path must not
+    pre-exist, which apply_link_plan() guarantees. An OSError from the target
+    or the link, or a CalledProcessError from the mklink /J fallback,
+    propagates to the caller.
+
+    Args:
+        link_path: Where the link is created, e.g. ~/.claude/{cmd}/skills.
+        target: The real directory the link points at.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    if platform.system() != 'Windows':
+        link_path.symlink_to(target, target_is_directory=True)
+        return
+    import _winapi
+
+    # Access the Windows-only CreateJunction via getattr so type checkers do
+    # not fail on non-Windows platforms. When it is present, attempt it first;
+    # if it is unavailable or raises, fall back to mklink /J.
+    create_junction = getattr(_winapi, 'CreateJunction', None)
+    junction_error: OSError | None = None
+    if create_junction is not None:
+        try:
+            create_junction(str(target), str(link_path))
+        except OSError as error:
+            junction_error = error
+    if create_junction is None or junction_error is not None:
+        reason = junction_error if junction_error is not None else 'CreateJunction is unavailable'
+        warning(f'CreateJunction failed ({reason}); falling back to mklink /J')
+        subprocess.run(
+            ['cmd', '/c', 'mklink', '/J', str(link_path), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+
+class LinkAction(NamedTuple):
+    """What Step 3 does to one linkable entry of a profile.
+
+    Attributes:
+        entry: The entry name, one of LINKABLE_PROFILE_DIRS.
+        kind: 'create' (no entry on disk, or an empty real directory), 'keep'
+            (a link already pointing at the target), 'repair' (a link pointing
+            elsewhere), 'convert' (a real directory moved aside, then linked),
+            'unlink' (a link removed because a typed or environment value no
+            longer asks for it), or 'undeclared' (a link on disk no value asks
+            for, left alone).
+        link_path: The entry path inside the profile.
+        target: The real directory the link points at; None for 'unlink' and
+            'undeclared'.
+        moved_to: Where 'convert' moves the real directory; None otherwise.
+        item_count: The direct entries of the real directory 'convert' moves.
+    """
+
+    entry: str
+    kind: str
+    link_path: Path
+    target: Path | None
+    moved_to: Path | None = None
+    item_count: int = 0
+
+
+# The action kinds after which an entry is a link to its target
+LINKED_ACTION_KINDS: frozenset[str] = frozenset({'create', 'keep', 'repair', 'convert'})
+
+
+class LinkPlan(NamedTuple):
+    """Everything Step 3 does to a profile's links, decided before consent.
+
+    Attributes:
+        source: The display name of the profile the links come from.
+        actions: One action per entry Step 3 touches or reports, in
+            LINKABLE_PROFILE_DIRS order.
+        errors: Why the plan cannot be carried out; the run exits with code 1
+            before any write when this is non-empty.
+    """
+
+    source: str
+    actions: list[LinkAction]
+    errors: list[str]
+
+    @property
+    def linked_entries(self) -> list[str]:
+        """The entries that are links once the plan has been applied."""
+        return [action.entry for action in self.actions if action.kind in LINKED_ACTION_KINDS]
+
+    @property
+    def moved_aside(self) -> list[LinkAction]:
+        """The real directories the plan moves aside."""
+        return [action for action in self.actions if action.kind == 'convert']
+
+    def rows(self) -> list[str]:
+        """Render the plan for the installation summary, one line per action."""
+        rendered: list[str] = []
+        for action in self.actions:
+            if action.kind == 'create':
+                rendered.append(f'{action.entry} -> {action.target} [create]')
+            elif action.kind == 'keep':
+                rendered.append(f'{action.entry} -> {action.target} [kept]')
+            elif action.kind == 'repair':
+                rendered.append(f'{action.entry} -> {action.target} [repair: the link points elsewhere]')
+            elif action.kind == 'convert':
+                rendered.append(f'{action.entry} -> {action.target} [create after moving the real directory aside]')
+            elif action.kind == 'unlink':
+                rendered.append(f'{action.entry}: [unlink] the link is removed; this run installs the real directory')
             else:
-                link_path.unlink()
-        elif link_path.exists():
-            # A real (non-link) path exists. Preserve real non-empty directories
-            # to protect any session history; replace only empty directories.
-            if link_path.is_dir() and any(link_path.iterdir()):
-                warning(
-                    f'A real projects directory already exists at {link_path}; '
-                    'preserving it and skipping the link to avoid data loss.',
-                )
-                return True
-            if link_path.is_dir():
-                link_path.rmdir()
+                rendered.append(f'{action.entry}: [on disk, not declared] the link is left alone')
+        return rendered
+
+    def move_aside_rows(self) -> list[str]:
+        """Render every directory the plan moves aside, with its path, item count and consequence."""
+        rendered: list[str] = []
+        for action in self.moved_aside:
+            items = 'item' if action.item_count == 1 else 'items'
+            line = f'{action.entry}: {action.link_path} ({action.item_count} {items}) -> {action.moved_to}'
+            if action.entry == SESSIONS_PROFILE_DIR:
+                line += '; those sessions and auto-memory stop appearing in this profile'
+            rendered.append(line)
+        return rendered
+
+
+def _count_direct_entries(directory: Path) -> int:
+    """Count the direct entries of a directory, 0 when it cannot be listed."""
+    try:
+        return sum(1 for _ in directory.iterdir())
+    except OSError:
+        return 0
+
+
+def move_aside_name(entry: str, timestamp: str) -> str:
+    """Name the directory a conversion moves a real entry aside to."""
+    return f'{entry}.unlinked-{timestamp}'
+
+
+def plan_profile_links(
+    profile_dir: Path,
+    wanted: list[str],
+    source_dir: Path,
+    *,
+    source_name: str,
+    typed: bool,
+    timestamp: str,
+) -> LinkPlan:
+    """Decide what Step 3 does to each linkable entry of a profile.
+
+    A wanted entry is created when absent (an empty real directory is
+    replaced), kept when it is a link to the target, repaired when it is a
+    link elsewhere, and converted -- the real directory moved aside to
+    <entry>.unlinked-<timestamp>, never deleted -- only when the value asking
+    for it was typed or came from the environment; under a remembered or
+    configuration value a real non-empty directory is an error naming the
+    typed value that converts it. A link no value asks for is removed only
+    under a typed or environment value and is otherwise reported as on disk
+    and left alone. projects links to the final real directory behind the
+    source's projects, so a link never points at a link; every other entry
+    links to the source's own directory, created there when absent.
+
+    Args:
+        profile_dir: The profile directory whose entries are linked.
+        wanted: The entries to link, a subset of LINKABLE_PROFILE_DIRS.
+        source_dir: The directory of the profile the links come from.
+        source_name: Its display name, for the plan.
+        typed: Whether the link-dirs value was typed or came from the
+            environment, which allows converting and unlinking.
+        timestamp: The timestamp every moved-aside directory is named with.
+
+    Returns:
+        The plan, with errors when it cannot be carried out.
+    """
+    actions: list[LinkAction] = []
+    errors: list[str] = []
+    wanted_set = set(wanted)
+    for entry in LINKABLE_PROFILE_DIRS:
+        link_path = profile_dir / entry
+        is_link = _is_directory_link(link_path)
+        if entry in wanted_set:
+            candidate = source_dir / entry
+            target = _final_real_directory(candidate) if entry == SESSIONS_PROFILE_DIR else candidate
+            if is_link:
+                kind = 'keep' if _link_points_to(link_path, target) else 'repair'
+                actions.append(LinkAction(entry, kind, link_path, target))
+            elif not link_path.exists():
+                actions.append(LinkAction(entry, 'create', link_path, target))
+            elif link_path.is_dir():
+                count = _count_direct_entries(link_path)
+                if count == 0:
+                    actions.append(LinkAction(entry, 'create', link_path, target))
+                elif typed:
+                    moved_to = profile_dir / move_aside_name(entry, timestamp)
+                    actions.append(LinkAction(entry, 'convert', link_path, target, moved_to, count))
+                else:
+                    errors.append(
+                        f'{link_path} is a real directory with {count} item(s), and only a typed value converts it: '
+                        f'pass --link-dirs {",".join(wanted)} (or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to move it aside '
+                        f'to {move_aside_name(entry, timestamp)} and link {entry} from profile "{source_name}".',
+                    )
             else:
-                link_path.unlink()
+                errors.append(f'{link_path} is a file, so {entry} cannot be linked; move the file away first.')
+        elif is_link:
+            actions.append(LinkAction(entry, 'unlink' if typed else 'undeclared', link_path, None))
+    return LinkPlan(source_name, actions, errors)
 
-        # Create the link. On Windows, a directory junction is elevation-free;
-        # _winapi.CreateJunction is the primary mechanism, with mklink /J as a
-        # last-resort fallback. _winapi is a private CPython module retained for
-        # this purpose. dst (link_path) must not pre-exist, which the state
-        # resolution above guarantees.
-        if is_windows:
-            import _winapi
 
-            # Access the Windows-only CreateJunction via getattr so type
-            # checkers do not fail on non-Windows platforms. When it is present,
-            # attempt it first; if it is unavailable or raises, fall back to
-            # mklink /J.
-            create_junction = getattr(_winapi, 'CreateJunction', None)
-            junction_error: OSError | None = None
-            if create_junction is not None:
-                try:
-                    create_junction(str(base_projects), str(link_path))
-                except OSError as error:
-                    junction_error = error
-            if create_junction is None or junction_error is not None:
-                reason = junction_error if junction_error is not None else 'CreateJunction is unavailable'
-                warning(f'CreateJunction failed ({reason}); falling back to mklink /J')
-                subprocess.run(
-                    ['cmd', '/c', 'mklink', '/J', str(link_path), str(base_projects)],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-        else:
-            link_path.symlink_to(base_projects, target_is_directory=True)
+def apply_link_plan(plan: LinkPlan) -> None:
+    """Carry out a link plan on disk.
 
-        success(f'Linked projects directory {link_path} -> {base_projects}')
-        return True
+    An OSError from a move, a link or an unlink, or a CalledProcessError
+    from the mklink /J fallback, propagates to the caller.
 
-    except (OSError, subprocess.CalledProcessError) as e:
-        warning(f'Failed to link projects directory: {e}')
-        return False
+    Args:
+        plan: The plan from plan_profile_links(), with no errors.
+    """
+    for action in plan.actions:
+        if action.kind == 'keep':
+            info(f'{action.entry}/ already linked to {action.target}')
+            continue
+        if action.kind == 'undeclared':
+            info(f'{action.entry}/ is a link on disk that no value declares; left alone')
+            continue
+        if action.kind == 'unlink':
+            _remove_directory_link(action.link_path)
+            success(f'Removed the {action.entry}/ link; this run installs the real directory')
+            continue
+        if action.kind == 'repair':
+            _remove_directory_link(action.link_path)
+        elif action.kind == 'convert' and action.moved_to is not None:
+            action.link_path.rename(action.moved_to)
+            success(f'Moved {action.link_path} aside to {action.moved_to}')
+        elif action.link_path.is_dir():
+            action.link_path.rmdir()
+        assert action.target is not None
+        link_profile_directory(action.link_path, action.target)
+        success(f'Linked {action.entry}/ -> {action.target}')
+
+
+def verify_profile_links(profile_dir: Path, plan: LinkPlan) -> list[str]:
+    """Check that every entry a plan linked is still a link to its target.
+
+    Args:
+        profile_dir: The profile directory.
+        plan: The plan Step 3 applied.
+
+    Returns:
+        One message per entry that is no longer a link to its target.
+    """
+    broken: list[str] = []
+    for action in plan.actions:
+        if action.kind not in LINKED_ACTION_KINDS or action.target is None:
+            continue
+        link_path = profile_dir / action.entry
+        if not _is_directory_link(link_path):
+            broken.append(f'{link_path} is no longer a link (it was linked to {action.target})')
+        elif not _link_points_to(link_path, action.target):
+            broken.append(f'{link_path} no longer points at {action.target}')
+    return broken
 
 
 def export_setup_time_config_dir(
@@ -16758,21 +17758,64 @@ def shared_destination_warnings(
     return warnings
 
 
-def unrefreshed_profile_lines(home_dir: Path, this_profile: str) -> list[str]:
+def unrefreshed_profile_lines(home_dir: Path, this_profile: str, refreshed: frozenset[str] = frozenset()) -> list[str]:
     """List the installed profiles a run did not refresh, each with its --profile command.
 
     Args:
         home_dir: User home directory.
         this_profile: This run's profile display name.
+        refreshed: The dependents this run refreshed in Step 23.
 
     Returns:
-        One line per other installed profile.
+        One line per other installed profile this run did not refresh.
     """
     return [
         f'{profile.name} (--profile {profile.name})'
         for profile in installed_profiles(home_dir)
-        if profile.name != this_profile
+        if profile.name != this_profile and profile.name not in refreshed
     ]
+
+
+def _exit_on_broken_links(broken: list[str], profile_name: str) -> None:
+    """Stop the run when a linked entry is no longer a link to its target.
+
+    Args:
+        broken: The messages verify_profile_links() returned.
+        profile_name: This run's profile display name.
+    """
+    if not broken:
+        return
+    error(f'Profile "{profile_name}" no longer holds every link it was installed with:')
+    for line in broken:
+        error(f'  - {line}')
+    info(f'Re-run the profile to repair its links: --profile {profile_name}')
+    sys.exit(1)
+
+
+def run_dependent_refresh_step(
+    dependents: list[InstalledProfile], *, source_name: str, refresh_all_child: bool,
+) -> list[DependentResult]:
+    """Run Step 23: refresh every profile that links content from this one.
+
+    Args:
+        dependents: The dependents content_dependents() found before the run.
+        source_name: This run's profile display name.
+        refresh_all_child: Whether this run is a child of --profile all, whose
+            parent runs every installed profile itself.
+
+    Returns:
+        One result per dependent refreshed; empty when none ran.
+    """
+    print()
+    if refresh_all_child:
+        print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the --profile all run{Colors.NC}')
+        return []
+    if not dependents:
+        print(f'{Colors.CYAN}Step 23: No installed profile links content from "{source_name}"{Colors.NC}')
+        return []
+    names = ', '.join(profile.name for profile in dependents)
+    print(f'{Colors.CYAN}Step 23: Refreshing {len(dependents)} dependent profile(s): {names}...{Colors.NC}')
+    return refresh_dependents(dependents)
 
 
 def child_run_environment() -> dict[str, str]:
@@ -16808,6 +17851,123 @@ def read_resolved_config_snapshot(profile_dir: Path) -> dict[str, Any] | None:
     except (OSError, yaml.YAMLError):
         return None
     return cast(dict[str, Any], content) if isinstance(content, dict) else None
+
+
+def _typed_selectors(args: argparse.Namespace) -> bool:
+    """Report whether a component selector was typed for this run or came from its environment."""
+    return any(args.origins.get(dest) in ('cli', 'env') for dest in ('select', 'with_', 'without'))
+
+
+def load_dependent_config(source: LinkSource, profile_name: str) -> tuple[dict[str, Any], str, str | None]:
+    """Load the configuration of a run that links content: its source's snapshot.
+
+    The source's resolved-config.yaml is the component-selected configuration
+    the source installed, so the dependent applies the same files and the
+    same choices without fetching anything; its components registry is left
+    out, because the source resolved it. The run exits with code 1 when the
+    source has no readable snapshot.
+
+    Args:
+        source: The profile the run links content from.
+        profile_name: This run's profile name, for the message.
+
+    Returns:
+        The configuration, the source's recorded configuration source, and
+        the source's recorded configuration version.
+    """
+    snapshot = read_resolved_config_snapshot(source.directory)
+    if snapshot is None or source.manifest is None:
+        error(
+            f'Profile "{profile_name}" links content from profile "{source.name}", whose '
+            f'{RESOLVED_CONFIG_FILENAME} is missing or unreadable; re-run the source first: --profile {source.name}',
+        )
+        sys.exit(1)
+    config = deepcopy(snapshot)
+    config.pop('components', None)
+    source_config = str(source.manifest.get('config_source') or '')
+    version = source.manifest.get('version')
+    info(f'Applying the configuration profile "{source.name}" installed ({source.directory / RESOLVED_CONFIG_FILENAME})')
+    return config, source_config, str(version) if version is not None else None
+
+
+# The configuration sections each linkable entry is installed from, so a
+# linked entry installs nothing and validates nothing of its own
+_LINKED_ENTRY_SECTIONS: dict[str, tuple[str, ...]] = {
+    'skills': ('skills',),
+    'agents': ('agents',),
+    'commands': ('slash-commands',),
+    'rules': ('rules',),
+    'hooks': ('hooks',),
+    'prompts': ('command-defaults',),
+}
+
+
+def config_without_linked_sections(config: dict[str, Any], linked_entries: frozenset[str]) -> dict[str, Any]:
+    """Copy a configuration without the sections its linked entries are installed from.
+
+    Hook events stay, because the profile's own config.json wires them; only
+    the files and helpers that would be downloaded into the linked hooks
+    directory are dropped, together with the system prompt of a linked
+    prompts directory.
+
+    Args:
+        config: The resolved configuration.
+        linked_entries: The entries that are links.
+
+    Returns:
+        A shallow copy with the linked sections emptied.
+    """
+    copy = dict(config)
+    for entry in linked_entries:
+        for section in _LINKED_ENTRY_SECTIONS.get(entry, ()):
+            if section == 'hooks' and isinstance(copy.get('hooks'), dict):
+                hooks = dict(cast(dict[str, Any], copy['hooks']))
+                hooks['files'] = []
+                hooks['helpers'] = []
+                copy['hooks'] = hooks
+            elif section == 'command-defaults' and isinstance(copy.get('command-defaults'), dict):
+                defaults = dict(cast(dict[str, Any], copy['command-defaults']))
+                defaults.pop('system-prompt', None)
+                copy['command-defaults'] = defaults
+            elif section in copy:
+                copy[section] = []
+    return copy
+
+
+def split_downloads_by_linked_entries(
+    files_to_download: list[Any],
+    profile_dir: Path,
+    linked_entries: frozenset[str],
+) -> tuple[list[Any], list[tuple[str, str]]]:
+    """Separate the files-to-download entries whose destination lies inside a linked entry.
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        profile_dir: The profile directory.
+        linked_entries: The entries that are links.
+
+    Returns:
+        The entries this run downloads, and (destination, entry) for each
+        entry it skips because the source holds that directory.
+    """
+    kept: list[Any] = []
+    skipped: list[tuple[str, str]] = []
+    for item in files_to_download:
+        if not isinstance(item, dict):
+            kept.append(item)
+            continue
+        entry_dict = cast(dict[str, Any], item)
+        source, dest = entry_dict.get('source'), entry_dict.get('dest')
+        inside: str | None = None
+        if source and dest:
+            relative = _relative_inside(_download_destination(str(source), str(dest)), profile_dir)
+            if relative is not None and relative.parts and relative.parts[0] in linked_entries:
+                inside = relative.parts[0]
+        if inside is None:
+            kept.append(item)
+        else:
+            skipped.append((str(dest), inside))
+    return kept, skipped
 
 
 def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argparse.Namespace) -> list[str]:
@@ -16883,6 +18043,8 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
             ('--without', args.without is not None),
             ('--switch-config', bool(args.switch_config)),
             ('--list-components', bool(args.list_components)),
+            ('--link-dirs', args.link_dirs is not None),
+            ('--link-from', args.link_from is not None),
         ) if present
     ]
     if conflicts:
@@ -16892,7 +18054,7 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         )
         return 1
     home_dir = get_real_user_home()
-    profiles = installed_profiles(home_dir)
+    profiles = order_profiles_source_first(installed_profiles(home_dir))
     if not profiles:
         error('No installed profile has a manifest under ~/.claude; install a configuration first.')
         return 1
@@ -17069,6 +18231,22 @@ def main() -> None:
         help='Accept a different configuration for an existing profile and remove what the '
         'previous configuration left behind',
     )
+    parser.add_argument(
+        '--link-dirs',
+        type=str,
+        metavar='ENTRIES',
+        help='Take these entries of the isolated profile through a directory link from the profile '
+        f'--link-from names (comma-separated; any of {", ".join(LINKABLE_PROFILE_DIRS)}; all for every '
+        'entry, none for no entry); every entry but projects links only between installs of one '
+        'configuration, and a profile that links one takes its configuration and components from the source',
+    )
+    parser.add_argument(
+        '--link-from',
+        type=str,
+        metavar='SOURCE',
+        help='The profile the linked entries come from: base for ~/.claude (the default), or the '
+        'primary command name of an installed isolated profile',
+    )
     parser.add_argument(REFRESH_ALL_CHILD_FLAG, dest='refresh_all_child', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
@@ -17135,40 +18313,68 @@ def main() -> None:
     elevated_window_held = False
 
     try:
-        # Load configuration from source (URL, local file, or repository)
-        config, config_source = load_config_from_source(config_name, args.auth)
-
-        # Extract version from root config BEFORE inheritance resolution.
-        # The version field identifies THIS specific config file's version,
-        # not a behavioral setting inherited from parent configs.
+        # A run that links content applies its source's resolved-config.yaml
+        # instead of fetching a configuration: a typed, environment or
+        # remembered link value decides that before anything is loaded, and
+        # the configuration the run was given is checked for identity only
+        home_dir = get_real_user_home()
+        early_target = profile_target_name(args, {})
+        early_manifest: dict[str, Any] | None = None
+        if rerun is not None:
+            early_manifest = rerun.manifest
+        elif early_target is not None:
+            early_manifest = _read_target_manifest(early_target, {})
+        link_spec, link_errors = resolve_link_spec(args, {}, early_manifest)
+        if link_errors:
+            for err in link_errors:
+                error(err)
+            sys.exit(1)
+        link_source: LinkSource | None = None
+        dependent_of: LinkSource | None = None
         config_version: str | None = None
-        raw_version = config.get('version')
-        if raw_version is not None:
-            version_str = str(raw_version).strip()
-            if version_str:
-                config_version = version_str
-                info(f'Configuration version: {config_version}')
-
-        # Resolve configuration inheritance if present
         inheritance_chain: list[InheritanceChainEntry] = []
-        if INHERIT_KEY in config:
-            info('Configuration uses inheritance, resolving parent configs...')
-            config, inheritance_chain = resolve_config_inheritance(
-                config, config_source, auth_param=args.auth,
-            )
-            # Append current config as the last entry in the chain
-            inheritance_chain.append(InheritanceChainEntry(
-                source=config_source,
-                source_type=classify_config_source(config_source),
-                name=config.get('name', config_name),
+        if early_target is not None and link_spec.links_content:
+            link_source, link_errors = resolve_link_source(link_spec, home_dir)
+            link_errors.extend(link_request_errors(
+                link_spec, link_source,
+                primary_command_name=early_target,
+                this_identity=config_identity_of_spec(config_name),
+                typed_selectors=_typed_selectors(args),
             ))
-            success('Configuration inheritance resolved successfully')
+            if link_errors:
+                for err in link_errors:
+                    error(err)
+                sys.exit(1)
+            assert link_source is not None
+            config, config_source, config_version = load_dependent_config(link_source, early_target)
+            dependent_of = link_source
         else:
-            inheritance_chain = [InheritanceChainEntry(
-                source=config_source,
-                source_type=classify_config_source(config_source),
-                name=config.get('name', config_name),
-            )]
+            # Load configuration from source (URL, local file, or repository)
+            config, config_source = load_config_from_source(config_name, args.auth)
+
+            # Extract version from root config BEFORE inheritance resolution.
+            # The version field identifies THIS specific config file's version,
+            # not a behavioral setting inherited from parent configs.
+            raw_version = config.get('version')
+            if raw_version is not None:
+                version_str = str(raw_version).strip()
+                if version_str:
+                    config_version = version_str
+                    info(f'Configuration version: {config_version}')
+
+            # Resolve configuration inheritance if present
+            if INHERIT_KEY in config:
+                info('Configuration uses inheritance, resolving parent configs...')
+                config, inheritance_chain = resolve_config_inheritance(
+                    config, config_source, auth_param=args.auth,
+                )
+                success('Configuration inheritance resolved successfully')
+        # The current configuration is the last entry of the chain
+        inheritance_chain.append(InheritanceChainEntry(
+            source=config_source,
+            source_type=classify_config_source(config_source),
+            name=config.get('name', config_name),
+        ))
 
         # The profile this run installs into and what its manifest remembers:
         # the component delta and the command names an earlier run typed or
@@ -17179,12 +18385,46 @@ def main() -> None:
         target_manifest: dict[str, Any] | None = (
             rerun.manifest if rerun is not None else _read_target_manifest(target_profile, config)
         )
+
+        # The links, now with the configuration's own keys: a configuration
+        # that declares content links is replaced by its source's snapshot
+        # the same way a typed value is, after the same checks
+        configured_link_values = yaml_link_values(config)
+        if dependent_of is None:
+            link_spec, link_errors = resolve_link_spec(args, config, target_manifest)
+            if not link_errors and link_spec.dirs:
+                link_source, link_errors = resolve_link_source(link_spec, home_dir)
+                link_errors.extend(link_request_errors(
+                    link_spec, link_source,
+                    primary_command_name=target_profile,
+                    this_identity=this_identity,
+                    typed_selectors=_typed_selectors(args),
+                ))
+            if link_errors:
+                for err in link_errors:
+                    error(err)
+                sys.exit(1)
+            for warn_msg in remembered_link_warnings(link_spec, config, target_manifest):
+                warning(warn_msg)
+            if link_spec.links_content:
+                assert link_source is not None
+                assert target_profile is not None
+                config, config_source, config_version = load_dependent_config(link_source, target_profile)
+                inheritance_chain = [InheritanceChainEntry(
+                    source=config_source,
+                    source_type=classify_config_source(config_source),
+                    name=config.get('name', config_name),
+                )]
+                dependent_of = link_source
+
         components_list: list[dict[str, Any]] = [
             cast(dict[str, Any], c)
             for c in config.get('components') or []
             if isinstance(c, dict)
         ]
-        remembered_delta_errors = apply_remembered_component_delta(
+        # A profile that links content takes its source's component
+        # selection, so its own remembered delta is not applied
+        remembered_delta_errors = [] if dependent_of is not None else apply_remembered_component_delta(
             args,
             target_manifest,
             [str(c.get('name', '')).strip() for c in components_list],
@@ -17258,6 +18498,23 @@ def main() -> None:
         # lists what the previous configuration leaves behind, and the run
         # removes it after consent
         guard_environment_name_change(args, effective_command_names, target_manifest, profile_name)
+        guard_environment_link_change(args, link_spec, target_manifest, profile_name)
+        dependents = content_dependents(home_dir, profile_name)
+        if dependents and target_manifest is not None:
+            recorded_link = manifest_link(target_manifest)
+            recorded_dirs = [str(item) for item in cast(list[object], recorded_link['dirs'])] if recorded_link else []
+            recorded_source = str(recorded_link.get('source') or LINK_SOURCE_BASE) if recorded_link else LINK_SOURCE_BASE
+            recorded_identity = manifest_config_identity(target_manifest)
+            links_changed = link_spec.dirs != recorded_dirs or (bool(link_spec.dirs) and link_spec.source != recorded_source)
+            if links_changed or (recorded_identity is not None and recorded_identity != this_identity):
+                names = ', '.join(profile.name for profile in dependents)
+                error(
+                    f'Profile "{profile_name}" is the link source of {names}; its links and its configuration stay '
+                    'as installed until each dependent is re-pointed or unlinked:',
+                )
+                for line in dependents_remedy(dependents):
+                    info(line)
+                sys.exit(1)
         residue_to_remove: ProfileResidue | None = None
         if target_manifest is not None:
             recorded_identity = manifest_config_identity(target_manifest)
@@ -17291,6 +18548,26 @@ def main() -> None:
         # --dry-run reports it instead of a plan it cannot execute.
         if not check_ambient_claude_config_dir(primary_command_name, target_config_dir):
             sys.exit(1)
+
+        # What Step 3 does to the profile's links, decided before consent so
+        # the summary lists every directory a conversion moves aside; a base
+        # run never links
+        run_timestamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')
+        link_plan: LinkPlan | None = None
+        if primary_command_name:
+            link_plan = plan_profile_links(
+                target_config_dir,
+                link_spec.dirs,
+                link_source.directory if link_source is not None else home_dir / '.claude',
+                source_name=link_spec.source,
+                typed=link_spec.typed,
+                timestamp=run_timestamp,
+            )
+            if link_plan.errors:
+                for err in link_plan.errors:
+                    error(err)
+                sys.exit(1)
+        linked_entries: frozenset[str] = frozenset(link_plan.linked_entries) if link_plan is not None else frozenset()
 
         picker: Callable[[list[str]], list[str] | None] | None = None
         if components_list and (sys.stdin.isatty() or _dev_tty_available()):
@@ -17456,7 +18733,6 @@ def main() -> None:
             warning(warn_msg)
         # Merge auto-injected items from both auto-update and IDE extension management
         auto_injected_items.extend(ide_ext_auto_injected)
-
         # Validate user-settings section (excluded keys and known key values)
         if user_settings:
             user_settings_errors = validate_user_settings(user_settings)
@@ -17528,7 +18804,9 @@ def main() -> None:
         # Validate all downloadable files before proceeding
         print()
         print(f'{Colors.CYAN}Validating configuration files...{Colors.NC}')
-        all_valid, validation_results = validate_all_config_files(config, config_source, args.auth, auth_cache)
+        all_valid, validation_results = validate_all_config_files(
+            config_without_linked_sections(config, linked_entries), config_source, args.auth, auth_cache,
+        )
 
         if not all_valid:
             print()
@@ -17561,6 +18839,10 @@ def main() -> None:
         plan.auto_injected_items = auto_injected_items
         plan.command_names_origin = effective_command_names.origin
         plan.command_names_remembered = effective_command_names.remembered
+        plan.link_spec = link_spec if primary_command_name else None
+        plan.link_plan = link_plan
+        plan.linked_from = dependent_of.name if dependent_of is not None else None
+        plan.dependents = [profile.name for profile in dependents]
         plan.claude_code_version = claude_install_decision.version
         plan.keep_installed_claude = claude_install_decision.kept
         plan.claude_install_reason = claude_install_decision.reason
@@ -17721,29 +19003,43 @@ def main() -> None:
             else:
                 print(f'{Colors.CYAN}Step 2: Skipping IDE extensions (skip-install mode){Colors.NC}')
 
-        # Step 3: Create base configuration directory
+        # Step 3: Create the base configuration directory and the profile's
+        # links. Every link exists before any content step, so a linked entry
+        # receives nothing of its own and a failed link stops the run.
         print()
-        print(f'{Colors.CYAN}Step 3: Creating base configuration directory...{Colors.NC}')
+        print(f'{Colors.CYAN}Step 3: Creating base configuration directory and profile links...{Colors.NC}')
         claude_user_dir.mkdir(parents=True, exist_ok=True)
         success(f'Created: {claude_user_dir}')
         if artifact_base_dir != claude_user_dir:
             artifact_base_dir.mkdir(parents=True, exist_ok=True)
             success(f'Created: {artifact_base_dir}')
+        if link_plan is not None and link_plan.actions:
+            try:
+                apply_link_plan(link_plan)
+            except (OSError, subprocess.CalledProcessError) as e:
+                raise Exception(f'Linking the profile directories failed: {e}') from e
         # Subdirectories (agents, commands, rules, prompts, hooks, skills)
-        # are created on-demand by their respective processing functions
-        # only when files are actually placed into them.
+        # that are not links are created on-demand by their respective
+        # processing functions only when files are actually placed into them.
 
         # Ensure .local/bin is in PATH early to prevent uv tool warnings
         ensure_local_bin_in_path()
 
-        # Track download and dependency failures across all steps for final error reporting
+        # Track download, dependency and dependent failures across all steps for final error reporting
         download_failures: list[str] = []
         dependency_failures: list[str] = []
+        dependent_results: list[DependentResult] = []
 
         # Step 4: Download/copy custom files
         print()
         print(f'{Colors.CYAN}Step 4: Processing file downloads...{Colors.NC}')
         files_to_download = config.get('files-to-download', [])
+        if files_to_download and linked_entries:
+            files_to_download, inside_links = split_downloads_by_linked_entries(
+                files_to_download, artifact_base_dir, linked_entries,
+            )
+            for skipped_dest, entry in inside_links:
+                info(f'Skipping {skipped_dest}: {entry}/ is linked from profile "{link_spec.source}"')
         if files_to_download:
             if not process_file_downloads(files_to_download, config_source, base_url, args.auth, auth_cache):
                 download_failures.append('file downloads')
@@ -17761,6 +19057,11 @@ def main() -> None:
         print(f'{Colors.CYAN}Step 6: Installing dependencies...{Colors.NC}')
         dependencies = config.get('dependencies', {})
         dependency_failures = install_dependencies(dependencies)
+
+        # A dependency command may have replaced a linked entry with a real
+        # directory; the profile would then diverge from its source silently
+        if link_plan is not None:
+            _exit_on_broken_links(verify_profile_links(artifact_base_dir, link_plan), profile_name)
 
         # Step 7: OS environment variables. A base run writes every entry to
         # the OS environment. An isolated run writes only the machine-wide
@@ -17789,7 +19090,9 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 8: Processing agents...{Colors.NC}')
         agents = config.get('agents', [])
-        if agents:
+        if 'agents' in linked_entries:
+            info(f'Agents are linked from profile "{link_spec.source}"; nothing to install')
+        elif agents:
             if not process_resources(agents, agents_dir, 'agents', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('agents')
         else:
@@ -17799,7 +19102,9 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 9: Processing slash commands...{Colors.NC}')
         commands = config.get('slash-commands', [])
-        if commands:
+        if 'commands' in linked_entries:
+            info(f'Slash commands are linked from profile "{link_spec.source}"; nothing to install')
+        elif commands:
             if not process_resources(commands, commands_dir, 'slash commands', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('slash commands')
         else:
@@ -17809,7 +19114,9 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 10: Processing rules...{Colors.NC}')
         rules = config.get('rules', [])
-        if rules:
+        if 'rules' in linked_entries:
+            info(f'Rules are linked from profile "{link_spec.source}"; nothing to install')
+        elif rules:
             if not process_resources(rules, rules_dir, 'rules', config_source, base_url, args.auth, auth_cache):
                 download_failures.append('rules')
         else:
@@ -17825,7 +19132,9 @@ def main() -> None:
             if isinstance(skills_raw, list)
             else []
         )
-        if skills:
+        if 'skills' in linked_entries:
+            info(f'Skills are linked from profile "{link_spec.source}"; nothing to install')
+        elif skills:
             if not process_skills(skills, skills_dir, config_source, args.auth, auth_cache):
                 download_failures.append('skills')
         else:
@@ -17835,7 +19144,9 @@ def main() -> None:
         print()
         print(f'{Colors.CYAN}Step 12: Processing system prompt...{Colors.NC}')
         prompt_path = None
-        if system_prompt:
+        if system_prompt and 'prompts' in linked_entries:
+            info(f'The system prompt is linked from profile "{link_spec.source}"; nothing to install')
+        elif system_prompt:
             # Strip query parameters from URL to get clean filename
             clean_prompt = system_prompt.split('?')[0] if '?' in system_prompt else system_prompt
             sys_prompt_filename = Path(clean_prompt).name
@@ -17944,7 +19255,9 @@ def main() -> None:
             'yaml_values': {
                 'command_names': configured_command_names,
                 'components': selection.defaults if selection.is_active else [],
+                **configured_link_values,
             },
+            'link': link_spec.record() if primary_command_name else None,
             'machine_wide_destinations': machine_wide_download_records(
                 [cast(dict[str, Any], f) for f in cast(list[object], files_to_download or []) if isinstance(f, dict)],
                 config_source, base_url, claude_user_dir,
@@ -17964,13 +19277,25 @@ def main() -> None:
             print(f'{Colors.CYAN}Step 17: Downloading hooks...{Colors.NC}')
             hooks = config.get('hooks', {})
             hooks_base_dir_arg = hooks_dir if isolated_config_dir else None
-            if not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
-                                       hooks_base_dir=hooks_base_dir_arg, auth_cache=auth_cache):
+            if 'hooks' in linked_entries:
+                info(f'Hook files are linked from profile "{link_spec.source}"; nothing to install')
+            elif not download_hook_files(hooks, claude_user_dir, config_source, base_url, args.auth,
+                                         hooks_base_dir=hooks_base_dir_arg, auth_cache=auth_cache):
                 download_failures.append('hook files')
 
-            # Step 18: Create profile configuration
+            # Step 18: Create profile configuration. config.json wires hook
+            # files by path, so a linked hooks/ must already hold every file
+            # the events and the status line name.
             print()
             print(f'{Colors.CYAN}Step 18: Creating profile configuration...{Colors.NC}')
+            if 'hooks' in linked_entries:
+                missing_hook_files = missing_wired_hook_files(config, hooks_dir)
+                if missing_hook_files:
+                    error(f'Profile "{profile_name}" wires hook files that profile "{link_spec.source}" does not hold:')
+                    for missing in missing_hook_files:
+                        error(f'  - {missing}')
+                    info(f'Re-run the source first: --profile {link_spec.source}')
+                    sys.exit(1)
 
             # Build profile_config dict from YAML using dict membership to
             # preserve the "declared-vs-absent" distinction end-to-end. In
@@ -18042,19 +19367,13 @@ def main() -> None:
             else:
                 warning('Launcher script was not created')
 
-            # Step 22: Optionally link the isolated profile's projects/ dir to the
-            # base ~/.claude/projects/ (shares session history when enabled).
-            if config.get('link-projects-dir'):
-                print()
-                print(f'{Colors.CYAN}Step 22: Linking projects directory to base...{Colors.NC}')
-                link_projects_directory(artifact_base_dir)
-
-            # Step 23: Remove previously installed artifacts of deselected
+            # Step 22: Remove previously installed artifacts of deselected
             # components (the removal plan derives from the unfiltered
-            # config, so no on-disk state is needed)
+            # config, so no on-disk state is needed); a linked entry belongs
+            # to another profile and is left alone
             if has_deselected_items(deselected):
                 print()
-                print(f'{Colors.CYAN}Step 23: Removing deselected components...{Colors.NC}')
+                print(f'{Colors.CYAN}Step 22: Removing deselected components...{Colors.NC}')
                 execute_deselection_cleanup(
                     deselected,
                     config,
@@ -18064,7 +19383,17 @@ def main() -> None:
                     skills_dir=skills_dir,
                     hooks_dir=hooks_dir,
                     is_isolated=True,
+                    linked_entries=linked_entries,
                 )
+
+            # Every linked entry must still be a link when the run ends
+            if link_plan is not None:
+                _exit_on_broken_links(verify_profile_links(artifact_base_dir, link_plan), profile_name)
+
+            # Step 23: Refresh the profiles that link content from this one
+            dependent_results = run_dependent_refresh_step(
+                dependents, source_name=profile_name, refresh_all_child=args.refresh_all_child,
+            )
         else:
             # No command-names: route the profile-owned YAML keys
             # (status-line, hooks) to the shared ~/.claude/settings.json via
@@ -18167,11 +19496,17 @@ def main() -> None:
                     hooks_dir=hooks_dir,
                     is_isolated=False,
                 )
+
+            # Step 23: Refresh the profiles that link content from the base profile
+            dependent_results = run_dependent_refresh_step(
+                dependents, source_name=profile_name, refresh_all_child=args.refresh_all_child,
+            )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
 
-        # Check for download/dependency failures and report accordingly
-        if download_failures or dependency_failures:
+        # Check for download, dependency and dependent failures and report accordingly
+        dependent_failures = [result for result in dependent_results if result.code != 0]
+        if download_failures or dependency_failures or dependent_failures:
             print()
             print(f'{Colors.RED}========================================================================{Colors.NC}')
             print(f'{Colors.RED}              Setup Completed with Errors{Colors.NC}')
@@ -18191,6 +19526,13 @@ def main() -> None:
                     error(f'  - {failure}')
                 print()
                 error('Review the dependency error messages above, then re-run the setup.')
+                print()
+            if dependent_failures:
+                error('The following dependent profiles failed to refresh:')
+                for result in dependent_failures:
+                    error(f'  - {result.line()}')
+                print()
+                error('Review the output of each failed dependent above, then retry it with its --profile command.')
                 print()
             error('Configuration steps were completed, but some components are missing.')
             print()
@@ -18280,13 +19622,24 @@ def main() -> None:
                 print('   * User settings: configured in ~/.claude/settings.json')
         if global_config:
             print(f'   * Global config: configured in {global_config_target_file(isolated_config_dir)}')
+        if link_plan is not None and link_plan.linked_entries:
+            links_marker = origin_marker(link_spec.dirs_origin, remembered=link_spec.dirs_remembered)
+            print(
+                f'   * Links: {", ".join(link_plan.linked_entries)} from profile "{link_spec.source}"{links_marker}',
+            )
         if stale_controls_elsewhere:
             print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        if dependent_results:
+            print('   * Dependent profiles refreshed from this run:')
+            for result in dependent_results:
+                print(f'       - {result.line()}')
         # A child of --profile all lists nothing here: the parent's report
         # covers every installed profile
-        unrefreshed = [] if args.refresh_all_child else unrefreshed_profile_lines(get_real_user_home(), profile_name)
+        unrefreshed = [] if args.refresh_all_child else unrefreshed_profile_lines(
+            get_real_user_home(), profile_name, frozenset(result.name for result in dependent_results),
+        )
         if unrefreshed:
             print('   * Installed profiles this run did not refresh:')
             for line in unrefreshed:
