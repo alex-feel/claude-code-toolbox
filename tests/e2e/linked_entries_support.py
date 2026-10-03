@@ -128,7 +128,10 @@ def write_source_entries(source: Path, hook_marker: Path) -> None:
     path outside every linked directory) carrying the event name, its own
     ``__file__``, the real path of that file, the helper and override
     sentinels and ``sys.path[0]``, so a run through a link shows the profile
-    path in ``file`` and ``sys_path0`` and the source path in ``realpath``.
+    path in ``file``, the source path in ``realpath``, and in ``sys_path0``
+    the directory CPython put first on the module search path: the profile
+    path on Windows, the source path on POSIX, where CPython canonicalizes
+    the script path before taking its directory.
 
     Args:
         source: The profile directory that holds the entries for real.

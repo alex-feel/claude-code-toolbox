@@ -182,11 +182,14 @@ def test_hooks_run_through_link(workspace: Workspace, kind: str) -> None:
     """The hook script under a linked hooks/ runs on SessionStart and UserPromptSubmit with its siblings.
 
     config.json names the script under the profile; the marker the script
-    writes shows that path as ``file`` and ``sys_path0`` and the directory
-    the link resolves to as ``realpath``, and carries the sentinels of the
-    helper module it imported and the project-overrides/ file it read
-    beside itself. The lockfile locked beside the source script is visible
-    beside the profile's script, where uv reads it under UV_LOCKED=1.
+    writes shows that path as ``file`` and the directory the link resolves
+    to as ``realpath``, and carries the sentinels of the helper module it
+    imported and the project-overrides/ file it read beside itself. Its
+    ``sys_path0`` resolves to the directory that holds the helper for real:
+    CPython canonicalizes the script path on POSIX, so the module search
+    root is the link target there, while on Windows it stays the profile
+    path. The lockfile locked beside the source script is visible beside
+    the profile's script, where uv reads it under UV_LOCKED=1.
     """
     profile = workspace.make_profile(_PROFILE_NAME, kind)
     profile_hooks = profile.config_dir / 'hooks'
@@ -204,10 +207,11 @@ def test_hooks_run_through_link(workspace: Workspace, kind: str) -> None:
     records = workspace.hook_records()
     assert {record['event'] for record in records} == {'SessionStart', 'UserPromptSubmit'}, records
     real_holder = profile.config_dir if kind == 'real' else workspace.source
+    real_hooks = real_holder / 'hooks'
     for record in records:
         assert Path(record['file']) == profile_hooks / support.HOOK_SCRIPT, record
-        assert Path(record['sys_path0']) == profile_hooks, record
-        assert Path(record['realpath']).resolve() == (real_holder / 'hooks' / support.HOOK_SCRIPT).resolve(), record
+        assert Path(record['sys_path0']).resolve() == real_hooks.resolve(), record
+        assert Path(record['realpath']).resolve() == (real_hooks / support.HOOK_SCRIPT).resolve(), record
         assert record['helper'] == support.HELPER_SENTINEL, record
         assert record['override'] == support.OVERRIDE_SENTINEL, record
 
