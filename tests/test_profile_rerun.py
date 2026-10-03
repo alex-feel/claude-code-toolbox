@@ -1192,6 +1192,72 @@ class TestRefreshAllProfiles:
             assert setup_environment.refresh_all_profiles(_args(profile='all')) == 1
         assert 'no interactive terminal available' in capsys.readouterr().err
 
+    def _run_main_as_elevated_window(
+        self, tmp_path: Path, argv: list[str], child_code: int, prompts: list[str],
+    ) -> int:
+        """Run main() as the Windows process a UAC relaunch opened, with every child stubbed."""
+
+        def _run(argv_: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+            return subprocess.CompletedProcess(argv_, child_code)
+
+        def _input(prompt: str) -> str:
+            prompts.append(prompt)
+            return ''
+
+        with (
+            patch.object(setup_environment.platform, 'system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=True),
+            patch.object(setup_environment, 'is_running_in_pytest', return_value=False),
+            patch.object(setup_environment, 'get_real_user_home', return_value=tmp_path),
+            patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES),
+            patch.object(setup_environment.subprocess, 'run', side_effect=_run),
+            patch('builtins.input', side_effect=_input),
+            patch('sys.argv', ['setup_environment.py', *argv]),
+            pytest.raises(SystemExit) as exc,
+        ):
+            setup_environment.main()
+        code = exc.value.code
+        assert isinstance(code, int)
+        return code
+
+    @pytest.mark.parametrize(
+        ('child_code', 'title', 'note'),
+        [
+            (0, 'Setup Completed Successfully!', 'Every installed profile has been refreshed.'),
+            (1, 'Setup Completed with Errors', None),
+        ],
+    )
+    def test_an_elevated_window_holds_the_report_until_enter(
+        self, child_code: int, title: str, note: str | None, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A parent relaunched through UAC pauses under the outcome banner after its report, like a single run."""
+        self._profiles(tmp_path)
+        prompts: list[str] = []
+
+        code = self._run_main_as_elevated_window(
+            tmp_path, ['--elevated-via-uac', '--profile', 'all', '--yes'], child_code, prompts,
+        )
+
+        assert code == child_code
+        assert prompts == ['Press Enter to exit...']
+        out = capsys.readouterr().out
+        assert out.index('Profiles refreshed:') < out.index(title), 'the report is on screen before the pause'
+        if note is not None:
+            assert note in out
+
+    def test_a_run_in_the_user_terminal_never_pauses(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Without the UAC relaunch there is no window to hold: the report prints and main() exits."""
+        self._profiles(tmp_path)
+        prompts: list[str] = []
+
+        code = self._run_main_as_elevated_window(tmp_path, ['--profile', 'all', '--yes'], 1, prompts)
+
+        assert code == 1
+        assert prompts == []
+        out = capsys.readouterr().out
+        assert 'Profiles refreshed:' in out
+        assert 'Setup Completed' not in out
+
 
 class TestRefreshAllElevationReasons:
     """The parent of --profile all decides elevation from the profiles it refreshes."""

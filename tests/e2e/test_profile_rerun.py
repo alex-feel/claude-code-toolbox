@@ -767,6 +767,51 @@ class TestProfileAll:
         assert '* aegis-2: failed (exit code 1); retry with --profile aegis-2' in output
 
     @pytest.mark.parametrize(
+        ('failing_child', 'title', 'expected_code'),
+        [
+            (False, 'Setup Completed Successfully!', 0),
+            (True, 'Setup Completed with Errors', 1),
+        ],
+    )
+    def test_an_elevated_parent_holds_its_window_until_the_report_is_read(
+        self, failing_child: bool, title: str, expected_code: int, configs: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The window a UAC relaunch opened closes on exit, so the parent waits for Enter after its report."""
+        _base, _one, two = self._install_three(configs)
+        if failing_child:
+            two.unlink()
+        runner = self._runner(tmp_path, monkeypatch)
+        prompts: list[str] = []
+
+        def _input(prompt: str) -> str:
+            prompts.append(prompt)
+            return ''
+
+        capfd.readouterr()
+
+        with (
+            patch.object(setup_environment.platform, 'system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=True),
+            patch.object(setup_environment, 'is_running_in_pytest', return_value=False),
+            patch('builtins.input', side_effect=_input),
+        ):
+            code = run_main(['--elevated-via-uac', '--profile', 'all', '--skip-install', '--yes'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        assert code == expected_code, output
+        assert prompts == ['Press Enter to exit...'], 'the parent waits once, after every child has run'
+        assert output.index('Profiles refreshed:') < output.index(title), 'the report is on screen before the pause'
+        assert '* base: ok' in output
+        assert '* aegis-1: ok' in output
+        if failing_child:
+            assert '* aegis-2: failed (exit code 1); retry with --profile aegis-2' in output
+        else:
+            assert '* aegis-2: ok' in output
+            assert 'Every installed profile has been refreshed.' in output
+
+    @pytest.mark.parametrize(
         ('argv', 'expected_reason'),
         [
             (['--profile', 'all', '--yes'], 'Installing Claude Code (includes Node.js and Git)'),

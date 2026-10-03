@@ -803,6 +803,32 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         sys.exit(1)
 
 
+def _hold_elevated_window(title: str, color: str, notes: tuple[str, ...] = ()) -> None:
+    """Keep the window a UAC relaunch opened on screen until the user presses Enter.
+
+    An elevated process runs in a console of its own that closes the moment
+    the process exits, so the outcome is shown under a banner and the
+    process waits for Enter. Under pytest the function returns at once.
+
+    Args:
+        title: The banner title.
+        color: The banner color.
+        notes: Lines printed below the banner.
+    """
+    if is_running_in_pytest():
+        return
+    print()
+    print(f'{color}========================================================================{Colors.NC}')
+    print(f'{color}     {title}{Colors.NC}')
+    print(f'{color}========================================================================{Colors.NC}')
+    print()
+    for note in notes:
+        print(f'{Colors.YELLOW}{note}{Colors.NC}')
+    if notes:
+        print()
+    input('Press Enter to exit...')
+
+
 def _is_global_npm_install(dep: str) -> bool:
     """Check if a dependency command is a global npm package installation.
 
@@ -16779,7 +16805,7 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     return reasons
 
 
-def refresh_all_profiles(args: argparse.Namespace) -> int:
+def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = False) -> int:
     """Re-run every installed profile, the base first, each in its own child run.
 
     The parent decides elevation once: when any profile's run needs
@@ -16791,10 +16817,14 @@ def refresh_all_profiles(args: argparse.Namespace) -> int:
     forwards the parent's --no-admin instead, so each child still prints
     what a real run would elevate for). The report at the end names each
     profile with its result and the --profile command that retries a
-    failed one.
+    failed one; a parent relaunched through UAC then holds its window
+    under the success or errors banner until Enter, because that window
+    closes when the process exits.
 
     Args:
         args: Arguments after resolve_args().
+        elevated_via_uac: Whether this process is the window a UAC
+            relaunch opened.
 
     Returns:
         The exit code: 1 when any child failed, the request was invalid, or
@@ -16890,6 +16920,18 @@ def refresh_all_profiles(args: argparse.Namespace) -> int:
             failed += 1
             print(f'   * {name}: failed (exit code {code}); retry with --profile {name}')
     print()
+    if elevated_via_uac:
+        if failed:
+            _hold_elevated_window('Setup Completed with Errors', Colors.RED)
+        else:
+            _hold_elevated_window(
+                'Setup Completed Successfully!',
+                Colors.GREEN,
+                (
+                    'Every installed profile has been refreshed.',
+                    'You can now close this window and use the configured environments.',
+                ),
+            )
     return 1 if failed else 0
 
 
@@ -17011,7 +17053,7 @@ def main() -> None:
 
     # --profile all refreshes every installed profile, each in its own child run
     if args.profile == ALL_PROFILES:
-        sys.exit(refresh_all_profiles(args))
+        sys.exit(refresh_all_profiles(args, elevated_via_uac=was_elevated_via_uac))
 
     # --profile NAME re-runs an installed profile from its manifest; the
     # configuration defaults to the one the manifest records
@@ -18128,14 +18170,9 @@ def main() -> None:
             error('Configuration steps were completed, but some components are missing.')
             print()
 
-            # If running elevated via UAC, add a pause so user can see the error
-            if was_elevated_via_uac and not is_running_in_pytest():
-                print()
-                print(f'{Colors.RED}========================================================================{Colors.NC}')
-                print(f'{Colors.RED}     Setup Completed with Errors{Colors.NC}')
-                print(f'{Colors.RED}========================================================================{Colors.NC}')
-                print()
-                input('Press Enter to exit...')
+            # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the error
+            if was_elevated_via_uac:
+                _hold_elevated_window('Setup Completed with Errors', Colors.RED)
 
             sys.exit(1)
 
@@ -18300,17 +18337,16 @@ def main() -> None:
                 print(f'  {line}')
             print()
 
-        # If running elevated via UAC, add a pause so user can see the results
-        if was_elevated_via_uac and not is_running_in_pytest():
-            print()
-            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
-            print(f'{Colors.GREEN}     Setup Completed Successfully!{Colors.NC}')
-            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
-            print()
-            print(f'{Colors.YELLOW}The environment has been configured successfully.{Colors.NC}')
-            print(f'{Colors.YELLOW}You can now close this window and use the configured environment.{Colors.NC}')
-            print()
-            input('Press Enter to exit...')
+        # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the results
+        if was_elevated_via_uac:
+            _hold_elevated_window(
+                'Setup Completed Successfully!',
+                Colors.GREEN,
+                (
+                    'The environment has been configured successfully.',
+                    'You can now close this window and use the configured environment.',
+                ),
+            )
 
     except Exception as e:
         print()
@@ -18320,14 +18356,9 @@ def main() -> None:
         print(f'{Colors.YELLOW}For help, visit: https://github.com/alex-feel/claude-code-toolbox{Colors.NC}')
         print()
 
-        # If running elevated via UAC, add a pause so user can see the error
-        if was_elevated_via_uac and not is_running_in_pytest():
-            print()
-            print(f'{Colors.RED}========================================================================{Colors.NC}')
-            print(f'{Colors.RED}     Setup Failed{Colors.NC}')
-            print(f'{Colors.RED}========================================================================{Colors.NC}')
-            print()
-            input('Press Enter to exit...')
+        # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the error
+        if was_elevated_via_uac:
+            _hold_elevated_window('Setup Failed', Colors.RED)
 
         sys.exit(1)
 
