@@ -1172,6 +1172,59 @@ def validate_tilde_preservation_on_unix(
     return []
 
 
+def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any]) -> list[str]:
+    """Validate the resolved-config.yaml a run writes beside its manifest.
+
+    Validates:
+    - The file exists and parses as a YAML mapping
+    - command-names is absent (the snapshot names what a profile installs,
+      never which profile)
+    - The content equals the expected snapshot, null-as-delete entries of
+      user-settings, global-config and os-env-variables, hooks and
+      components included
+    - Its sha256 equals the config_digest the manifest beside it records
+
+    Args:
+        profile_dir: The profile directory holding manifest.json and
+            resolved-config.yaml
+        expected_snapshot: resolved_config_snapshot() of the configuration
+            the run installed, after component selection
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    import yaml
+
+    from scripts.setup_environment import MANIFEST_FILENAME
+    from scripts.setup_environment import RESOLVED_CONFIG_FILENAME
+    from scripts.setup_environment import config_digest_of
+
+    resolved_path = profile_dir / RESOLVED_CONFIG_FILENAME
+    if not resolved_path.is_file():
+        return [f'{resolved_path} does not exist']
+    text = resolved_path.read_text(encoding='utf-8')
+    try:
+        content = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return [f'{resolved_path} is not valid YAML: {exc}']
+    if not isinstance(content, dict):
+        return [f'{resolved_path} does not hold a mapping']
+    errors: list[str] = []
+    if 'command-names' in content:
+        errors.append(f'{RESOLVED_CONFIG_FILENAME} carries command-names, which names the profile, not the configuration')
+    errors.extend(
+        f'{RESOLVED_CONFIG_FILENAME} key {key!r}: expected {expected_snapshot.get(key)!r}, got {content.get(key)!r}'
+        for key in sorted(set(content) | set(expected_snapshot))
+        if content.get(key) != expected_snapshot.get(key)
+    )
+    manifest, manifest_errors = validate_json_file(profile_dir / MANIFEST_FILENAME)
+    if manifest_errors:
+        errors.extend(manifest_errors)
+    elif manifest is not None and manifest.get('config_digest') != config_digest_of(text):
+        errors.append(f'Manifest config_digest does not equal the sha256 of {RESOLVED_CONFIG_FILENAME}')
+    return errors
+
+
 def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate manifest.json structure and content.
 
@@ -1186,8 +1239,9 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
       absent key both normalize to None)
     - config_source_type is one of: url, local, repo
     - config_identity is the identity of config_source, and config_digest
-      is the sha256 of the resolved-config.yaml beside the manifest (or
-      None when that file was not written)
+      is the sha256 of the resolved-config.yaml beside the manifest, which
+      every written manifest has (a None digest or a missing file is an
+      error)
     - command_names and name match the profile shape: the primary command
       name and a non-empty list for an isolated profile, None and an empty
       list for the base profile
@@ -1267,12 +1321,12 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"Manifest config_identity: expected {expected_identity!r}, got {data['config_identity']!r}",
         )
     resolved_path = path.parent / RESOLVED_CONFIG_FILENAME
-    if resolved_path.is_file():
-        expected_digest = config_digest_of(resolved_path.read_text(encoding='utf-8'))
-        if data['config_digest'] != expected_digest:
-            errors.append(f'Manifest config_digest does not match {RESOLVED_CONFIG_FILENAME}')
-    elif data['config_digest'] is not None:
-        errors.append(f'Manifest config_digest is set but {RESOLVED_CONFIG_FILENAME} is absent')
+    if not resolved_path.is_file():
+        errors.append(f'{RESOLVED_CONFIG_FILENAME} is absent beside the manifest')
+    elif data['config_digest'] is None:
+        errors.append(f'Manifest config_digest is None although {RESOLVED_CONFIG_FILENAME} exists')
+    elif data['config_digest'] != config_digest_of(resolved_path.read_text(encoding='utf-8')):
+        errors.append(f'Manifest config_digest does not match {RESOLVED_CONFIG_FILENAME}')
 
     # Remembered values and their origins
     origins = data['origins']

@@ -4,16 +4,20 @@ Tests verify:
 - The isolated and the base profile manifests carry exactly the expected fields
 - The manifest records the configuration version, or None without one
 - The manifest records every command name and the configuration source
+- resolved-config.yaml beside the manifest holds the installed configuration
+  without command-names, and config_digest is its sha256
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tests.e2e.expected import EXPECTED_JSON_KEYS
+from tests.e2e.validators import validate_resolved_config
 
 
 class TestManifestFields:
@@ -29,10 +33,11 @@ class TestManifestFields:
     def test_manifest_carries_exactly_the_profile_fields(
         self,
         e2e_isolated_home: dict[str, Path],
+        golden_resolved_config: dict[str, Any],
         command_name: str | None,
         command_names: list[str],
     ) -> None:
-        """Verify a written manifest holds the expected fields and nothing else."""
+        """Verify a written manifest holds the expected fields and the installed configuration beside it."""
         from scripts.setup_environment import write_manifest
 
         claude_dir = e2e_isolated_home['claude_dir']
@@ -47,12 +52,15 @@ class TestManifestFields:
             config_source_url=None,
             command_names=command_names,
             claude_code_version='2.1.85',
+            resolved_config=golden_resolved_config,
         )
 
         data = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
         assert sorted(data) == sorted(EXPECTED_JSON_KEYS['manifest'])
         assert data['version'] == '1.4.0'
         assert data['claude_code_version'] == '2.1.85'
+        errors = validate_resolved_config(profile_dir, golden_resolved_config)
+        assert not errors, '\n'.join(errors)
 
 
 class TestManifestLifecycle:
@@ -61,6 +69,7 @@ class TestManifestLifecycle:
     def test_manifest_without_version_field(
         self,
         e2e_isolated_home: dict[str, Path],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest works when config has no version field."""
         from scripts.setup_environment import write_manifest
@@ -78,6 +87,7 @@ class TestManifestLifecycle:
             config_source_url=None,
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -87,6 +97,7 @@ class TestManifestLifecycle:
     def test_manifest_preserves_all_command_names(
         self,
         e2e_isolated_home: dict[str, Path],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest includes primary and alias command names."""
         from scripts.setup_environment import write_manifest
@@ -105,6 +116,7 @@ class TestManifestLifecycle:
             config_source_url=None,
             command_names=all_names,
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -116,6 +128,7 @@ class TestManifestLifecycle:
     def test_manifest_with_url_source(
         self,
         e2e_isolated_home: dict[str, Path],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest records URL source correctly."""
         from scripts.setup_environment import write_manifest
@@ -134,6 +147,7 @@ class TestManifestLifecycle:
             config_source_url=url,
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -145,6 +159,7 @@ class TestManifestLifecycle:
     def test_manifest_with_local_source(
         self,
         e2e_isolated_home: dict[str, Path],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest records local source correctly."""
         from scripts.setup_environment import write_manifest
@@ -162,6 +177,7 @@ class TestManifestLifecycle:
             config_source_url=None,
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'

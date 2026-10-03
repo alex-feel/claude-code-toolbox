@@ -7,20 +7,27 @@ All isolated environment files use generic names inside {claude_dir}/{cmd}/:
 - config.json (profile settings, Priority 2)
 - mcp.json (MCP server configuration)
 - manifest.json (installation metadata)
+- resolved-config.yaml (the configuration the run installed, whose sha256
+  the manifest records as config_digest)
 
-A run without command-names writes its own {claude_dir}/manifest.json for the
-base profile, with the same key set.
+A run without command-names writes its own {claude_dir}/manifest.json and
+{claude_dir}/resolved-config.yaml for the base profile, with the same key set.
 """
 
 from typing import Final
 
-# Files created on ALL platforms (these are just the common JSON files)
+# Files created on ALL platforms (these are just the common JSON and YAML files)
 # The actual location varies by platform, so platform modules define full paths
 COMMON_FILES: Final[list[str]] = [
     # MCP server configuration (inside isolated directory)
     '{claude_dir}/{cmd}/mcp.json',
     # Installation manifest (inside isolated directory)
     '{claude_dir}/{cmd}/manifest.json',
+    # The installed configuration beside the manifest (inside isolated directory)
+    '{claude_dir}/{cmd}/resolved-config.yaml',
+    # The base profile's own manifest and installed configuration
+    '{claude_dir}/manifest.json',
+    '{claude_dir}/resolved-config.yaml',
 ]
 
 # Expected keys in generated JSON files

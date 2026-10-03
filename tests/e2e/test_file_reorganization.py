@@ -44,6 +44,7 @@ class TestFileReorganization:
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Scenario 9: All infrastructure files created inside {cmd}/ subdirectory."""
         claude_dir = e2e_isolated_home['claude_dir']
@@ -92,12 +93,14 @@ class TestFileReorganization:
             config_source_url=None,
             command_names=command_names,
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         # Verify all expected files exist inside artifact_base_dir
         assert (artifact_base_dir / 'config.json').exists()
         assert (artifact_base_dir / 'mcp.json').exists()
         assert (artifact_base_dir / 'manifest.json').exists()
+        assert (artifact_base_dir / 'resolved-config.yaml').exists()
         assert (artifact_base_dir / 'launch.sh').exists()
 
         if sys.platform == 'win32':
@@ -117,6 +120,7 @@ class TestFileReorganization:
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Scenario 10: All filenames are generic (no command-name prefix)."""
         claude_dir = e2e_isolated_home['claude_dir']
@@ -144,12 +148,13 @@ class TestFileReorganization:
             config_source_url=None,
             command_names=command_names,
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         create_launcher_script(artifact_base_dir, cmd)
 
         # Verify generic names exist
-        for expected_name in ['config.json', 'manifest.json', 'mcp.json', 'launch.sh']:
+        for expected_name in ['config.json', 'manifest.json', 'resolved-config.yaml', 'mcp.json', 'launch.sh']:
             assert (artifact_base_dir / expected_name).exists(), (
                 f'Expected generic file {expected_name} in artifact_base_dir'
             )

@@ -219,8 +219,9 @@ class TestManifestFile:
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
-        """Verify {cmd}-manifest.json is created with correct structure."""
+        """Verify manifest.json and resolved-config.yaml are created with correct structure."""
         from scripts.setup_environment import classify_config_source
         from scripts.setup_environment import resolve_config_source_url
         from scripts.setup_environment import write_manifest
@@ -242,19 +243,24 @@ class TestManifestFile:
             config_source_url=config_source_url,
             command_names=golden_config['command-names'],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
 
         from tests.e2e.validators import validate_manifest
+        from tests.e2e.validators import validate_resolved_config
 
         errors = validate_manifest(manifest_path, golden_config)
         assert not errors, 'Manifest validation failed:\n' + '\n'.join(errors)
+        errors = validate_resolved_config(claude_dir, golden_resolved_config)
+        assert not errors, 'resolved-config.yaml validation failed:\n' + '\n'.join(errors)
 
     def test_manifest_has_all_required_fields(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest contains exactly the expected field set."""
         from scripts.setup_environment import write_manifest
@@ -272,6 +278,7 @@ class TestManifestFile:
             config_source_url='https://example.com/config.yaml',
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
@@ -306,6 +313,7 @@ class TestManifestFile:
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        golden_resolved_config: dict[str, Any],
     ) -> None:
         """Verify manifest is overwritten when setup runs again."""
         from scripts.setup_environment import write_manifest
@@ -324,6 +332,7 @@ class TestManifestFile:
             config_source_url=None,
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         # Write manifest again with version 2.0.0
@@ -336,6 +345,7 @@ class TestManifestFile:
             config_source_url=None,
             command_names=[cmd],
             claude_code_version=None,
+            resolved_config=golden_resolved_config,
         )
 
         manifest_path = claude_dir / 'manifest.json'
