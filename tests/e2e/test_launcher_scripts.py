@@ -15,6 +15,8 @@ import pytest
 from scripts.setup_environment import create_launcher_script
 from scripts.setup_environment import register_global_command
 from tests.e2e.expected import EXPECTED_PATHS
+from tests.e2e.shells import find_bash
+from tests.e2e.shells import find_powershell
 from tests.e2e.validators import validate_launcher_script
 
 
@@ -310,36 +312,6 @@ class TestLauncherScriptsPlatformAgnostic:
         assert not errors, 'Launcher script format validation failed:\n' + '\n'.join(errors)
 
 
-def _find_bash() -> str | None:
-    """Locate a bash able to run the generated POSIX launcher.
-
-    On Windows, plain which('bash') can resolve to the WSL shim, which
-    cannot execute Windows paths; the Git Bash discovery from the module
-    under test is authoritative there.
-
-    Returns:
-        Path to a usable bash executable, or None when unavailable.
-    """
-    import shutil
-
-    if sys.platform == 'win32':
-        from scripts.setup_environment import find_bash_windows
-
-        return find_bash_windows()
-    return shutil.which('bash')
-
-
-def _find_powershell() -> str | None:
-    """Locate a PowerShell able to parse generated .ps1 wrappers.
-
-    Returns:
-        Path to a PowerShell executable, or None when unavailable.
-    """
-    import shutil
-
-    return shutil.which('pwsh') or shutil.which('powershell')
-
-
 class TestGeneratedScriptSyntax:
     """Generated scripts must parse with their real interpreters.
 
@@ -369,7 +341,7 @@ class TestGeneratedScriptSyntax:
         """bash -n accepts the generated launch.sh."""
         import subprocess
 
-        bash = _find_bash()
+        bash = find_bash()
         if bash is None:
             pytest.skip('bash unavailable')
         cmd = golden_config['command-names'][0]
@@ -397,7 +369,7 @@ class TestGeneratedScriptSyntax:
         """The PowerShell AST parser accepts the generated start.ps1."""
         import subprocess
 
-        powershell = _find_powershell()
+        powershell = find_powershell()
         if powershell is None:
             pytest.skip('PowerShell unavailable')
         cmd = golden_config['command-names'][0]
@@ -436,7 +408,7 @@ class TestLauncherExecutionSmoke:
         import os
         import subprocess
 
-        bash = _find_bash()
+        bash = find_bash()
         if bash is None:
             pytest.skip('bash unavailable')
         paths = e2e_isolated_home

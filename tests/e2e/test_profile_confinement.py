@@ -23,6 +23,9 @@ leaves every other profile alone:
 - The final summary names the files the run wrote: the profile's
   config.json and .claude.json for an isolated run, ~/.claude/settings.json
   and ~/.claude.json for a base run.
+- The loaders work when sourced: a null entry removes a variable the
+  session inherited, in bash on every platform and in CMD and PowerShell
+  on Windows; env.fish is generated when fish is installed.
 
 A base run keeps writing ~/.claude.json and the OS environment as before.
 
@@ -40,6 +43,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 from collections.abc import Mapping
 from pathlib import Path
@@ -51,6 +57,8 @@ import yaml
 
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
+from tests.e2e.shells import find_bash
+from tests.e2e.shells import find_powershell
 from tests.e2e.validators import validate_env_loader_files
 
 PROFILE_NAME = 'e2e-corp'
@@ -59,6 +67,7 @@ DETECTED_IDE_CLI = 'code'
 _ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 MACHINE_WIDE_CONTROLS = ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL')
 BASE_ACCOUNT = {'emailAddress': 'base@example.com', 'accountUuid': 'base-account-uuid'}
+LOADER_VARS: dict[str, str | None] = {'E2E_KEPT': 'kept-value', 'E2E_GONE': None}
 
 
 def _write_yaml(path: Path, data: dict[str, Any]) -> Path:
@@ -186,6 +195,13 @@ def _output(capsys: pytest.CaptureFixture[str]) -> str:
 def _machine_wide_rows(output: str) -> list[str]:
     """Return the text of every [machine-wide] row of the installation summary."""
     return [line.split('[machine-wide] ', 1)[1] for line in output.splitlines() if '[machine-wide] ' in line]
+
+
+def _run_isolated_with_loader_vars(config_path: Path, home: Path) -> Path:
+    """Install an unpinned isolated profile declaring LOADER_VARS and return its profile directory."""
+    _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+    assert exit_code is None
+    return home / '.claude' / PROFILE_NAME
 
 
 class TestIsolatedInstallLeavesTheBaseAlone:
@@ -628,6 +644,62 @@ class TestMachineWideWritesNamedBeforeConsent:
         assert f'[machine-wide] Claude Code version pin {PINNED_VERSION}: holds the binary every profile uses' in output
         assert '[machine-wide] IDE extension' not in output
 
+    def test_isolated_dry_run_names_destinations_project_servers_and_dependencies(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Content that lands outside the profile is named per destination, server and command group."""
+        home = e2e_isolated_home['home']
+        (tmp_path / 'payload.txt').write_text('payload\n', encoding='utf-8')
+        config = _corp_like_config(isolated=True)
+        config['files-to-download'] = [
+            {'source': 'payload.txt', 'dest': '~/.serena/x.yml'},
+            {'source': 'payload.txt', 'dest': '~/.claude/x.txt'},
+            {'source': 'payload.txt', 'dest': f'~/.claude/{PROFILE_NAME}/x.txt'},
+        ]
+        config['mcp-servers'] = [
+            {'name': 'shared-server', 'scope': 'project', 'transport': 'http', 'url': 'http://localhost:3001/shared'},
+            {'name': 'mine-server', 'scope': 'user', 'transport': 'http', 'url': 'http://localhost:3002/mine'},
+        ]
+        config['dependencies'] = {'common': ["echo 'dependency-installed'"]}
+        config_path = _write_yaml(tmp_path / 'corp.yaml', config)
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        rows = _machine_wide_rows(_output(capsys))
+        assert 'files-to-download outside the profile: ~/.serena/x.yml' in rows
+        assert 'files-to-download outside the profile: ~/.claude/x.txt' in rows
+        assert not any(
+            PROFILE_NAME in row for row in rows if row.startswith('files-to-download')
+        ), 'A destination inside the profile is not a machine-wide write'
+        assert '.mcp.json in the working directory: project-scope MCP server(s) shared-server' in rows
+        assert not any('mine-server' in row for row in rows), 'A user-scope server lands in the profile'
+        assert 'Dependency commands: run machine-wide (listed above)' in rows
+
+    def test_unpinned_isolated_dry_run_beside_a_pinned_base_keeps_the_installed_binary(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The base pins a version, so Step 1 keeps the installed binary and the row says so."""
+        home = e2e_isolated_home['home']
+        _write_json(e2e_isolated_home['claude_dir'] / 'manifest.json', {'name': None, 'claude_code_version': PINNED_VERSION})
+        config_path = _write_yaml(tmp_path / 'personal.yaml', _corp_like_config(isolated=True, pinned=False))
+
+        with patch('scripts.setup_environment._installed_claude_version', return_value='2.1.80'):
+            _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert '[machine-wide] Claude Code binary: keep the installed version 2.1.80 (used by every profile)' in output
+        assert 'install or upgrade' not in output
+        assert f'[machine-wide] {home / ".claude.json"}: installMethod, recorded by the Claude Code installer' in output, \
+            'A kept binary can still be migrated, so the installMethod record is named'
+
     def test_base_dry_run_has_no_machine_wide_block(
         self,
         e2e_isolated_home: dict[str, Path],
@@ -709,3 +781,129 @@ class TestFinalSummaryNamesTheFilesWritten:
         assert 'User settings: configured in ~/.claude/settings.json' in output
         assert 'User settings: built into' not in output
         assert f'Global config: configured in {home / ".claude.json"}' in output
+
+
+class TestLoaderFilesWorkWhenSourced:
+    """Loader files generated by an isolated run take effect in the shells that source them."""
+
+    @staticmethod
+    def _loader_config(tmp_path: Path) -> Path:
+        return _write_yaml(
+            tmp_path / 'personal.yaml',
+            _corp_like_config(isolated=True, pinned=False, os_env_variables=LOADER_VARS),
+        )
+
+    def test_env_fish_is_generated_with_set_and_erase_lines_when_fish_is_installed(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        real_which = shutil.which
+
+        def which_with_fish(cmd: str, *args: Any, **kwargs: Any) -> str | None:
+            return '/usr/bin/fish' if cmd == 'fish' else real_which(cmd, *args, **kwargs)
+
+        with patch('scripts.setup_environment.shutil.which', side_effect=which_with_fish):
+            profile_dir = _run_isolated_with_loader_vars(self._loader_config(tmp_path), home)
+
+        assert (profile_dir / 'env.fish').is_file(), 'fish is installed, so the fish loader is generated'
+        errors = validate_env_loader_files(claude_dir, LOADER_VARS, command_name=PROFILE_NAME, expect_fish=True)
+        assert not errors, '\n'.join(errors)
+        content = (profile_dir / 'env.fish').read_text(encoding='utf-8')
+        assert 'set -gx E2E_KEPT "kept-value"\n' in content
+        assert 'set -q E2E_GONE; and set -e E2E_GONE\n' in content
+        assert 'E2E_GONE "' not in content, 'A null entry is never exported'
+
+    def test_env_fish_is_absent_without_fish(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        real_which = shutil.which
+
+        def which_without_fish(cmd: str, *args: Any, **kwargs: Any) -> str | None:
+            return None if cmd == 'fish' else real_which(cmd, *args, **kwargs)
+
+        with patch('scripts.setup_environment.shutil.which', side_effect=which_without_fish):
+            profile_dir = _run_isolated_with_loader_vars(self._loader_config(tmp_path), home)
+
+        assert not (profile_dir / 'env.fish').exists()
+        errors = validate_env_loader_files(claude_dir, LOADER_VARS, command_name=PROFILE_NAME, expect_fish=True)
+        assert errors == [
+            f'Per-command Fish env loader not found although fish is installed: {profile_dir / "env.fish"}',
+        ]
+
+    def test_bash_loader_unsets_the_inherited_variable_and_exports_the_declared_one(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Sourcing env.sh in a shell that inherited the deleted variable removes it."""
+        bash = find_bash()
+        if bash is None:
+            pytest.skip('bash unavailable')
+        profile_dir = _run_isolated_with_loader_vars(self._loader_config(tmp_path), e2e_isolated_home['home'])
+        env_sh = (profile_dir / 'env.sh').as_posix()
+
+        probe = (
+            f'export E2E_GONE=1; export E2E_KEPT=stale; . "{env_sh}"; '
+            '[ -z "${E2E_GONE+x}" ] && [ "$E2E_KEPT" = "kept-value" ]'
+        )
+        completed = subprocess.run([bash, '-c', probe], capture_output=True, text=True, check=False, timeout=60)
+
+        assert completed.returncode == 0, f'env.sh did not unset E2E_GONE or export E2E_KEPT:\n{completed.stderr}'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='env.cmd is generated only on Windows')
+    def test_cmd_loader_unsets_the_inherited_variable_and_sets_the_declared_one(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Calling env.cmd in a CMD session that inherited the deleted variable removes it."""
+        profile_dir = _run_isolated_with_loader_vars(self._loader_config(tmp_path), e2e_isolated_home['home'])
+        probe = tmp_path / 'probe.cmd'
+        probe.write_text(
+            '@echo off\r\n'
+            'set E2E_GONE=1\r\n'
+            'set E2E_KEPT=stale\r\n'
+            f'call "{profile_dir / "env.cmd"}"\r\n'
+            'if defined E2E_GONE exit /b 1\r\n'
+            'if not "%E2E_KEPT%"=="kept-value" exit /b 2\r\n'
+            'exit /b 0\r\n',
+            encoding='utf-8',
+        )
+
+        completed = subprocess.run(
+            ['cmd', '/d', '/c', str(probe)], capture_output=True, text=True, check=False, timeout=60,
+        )
+
+        assert completed.returncode == 0, \
+            f'env.cmd left E2E_GONE defined or E2E_KEPT stale (exit {completed.returncode})'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='env.ps1 is generated only on Windows')
+    def test_powershell_loader_removes_the_inherited_variable_and_sets_the_declared_one(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Dot-sourcing env.ps1 in a PowerShell session that inherited the deleted variable removes it."""
+        powershell = find_powershell()
+        if powershell is None:
+            pytest.skip('PowerShell unavailable')
+        profile_dir = _run_isolated_with_loader_vars(self._loader_config(tmp_path), e2e_isolated_home['home'])
+
+        probe = (
+            "$env:E2E_GONE='1'; $env:E2E_KEPT='stale'; "
+            f". '{profile_dir / 'env.ps1'}'; "
+            "exit [int]((Test-Path Env:E2E_GONE) -or ($env:E2E_KEPT -ne 'kept-value'))"
+        )
+        completed = subprocess.run(
+            [powershell, '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', probe],
+            capture_output=True, text=True, check=False, timeout=120,
+        )
+
+        assert completed.returncode == 0, f'env.ps1 left E2E_GONE set or E2E_KEPT stale:\n{completed.stderr}'
