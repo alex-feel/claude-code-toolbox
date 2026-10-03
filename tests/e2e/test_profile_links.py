@@ -349,6 +349,35 @@ class TestRerunsAndRepairs:
         assert f'pass --link-dirs {",".join(LINKABLE_PROFILE_DIRS)}' in output
         assert (agents / 'local.md').is_file(), 'nothing was moved or removed'
 
+    def test_remembered_typed_value_overrides_a_changed_configuration_value_with_a_warning(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A projects link typed at install time is kept when the YAML later asks for all, and the run says so."""
+        cfg = write_config(configs, 'personal.yaml', {**_aegis(), 'link-dirs': ['projects']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([
+            str(cfg), *SKIP, '--yes', '--command-names', 'p2', '--link-dirs', 'projects', '--link-from', 'base',
+        ]) == 0
+        assert read_manifest(claude_dir / 'p2')['link']['origins'] == {'dirs': 'cli', 'source': 'cli'}
+        write_config(configs, 'personal.yaml', {**_aegis(), 'link-dirs': ['all']})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'p2', *SKIP, '--yes']) == 0
+
+        output = _output(capsys)
+        assert (
+            "link-dirs: using the remembered value projects [remembered]; the configuration's link-dirs changed from "
+            f'projects to {", ".join(LINKABLE_PROFILE_DIRS)} since the profile was installed. Pass --link-dirs to '
+            'replace the remembered value.'
+        ) in output
+        assert _links_to(claude_dir / 'p2' / 'projects', claude_dir / 'projects')
+        for entry in CONTENT_ENTRIES:
+            assert not ((claude_dir / 'p2' / entry).exists() and _is_link(claude_dir / 'p2' / entry)), entry
+        assert (claude_dir / 'p2' / 'agents' / 'core.md').is_file(), 'the profile keeps installing its own content'
+        assert read_manifest(claude_dir / 'p2')['link'] == {
+            'dirs': ['projects'], 'source': 'base', 'origins': {'dirs': 'cli', 'source': 'cli'},
+        }
+
     def test_configuration_value_never_converts_a_real_projects_directory(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -1195,6 +1224,30 @@ class TestSourceRunRefreshesDependents:
         assert 'The following dependent profiles failed to refresh:' in output
         assert '- aegis-2: failed (exit code 1); retry with --profile aegis-2' in output
         assert _installed_at(claude_dir / 'aegis-3') != before, 'the other dependent still ran'
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='administrator rights are a Windows concern')
+    def test_failed_dependent_with_a_global_npm_install_gets_the_elevated_terminal_remedy(
+        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent whose snapshot installs a global npm package fails on a non-elevated source run with the remedy."""
+        cfg = write_config(configs, 'aegis.yaml', {**_aegis(), 'dependencies': {'common': ['echo npm install -g fake']}})
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1']) == 0
+        _install_dependent(cfg, 'aegis-2')
+        runner = tmp_path / 'failing_runner.py'
+        runner.write_text('import sys\nprint("child failed")\nsys.exit(1)\n', encoding='utf-8')
+        monkeypatch.setenv('PYTHONPATH', str(Path(__file__).resolve().parents[2]))
+        capfd.readouterr()
+
+        with patch.object(setup_environment, 'is_admin', return_value=False):
+            code = run_main(['--profile', 'aegis-1', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 1, output
+        assert 'child failed' in output
+        assert (
+            '- aegis-2: failed (exit code 1); retry with --profile aegis-2 from an elevated terminal (a global npm '
+            'install needs administrator rights the run could not request)'
+        ) in output
 
     def test_dry_run_lists_the_dependents_and_starts_none(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
