@@ -10,6 +10,9 @@
 
       # One-liner from CMD or external PowerShell:
       powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='python'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+
+    To install it as the isolated profile ~/.claude/<name> (same as --command-names):
+      $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='<name>[,<alias>...]'
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Installation script needs console output')]

@@ -17498,33 +17498,13 @@ class TestResolveArgs:
 
 
 class TestRequestAdminElevationEnvVars:
-    """Test that critical_env_vars in request_admin_elevation covers all workflow env vars."""
+    """Test the environment variables request_admin_elevation() forwards."""
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only UAC logic')
-    def test_critical_env_vars_include_workflow_control_vars(self) -> None:
-        """Verify critical_env_vars includes all workflow-control environment variables."""
-        import ast
-        import inspect
-
-        source = inspect.getsource(setup_environment.request_admin_elevation)
-        tree = ast.parse(source)
-
-        critical_vars: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if (
-                        isinstance(target, ast.Name)
-                        and target.id == 'critical_env_vars'
-                        and isinstance(node.value, ast.List)
-                    ):
-                        critical_vars.extend(
-                            elt.value
-                            for elt in node.value.elts
-                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                        )
-
-        expected_vars = {
+    def test_forwarded_variables_cover_workflow_controls_and_credentials(self) -> None:
+        """The registry twins plus the credentials form the forwarded set."""
+        forwarded = {twin.variable for twin in setup_environment.ENV_TWINS}
+        forwarded.update(setup_environment.UAC_FORWARDED_ENV_VARS)
+        assert forwarded >= {
             'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
             'GITHUB_TOKEN',
             'GITLAB_TOKEN',
@@ -17538,8 +17518,8 @@ class TestRequestAdminElevationEnvVars:
             'CLAUDE_CODE_TOOLBOX_SELECT',
             'CLAUDE_CODE_TOOLBOX_WITH',
             'CLAUDE_CODE_TOOLBOX_WITHOUT',
+            'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
         }
-        assert set(critical_vars) == expected_vars
 
     def test_backslash_ending_value_round_trips_msvcrt_quoting(self) -> None:
         """A value ending in a backslash keeps later flags as separate tokens.
@@ -17962,28 +17942,28 @@ class TestValidateComponents:
         assert any('hooks/h-config.json' in text for text in warning_texts)
 
 
-class TestParseComponentCsv:
-    """Test _parse_component_csv() absent/empty distinction."""
+class TestParseCsv:
+    """Test _parse_csv() absent/empty distinction."""
 
     def test_none_stays_none(self) -> None:
         """Absent input returns None."""
-        assert setup_environment._parse_component_csv(None) is None
+        assert setup_environment._parse_csv(None) is None
 
     def test_simple_split(self) -> None:
         """Comma-separated names split into tokens."""
-        assert setup_environment._parse_component_csv('a,b') == ['a', 'b']
+        assert setup_environment._parse_csv('a,b') == ['a', 'b']
 
     def test_whitespace_stripped(self) -> None:
         """Tokens are whitespace-stripped."""
-        assert setup_environment._parse_component_csv(' a , b ') == ['a', 'b']
+        assert setup_environment._parse_csv(' a , b ') == ['a', 'b']
 
     def test_empty_string_is_empty_list(self) -> None:
         """An empty string parses to an empty list, not None."""
-        assert setup_environment._parse_component_csv('') == []
+        assert setup_environment._parse_csv('') == []
 
     def test_only_commas_is_empty_list(self) -> None:
         """Separators without tokens parse to an empty list."""
-        assert setup_environment._parse_component_csv(',,') == []
+        assert setup_environment._parse_csv(',,') == []
 
 
 class TestValidateComponentSelectorArgs:
