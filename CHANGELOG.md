@@ -1,5 +1,22 @@
 # Changelog
 
+## [7.5.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.2...v7.5.0) (2026-10-03)
+
+
+### Features
+
+* install any configuration as a named profile with --command-names ([#463](https://github.com/alex-feel/claude-code-toolbox/issues/463)) ([833076d](https://github.com/alex-feel/claude-code-toolbox/commit/833076d68ac8f414a0e55a98f0ed80101e251b6c))
+* remember profile installs and re-run them with --profile ([#466](https://github.com/alex-feel/claude-code-toolbox/issues/466)) ([926cab1](https://github.com/alex-feel/claude-code-toolbox/commit/926cab1f155f4277b4e70acf1cc8dd9ae0684f23))
+
+
+### Bug Fixes
+
+* build launcher and wrapper paths from the profile directory ([#461](https://github.com/alex-feel/claude-code-toolbox/issues/461)) ([b987bdc](https://github.com/alex-feel/claude-code-toolbox/commit/b987bdc68e0f470c94d838b8b12140c1c2d9f858))
+* keep an isolated install inside its own profile ([#462](https://github.com/alex-feel/claude-code-toolbox/issues/462)) ([78a4505](https://github.com/alex-feel/claude-code-toolbox/commit/78a45054dbfd7f8a244c242c9db34f6c8a53517f))
+* make command-defaults and version independent of command-names ([#465](https://github.com/alex-feel/claude-code-toolbox/issues/465)) ([9ed7a89](https://github.com/alex-feel/claude-code-toolbox/commit/9ed7a89ed19676b188491f0dfa9df6f187307119))
+* never request Windows elevation during a dry run ([#457](https://github.com/alex-feel/claude-code-toolbox/issues/457)) ([a2adfa0](https://github.com/alex-feel/claude-code-toolbox/commit/a2adfa0ef8d6d510146b98d7dd77ac0a4d4833a9))
+* remove the launcher update notice that nothing triggers ([#458](https://github.com/alex-feel/claude-code-toolbox/issues/458)) ([dcf22c1](https://github.com/alex-feel/claude-code-toolbox/commit/dcf22c1f2d59dfff243b8b59d50152389c247822))
+
 ## [7.4.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.1...v7.4.2) (2026-09-27)
 
 
