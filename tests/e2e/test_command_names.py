@@ -259,6 +259,46 @@ class TestPrecedence:
         assert not (e2e_isolated_home['claude_dir'] / 'claude-a').exists()
 
 
+class TestReplayLine:
+    """The Components replay line reproduces the profile a typed list selected."""
+
+    COMPONENTS_CONFIG: dict[str, Any] = {
+        **PERSONAL_CONFIG,
+        'agents': ['agents/core.md'],
+        'components': [{'name': 'core', 'includes': {'agents': ['agents/core.md']}}],
+    }
+
+    @pytest.mark.parametrize(
+        ('source', 'expected_replay'),
+        [
+            ('flag', 'Replay: --select core --command-names p2,p2-alias\n'),
+            ('variable', 'Replay: --select core --command-names p2,p2-alias\n'),
+            ('configuration', 'Replay: --select core\n'),
+        ],
+    )
+    def test_replay_carries_names_that_did_not_come_from_the_configuration(
+        self,
+        source: str,
+        expected_replay: str,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Typed or environment names join the replay; the configuration's names come back on their own."""
+        extra = ['--dry-run']
+        if source == 'flag':
+            extra += ['--command-names', 'p2,p2-alias']
+        elif source == 'variable':
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'p2,p2-alias')
+
+        assert _install(extra, self.COMPONENTS_CONFIG) == 0
+
+        captured = capsys.readouterr()
+        summary = (captured.out + captured.err).replace('\r\n', '\n')
+        assert expected_replay in summary
+        _assert_nothing_written(e2e_isolated_home)
+
+
 class TestTypedNameNeverMergesWithTheConfiguration:
     """A typed single name is a new profile with exactly one command."""
 
