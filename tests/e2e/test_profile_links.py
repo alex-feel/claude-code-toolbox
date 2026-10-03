@@ -957,6 +957,35 @@ class TestEnvironmentValues:
         ) in output
         assert not any(_is_link(claude_dir / entry) for entry in LINKABLE_PROFILE_DIRS if (claude_dir / entry).exists())
 
+    def test_profile_all_refuses_a_link_variable_or_flag_before_any_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile all names a leftover CLAUDE_CODE_TOOLBOX_LINK_DIRS, or a typed --link-from, and starts nothing."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'aegis-2')
+        claude_dir = e2e_isolated_home['claude_dir']
+        before = {name: read_manifest(claude_dir / name)['installed_at'] for name in ('aegis-1', 'aegis-2')}
+        capsys.readouterr()
+
+        with (
+            patch.object(setup_environment.subprocess, 'run') as run,
+            patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all'}),
+        ):
+            assert run_main(['--profile', 'all', *SKIP, '--yes']) == 1
+        output = _output(capsys)
+        assert (
+            'cannot be combined with CLAUDE_CODE_TOOLBOX_LINK_DIRS; clear CLAUDE_CODE_TOOLBOX_LINK_DIRS (unset '
+            'CLAUDE_CODE_TOOLBOX_LINK_DIRS, or Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS in PowerShell).'
+        ) in output
+        run.assert_not_called()
+        capsys.readouterr()
+
+        with patch.object(setup_environment.subprocess, 'run') as run:
+            assert run_main(['--profile', 'all', '--link-from', 'aegis-1', *SKIP, '--yes']) == 1
+        assert 'cannot be combined with --link-from; drop them from the command line.' in _output(capsys)
+        run.assert_not_called()
+        assert {name: read_manifest(claude_dir / name)['installed_at'] for name in before} == before, 'no child ran'
+
     def test_environment_value_that_changes_the_links_is_guarded(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:

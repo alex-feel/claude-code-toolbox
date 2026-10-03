@@ -730,7 +730,17 @@ class TestRefreshAllConflicts:
         args = _args(link_dirs='all', link_from='aegis-1')
         args.profile = 'all'
         assert setup_environment.refresh_all_profiles(args) == 1
-        assert 'cannot be combined with --link-dirs, --link-from' in capsys.readouterr().err
+        assert 'cannot be combined with --link-dirs, --link-from; drop them from the command line.' in capsys.readouterr().err
+
+    def test_link_variables_are_named_with_the_clear_remedy(self, capsys: pytest.CaptureFixture[str]) -> None:
+        args = _args(link_from='aegis-1', env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all'})
+        args.profile = 'all'
+        assert setup_environment.refresh_all_profiles(args) == 1
+        assert (
+            'cannot be combined with CLAUDE_CODE_TOOLBOX_LINK_DIRS, --link-from; drop them from the command line and clear '
+            'CLAUDE_CODE_TOOLBOX_LINK_DIRS (unset CLAUDE_CODE_TOOLBOX_LINK_DIRS, or Remove-Item '
+            'Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS in PowerShell).'
+        ) in capsys.readouterr().err
 
 
 class TestWiredHookFiles:

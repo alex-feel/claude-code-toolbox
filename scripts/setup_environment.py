@@ -18258,26 +18258,36 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
         The exit code: 1 when any child failed, the request was invalid, or
         elevation was denied; 0 otherwise.
     """
+    # Each conflicting value is named the way it was given: the flag, or
+    # the variable it came from, with the commands that clear the variables
+    def _given_as(dest: str, flag: str) -> str:
+        if args.origins.get(dest) != 'env':
+            return flag
+        return next(twin.variable for twin in ENV_TWINS if twin.dest == dest)
+
     conflicts = [
         name for name, present in (
-            (
-                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if args.origins.get('config') == 'env' else 'a configuration',
-                bool(args.config),
-            ),
-            ('--command-names', args.command_names is not None),
-            ('--select', args.select is not None),
-            ('--with', args.with_ is not None),
-            ('--without', args.without is not None),
+            (_given_as('config', 'a configuration'), bool(args.config)),
+            (_given_as('command_names', '--command-names'), args.command_names is not None),
+            (_given_as('select', '--select'), args.select is not None),
+            (_given_as('with_', '--with'), args.with_ is not None),
+            (_given_as('without', '--without'), args.without is not None),
             ('--switch-config', bool(args.switch_config)),
             ('--list-components', bool(args.list_components)),
-            ('--link-dirs', args.link_dirs is not None),
-            ('--link-from', args.link_from is not None),
+            (_given_as('link_dirs', '--link-dirs'), args.link_dirs is not None),
+            (_given_as('link_from', '--link-from'), args.link_from is not None),
         ) if present
     ]
     if conflicts:
+        variables = [name for name in conflicts if name.startswith('CLAUDE_CODE_TOOLBOX_')]
+        remedies: list[str] = []
+        if len(variables) < len(conflicts):
+            remedies.append('drop them from the command line')
+        if variables:
+            remedies.append(f'clear {clear_variables_text(variables)}')
         error(
             f'--profile {ALL_PROFILES} refreshes every installed profile from its own manifest and cannot '
-            f'be combined with {", ".join(conflicts)}; clear the flag or its variable.',
+            f'be combined with {", ".join(conflicts)}; {" and ".join(remedies)}.',
         )
         return 1
     home_dir = get_real_user_home()
