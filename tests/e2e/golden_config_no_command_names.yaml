@@ -171,7 +171,8 @@ os-env-variables:
   E2E_OS_INT_VAR: 30000
   E2E_OS_BOOL_VAR: true
 
-# Command defaults - system-prompt in non-command-names mode emits a WARNING
+# Command defaults - without command-names no launcher applies the system
+# prompt, so the installation summary notes that it applies only to isolated installs
 command-defaults:
   system-prompt: "prompts/e2e-test-prompt.md"
   mode: "replace"

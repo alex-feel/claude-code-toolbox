@@ -1,0 +1,7 @@
+# Declares command-names and no command-defaults: an isolated profile whose
+# launcher starts Claude Code with its default system prompt.
+name: "Command Names Without Command Defaults"
+
+command-names:
+  - "names-probe"
+  - "names-probe-alias"

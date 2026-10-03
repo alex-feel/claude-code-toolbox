@@ -165,7 +165,7 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`version`](#version)                                 | `str`                  | No       | `None`  | Config version (semver)                                    |
 | [`inherit`](#inherit)                                 | `str \| list`          | No       | `None`  | Parent config URL/path/name or list for composition chains |
 | [`merge-keys`](#merge-keys)                           | `list[str]`            | No       | `None`  | Keys to merge instead of replace                           |
-| [`command-names`](#command-names)                     | `list[str]`            | No*      | `[]`    | Command names and aliases                                  |
+| [`command-names`](#command-names)                     | `list[str]`            | No       | `[]`    | Command names and aliases                                  |
 | [`base-url`](#base-url)                               | `str`                  | No       | `None`  | Base URL for relative resource paths                       |
 | [`claude-code-version`](#claude-code-version)         | `str`                  | No       | `None`  | Specific Claude Code version or `"latest"`                 |
 | [`install-nodejs`](#install-nodejs)                   | `bool`                 | No       | `None`  | Install Node.js LTS before dependencies                    |
@@ -181,12 +181,10 @@ Quick-reference table of all configuration keys. Each key links to its detailed 
 | [`mcp-servers`](#mcp-servers)                         | `list[dict]`           | No       | `[]`    | MCP server configurations                                  |
 | [`components`](#components)                           | `list[Component]`      | No       | `[]`    | Author-defined selectable component groups                 |
 | [`os-env-variables`](#os-env-variables)               | `dict`                 | No       | `None`  | OS-level persistent environment variables                  |
-| [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No*      | `None`  | System prompt and mode                                     |
+| [`command-defaults`](#command-defaults)               | `CommandDefaults`      | No       | `None`  | System prompt and mode                                     |
 | [`user-settings`](#user-settings)                     | `UserSettings`         | No       | `None`  | Raw `settings.json` content (camelCase keys)               |
 | [`status-line`](#status-line)                         | `StatusLine`           | No       | `None`  | Status line script configuration                           |
 
-> `command-names` and `command-defaults` have a co-dependency: if one is specified, the other must also be specified.
->
 > `link-projects-dir` requires `command-names`: setting `link-projects-dir: true` without `command-names` produces a validation error, because the projects link only applies to an isolated profile (created only when `command-names` is present).
 
 ### Configuration key naming
@@ -253,11 +251,11 @@ post-install-notes: |
 
 #### `version`
 
-Configuration version. Setup records it as `version` in the profile manifest (`manifest.json`).
+Configuration version. Setup records it as `version` in the manifest of the profile it installs: `~/.claude/manifest.json` for a base install and `~/.claude/{cmd}/manifest.json` for an isolated one.
 
 - **Type:** `str | None`
 - **Default:** `None`
-- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Requires `command-names`; validation rejects `version` without it.
+- **Validation:** Must be valid semver (`X.Y.Z` format, with optional pre-release and build metadata). Valid with or without `command-names`.
 - **Inheritance:** Not inherited. Extracted from the root config before inheritance resolution.
 - **Example:** `version: "1.0.0"` or `version: "2.1.0-beta.1"`
 
@@ -272,7 +270,6 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Cannot contain spaces
   - Must be alphanumeric, hyphens, and underscores only
   - Cannot be a reserved name, compared without regard to case: `none`, `base`, `all`, `skills`, `agents`, `commands`, `rules`, `hooks`, `output-styles`, `prompts`, `projects`
-- **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
 - **Note:** If no command names are given (neither here nor through `--command-names`), hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, with `name` as `null` and an empty `command_names` list (see [Profile manifests](#profile-manifests)); setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
@@ -785,16 +782,18 @@ The `config.fish` write is always the authoritative source. The `set -Ux` call i
 
 #### `command-defaults`
 
-System prompt configuration for the environment command.
+System prompt configuration for the commands an isolated profile installs.
 
 - **Type:** `CommandDefaults | None`
 - **Default:** `None`
 - **Fields:**
-  - `system-prompt` (str) -- Path to the system prompt file (downloaded to `~/.claude/prompts/`)
+  - `system-prompt` (str) -- Path to the system prompt file (downloaded to the profile's `prompts/` directory)
   - `mode` (str, default: `"replace"`) -- How the prompt is applied:
     - `replace` -- Completely replaces the default system prompt (`--system-prompt` flag, added in Claude Code v2.0.14)
     - `append` -- Appends to Claude's default development prompt (`--append-system-prompt` flag, added in Claude Code v1.0.55)
-- **Co-dependency:** If specified, `command-names` must also be specified (and vice versa)
+- **Isolated install** (the run has command names, from `command-names`, `--command-names`, or `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`): the profile's launcher passes the prompt file from `~/.claude/{cmd}/prompts/` to Claude Code in the configured mode.
+- **Base install** (none of them gives the run any names): the prompt file is still downloaded to `~/.claude/prompts/`, but a base install has no launcher, so the prompt does not reach Claude Code. The run is not refused: the installation summary and `--dry-run` state that `command-defaults` applies only to isolated installs, and the closing summary reports the system prompt as not applied. See [`command-defaults` Without Command Names](#command-defaults-without-command-names).
+- **Validation:** Valid with or without `command-names`.
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:**
 
@@ -2208,18 +2207,21 @@ This constraint is enforced at two levels: the `EnvironmentConfig` Pydantic mode
 
 The validation walks `config.get('mcp-servers', [])` and matches BOTH the string form (`scope: profile`) AND the list form (`scope: [user, profile]`) -- a combined `[user, profile]` scope without `command-names` also triggers the error because the `profile` portion of the list has no launcher target. Error output is written to `sys.stderr` (not stdout).
 
-### `command-defaults.system-prompt` in Non-Command-Names Mode (WARNING)
+### `command-defaults` Without Command Names
 
-System prompts are applied by the launcher via `--system-prompt` or `--append-system-prompt` CLI flags. Without `command-names`, there is no launcher, so the prompt file cannot be passed to Claude at runtime. The setup script emits a non-fatal WARNING (setup continues):
+System prompts are applied by the launcher via `--system-prompt` or `--append-system-prompt` CLI flags, and only an isolated install creates a launcher. A run with no command names installs a configuration that declares `command-defaults` without `command-names` as the base profile, and downloads the prompt file to `~/.claude/prompts/`. The same file run with `--command-names NAME` (or `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES=NAME`) installs the isolated profile `~/.claude/NAME`, whose launcher applies the prompt. When the run has no command names and `command-defaults` is not empty, the installation summary, shown before consent and by `--dry-run`, carries this line under Settings:
 
 ```text
-[WARN] command-defaults.system-prompt is set to 'prompts/my-prompt.md' but command-names is not specified.
-[WARN] System prompts are applied by the launcher; without command-names there is no launcher,
-[WARN] so the system prompt will NOT be applied.
-[WARN] Add 'command-names: [your-name]' to enable isolated environment with launcher-based system prompt injection.
+* command-defaults applies only to isolated installs, whose launcher passes the system prompt to Claude Code; this run has no command names
 ```
 
-Unlike profile-scoped MCP servers (which are a hard error because silently-dropped servers are a correctness risk), a silently-unused system prompt file is merely a configuration mistake -- a warning is sufficient. Warning output is written to stdout.
+and the closing summary reports the system prompt as not applied:
+
+```text
+* System prompt: not applied (command-defaults applies only to isolated installs, whose launcher passes the system prompt to Claude Code; this run has no command names)
+```
+
+Unlike profile-scoped MCP servers (a hard error, because silently dropped servers are a correctness risk), `command-defaults` without command names never fails a run: the prompt file is installed and the summaries say where it applies.
 
 ### Four-Writer Architectural Model Summary
 
@@ -2442,17 +2444,9 @@ A variable left over from an earlier install would rename the profile. The setup
 
 If the named configuration is not found, verify the name matches a YAML file in the [claude-code-artifacts-public](https://github.com/alex-feel/claude-code-artifacts-public) repository. Browse the repository to see available configurations.
 
-### version requires command-names
-
-Validation accepts the `version` field only together with `command-names`. Either add `command-names` or remove `version`.
-
 ### merge-keys requires inherit
 
 The `merge-keys` directive controls merge semantics during inheritance resolution. Without `inherit`, there is no parent configuration to merge from. Either add `inherit` or remove `merge-keys`. Note: an empty `merge-keys: []` without `inherit` is permitted.
-
-### command-defaults requires command-names
-
-Both `command-names` and `command-defaults` must be specified together. Provide both or neither.
 
 ### link-projects-dir requires command-names
 
