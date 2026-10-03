@@ -18,7 +18,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Slash commands** -- custom commands for frequently used workflows
 - **Rules** -- user-scope rule files for coding standards, security policies, and project conventions
 - **Skills** -- multi-file skill packages for complex agent capabilities
-- **System prompts** -- replace or append to the default Claude Code prompt
+- **System prompts** -- replace or append to the default Claude Code prompt in the commands an isolated profile installs
 - **Hooks** -- five hook types: command (shell scripts, shell or exec form), HTTP (webhooks), prompt (LLM evaluation), agent (subagent with tools), and MCP tool (a tool on a configured MCP server), plus shared helper modules delivered beside the hook scripts
 - **User and global settings** -- `user-settings` is raw `settings.json` content (camelCase keys) and `global-config` is raw `~/.claude.json` content, covering model selection, permissions, effort levels, thinking mode, environment variables, and every other Claude Code setting
 - **Status line** -- custom status bar scripts for real-time session information

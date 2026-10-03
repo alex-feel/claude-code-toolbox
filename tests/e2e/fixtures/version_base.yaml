@@ -1,0 +1,4 @@
+# Declares version and no command-names: a base install that records the
+# configuration version in ~/.claude/manifest.json.
+name: "Version Without Command Names"
+version: "3.1.4"

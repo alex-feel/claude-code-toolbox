@@ -1,0 +1,9 @@
+# Declares command-defaults and no command-names. Installed as it is, it
+# becomes the base profile, which has no launcher to hand the system prompt
+# to Claude Code; given command names for the run, it becomes an isolated
+# profile whose launcher appends the prompt.
+name: "Command Defaults Without Command Names"
+
+command-defaults:
+  system-prompt: "mock_repo/prompts/e2e-test-prompt.md"
+  mode: "append"
