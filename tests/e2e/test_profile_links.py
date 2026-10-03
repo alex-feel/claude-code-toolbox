@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -683,6 +684,86 @@ class TestLinkRules:
         assert 'link only between installs of one configuration' in output
         assert 'Profile "aegis-2" was installed from' not in output, 'the identity check runs before the switch guard'
         assert (e2e_isolated_home['claude_dir'] / 'aegis-2' / 'manifest.json').is_file()
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestConfigurationSwitch:
+    """A --switch-config run removes only what the profile holds itself, never what it sees through a link."""
+
+    def test_switching_dependents_leaves_the_source_and_its_other_dependents_intact(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Three dependents of aegis-1 switch configuration (projects only, none, re-pointed); aegis-1 loses nothing."""
+        cfg = _install_source(configs)
+        for name in ('aegis-2', 'aegis-3', 'aegis-4', 'aegis-5'):
+            _install_dependent(cfg, name)
+        other = write_config(configs, 'other.yaml', _plain('Other'))
+        assert run_main([str(other), *SKIP, '--yes', '--command-names', 'corp-1']) == 0
+        claude_dir = e2e_isolated_home['claude_dir']
+        source_dir = claude_dir / 'aegis-1'
+        source_before = home_state(source_dir)
+        for name in ('aegis-2', 'aegis-3', 'aegis-4', 'aegis-5'):
+            recorded = read_manifest(claude_dir / name)['files_written']
+            linked_paths = [path for path in recorded if path.split('/')[0] in LINKABLE_PROFILE_DIRS]
+            assert linked_paths == [], f'{name} records files it sees through its links: {linked_paths}'
+        capsys.readouterr()
+
+        switches = {
+            'aegis-2': ['--link-dirs', 'projects', '--link-from', 'aegis-1'],
+            'aegis-3': ['--link-dirs', 'none'],
+            'aegis-4': ['--link-dirs', 'all', '--link-from', 'corp-1'],
+        }
+        for name, link_argv in switches.items():
+            assert run_main([str(other), *SKIP, '--yes', '--command-names', name, *link_argv, '--switch-config']) == 0, name
+
+        output = _output(capsys)
+        assert output.count('Accepted via --switch-config') == 3
+        for name in switches:
+            for entry in CONTENT_ENTRIES:
+                assert f'file: {claude_dir / name / entry}' not in output, (name, entry)
+                assert f'Removed {claude_dir / name / entry}' not in output, (name, entry)
+        assert home_state(source_dir) == source_before, 'the source lost nothing'
+        assert (source_dir / 'agents' / 'core.md').is_file()
+        assert (source_dir / 'skills' / 'tool-skill' / 'SKILL.md').is_file()
+        for entry in LINKABLE_PROFILE_DIRS:
+            assert _links_to(claude_dir / 'aegis-5' / entry, source_dir / entry), entry
+        assert _links_to(claude_dir / 'aegis-2' / 'projects', source_dir / 'projects')
+        assert not any((claude_dir / 'aegis-2' / entry).exists() for entry in CONTENT_ENTRIES), (
+            'the content links were dissolved and the new configuration installs no content'
+        )
+        assert read_manifest(claude_dir / 'aegis-3')['link'] is None
+        assert not any((claude_dir / 'aegis-3' / entry).exists() for entry in LINKABLE_PROFILE_DIRS)
+        for entry in LINKABLE_PROFILE_DIRS:
+            assert _links_to(claude_dir / 'aegis-4' / entry, claude_dir / 'corp-1' / entry), entry
+        re_pointed = read_manifest(claude_dir / 'aegis-4')
+        assert re_pointed['link']['source'] == 'corp-1'
+        assert re_pointed['config_identity'] == read_manifest(claude_dir / 'corp-1')['config_identity']
+
+    def test_a_link_made_outside_the_setup_shields_its_target_from_residue_removal(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A full profile whose agents/ was replaced by a link by hand switches without deleting through it."""
+        _install_source(configs)
+        _install_source(configs, 'aegis-copy')
+        claude_dir = e2e_isolated_home['claude_dir']
+        copy = claude_dir / 'aegis-copy'
+        recorded = read_manifest(copy)['files_written']
+        assert 'agents/core.md' in recorded
+        assert 'rules/rule.md' in recorded
+        shutil.rmtree(copy / 'agents')
+        setup_environment.link_profile_directory(copy / 'agents', claude_dir / 'aegis-1' / 'agents')
+        other = write_config(configs, 'other.yaml', _plain('Other'))
+        capsys.readouterr()
+
+        assert run_main([str(other), *SKIP, '--yes', '--command-names', 'aegis-copy', '--switch-config']) == 0
+
+        output = _output(capsys)
+        assert f'file: {copy / "rules" / "rule.md"}' in output, 'a file in a real directory is residue'
+        assert f'file: {copy / "agents" / "core.md"}' not in output, 'a file behind the link is not'
+        assert not (copy / 'rules' / 'rule.md').exists()
+        assert (claude_dir / 'aegis-1' / 'agents' / 'core.md').is_file(), 'the link target kept its file'
+        assert '* agents: [on disk, not declared] the link is left alone' in output
+        assert _links_to(copy / 'agents', claude_dir / 'aegis-1' / 'agents')
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')

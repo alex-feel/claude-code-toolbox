@@ -15424,7 +15424,12 @@ def _relative_inside(target: Path, directory: Path) -> Path | None:
     return Path(*target_abs.parts[depth:])
 
 
-def planned_profile_files(config: dict[str, Any], profile_dir: Path) -> list[str]:
+def planned_profile_files(
+    config: dict[str, Any],
+    profile_dir: Path,
+    *,
+    linked_entries: frozenset[str] = frozenset(),
+) -> list[str]:
     """List the profile-relative paths of the files a configuration installs.
 
     Mirrors each installer's target-path resolution: agents, slash commands,
@@ -15433,15 +15438,25 @@ def planned_profile_files(config: dict[str, Any], profile_dir: Path) -> list[str
     under prompts/, and files-to-download entries whose destination lies
     inside the profile directory. Launchers, settings, env loaders and the
     manifest are toolbox-owned and rebuilt on every run, so they are not
-    listed.
+    listed. A linked entry installs nothing of its own, so nothing inside
+    one is listed: the files a dependent sees through a link belong to its
+    source, and a record of them would let a later configuration switch
+    remove them from the source.
 
     Args:
         config: The resolved, component-selected configuration.
         profile_dir: The profile directory the run installs into.
+        linked_entries: The entries of the profile that are links.
 
     Returns:
         Sorted relative POSIX paths.
     """
+    if linked_entries:
+        config = config_without_linked_sections(config, linked_entries)
+        downloads, _skipped = split_downloads_by_linked_entries(
+            cast(list[Any], config.get('files-to-download') or []), profile_dir, linked_entries,
+        )
+        config = {**config, 'files-to-download': downloads}
     files: set[str] = set()
     for section, directory in (('agents', 'agents'), ('slash-commands', 'commands'), ('rules', 'rules')):
         files.update(
@@ -15682,6 +15697,21 @@ def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[
     return recorded
 
 
+def _under_directory_link(profile_dir: Path, relative: str) -> bool:
+    """Report whether a profile-relative path is reached through a directory link.
+
+    Args:
+        profile_dir: The profile directory.
+        relative: A recorded relative POSIX path inside it.
+
+    Returns:
+        True when any directory between the profile directory and the path
+        is a junction or symlink, so the path lies in another directory.
+    """
+    parts = [part for part in relative.split('/') if part]
+    return any(_is_directory_link(profile_dir.joinpath(*parts[:depth])) for depth in range(1, len(parts)))
+
+
 def profile_residue(
     manifest: dict[str, Any],
     profile_dir: Path,
@@ -15707,7 +15737,9 @@ def profile_residue(
 
     Returns:
         The residue; empty when the new configuration covers everything the
-        previous run recorded.
+        previous run recorded. A recorded file that lies under a directory
+        link on disk is never residue: it belongs to the link's target, so
+        removing it would edit another directory.
     """
     def _strings(key: str) -> list[str]:
         value = manifest.get(key)
@@ -15717,7 +15749,9 @@ def profile_residue(
     files = [
         profile_dir / relative
         for relative in _strings('files_written')
-        if relative not in planned and (profile_dir / relative).is_file()
+        if relative not in planned
+        and (profile_dir / relative).is_file()
+        and not _under_directory_link(profile_dir, relative)
     ]
 
     new_servers = {record['name'] for record in mcp_server_records(
@@ -19318,7 +19352,7 @@ def main() -> None:
             'os_env_written': [key for key, value in os_level_env_variables.items() if value is not None],
             'settings_keys_written': written_settings_keys(user_settings, status_line, config.get('hooks')),
             'mcp_servers': mcp_server_records(mcp_servers),
-            'files_written': planned_profile_files(config, artifact_base_dir),
+            'files_written': planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
         }
         config_source_type = classify_config_source(config_source)
         config_source_url = resolve_config_source_url(config_source, config_source_type)

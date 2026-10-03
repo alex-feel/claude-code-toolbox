@@ -571,6 +571,32 @@ class TestInstallRecords:
             'prompts/sys.md', 'rules/r.md', 'skills/sk/SKILL.md', 'skills/sk/scripts/run.py',
         ]
 
+    def test_planned_profile_files_leaves_linked_entries_out(self, tmp_path: Path) -> None:
+        """A dependent records only what it installs itself: nothing inside a linked entry."""
+        profile_dir = tmp_path / '.claude' / 'p'
+        config: dict[str, Any] = {
+            'agents': ['agents/a.md'],
+            'slash-commands': ['commands/c.md'],
+            'rules': ['rules/r.md'],
+            'hooks': {
+                'files': ['hooks/h.py'], 'helpers': ['hooks/helper.py'],
+                'events': [{'event': 'Stop', 'type': 'command', 'command': 'h.py'}],
+            },
+            'skills': [{'name': 'sk', 'files': ['SKILL.md']}],
+            'command-defaults': {'system-prompt': 'prompts/sys.md'},
+            'files-to-download': [
+                {'source': 'x/in.txt', 'dest': f'{profile_dir}/skills/sk/in.txt'},
+                {'source': 'x/own.txt', 'dest': f'{profile_dir}/extra/own.txt'},
+            ],
+        }
+        untouched = json.loads(json.dumps(config))
+        linked = frozenset({'agents', 'commands', 'hooks', 'prompts', 'skills'})
+
+        planned = setup_environment.planned_profile_files(config, profile_dir, linked_entries=linked)
+
+        assert planned == ['extra/own.txt', 'rules/r.md']
+        assert config == untouched, 'the configuration is untouched'
+
     def test_machine_wide_download_records(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
         outside = tmp_path / 'shared' / 'file.txt'
@@ -652,6 +678,25 @@ class TestProfileResidue:
             'settings.json key: model',
             f'file outside ~/.claude: {outside}',
         ]
+
+    def test_files_under_a_link_on_disk_are_never_residue(self, tmp_path: Path) -> None:
+        """A recorded file reached through a directory link belongs to the link's target, not to the profile."""
+        claude_dir = tmp_path / '.claude'
+        source = claude_dir / 'src'
+        (source / 'agents').mkdir(parents=True)
+        (source / 'agents' / 'old.md').write_text('x', encoding='utf-8')
+        profile_dir = claude_dir / 'p'
+        (profile_dir / 'rules').mkdir(parents=True)
+        (profile_dir / 'rules' / 'old.md').write_text('x', encoding='utf-8')
+        setup_environment.link_profile_directory(profile_dir / 'agents', source / 'agents')
+        manifest = {'files_written': ['agents/old.md', 'rules/old.md']}
+
+        residue = setup_environment.profile_residue(
+            manifest, profile_dir, {}, isolated=True, config_source='c.yaml', base_url=None, claude_dir=claude_dir,
+        )
+
+        assert residue.files == [profile_dir / 'rules' / 'old.md']
+        assert (source / 'agents' / 'old.md').is_file()
 
     def test_machine_wide_controls_are_never_residue(self, tmp_path: Path) -> None:
         """The binary controls belong to the pin gate and the Step 16 sweep, not to a configuration switch."""
