@@ -10,7 +10,7 @@ configuration determines where the user-settings content is written.
 - Non-isolated mode (command-names absent): the user-settings section is
   deep-merged into the shared ~/.claude/settings.json via write_user_settings().
 
-Covers: Scenarios 1-8 (scope-based routing) and Scenario 18 (preservation).
+Covers: Scenarios 1-8 (scope-based routing) and Scenario 17 (preservation).
 """
 
 import json
@@ -282,7 +282,7 @@ class TestScopePreservation:
         self,
         e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Scenario 18: Non-isolated config writes to standard location with no subdirs."""
+        """Scenario 17: Non-isolated config writes to standard location with no subdirs."""
         config = _load_fixture('scope_standard.yaml')
         claude_dir = e2e_isolated_home['claude_dir']
 
