@@ -226,13 +226,14 @@ OS_ENV_VARIABLES_KEY = 'os-env-variables'
 ENV_VAR_MARKER_START = '# >>> claude-code-toolbox >>>'
 ENV_VAR_MARKER_END = '# <<< claude-code-toolbox <<<'
 
-# Per-path union whitelist used ONLY by the YAML inheritance layer
-# (_resolve_single_key at lines 4331 and 4337) for child-overrides-parent
-# composition semantics. On-disk writers (write_user_settings(),
-# write_profile_settings_to_settings(), write_global_config()) use the
-# default universal union-all-arrays semantics via
-# _write_merged_json(array_union_keys=None) -- every array at every depth
-# is unioned with structural dedupe, matching Claude Code CLI's
+# Per-path union whitelist used ONLY by the YAML inheritance layer:
+# _merge_config_key() composes a child's user-settings onto its parent's
+# with these arrays unioned and every other array replaced by the child's
+# (global-config composes with an empty whitelist, so every one of its
+# arrays is replaced). The on-disk merge writers (write_user_settings(),
+# write_profile_settings_to_settings(), write_global_config()) go through
+# _write_merged_json(), which unions every array at every depth with the
+# array the target file already holds, matching Claude Code CLI's
 # cross-scope merge behavior.
 DEFAULT_ARRAY_UNION_KEYS: set[str] = {
     'permissions.allow',
@@ -1941,7 +1942,6 @@ def _expand_tilde_keys_in_settings(settings: dict[str, Any]) -> dict[str, Any]:
 def _write_merged_json(
     target_file: Path,
     new_settings: dict[str, Any],
-    array_union_keys: set[str] | None = None,
     *,
     ensure_parent: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
@@ -1952,23 +1952,22 @@ def _write_merged_json(
     2. DEEP MERGE new settings into existing via deep_merge_settings()
     3. WRITE merged result back to file
 
-    Merge semantics (default, array_union_keys=None):
+    Merge semantics:
     - Nested dicts: recursive deep merge.
-    - Lists: union with structural dedupe at every depth (matches Claude
-      Code CLI's cross-scope merge: "arrays are concatenated and
-      deduplicated, not replaced").
+    - Lists: every list at every depth is unioned with the list the file
+      already holds -- existing elements first, new elements appended,
+      duplicates dropped by structural equality (matches Claude Code
+      CLI's cross-scope merge: "arrays are concatenated and
+      deduplicated, not replaced"). A list in new_settings therefore
+      never removes an element from the file.
     - Scalars: update wins.
-    - None values: RFC 7396 null-as-delete (top-level and nested).
+    - None values: RFC 7396 null-as-delete (top-level and nested), so a
+      None deletes a whole list.
     - Keys absent from new_settings: preserved unchanged in target.
 
     Args:
         target_file: Path to the JSON file to update.
         new_settings: New settings to deep-merge into existing content.
-        array_union_keys: None (default) unions every array at every
-            depth. Pass an explicit set[str] only when the caller needs
-            the per-path whitelist behavior (currently only the YAML
-            inheritance layer at lines 4331 and 4337). Pass set() to
-            disable union entirely (every array replaced).
         ensure_parent: If True, create parent directories if needed.
 
     Returns:
@@ -1991,7 +1990,7 @@ def _write_merged_json(
             warning(f'Invalid JSON in {target_file}: {e}, starting fresh')
 
     # Step 2: DEEP MERGE new settings into existing
-    merged = deep_merge_settings(existing, new_settings, array_union_keys=array_union_keys)
+    merged = deep_merge_settings(existing, new_settings)
 
     # Step 3: WRITE merged result back to file
     try:
@@ -2039,9 +2038,8 @@ def write_user_settings(
     # Step 0: Platform-conditional tilde handling in command keys
     expanded_settings = _expand_tilde_keys_in_settings(settings)
 
-    # Delegate to shared READ-MERGE-WRITE helper.
-    # Uses default array_union_keys=None: every list is unioned with
-    # structural dedupe at every depth. This preserves contributions
+    # Delegate to shared READ-MERGE-WRITE helper, which unions every list
+    # with structural dedupe at every depth. This preserves contributions
     # from the Claude Code CLI, prior toolbox runs with other YAML
     # configs, manual user edits, and other writers. permissions.allow,
     # permissions.deny, permissions.ask, permissions.additionalDirectories,
@@ -12873,10 +12871,9 @@ def write_profile_settings_to_settings(
     settings_file = settings_dir / 'settings.json'
     info('Writing profile settings to settings.json...')
 
-    # Delegate to the shared READ-MERGE-WRITE helper. Uses the default
-    # array_union_keys=None (every array at every depth is unioned with
-    # structural dedupe) and ensure_parent=True (creates settings_dir
-    # if missing).
+    # Delegate to the shared READ-MERGE-WRITE helper: every array at every
+    # depth is unioned with structural dedupe, and ensure_parent=True
+    # creates settings_dir if missing.
     ok, _ = _write_merged_json(settings_file, settings_delta)
 
     if ok:
