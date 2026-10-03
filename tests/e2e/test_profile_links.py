@@ -487,7 +487,9 @@ class TestConversions:
         assert (profile_dir / 'commands' / 'cmd.md').is_file()
         assert (profile_dir / 'skills' / 'tool-skill' / 'SKILL.md').is_file()
         assert (claude_dir / 'aegis-1' / 'agents' / 'core.md').is_file(), 'unlinking never touches the source'
-        assert read_manifest(profile_dir)['link'] is None
+        assert read_manifest(profile_dir)['link'] == {
+            'dirs': [], 'source': 'aegis-1', 'origins': {'dirs': 'cli', 'source': 'cli'},
+        }, 'the typed none is recorded like any typed value'
         capsys.readouterr()
 
         assert run_main(['--profile', 'aegis-2', *SKIP, '--yes']) == 0, 'the unlinked profile re-runs as a full install'
@@ -515,6 +517,162 @@ class TestConversions:
         assert read_manifest(profile_dir)['link'] == {
             'dirs': ['projects'], 'source': 'aegis-1', 'origins': {'dirs': 'cli', 'source': 'cli'},
         }
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestRememberedNone:
+    """A typed or environment none is remembered like any typed value, ahead of the configuration's link-dirs."""
+
+    def test_convert_back_holds_across_plain_reruns_and_profile_all(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """After --link-dirs none, a profile whose YAML declares link-dirs: [projects] stays unlinked with its sessions."""
+        cfg = write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['projects']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / 'claude-personal'
+        projects = profile_dir / 'projects'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 0
+        assert _links_to(projects, claude_dir / 'projects')
+        capfd.readouterr()
+
+        assert run_main(['--profile', 'claude-personal', '--link-dirs', 'none', *SKIP, '--yes']) == 0
+
+        output = _run_output(capfd)
+        assert '* projects: [unlink] the link is removed' in output
+        assert "Links: none [cli] (the configuration's link-dirs [projects] is not applied)" in output
+        assert not projects.exists() or not _is_link(projects)
+        assert read_manifest(profile_dir)['link'] == {
+            'dirs': [], 'source': 'base', 'origins': {'dirs': 'cli', 'source': 'default'},
+        }
+        projects.mkdir(exist_ok=True)
+        (projects / 'session.jsonl').write_text('{}\n', encoding='utf-8')
+        capfd.readouterr()
+
+        assert run_main(['--profile', 'claude-personal', *SKIP, '--yes']) == 0, 'the remembered none beats the YAML'
+
+        output = _run_output(capfd)
+        assert (
+            "Links: none [remembered] (the configuration's link-dirs [projects] is not applied; pass --link-dirs to "
+            'replace the remembered value)'
+        ) in output
+        assert 'is a real directory with' not in output
+        assert (projects / 'session.jsonl').is_file()
+        assert not _is_link(projects)
+        assert read_manifest(profile_dir)['link'] == {
+            'dirs': [], 'source': 'base', 'origins': {'dirs': 'cli', 'source': 'default'},
+        }, 'the re-run records the remembered none again'
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert '=== Profile claude-personal ===' in output
+        assert '* claude-personal: ok' in output
+        assert (projects / 'session.jsonl').is_file()
+        assert not _is_link(projects)
+
+    def test_source_installed_with_none_under_its_own_link_keys_reruns_and_refreshes_its_dependents(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A source installed with --link-dirs none under its own YAML link keys re-runs without the flag."""
+        cfg = write_config(configs, 'aegis.yaml', {**_aegis(), 'link-dirs': ['all'], 'link-from': 'aegis-1'})
+        claude_dir = e2e_isolated_home['claude_dir']
+        source_dir = claude_dir / 'aegis-1'
+        capfd.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--link-dirs', 'none']) == 0
+
+        output = _run_output(capfd)
+        assert (
+            f"Links: none [cli] (the configuration's link-dirs [{', '.join(LINKABLE_PROFILE_DIRS)}] is not applied)"
+        ) in output
+        assert read_manifest(source_dir)['link'] == {
+            'dirs': [], 'source': 'aegis-1', 'origins': {'dirs': 'cli', 'source': 'yaml'},
+        }
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-2']) == 0, 'the YAML keys install a dependent'
+        assert _links_to(claude_dir / 'aegis-2' / 'agents', source_dir / 'agents')
+        dependent_before = _installed_at(claude_dir / 'aegis-2')
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'aegis-1', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert 'cannot link from itself' not in output
+        assert (
+            f"Links: none [remembered] (the configuration's link-dirs [{', '.join(LINKABLE_PROFILE_DIRS)}] is not "
+            'applied; pass --link-dirs to replace the remembered value)'
+        ) in output
+        assert 'Step 23: Refreshing 1 dependent profile(s): aegis-2...' in output
+        assert '- aegis-2: ok' in output
+        assert _installed_at(claude_dir / 'aegis-2') != dependent_before
+        for entry in CONTENT_ENTRIES:
+            assert (source_dir / entry).is_dir(), entry
+            assert not _is_link(source_dir / entry), entry
+        assert _links_to(claude_dir / 'aegis-2' / 'agents', source_dir / 'agents')
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert output.index('=== Profile aegis-1 ===') < output.index('=== Profile aegis-2 ===')
+        assert '* aegis-1: ok' in output
+        assert '* aegis-2: ok' in output
+        assert not _is_link(source_dir / 'agents')
+
+    def test_environment_none_is_remembered_and_warns_when_the_configuration_changes(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """CLAUDE_CODE_TOOLBOX_LINK_DIRS=none is recorded with its origin, remembered, and named when the YAML changes."""
+        cfg = write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['projects']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / 'p1'
+        capsys.readouterr()
+
+        with patch.dict(os.environ, {'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'none'}):
+            assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1']) == 0
+
+        output = _output(capsys)
+        assert "Links: none [env] (the configuration's link-dirs [projects] is not applied)" in output
+        assert not (profile_dir / 'projects').exists()
+        assert read_manifest(profile_dir)['link'] == {
+            'dirs': [], 'source': 'base', 'origins': {'dirs': 'env', 'source': 'default'},
+        }
+        write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['all']})
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1']) == 0
+
+        output = _output(capsys)
+        assert (
+            "link-dirs: using the remembered value none [remembered]; the configuration's link-dirs changed from "
+            f'projects to {", ".join(LINKABLE_PROFILE_DIRS)} since the profile was installed. Pass --link-dirs to '
+            'replace the remembered value.'
+        ) in output
+        assert "Links: none [remembered] (the configuration's link-dirs" in output
+        assert not any(_is_link(profile_dir / entry) for entry in LINKABLE_PROFILE_DIRS if (profile_dir / entry).exists())
+        assert read_manifest(profile_dir)['link']['origins'] == {'dirs': 'env', 'source': 'default'}
+
+    def test_configuration_none_is_not_remembered(
+        self, e2e_isolated_home: dict[str, Path], configs: Path,
+    ) -> None:
+        """A YAML link-dirs: [none] is re-read on every run, so the manifest records no link."""
+        cfg = write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['none']})
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1']) == 0
+        assert read_manifest(claude_dir / 'p1')['link'] is None
+        write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['projects']})
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1']) == 0
+
+        assert _links_to(claude_dir / 'p1' / 'projects', claude_dir / 'projects'), 'the configuration value applies'
+        assert read_manifest(claude_dir / 'p1')['link']['origins'] == {'dirs': 'yaml', 'source': 'default'}
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -866,7 +1024,9 @@ class TestConfigurationSwitch:
         assert not any((claude_dir / 'aegis-2' / entry).exists() for entry in CONTENT_ENTRIES), (
             'the content links were dissolved and the new configuration installs no content'
         )
-        assert read_manifest(claude_dir / 'aegis-3')['link'] is None
+        assert read_manifest(claude_dir / 'aegis-3')['link'] == {
+            'dirs': [], 'source': 'aegis-1', 'origins': {'dirs': 'cli', 'source': 'cli'},
+        }, 'the typed none is remembered'
         assert not any((claude_dir / 'aegis-3' / entry).exists() for entry in LINKABLE_PROFILE_DIRS)
         for entry in LINKABLE_PROFILE_DIRS:
             assert _links_to(claude_dir / 'aegis-4' / entry, claude_dir / 'corp-1' / entry), entry

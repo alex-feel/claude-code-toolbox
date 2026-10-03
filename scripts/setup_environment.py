@@ -1135,6 +1135,9 @@ class InstallationPlan:
     # base run
     link_spec: 'LinkSpec | None' = None
     link_plan: 'LinkPlan | None' = None
+    # The entries the configuration's own link-dirs names, so the summary
+    # can say that a typed, environment or remembered none sets them aside
+    configured_link_dirs: list[str] | None = None
     # The profile whose resolved-config.yaml this run applies, when the run
     # links content; its component selection is the source's
     linked_from: str | None = None
@@ -9371,6 +9374,7 @@ def display_installation_summary(
             f'Configuration: applied from profile "{plan.linked_from}" ({RESOLVED_CONFIG_FILENAME}), '
             f'components as installed there',
         )
+    settings_items.extend(unlinked_summary_lines(plan.link_spec, plan.configured_link_dirs))
 
     if settings_items:
         _print()
@@ -13777,8 +13781,18 @@ class LinkSpec(NamedTuple):
         return not self.dirs_remembered and self.dirs_origin in ('cli', 'env')
 
     def record(self) -> dict[str, Any] | None:
-        """The manifest's link field: None when nothing is linked."""
-        if not self.dirs:
+        """Render the manifest's link field.
+
+        A linked profile records its entries whatever their origin. A profile
+        that links nothing records that only when the none was typed or came
+        from the environment (this run or a remembered one), so a re-run
+        remembers it ahead of the configuration's link-dirs.
+
+        Returns:
+            The record (entries, source and per-key origins), or None for a
+            configuration or default none.
+        """
+        if not self.dirs and self.dirs_origin not in ('cli', 'env'):
             return None
         return {
             'dirs': list(self.dirs),
@@ -13800,13 +13814,13 @@ def link_dirs_value_text(spec: LinkSpec) -> str:
         The flag with its value, the variable with its value, the
         configuration key with its list, or the remembered value.
     """
-    entries = ','.join(spec.dirs)
+    entries = ','.join(spec.dirs) or LINK_NONE_TOKEN
     if spec.dirs_remembered:
-        return f'the remembered link-dirs value ({", ".join(spec.dirs)})'
+        return f'the remembered link-dirs value ({_format_names(spec.dirs)})'
     if spec.dirs_origin == 'env':
         return f'{LINK_DIRS_SOURCES["env"]}={entries}'
     if spec.dirs_origin == 'yaml':
-        return f'{LINK_DIRS_SOURCES["yaml"]} [{", ".join(spec.dirs)}]'
+        return f'{LINK_DIRS_SOURCES["yaml"]} [{_format_names(spec.dirs)}]'
     return f'{LINK_DIRS_SOURCES["cli"]} {entries}'
 
 
@@ -13849,18 +13863,68 @@ def link_environment_variables(spec: LinkSpec) -> list[str]:
     ]
 
 
-def manifest_link(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Read the link record of a manifest, or None when it records no link."""
+def unlinked_summary_lines(spec: LinkSpec | None, configured_dirs: list[str] | None) -> list[str]:
+    """Name a none that sets the configuration's link-dirs aside, for the installation summary.
+
+    Args:
+        spec: The run's links, or None for a base run.
+        configured_dirs: The entries the configuration's own link-dirs
+            names, or None when it declares no link-dirs.
+
+    Returns:
+        One line when the run links nothing because a typed, environment or
+        remembered none overrides a configuration that names entries, with
+        the origin marker and, for a remembered value, the flag that
+        replaces it; empty otherwise.
+    """
+    if spec is None or spec.dirs or spec.dirs_origin not in ('cli', 'env') or not configured_dirs:
+        return []
+    marker = origin_marker(spec.dirs_origin, remembered=spec.dirs_remembered)
+    explanation = f"the configuration's link-dirs [{', '.join(configured_dirs)}] is not applied"
+    if spec.dirs_remembered:
+        explanation += '; pass --link-dirs to replace the remembered value'
+    return [f'Links: {LINK_NONE_TOKEN}{marker} ({explanation})']
+
+
+def manifest_link_record(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Read the link record of a manifest as LinkSpec.record() wrote it.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The record, whose ``dirs`` list is empty for a profile that recorded
+        a typed or environment none, or None when the manifest records no
+        link at all.
+    """
     if manifest is None:
         return None
     record = manifest.get('link')
     if not isinstance(record, dict):
         return None
     record_dict = cast(dict[str, Any], record)
-    dirs = record_dict.get('dirs')
-    if not isinstance(dirs, list) or not dirs:
+    if not isinstance(record_dict.get('dirs'), list):
         return None
     return record_dict
+
+
+def manifest_link(manifest: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Read the link record of a manifest when the profile links at least one entry.
+
+    A recorded none (an empty ``dirs`` list) is a remembered value, not a
+    link: a profile that recorded one is neither a dependent of the source
+    the record names nor a partially linked profile.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The record, or None when the manifest records no link or a none.
+    """
+    record = manifest_link_record(manifest)
+    if record is None or not record['dirs']:
+        return None
+    return record
 
 
 def remembered_link(manifest: dict[str, Any] | None) -> tuple[tuple[list[str], str] | None, tuple[str, str] | None]:
@@ -13868,8 +13932,9 @@ def remembered_link(manifest: dict[str, Any] | None) -> tuple[tuple[list[str], s
 
     A content link is remembered whatever its origin, because a profile that
     links content takes its configuration from the source and reads no
-    link-dirs of its own; a projects-only link, like every other value, is
-    remembered only when it was typed or came from the environment.
+    link-dirs of its own; a projects-only link and a recorded none, like
+    every other value, are remembered only when they were typed or came from
+    the environment.
 
     Args:
         manifest: The profile manifest, or None when the profile is new.
@@ -13878,11 +13943,11 @@ def remembered_link(manifest: dict[str, Any] | None) -> tuple[tuple[list[str], s
         The remembered (entries, origin) and (source, origin), each None
         when not remembered.
     """
-    record = manifest_link(manifest)
+    record = manifest_link_record(manifest)
     if record is None:
         return None, None
     entries, errors = parse_link_dirs([str(item) for item in cast(list[object], record['dirs'])], 'manifest link')
-    if errors or not entries:
+    if errors:
         return None, None
     origins = record.get('origins')
     dirs_origin = str(cast(dict[str, Any], origins).get('dirs') or 'yaml') if isinstance(origins, dict) else 'yaml'
@@ -13902,8 +13967,11 @@ def resolve_link_spec(
     """Determine the links of a run and validate them.
 
     Per key the sources rank: a value typed for this run, an environment
-    value for this run, the value the profile's manifest remembers, the
-    configuration's own key, then the default (no links, from base).
+    value for this run, the value the profile's manifest remembers (a typed
+    or environment none included, so a profile converted back or installed
+    as the source its configuration's link keys serve stays unlinked on
+    every re-run), the configuration's own key, then the default (no links,
+    from base).
 
     Args:
         args: Arguments after resolve_args(), which records in args.origins
@@ -13960,8 +14028,6 @@ def resolve_link_spec(
             f'--link-dirs ENTRIES (or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to link from it, or clear '
             f'{LINK_FROM_SOURCES[source_origin]}.',
         )
-    if not dirs:
-        dirs_origin = 'default' if dirs_origin == 'default' else dirs_origin
     return LinkSpec(dirs, source, dirs_origin, source_origin, dirs_remembered, source_remembered), errors
 
 
@@ -14039,9 +14105,9 @@ def guard_environment_link_change(
         manifest: The manifest of the profile the run installs into.
         profile_name: The profile's display name.
     """
-    record = manifest_link(manifest)
     if manifest is None:
         return
+    record = manifest_link_record(manifest)
     recorded_dirs = [str(item) for item in cast(list[object], record['dirs'])] if record else []
     recorded_source = str(record.get('source') or LINK_SOURCE_BASE) if record else LINK_SOURCE_BASE
     changed: list[str] = []
@@ -16095,8 +16161,10 @@ def write_manifest(
         mcp_servers: MCP servers this run registered, with their scopes
         files_written: Profile-relative paths of the files this run installs
         link: The profile's links as LinkSpec.record() renders them (the
-            linked entries, the source profile, and the origin of each), or
-            None when the profile links nothing
+            linked entries, the source profile, and the origin of each; an
+            empty entry list for a typed or environment none, which a re-run
+            remembers ahead of the configuration's link-dirs), or None when
+            the profile links nothing without such a value
 
     Returns:
         True if manifest was written successfully, False otherwise.
@@ -19088,6 +19156,7 @@ def main() -> None:
         plan.command_names_remembered = effective_command_names.remembered
         plan.link_spec = link_spec if primary_command_name else None
         plan.link_plan = link_plan
+        plan.configured_link_dirs = configured_link_values['link_dirs'] if primary_command_name else None
         plan.linked_from = dependent_of.name if dependent_of is not None else None
         plan.dependents = [profile.name for profile in dependents]
         plan.claude_code_version = claude_install_decision.version

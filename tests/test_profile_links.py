@@ -188,13 +188,58 @@ class TestResolveLinkSpec:
         assert (spec.dirs_origin, spec.source_origin) == ('yaml', 'yaml')
         assert not spec.typed
 
-    def test_typed_none_links_nothing_and_counts_as_typed(self, tmp_path: Path) -> None:
+    def test_typed_none_links_nothing_and_is_recorded_as_typed(self, tmp_path: Path) -> None:
         manifest = _manifest(tmp_path, 'dep', link=_record(list(LINKABLE_PROFILE_DIRS), 'aegis-1'))
         spec, errors = resolve_link_spec(_args(link_dirs='none'), {'link-dirs': ['projects']}, manifest)
         assert errors == []
         assert spec.dirs == []
         assert spec.typed
-        assert spec.record() is None
+        assert spec.record() == _record([], 'aegis-1', 'cli', 'cli'), 'the remembered source keeps its origin'
+        from_environment, _ = resolve_link_spec(_args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'none'}), {}, None)
+        assert from_environment.record() == _record([], 'base', 'env', 'default')
+
+    def test_configuration_none_is_not_recorded(self) -> None:
+        spec, errors = resolve_link_spec(_args(), {'link-dirs': ['none'], 'link-from': 'aegis-1'}, None)
+        assert errors == []
+        assert spec.dirs == []
+        assert not spec.typed
+        assert spec.record() is None, 'a configuration value is re-read on every run, never remembered'
+
+    def test_remembered_none_beats_the_configuration(self, tmp_path: Path) -> None:
+        """A typed or environment none is remembered ahead of the YAML link-dirs, whatever the YAML declares."""
+        for origin in ('cli', 'env'):
+            manifest = _manifest(tmp_path / origin, 'dep', link=_record([], 'base', origin, 'default'))
+            spec, errors = resolve_link_spec(_args(), {'link-dirs': ['all'], 'link-from': 'aegis-1'}, manifest)
+            assert errors == [], origin
+            assert spec.dirs == [], origin
+            assert spec.dirs_remembered, origin
+            assert spec.dirs_origin == origin
+            assert not spec.typed, 'a remembered none never converts or unlinks anything'
+            assert spec.source == 'aegis-1', 'the source falls through to the configuration'
+            assert spec.source_origin == 'yaml'
+            assert spec.record() == _record([], 'aegis-1', origin, 'yaml'), 'the re-run records the none again'
+        remembered = _manifest(tmp_path / 'again', 'dep', link=_record([], 'base'))
+        typed_again, errors = resolve_link_spec(_args(link_dirs='projects'), {'link-dirs': ['all']}, remembered)
+        assert errors == []
+        assert typed_again.dirs == ['projects']
+        assert typed_again.typed
+
+    def test_remembered_none_with_a_typed_source_still_needs_entries(self, tmp_path: Path) -> None:
+        manifest = _manifest(tmp_path, 'dep', link=_record([], 'base'))
+        _spec, errors = resolve_link_spec(_args(link_from='aegis-1'), {}, manifest)
+        assert errors == [
+            (
+                '--link-from names the profile "aegis-1", but no entry is linked; pass --link-dirs ENTRIES '
+                '(or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to link from it, or clear --link-from.'
+            ),
+        ]
+
+    def test_recorded_none_with_a_configuration_origin_is_not_remembered(self, tmp_path: Path) -> None:
+        manifest = _manifest(tmp_path, 'dep', link=_record([], 'base', 'yaml', 'default'))
+        spec, _ = resolve_link_spec(_args(), {'link-dirs': ['projects']}, manifest)
+        assert spec.dirs == ['projects']
+        assert spec.dirs_origin == 'yaml'
+        assert not spec.dirs_remembered
 
     def test_source_without_entries_is_an_error_only_when_typed_or_from_the_environment(self) -> None:
         _spec, errors = resolve_link_spec(_args(link_from='aegis-1'), {}, None)
@@ -561,6 +606,19 @@ class TestLinkRules:
             primary_command_name='p1', this_identity=identity, typed_selectors=False,
         )
         assert projects_only_source == [], 'a projects-only link does not make a profile a dependent'
+        unlinked_source = link_request_errors(
+            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'),
+            self._source(tmp_path / 'e', link=_record([], 'aegis-1', 'cli', 'yaml')),
+            primary_command_name='p1', this_identity=identity, typed_selectors=False,
+        )
+        assert unlinked_source == [], 'a source installed with --link-dirs none holds every entry for real'
+
+    def test_remembered_none_links_nothing_and_breaks_no_rule(self, tmp_path: Path) -> None:
+        """A source re-run under a remembered none never trips the self-link rule its YAML link-from would."""
+        assert link_request_errors(
+            LinkSpec([], 'aegis-1', 'cli', 'yaml', dirs_remembered=True), self._source(tmp_path),
+            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+        ) == []
 
     def test_content_links_refuse_typed_selectors(self, tmp_path: Path) -> None:
         identity = setup_environment.config_identity_of('https://example.com/aegis.yaml')
@@ -586,11 +644,20 @@ class TestContentDependents:
         _manifest(claude / 'alpha', 'alpha', link=_record(list(LINKABLE_PROFILE_DIRS), 'aegis-1'))
         _manifest(claude / 'sessions', 'sessions', link=_record(['projects'], 'aegis-1'))
         _manifest(claude / 'other', 'other', link=_record(['hooks'], 'base'))
-        _manifest(claude / 'aegis-1', 'aegis-1')
+        _manifest(claude / 'unlinked', 'unlinked', link=_record([], 'aegis-1', 'cli', 'yaml'))
+        _manifest(claude / 'aegis-1', 'aegis-1', link=_record([], 'aegis-1', 'cli', 'yaml'))
         with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
-            assert [p.name for p in content_dependents(tmp_path, 'aegis-1')] == ['alpha', 'zeta']
+            assert [p.name for p in content_dependents(tmp_path, 'aegis-1')] == ['alpha', 'zeta'], (
+                'a recorded none is not a dependency, whichever source it names'
+            )
             assert [p.name for p in content_dependents(tmp_path, 'base')] == ['other']
             assert content_dependents(tmp_path, 'sessions') == []
+            assert setup_environment.manifest_link(setup_environment.read_profile_manifest(
+                claude / 'unlinked' / 'manifest.json',
+            )) is None
+            assert setup_environment.manifest_link_record(setup_environment.read_profile_manifest(
+                claude / 'unlinked' / 'manifest.json',
+            )) == _record([], 'aegis-1', 'cli', 'yaml')
         alpha = setup_environment.InstalledProfile('alpha', claude / 'alpha', claude / 'alpha' / 'manifest.json', None)
         assert setup_environment.dependents_remedy([alpha]) == [
             '  --profile alpha --link-from <other profile>   (re-point), or --profile alpha --link-dirs none   (unlink)',
@@ -721,6 +788,23 @@ class TestRememberedLinkWarnings:
         ]
         unchanged = {'link-dirs': ['projects'], 'link-from': 'base'}
         assert setup_environment.remembered_link_warnings(spec, unchanged, manifest) == []
+
+    def test_remembered_none_is_named_as_none(self, tmp_path: Path) -> None:
+        manifest = _manifest(
+            tmp_path, 'dep', link=_record([], 'base', 'cli', 'default'),
+            yaml_values={'command_names': [], 'components': [], 'link_dirs': ['projects'], 'link_from': None},
+        )
+        changed = {'link-dirs': ['all']}
+        spec, _ = resolve_link_spec(_args(), changed, manifest)
+        assert setup_environment.remembered_link_warnings(spec, changed, manifest) == [
+            (
+                "link-dirs: using the remembered value none [remembered]; the configuration's link-dirs changed "
+                f'from projects to {", ".join(LINKABLE_PROFILE_DIRS)} since the profile was installed. Pass '
+                '--link-dirs to replace the remembered value.'
+            ),
+        ]
+        assert setup_environment.remembered_link_warnings(spec, {'link-dirs': ['projects']}, manifest) == []
+        assert setup_environment.link_dirs_value_text(spec) == 'the remembered link-dirs value (none)'
 
 
 class TestRefreshAllConflicts:
