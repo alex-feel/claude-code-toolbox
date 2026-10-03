@@ -375,6 +375,102 @@ class TestReservedNames:
         _assert_nothing_written(e2e_isolated_home)
 
 
+def _invalid_name_message(value: str, source: str) -> str:
+    """The error command_name_errors() or resolve_command_names() prints for one value."""
+    if not [token for token in value.split(',') if token.strip()]:
+        return f'{source} requires at least one command name'
+    if ' ' in value:
+        return f'Invalid command name "{value}" in {source}: names cannot contain spaces'
+    return (
+        f'Invalid command name "{value}" in {source}: use only letters, digits, hyphens, and '
+        'underscores, starting with a letter or digit'
+    )
+
+
+# Values a flag or variable may carry that cannot name a profile directory and
+# a command: path traversal, separators, a hidden or option-like name, a shell
+# metacharacter, a space, and values without any name in them
+INVALID_FLAG_VALUES = ['../escape', 'a/b', '.hidden', '-dash', 'bad$name', 'has space', '', ',', '  ']
+
+# An empty variable counts as unset (see TestEmptyVariable); every other value
+# is used and validated
+INVALID_VARIABLE_VALUES = [value for value in INVALID_FLAG_VALUES if value]
+
+
+class TestInvalidNames:
+    """A name that cannot be a profile directory and a command is refused before anything is written."""
+
+    @pytest.mark.parametrize('value', INVALID_FLAG_VALUES)
+    def test_invalid_flag_value_is_refused_without_writes(
+        self, value: str, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The run exits 1 with a message naming the flag and leaves the home untouched."""
+        # The = form keeps argparse from reading '-dash' as an option
+        assert _install(['--yes', f'--command-names={value}']) == 1
+
+        assert _invalid_name_message(value, '--command-names') in capsys.readouterr().err
+        _assert_nothing_written(e2e_isolated_home)
+
+    @pytest.mark.parametrize('value', INVALID_VARIABLE_VALUES)
+    def test_invalid_variable_value_is_refused_without_writes(
+        self,
+        value: str,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The run exits 1 with a message naming the variable and leaves the home untouched."""
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', value)
+
+        assert _install(['--yes']) == 1
+
+        assert _invalid_name_message(value, 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES') in capsys.readouterr().err
+        _assert_nothing_written(e2e_isolated_home)
+
+    @pytest.mark.parametrize('source', ['flag', 'variable'])
+    def test_dry_run_reports_the_refusal(
+        self,
+        source: str,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A preview of a run that cannot execute reports the refusal, not a plan."""
+        extra = ['--dry-run']
+        if source == 'flag':
+            extra.append('--command-names=../escape')
+            expected = _invalid_name_message('../escape', '--command-names')
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', '../escape')
+            expected = _invalid_name_message('../escape', 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES')
+
+        assert _install(extra) == 1
+
+        captured = capsys.readouterr()
+        assert expected in captured.err
+        assert 'Installation Summary' not in captured.out + captured.err
+        _assert_nothing_written(e2e_isolated_home)
+
+
+class TestEmptyVariable:
+    """An empty CLAUDE_CODE_TOOLBOX_COMMAND_NAMES counts as unset."""
+
+    def test_empty_variable_falls_back_to_configuration_names(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A CI template's empty default installs the configuration's own profile."""
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', '')
+
+        assert _install(['--yes']) == 0
+
+        captured = capsys.readouterr()
+        assert 'Command names: claude-a, claude-b, claude-c [yaml]' in captured.out + captured.err
+        _assert_profile_installed(e2e_isolated_home, 'claude-a', ['claude-a', 'claude-b', 'claude-c'])
+
+
 def _home_state(home: Path) -> dict[str, str]:
     """Snapshot every entry under the home: links by target, files by content, directories by name."""
     state: dict[str, str] = {}
