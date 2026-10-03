@@ -3868,9 +3868,17 @@ def write_global_config(
     user-scoped MCP server approvals via /mcp approve, enabledPlugins,
     enabledMcpjsonServers, disabledMcpjsonServers, etc.). The writer
     MUST NOT destroy these contributions, so it delegates to
-    _write_merged_json() with the default universal union-all-arrays
-    merge policy -- exactly the same semantics as write_user_settings()
-    and write_profile_settings_to_settings().
+    _write_merged_json() -- exactly the same semantics as
+    write_user_settings() and write_profile_settings_to_settings(): each
+    target file is merged separately, and every array at every depth is
+    unioned with the array that file already holds (existing elements
+    first, new ones appended, duplicates dropped). A YAML array therefore
+    only adds elements; a None value deletes the whole key.
+
+    The YAML inheritance layer composes global-config before this writer
+    runs and treats arrays the other way: with global-config in
+    merge-keys, a child's array replaces the parent's at every depth
+    (see _merge_config_key()).
 
     Args:
         global_config: Global config dict from YAML global-config section.
@@ -7730,13 +7738,17 @@ def _merge_config_key(
     # consumed here -- otherwise a parent-declared value would silently
     # cancel the child's deletion and the stale on-disk value would survive.
 
-    # Global-config: deep merge with no array union
+    # Global-config: objects deep-merge, and a child array replaces the
+    # parent's at every depth. The Step 15 writer later unions the result
+    # with the arrays the target .claude.json already holds.
     if key == 'global-config':
         p_gc = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
         c_gc = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
         return deep_merge_settings(p_gc, c_gc, array_union_keys=set(), preserve_nulls=True)
 
-    # User-settings: deep merge with default array union keys
+    # User-settings: objects deep-merge, permissions.allow/deny/ask arrays
+    # are unioned (DEFAULT_ARRAY_UNION_KEYS), and every other child array
+    # replaces the parent's.
     if key == 'user-settings':
         p_us = cast(dict[str, Any], parent_value) if isinstance(parent_value, dict) else {}
         c_us = cast(dict[str, Any], child_value) if isinstance(child_value, dict) else {}
