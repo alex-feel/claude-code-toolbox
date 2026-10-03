@@ -13,7 +13,6 @@ consuming positional arguments as additional header values, which causes
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +24,7 @@ import pytest
 
 from scripts import setup_environment
 from scripts.setup_environment import configure_all_mcp_servers
+from tests.e2e.shells import find_bash
 
 
 def _find_mcp_add_call(call_args_list: list[Any], server_name: str) -> str | None:
@@ -47,11 +47,7 @@ def _find_mcp_add_call(call_args_list: list[Any], server_name: str) -> str | Non
 # Whether a usable bash is unavailable on this host, evaluated once at collection time.
 # The real-shell MCP test needs Git Bash on Windows (run_bash_command) or native bash on
 # Unix; skip it cleanly when neither is present rather than failing.
-_BASH_UNAVAILABLE: bool = (
-    setup_environment.find_bash_windows() is None
-    if sys.platform == 'win32'
-    else shutil.which('bash') is None
-)
+_BASH_UNAVAILABLE: bool = find_bash() is None
 
 
 class TestMCPArgumentOrdering:

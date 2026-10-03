@@ -57,7 +57,7 @@ class TestPinnedVersionInjectsIdeControls:
         assert osev is not None
         assert osev.get('CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL') == '1'
 
-        # Write global config with dual-write when command-names is present
+        # Write global config to the profile's own .claude.json (command-names present)
         primary_command = config.get('command-names', [None])[0]
         artifact_dir = home / '.claude' / primary_command if primary_command else None
         if artifact_dir:
@@ -72,6 +72,7 @@ class TestPinnedVersionInjectsIdeControls:
             home, pinned=True, command_name=primary_command,
         )
         assert not errors, '\n'.join(errors)
+        assert not (home / '.claude.json').exists(), 'The pinned isolated run must leave the base file alone'
 
 
 class TestLatestVersionNoIdeControls:
@@ -135,38 +136,61 @@ class TestIdeUserConflictRespected:
 
 
 class TestIdeStaleCleanup:
-    """Verify stale IDE extension controls are cleaned when switching to latest."""
+    """Verify stale IDE extension controls are cleaned from the running profile when switching to latest."""
 
-    def test_unpinned_cleans_all(
+    @staticmethod
+    def _seed_stale_controls(home: Path, cmd_dir: Path) -> None:
+        """Seed the base profile and an isolated profile with the stale IDE controls."""
+        claude_dir = home / '.claude'
+        cmd_dir.mkdir(parents=True, exist_ok=True)
+        for settings in (claude_dir / 'settings.json', cmd_dir / 'settings.json'):
+            settings.write_text(json.dumps({'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'}}))
+        for claude_json in (home / '.claude.json', cmd_dir / '.claude.json'):
+            claude_json.write_text(json.dumps({'autoInstallIdeExtension': False}))
+
+    def test_unpinned_base_run_cleans_the_base_files_only(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
         home = e2e_isolated_home['home']
-        claude_dir = home / '.claude'
-        cmd_dir = claude_dir / 'test-cmd'
-        cmd_dir.mkdir(parents=True, exist_ok=True)
+        cmd_dir = home / '.claude' / 'test-cmd'
+        self._seed_stale_controls(home, cmd_dir)
 
-        # Pre-populate stale controls
-        settings = claude_dir / 'settings.json'
-        settings.write_text(json.dumps({
-            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
-        }))
-        cmd_settings = cmd_dir / 'settings.json'
-        cmd_settings.write_text(json.dumps({
-            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
-        }))
-        claude_json = home / '.claude.json'
-        claude_json.write_text(json.dumps({'autoInstallIdeExtension': False}))
-        cmd_claude_json = cmd_dir / '.claude.json'
-        cmd_claude_json.write_text(json.dumps({'autoInstallIdeExtension': False}))
-
-        # Run cleanup with not-pinned (no isolation, no user-declared key)
         setup_environment.cleanup_stale_ide_extension_controls(
-            home, machine_pinned=False, user_declared_keys=frozenset(),
+            home, machine_pinned=False, user_declared_keys=frozenset(), profile_dir=None,
         )
 
-        # Verify all cleaned
         errors = validate_ide_extension_controls(home, pinned=False)
         assert not errors, '\n'.join(errors)
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in json.loads(
+            (home / '.claude' / 'settings.json').read_text(),
+        ).get('env', {})
+        # The isolated profile is another profile's: untouched by a base run
+        assert json.loads((cmd_dir / 'settings.json').read_text()) == {
+            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
+        }
+        assert json.loads((cmd_dir / '.claude.json').read_text()) == {'autoInstallIdeExtension': False}
+
+    def test_unpinned_isolated_run_cleans_its_profile_files_only(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        cmd_dir = home / '.claude' / 'test-cmd'
+        self._seed_stale_controls(home, cmd_dir)
+
+        setup_environment.cleanup_stale_ide_extension_controls(
+            home, machine_pinned=False, user_declared_keys=frozenset(), profile_dir=cmd_dir,
+        )
+
+        errors = validate_ide_extension_controls(home, pinned=False, command_name='test-cmd')
+        assert not errors, '\n'.join(errors)
+        assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in json.loads(
+            (cmd_dir / 'settings.json').read_text(),
+        ).get('env', {})
+        # The base profile is another profile's: untouched by an isolated run
+        assert json.loads((home / '.claude' / 'settings.json').read_text()) == {
+            'env': {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': '1'},
+        }
+        assert json.loads((home / '.claude.json').read_text()) == {'autoInstallIdeExtension': False}
 
 
 class TestIdeUnpinnedRemovalSemantics:
@@ -229,6 +253,7 @@ class TestIdeUnpinnedRemovalSemantics:
 
         setup_environment.cleanup_stale_ide_extension_controls(
             home, machine_pinned=False, user_declared_keys=frozenset({'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'}),
+            profile_dir=None,
         )
 
         data = json.loads(settings_path.read_text())
