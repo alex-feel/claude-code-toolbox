@@ -66,7 +66,7 @@ class TestPinnedVersionInjectsControls:
         assert osev.get('DISABLE_AUTOUPDATER') == '1'
         assert osev.get('DISABLE_UPDATES') == '1'
 
-        # Write global config with dual-write when command-names is present
+        # Write global config to the profile's own .claude.json (command-names present)
         primary_command = config.get('command-names', [None])[0]
         artifact_dir = home / '.claude' / primary_command if primary_command else None
         if artifact_dir:
@@ -81,6 +81,7 @@ class TestPinnedVersionInjectsControls:
             home, pinned=True, command_name=primary_command,
         )
         assert not errors, '\n'.join(errors)
+        assert not (home / '.claude.json').exists(), 'The pinned isolated run must leave the base file alone'
 
     def test_pinned_version_shows_auto_injected_items(self) -> None:
         config = _load_fixture_config('pinned_version_config.yaml')
@@ -306,7 +307,7 @@ class TestUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_auto_update_controls(
-            home, machine_pinned=False, user_declared_keys=frozenset({declared_key}),
+            home, machine_pinned=False, user_declared_keys=frozenset({declared_key}), profile_dir=None,
         )
 
         data = json.loads(settings_path.read_text())
@@ -328,7 +329,7 @@ class TestUnpinnedRemovalSemantics:
         }))
 
         setup_environment.cleanup_stale_auto_update_controls(
-            home, machine_pinned=False, user_declared_keys=frozenset(),
+            home, machine_pinned=False, user_declared_keys=frozenset(), profile_dir=None,
         )
 
         data = json.loads(settings_path.read_text())
@@ -339,9 +340,12 @@ class TestUnpinnedRemovalSemantics:
 
 
 class TestUnpinnedNullEnvControlFlow:
-    """A null user-settings.env control is a deletion request the Step 16 sweep carries out everywhere."""
+    """A null user-settings.env control is a deletion request the Step 16 sweep carries out in its own profile."""
 
-    def test_null_env_control_does_not_shield_a_stale_copy(self, e2e_isolated_home: dict[str, Path]) -> None:
+    def test_null_env_control_does_not_shield_the_running_profile_copy(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """The base run removes its own stale copy and reports, without editing, the sibling's."""
         home = e2e_isolated_home['home']
         base_settings = home / '.claude' / 'settings.json'
         sibling_settings = home / '.claude' / 'sibling' / 'settings.json'
@@ -352,19 +356,25 @@ class TestUnpinnedNullEnvControlFlow:
         declared = setup_environment._collect_user_declared_control_keys(
             {'env': {'DISABLE_UPDATES': None}}, global_config=None,
         )
-        setup_environment._run_stale_controls_cleanup(machine_pinned=False, user_declared_keys=declared)
+        report = setup_environment._run_stale_controls_cleanup(
+            machine_pinned=False, user_declared_keys=declared, profile_dir=None,
+        )
 
-        for path in (base_settings, sibling_settings):
-            assert json.loads(path.read_text()) == {'env': {'KEEP': 'x'}}, \
-                f'A null DISABLE_UPDATES must not keep the stale value in {path}'
+        assert json.loads(base_settings.read_text()) == {'env': {'KEEP': 'x'}}, \
+            'A null DISABLE_UPDATES must not keep the stale value in the running profile'
+        assert json.loads(sibling_settings.read_text()) == {'env': {'DISABLE_UPDATES': '1', 'KEEP': 'x'}}, \
+            "Another profile's file is never edited"
+        assert report == [setup_environment.StaleControlCopy('sibling', sibling_settings, ('DISABLE_UPDATES',))]
 
 
 class TestUnpinnedDeclaredGlobalConfigFlow:
     """Step 15 writes the YAML global-config, then the Step 16 sweep runs on the same machine."""
 
     @staticmethod
-    def _run_steps_15_16(home: Path, global_config: dict[str, Any]) -> tuple[Path, Path]:
-        """Seed a sibling profile's stale control, write global-config, sweep; return both .claude.json paths."""
+    def _run_steps_15_16(
+        home: Path, global_config: dict[str, Any],
+    ) -> tuple[Path, Path, list[setup_environment.StaleControlCopy]]:
+        """Seed a sibling profile's stale control, write global-config, sweep; return both files and the report."""
         sibling = home / '.claude' / 'sibling' / '.claude.json'
         sibling.parent.mkdir(parents=True)
         sibling.write_text(json.dumps({'autoUpdates': False}))
@@ -376,26 +386,30 @@ class TestUnpinnedDeclaredGlobalConfigFlow:
         )
         assert gc is not None
         setup_environment.write_global_config(gc)
-        setup_environment._run_stale_controls_cleanup(machine_pinned=False, user_declared_keys=declared)
-        return home / '.claude.json', sibling
+        report = setup_environment._run_stale_controls_cleanup(
+            machine_pinned=False, user_declared_keys=declared, profile_dir=None,
+        )
+        return home / '.claude.json', sibling, report
 
     def test_declared_false_survives_the_sweep(self, e2e_isolated_home: dict[str, Path]) -> None:
-        """A global-config autoUpdates: false written by Step 15 is not removed by Step 16."""
-        claude_json, sibling = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': False})
+        """A global-config autoUpdates: false written by Step 15 is not removed by Step 16 and shields the sibling's report."""
+        claude_json, sibling, report = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': False})
 
         assert json.loads(claude_json.read_text())['autoUpdates'] is False, \
             'The declared autoUpdates: false must survive the unpinned sweep'
         assert json.loads(sibling.read_text()) == {'autoUpdates': False}
+        assert report == []
 
-    def test_declared_true_leaves_the_sweep_free_to_clear_stale_copies(
+    def test_declared_true_leaves_the_sibling_copy_reported_but_untouched(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """A global-config autoUpdates: true does not shield another profile's stale false."""
-        claude_json, sibling = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': True})
+        """A global-config autoUpdates: true does not shield another profile's stale false from the report."""
+        claude_json, sibling, report = self._run_steps_15_16(e2e_isolated_home['home'], {'autoUpdates': True})
 
         assert json.loads(claude_json.read_text())['autoUpdates'] is True
-        assert 'autoUpdates' not in json.loads(sibling.read_text()), \
-            "A stale autoUpdates: false in another profile's .claude.json must be removed"
+        assert json.loads(sibling.read_text()) == {'autoUpdates': False}, \
+            "A stale autoUpdates: false in another profile's .claude.json is reported, never edited"
+        assert report == [setup_environment.StaleControlCopy('sibling', sibling, ('autoUpdates',))]
 
 
 class TestPinnedBaseFlowSequence:
@@ -440,7 +454,7 @@ class TestPinnedBaseFlowSequence:
 
         # Step 16: pinned non-isolated cleanup must NOT sweep the base file
         setup_environment._run_stale_controls_cleanup(
-            machine_pinned=True, user_declared_keys=frozenset(),
+            machine_pinned=True, user_declared_keys=frozenset(), profile_dir=None,
         )
         data = json.loads((claude_dir / 'settings.json').read_text())
         assert data['env']['DISABLE_AUTOUPDATER'] == '1', \
@@ -515,12 +529,12 @@ class TestIsolatedInjectedEnvReachesConfigJson:
 
 
 class TestCrossLocationStaleCleanup:
-    """Verify cleanup helpers sweep all settings.json and .claude.json locations."""
+    """Verify the per-file cleanup helper removes the controls from exactly the file it is given."""
 
-    def test_unpinned_cleans_all_settings_json(
+    def test_helper_cleans_each_settings_json_it_is_given(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Not pinned: removes both env controls from ALL settings.json locations."""
+        """Called once per file, the helper removes both env controls from every one of them."""
         home = e2e_isolated_home['home']
         claude_dir = home / '.claude'
 
@@ -570,10 +584,10 @@ class TestCrossLocationStaleCleanup:
         data = json.loads(settings_path.read_text())
         assert 'env' not in data, 'Empty env: {} should be cleaned up after removal'
 
-    def test_pinned_cleans_only_bare_session_settings(
+    def test_helper_leaves_every_other_file_alone(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Pinned: only cleans bare session ~/.claude/settings.json."""
+        """The helper touches only the file it is given; a sibling profile's copy stays."""
         home = e2e_isolated_home['home']
         claude_dir = home / '.claude'
 
@@ -589,7 +603,6 @@ class TestCrossLocationStaleCleanup:
             'env': dict.fromkeys(ENV_CONTROL_KEYS, '1'),
         }))
 
-        # Pinned: only cleans bare session location
         setup_environment._cleanup_settings_json_env_controls(
             claude_dir / 'settings.json', ENV_CONTROL_KEYS,
         )
@@ -607,13 +620,13 @@ class TestCrossLocationStaleCleanup:
             assert isolated_env.get(key) == '1'
 
 
-class TestGlobalConfigDualWrite:
-    """Verify write_global_config() dual-writes when command-names is present."""
+class TestGlobalConfigSingleWrite:
+    """Verify write_global_config() writes exactly one .claude.json: the running profile's."""
 
-    def test_dual_write_creates_both_files(
+    def test_isolated_write_creates_only_the_profile_file(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Both home and isolated .claude.json are written."""
+        """An isolated run writes ~/.claude/{cmd}/.claude.json and never creates ~/.claude.json."""
         home = e2e_isolated_home['home']
         artifact_dir = home / '.claude' / 'test-cmd'
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -625,38 +638,51 @@ class TestGlobalConfigDualWrite:
         )
 
         assert result is True
-
-        # Verify BOTH files exist with matching content
-        home_json = json.loads((home / '.claude.json').read_text())
         isolated_json = json.loads((artifact_dir / '.claude.json').read_text())
-
-        assert home_json['autoConnectIde'] is True
-        assert home_json['editorMode'] == 'vim'
         assert isolated_json['autoConnectIde'] is True
         assert isolated_json['editorMode'] == 'vim'
+        assert not (home / '.claude.json').exists(), 'An isolated run must not create the base ~/.claude.json'
 
-    def test_no_dual_write_without_artifact_base_dir(
+    def test_isolated_write_leaves_an_existing_base_file_unchanged(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """No isolated .claude.json when artifact_base_dir is None."""
+        """A base ~/.claude.json with an account keeps every byte when an isolated run deletes account keys."""
+        home = e2e_isolated_home['home']
+        artifact_dir = home / '.claude' / 'test-cmd'
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        base_json = home / '.claude.json'
+        base_json.write_text(json.dumps({
+            'oauthAccount': {'emailAddress': 'base@example.com'}, 'userID': 'base-user', 'editorMode': 'emacs',
+        }))
+        base_bytes = base_json.read_bytes()
+
+        assert setup_environment.write_global_config(
+            {'oauthAccount': None, 'userID': None, 'editorMode': 'vim'}, artifact_base_dir=artifact_dir,
+        )
+
+        assert base_json.read_bytes() == base_bytes
+        assert json.loads((artifact_dir / '.claude.json').read_text()) == {'editorMode': 'vim'}
+
+    def test_base_write_targets_only_the_base_file(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        """A base run writes ~/.claude.json and no isolated .claude.json."""
         home = e2e_isolated_home['home']
         global_config: dict[str, Any] = {'showTurnDuration': True}
 
         result = setup_environment.write_global_config(global_config)
 
         assert result is True
-        assert (home / '.claude.json').exists()
-        # No isolated .claude.json should be created
+        assert json.loads((home / '.claude.json').read_text()) == {'showTurnDuration': True}
         claude_dir = home / '.claude'
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    assert not (subdir / '.claude.json').exists()
+        for subdir in claude_dir.iterdir():
+            if subdir.is_dir():
+                assert not (subdir / '.claude.json').exists()
 
-    def test_auto_updates_false_in_both_files_when_pinned(
+    def test_auto_updates_false_reaches_only_the_profile_file_when_pinned(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Pinned version: autoUpdates: false appears in both locations."""
+        """A pinned isolated run writes autoUpdates: false into its own .claude.json only."""
         home = e2e_isolated_home['home']
         artifact_dir = home / '.claude' / 'test-cmd'
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -668,44 +694,31 @@ class TestGlobalConfigDualWrite:
         assert gc is not None
         setup_environment.write_global_config(gc, artifact_base_dir=artifact_dir)
 
-        home_json = json.loads((home / '.claude.json').read_text())
         isolated_json = json.loads((artifact_dir / '.claude.json').read_text())
-        assert home_json['autoUpdates'] is False
         assert isolated_json['autoUpdates'] is False
+        assert not (home / '.claude.json').exists()
+        assert not validate_auto_update_controls(home, pinned=True, command_name='test-cmd')
 
-    def test_dual_write_skips_when_artifact_base_dir_equals_home(
+    def test_profile_dir_equal_to_home_is_the_base_file(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Degenerate case: artifact_base_dir == home_dir skips dual-write.
-
-        When artifact_base_dir equals the home directory, dual-write is
-        skipped to avoid writing the same ~/.claude.json file twice.
-        """
+        """Degenerate case: artifact_base_dir == home_dir writes the base ~/.claude.json once."""
         home = e2e_isolated_home['home']
 
         global_config: dict[str, Any] = {'autoConnectIde': True, 'editorMode': 'vim'}
 
-        # Pass home as artifact_base_dir (degenerate case)
         result = setup_environment.write_global_config(
             global_config, artifact_base_dir=home,
         )
 
         assert result is True
-
-        # Home .claude.json should exist with correct content
         home_json = json.loads((home / '.claude.json').read_text())
         assert home_json['autoConnectIde'] is True
         assert home_json['editorMode'] == 'vim'
-
-        # No separate .claude.json should appear in home directory itself
-        # (the guard prevents writing home/.claude.json a second time)
-        # Verify by checking that .claude subdirectories have no .claude.json
         claude_dir = home / '.claude'
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    assert not (subdir / '.claude.json').exists(), \
-                        f'Unexpected .claude.json in {subdir}'
+        for subdir in claude_dir.iterdir():
+            if subdir.is_dir():
+                assert not (subdir / '.claude.json').exists(), f'Unexpected .claude.json in {subdir}'
 
 
 class TestStaleAutoUpdatesFalseCleanup:
@@ -757,10 +770,10 @@ class TestStaleAutoUpdatesFalseCleanup:
         data = json.loads(claude_json.read_text())
         assert data['autoUpdates'] is True
 
-    def test_cleans_all_isolated_claude_json(
+    def test_helper_cleans_each_isolated_claude_json_it_is_given(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """Cleanup sweeps ~/.claude/*/.claude.json too."""
+        """Called for a profile's own .claude.json, the helper removes the stale false there."""
         home = e2e_isolated_home['home']
         for name in ['aegis', 'myenv']:
             isolated_dir = home / '.claude' / name

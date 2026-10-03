@@ -1,0 +1,610 @@
+"""E2E tests for the writes an isolated install makes outside its own profile.
+
+An isolated run (command-names present) writes inside ~/.claude/{cmd} and
+leaves every other profile alone:
+
+- global-config goes to the profile's own .claude.json; the base
+  ~/.claude.json changes only when Step 1 installs or upgrades Claude Code,
+  and then only in installMethod, which the installer records there.
+- os-env-variables go to the profile's env loader files, null entries as
+  unset lines; only the three machine-wide binary controls reach the OS
+  environment.
+- The Step 16 sweeps edit the running profile's settings.json and
+  .claude.json; stale controls found in other profiles are listed and never
+  edited.
+- A global-config null for oauthAccount or userID that signs an account out
+  of the .claude.json this run writes is named in the summary and in
+  --dry-run; nothing blocks it.
+- Every machine-wide write of an isolated run is named in the summary
+  before consent.
+
+A base run keeps writing ~/.claude.json and the OS environment as before.
+
+Every test runs main() against YAML files on disk, so loading, validation,
+the writers and the summary run for real; only the steps that never touch
+these files (Claude Code installation, dependencies, downloads, MCP
+registration, OS environment writes, launcher and command registration) are
+stubbed. The Claude Code installation stub records installMethod in the base
+~/.claude.json the way the installer does, so the base file's one allowed
+change is exercised rather than assumed.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Callable
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+from scripts import setup_environment
+from tests.conftest import empty_mcp_stats
+from tests.e2e.validators import validate_env_loader_files
+
+PROFILE_NAME = 'e2e-corp'
+PINNED_VERSION = '2.1.85'
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
+MACHINE_WIDE_CONTROLS = ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL')
+BASE_ACCOUNT = {'emailAddress': 'base@example.com', 'accountUuid': 'base-account-uuid'}
+
+
+def _write_yaml(path: Path, data: dict[str, Any]) -> Path:
+    """Write a configuration dict as a YAML file and return its path."""
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding='utf-8')
+    return path
+
+
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    """Seed a JSON file the way Claude Code leaves it before setup runs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON object from disk."""
+    data: dict[str, Any] = json.loads(path.read_text(encoding='utf-8'))
+    return data
+
+
+def _install_recording_install_method(home: Path) -> Callable[..., bool]:
+    """Build an install_claude stand-in that records installMethod like the installer does.
+
+    update_install_method_config() in install_claude.py reads ~/.claude.json,
+    sets installMethod and writes the file back; this stand-in performs the
+    same read-merge-write so the test observes the one base-file change an
+    isolated run is allowed to cause.
+
+    Returns:
+        A callable with install_claude()'s signature that always succeeds.
+    """
+    def fake_install(_version: str | None = None, *, keep_installed: bool = False) -> bool:
+        del keep_installed
+        path = home / '.claude.json'
+        data = _read_json(path) if path.exists() else {}
+        data['installMethod'] = 'native'
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+        return True
+    return fake_install
+
+
+def _corp_like_config(
+    *,
+    isolated: bool,
+    pinned: bool = True,
+    os_env_variables: Mapping[str, str | None] | None = None,
+) -> dict[str, Any]:
+    """Build a configuration shaped like a corporate base profile.
+
+    Such a configuration pins a Claude Code version and deletes the account
+    keys from the global config so that every install signs in afresh.
+
+    Returns:
+        The configuration dict, ready to be written as YAML.
+    """
+    config: dict[str, Any] = {
+        'name': 'Corporate Profile',
+        'global-config': {'oauthAccount': None, 'userID': None, 'editorMode': 'vim'},
+        'user-settings': {'theme': 'dark'},
+    }
+    if pinned:
+        config['claude-code-version'] = PINNED_VERSION
+    if isolated:
+        config['command-names'] = [PROFILE_NAME]
+    if os_env_variables is not None:
+        config['os-env-variables'] = dict(os_env_variables)
+    return config
+
+
+def _run_setup(
+    config_path: Path,
+    home: Path,
+    *args: str,
+    install_claude: Callable[..., bool] | None = None,
+) -> tuple[dict[str, str | None] | None, int | None]:
+    """Run main() for one YAML file with the unrelated steps stubbed.
+
+    Returns:
+        The dict handed to the OS environment writer (None when Step 7 never
+        ran) and the exit code main() asked for (None when it returned).
+    """
+    profile_dir = home / '.claude' / 'unused-launcher'
+    passthrough_find = setup_environment.find_command
+    recorded: dict[str, Any] = {}
+
+    def find_with_claude(cmd: str) -> str | None:
+        return '/usr/bin/claude' if cmd == 'claude' else passthrough_find(cmd)
+
+    def record_os_env(env_vars: dict[str, str | None]) -> bool:
+        recorded['os_env'] = dict(env_vars)
+        return True
+
+    exit_code: int | None = None
+    with (
+        patch('scripts.setup_environment.find_command', side_effect=find_with_claude),
+        patch('scripts.setup_environment.install_claude', side_effect=install_claude or (lambda *_a, **_k: True)),
+        patch('scripts.setup_environment.install_ide_extensions', return_value=True),
+        patch('scripts.setup_environment.install_dependencies', return_value=[]),
+        patch('scripts.setup_environment.process_resources', return_value=True),
+        patch('scripts.setup_environment.process_skills', return_value=True),
+        patch('scripts.setup_environment.configure_all_mcp_servers',
+              return_value=(True, [], empty_mcp_stats())),
+        patch('scripts.setup_environment.set_all_os_env_variables', side_effect=record_os_env),
+        patch('scripts.setup_environment.create_launcher_script',
+              return_value=(profile_dir / 'launch.sh', profile_dir / 'launch.sh')),
+        patch('scripts.setup_environment.register_global_command', return_value=True),
+        patch('scripts.setup_environment.is_admin', return_value=True),
+        patch('sys.argv', ['setup_environment.py', str(config_path), *args]),
+    ):
+        try:
+            setup_environment.main()
+        except SystemExit as exc:
+            exit_code = int(exc.code) if isinstance(exc.code, int) else 1
+    return recorded.get('os_env'), exit_code
+
+
+def _output(capsys: pytest.CaptureFixture[str]) -> str:
+    """Return everything the run printed, color codes stripped; the summary goes to stderr under capture."""
+    captured = capsys.readouterr()
+    return _ANSI_SEQUENCE.sub('', captured.out + captured.err)
+
+
+class TestIsolatedInstallLeavesTheBaseAlone:
+    """An isolated install of a base configuration writes only its own profile's .claude.json."""
+
+    def test_base_file_changes_only_in_install_method_when_step_1_installs(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """oauthAccount and userID survive in the base file; the profile file gets the resolved global-config."""
+        home = e2e_isolated_home['home']
+        base_json = home / '.claude.json'
+        base_before = {
+            'oauthAccount': dict(BASE_ACCOUNT),
+            'userID': 'base-user',
+            'editorMode': 'emacs',
+            'installMethod': 'global',
+            'projects': {'/work': {'allowedTools': []}},
+        }
+        _write_json(base_json, base_before)
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--yes', install_claude=_install_recording_install_method(home))
+
+        assert exit_code is None
+        expected_base = dict(base_before, installMethod='native')
+        assert _read_json(base_json) == expected_base, \
+            'An isolated run may change the base ~/.claude.json only through the installer, in installMethod'
+        profile_json = _read_json(home / '.claude' / PROFILE_NAME / '.claude.json')
+        assert 'oauthAccount' not in profile_json
+        assert 'userID' not in profile_json
+        assert profile_json['editorMode'] == 'vim'
+        assert profile_json['autoUpdates'] is False
+        assert profile_json['autoInstallIdeExtension'] is False
+        assert profile_json['installMethod'] == 'native', 'installMethod is propagated into the profile file'
+
+    def test_base_file_is_byte_identical_under_skip_install(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Without Step 1 nothing at all touches ~/.claude.json."""
+        home = e2e_isolated_home['home']
+        base_json = home / '.claude.json'
+        _write_json(base_json, {'oauthAccount': dict(BASE_ACCOUNT), 'userID': 'base-user', 'installMethod': 'native'})
+        base_bytes = base_json.read_bytes()
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        assert base_json.read_bytes() == base_bytes
+        profile_json = _read_json(home / '.claude' / PROFILE_NAME / '.claude.json')
+        assert 'oauthAccount' not in profile_json
+        assert profile_json['installMethod'] == 'native'
+
+    def test_base_run_still_writes_the_base_file(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """A base run of the same configuration deletes the account keys from ~/.claude.json."""
+        home = e2e_isolated_home['home']
+        base_json = home / '.claude.json'
+        _write_json(base_json, {'oauthAccount': dict(BASE_ACCOUNT), 'userID': 'base-user', 'editorMode': 'emacs'})
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=False))
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        base_after = _read_json(base_json)
+        assert 'oauthAccount' not in base_after
+        assert 'userID' not in base_after
+        assert base_after['editorMode'] == 'vim'
+        assert base_after['autoUpdates'] is False
+        assert not any(
+            (subdir / '.claude.json').exists() for subdir in (home / '.claude').iterdir() if subdir.is_dir()
+        ), 'A base run writes no isolated .claude.json'
+
+
+class TestIsolatedOsEnvVariablesStayInTheProfile:
+    """os-env-variables of an isolated run reach the env loaders; only the binary controls reach the OS."""
+
+    def test_pinned_isolated_run_writes_only_the_controls_to_the_os(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        yaml_vars: dict[str, str | None] = {'CORP_GATEWAY': 'https://gateway.example', 'OLD_TOKEN': None}
+        config_path = _write_yaml(
+            tmp_path / 'corp.yaml', _corp_like_config(isolated=True, os_env_variables=yaml_vars),
+        )
+
+        os_env, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        assert os_env == dict.fromkeys(MACHINE_WIDE_CONTROLS, '1'), \
+            'Only the three machine-wide controls may reach the OS environment from an isolated run'
+        errors = validate_env_loader_files(claude_dir, yaml_vars, command_name=PROFILE_NAME)
+        assert not errors, '\n'.join(errors)
+        loader = (claude_dir / PROFILE_NAME / 'env.sh').read_text(encoding='utf-8')
+        assert 'export CORP_GATEWAY="https://gateway.example"' in loader
+        assert 'unset OLD_TOKEN\n' in loader
+        for control in MACHINE_WIDE_CONTROLS:
+            assert control not in loader, f'{control} is machine-wide and never enters a profile loader'
+
+    def test_unpinned_isolated_run_deletes_only_the_controls_from_the_os(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """With no pin anywhere, the OS writer gets the three deletions and the YAML variables stay in the loaders."""
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        config_path = _write_yaml(
+            tmp_path / 'personal.yaml',
+            _corp_like_config(isolated=True, pinned=False, os_env_variables={'MY_VAR': 'x', 'GONE': None}),
+        )
+
+        os_env, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        assert os_env == dict.fromkeys(MACHINE_WIDE_CONTROLS)
+        loader = (claude_dir / PROFILE_NAME / 'env.sh').read_text(encoding='utf-8')
+        assert 'export MY_VAR="x"' in loader
+        assert 'unset GONE\n' in loader
+        for control in MACHINE_WIDE_CONTROLS:
+            assert control not in loader
+
+    def test_base_run_writes_every_variable_to_the_os_and_no_loader(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        config_path = _write_yaml(
+            tmp_path / 'corp.yaml',
+            _corp_like_config(isolated=False, os_env_variables={'CORP_GATEWAY': 'g', 'OLD_TOKEN': None}),
+        )
+
+        os_env, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        assert os_env == {
+            'CORP_GATEWAY': 'g',
+            'OLD_TOKEN': None,
+            **dict.fromkeys(MACHINE_WIDE_CONTROLS, '1'),
+        }
+        assert not list(claude_dir.rglob('env.sh')), 'A base run generates no env loader files'
+
+
+class TestStep16StaysInsideTheProfile:
+    """The unpinned sweep edits the running profile's files and reports the copies other profiles hold."""
+
+    @staticmethod
+    def _seed_stale_controls(settings_path: Path, claude_json_path: Path) -> None:
+        _write_json(settings_path, {'env': {'DISABLE_AUTOUPDATER': '1', 'DISABLE_UPDATES': '1', 'KEEP': 'x'}})
+        _write_json(claude_json_path, {'autoUpdates': False, 'autoInstallIdeExtension': False, 'userID': 'u'})
+
+    def test_unpinned_isolated_run_edits_its_own_files_and_reports_the_base_copy(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        profile_dir = claude_dir / PROFILE_NAME
+        base_settings = claude_dir / 'settings.json'
+        base_json = home / '.claude.json'
+        self._seed_stale_controls(base_settings, base_json)
+        self._seed_stale_controls(profile_dir / 'settings.json', profile_dir / '.claude.json')
+        base_settings_bytes = base_settings.read_bytes()
+        base_json_bytes = base_json.read_bytes()
+        config_path = _write_yaml(
+            tmp_path / 'personal.yaml',
+            {'name': 'Personal', 'command-names': [PROFILE_NAME], 'user-settings': {'theme': 'dark'}},
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        assert _read_json(profile_dir / 'settings.json') == {'env': {'KEEP': 'x'}}
+        profile_json = _read_json(profile_dir / '.claude.json')
+        assert 'autoUpdates' not in profile_json
+        assert 'autoInstallIdeExtension' not in profile_json
+        assert profile_json['userID'] == 'u'
+        assert base_settings.read_bytes() == base_settings_bytes, 'The base settings.json is never edited'
+        assert base_json.read_bytes() == base_json_bytes, 'The base .claude.json is never edited'
+        output = _output(capsys)
+        assert 'Stale update controls in other profiles (not edited by this run):' in output
+        assert 'Stale update controls remain in other profiles' in output
+        assert f'base: {base_settings} (DISABLE_AUTOUPDATER, DISABLE_UPDATES)' in output
+        assert f'base: {base_json} (autoUpdates, autoInstallIdeExtension)' in output
+        assert setup_environment.STALE_CONTROLS_RERUN_NOTE in output
+        assert 'Stale update controls left in other profiles' in output
+
+    def test_unpinned_base_run_edits_its_own_files_and_reports_the_isolated_copy(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        other_dir = claude_dir / 'aegis-1'
+        self._seed_stale_controls(claude_dir / 'settings.json', home / '.claude.json')
+        self._seed_stale_controls(other_dir / 'settings.json', other_dir / '.claude.json')
+        other_settings_bytes = (other_dir / 'settings.json').read_bytes()
+        other_json_bytes = (other_dir / '.claude.json').read_bytes()
+        config_path = _write_yaml(tmp_path / 'base.yaml', {'name': 'Base', 'user-settings': {'theme': 'dark'}})
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        base_settings = _read_json(claude_dir / 'settings.json')
+        assert 'DISABLE_UPDATES' not in base_settings['env']
+        assert 'DISABLE_AUTOUPDATER' not in base_settings['env']
+        assert 'autoUpdates' not in _read_json(home / '.claude.json')
+        assert (other_dir / 'settings.json').read_bytes() == other_settings_bytes
+        assert (other_dir / '.claude.json').read_bytes() == other_json_bytes
+        output = _output(capsys)
+        assert f'aegis-1: {other_dir / "settings.json"} (DISABLE_AUTOUPDATER, DISABLE_UPDATES)' in output
+        assert f'aegis-1: {other_dir / ".claude.json"} (autoUpdates, autoInstallIdeExtension)' in output
+
+    def test_pinned_base_keeps_its_controls_through_an_unpinned_isolated_run(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """While the base pins a version nothing is swept and nothing is reported as stale."""
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        _write_json(claude_dir / 'manifest.json', {'name': None, 'claude_code_version': PINNED_VERSION})
+        self._seed_stale_controls(claude_dir / 'settings.json', home / '.claude.json')
+        profile_dir = claude_dir / PROFILE_NAME
+        self._seed_stale_controls(profile_dir / 'settings.json', profile_dir / '.claude.json')
+        snapshots = {
+            path: path.read_bytes()
+            for path in (claude_dir / 'settings.json', home / '.claude.json', profile_dir / 'settings.json')
+        }
+        config_path = _write_yaml(
+            tmp_path / 'personal.yaml',
+            {'name': 'Personal', 'command-names': [PROFILE_NAME], 'user-settings': {'theme': 'dark'}},
+        )
+
+        os_env, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        for path, before in snapshots.items():
+            assert path.read_bytes() == before, f'{path} must keep the controls the pinned base needs'
+        assert _read_json(profile_dir / '.claude.json')['autoUpdates'] is False
+        assert os_env == {}, 'No OS-level deletion while another profile pins'
+        output = _output(capsys)
+        assert 'Stale update controls' not in output
+        assert "Another installed profile pins a Claude Code version ('base')" in output
+
+    def test_pinned_isolated_run_keeps_its_own_controls(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        profile_dir = claude_dir / PROFILE_NAME
+        assert _read_json(profile_dir / '.claude.json')['autoUpdates'] is False
+        config_env = _read_json(profile_dir / 'config.json')['env']
+        for control in MACHINE_WIDE_CONTROLS:
+            assert config_env[control] == '1'
+
+
+class TestAccountKeyWarning:
+    """A global-config null for an account key names the profile it signs out, before consent."""
+
+    def test_dry_run_names_the_profile_and_file_without_printing_values(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        profile_json = home / '.claude' / PROFILE_NAME / '.claude.json'
+        _write_json(profile_json, {'oauthAccount': {'emailAddress': 'profile@example.com'}, 'userID': 'profile-user'})
+        _write_json(home / '.claude.json', {'oauthAccount': dict(BASE_ACCOUNT), 'userID': 'base-user'})
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert (
+            f"[!] global-config deletes oauthAccount from {profile_json} (profile '{PROFILE_NAME}'): "
+            'the account signed in there is signed out'
+        ) in output
+        assert f"[!] global-config deletes userID from {profile_json} (profile '{PROFILE_NAME}')" in output
+        assert f'global-config deletes oauthAccount from {home / ".claude.json"}' not in output, \
+            'The base file is not the target of an isolated run, so it is not named as signed out'
+        for secret in ('profile@example.com', 'profile-user', 'base@example.com', 'base-user'):
+            assert secret not in output, 'Account values are never printed'
+        assert not (home / '.claude' / PROFILE_NAME / 'config.json').exists(), 'A dry run writes nothing'
+
+    def test_dry_run_is_silent_when_the_target_holds_no_account(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        _write_json(home / '.claude' / PROFILE_NAME / '.claude.json', {'editorMode': 'emacs', 'oauthAccount': None})
+        _write_json(home / '.claude.json', {'oauthAccount': dict(BASE_ACCOUNT), 'userID': 'base-user'})
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert 'global-config deletes' not in output
+
+    def test_base_run_summary_warns_and_the_run_proceeds(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The warning never blocks: with --yes the key is deleted from the base file as asked."""
+        home = e2e_isolated_home['home']
+        base_json = home / '.claude.json'
+        _write_json(base_json, {'userID': 'base-user', 'editorMode': 'emacs'})
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=False))
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        output = _output(capsys)
+        assert f"[!] global-config deletes userID from {base_json} (profile 'base')" in output
+        assert 'global-config deletes oauthAccount' not in output, 'The base file holds no oauthAccount'
+        assert 'base-user' not in output
+        assert 'userID' not in _read_json(base_json)
+
+    def test_base_run_is_silent_when_the_base_file_lacks_the_keys(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        _write_json(home / '.claude.json', {'editorMode': 'emacs'})
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=False))
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        assert 'global-config deletes' not in _output(capsys)
+
+
+class TestMachineWideWritesNamedBeforeConsent:
+    """The summary of an isolated run lists every write that leaves the profile directory."""
+
+    def test_pinned_isolated_dry_run_lists_the_binary_install_method_and_controls(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        config_path = _write_yaml(
+            tmp_path / 'corp.yaml',
+            _corp_like_config(isolated=True, os_env_variables={'CORP_GATEWAY': 'g'}),
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert 'Machine-wide writes (shared by every profile on this machine):' in output
+        assert f'[machine-wide] Claude Code binary: install or upgrade to {PINNED_VERSION} (used by every profile)' in output
+        assert (
+            f'[machine-wide] {home / ".claude.json"}: installMethod, recorded by the Claude Code installer '
+            'when it installs, upgrades or migrates the binary'
+        ) in output
+        assert f'[machine-wide] Claude Code version pin {PINNED_VERSION}: holds the binary every profile uses' in output
+        for control in MACHINE_WIDE_CONTROLS:
+            assert f'[machine-wide] OS environment: {control}="1"' in output
+        assert f'[machine-wide] {home / ".local" / "bin"}: command wrapper(s) {PROFILE_NAME}' in output
+        assert 'OS environment variables: 1 in the profile env loaders, 3 machine-wide (listed below)' in output
+        assert '[machine-wide] OS environment: CORP_GATEWAY' not in output, \
+            'A profile variable never appears as a machine-wide write'
+
+    def test_unpinned_isolated_dry_run_under_skip_install_lists_the_deletions_only(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        config_path = _write_yaml(tmp_path / 'personal.yaml', _corp_like_config(isolated=True, pinned=False))
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run', '--skip-install')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert 'Machine-wide writes (shared by every profile on this machine):' in output
+        assert 'recorded by the Claude Code installer' not in output, \
+            'Under --skip-install no installer runs, so no installMethod write is named'
+        assert 'Claude Code binary:' not in output
+        for control in MACHINE_WIDE_CONTROLS:
+            assert f'[machine-wide] OS environment: delete {control}' in output
+
+    def test_base_dry_run_has_no_machine_wide_block(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A base run's writes are the base profile's own; its OS variables are labeled machine-wide inline."""
+        home = e2e_isolated_home['home']
+        config_path = _write_yaml(
+            tmp_path / 'corp.yaml',
+            _corp_like_config(isolated=False, os_env_variables={'CORP_GATEWAY': 'g'}),
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert 'Machine-wide writes' not in output
+        assert 'OS environment variables: 4 (machine-wide)' in output

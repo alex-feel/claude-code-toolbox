@@ -262,6 +262,12 @@ GLOBAL_CONFIG_EXCLUDED_KEYS: frozenset[str] = frozenset({
     'oauthAccount',
 })
 
+# The .claude.json keys that identify the account a profile is signed in
+# with. A global-config null for one of them signs that account out of the
+# profile whose .claude.json the run writes, so the installation summary
+# warns before consent whenever the target file holds a value for it.
+GLOBAL_CONFIG_ACCOUNT_KEYS: tuple[str, ...] = ('oauthAccount', 'userID')
+
 # Model family markers whose presence (case-insensitive substring) in the model
 # identifier indicates support for the extended effort levels: 'xhigh' is
 # supported on Opus 4.7/4.8 and Fable 5; 'max' on Opus 4.6+, Sonnet 4.6+, and
@@ -892,6 +898,21 @@ class ComponentSelection:
         return [name for name in self.available if name not in selected_set]
 
 
+class StaleControlCopy(NamedTuple):
+    """Stale update controls found in a profile the running one does not own.
+
+    Attributes:
+        profile: Display name of the profile holding the controls ('base'
+            for the base profile, the directory name for an isolated one).
+        file: The settings.json or .claude.json holding them.
+        keys: The control keys present in that file.
+    """
+
+    profile: str
+    file: Path
+    keys: tuple[str, ...]
+
+
 @dataclass
 class InstallationPlan:
     """Structured representation of what the setup will install.
@@ -961,6 +982,19 @@ class InstallationPlan:
 
     # Removal plan for deselected components (empty lists when nothing is dropped)
     deselected_items: dict[str, list[Any]] | None = None
+
+    # Writes of an isolated run that reach beyond its profile directory,
+    # each named before consent
+    machine_wide_writes: list[str] = field(default_factory=lambda: list[str]())
+
+    # global-config deletions that sign an account out of the .claude.json
+    # this run writes
+    account_key_warnings: list[str] = field(default_factory=lambda: list[str]())
+
+    # Stale update controls other installed profiles hold; listed, never edited
+    stale_controls_elsewhere: list[StaleControlCopy] = field(
+        default_factory=lambda: list[StaleControlCopy](),
+    )
 
     @property
     def total_resources(self) -> int:
@@ -3900,27 +3934,48 @@ def prompt_component_selection(
     return _prompt_component_selection_numbered(names, labels, seed)
 
 
+def global_config_target_file(artifact_base_dir: Path | None) -> Path:
+    """Resolve the one .claude.json a run's global-config write targets.
+
+    An isolated run writes its profile's own file, because the Claude Code
+    CLI resolves getGlobalClaudeFile() through CLAUDE_CONFIG_DIR with no
+    fallback to the home directory and because the base file belongs to
+    the base profile. A base run writes ~/.claude.json. A profile directory
+    equal to the home directory is the base file.
+
+    Args:
+        artifact_base_dir: Isolated profile directory, or None for the base
+            profile.
+
+    Returns:
+        Path to the .claude.json the run writes.
+    """
+    home_dir = get_real_user_home()
+    if artifact_base_dir is not None and artifact_base_dir != home_dir:
+        return artifact_base_dir / '.claude.json'
+    return home_dir / '.claude.json'
+
+
 def write_global_config(
     global_config: dict[str, Any],
     artifact_base_dir: Path | None = None,
 ) -> bool:
-    """Write global configuration to ~/.claude.json with universal deep merge.
+    """Write global configuration to the run's own .claude.json with universal deep merge.
 
-    Implements asymmetric dual-write: always writes to ~/.claude.json
-    (machine baseline for bare claude sessions), and additionally writes
-    to artifact_base_dir/.claude.json when command-names creates an
-    isolated environment (since Claude Code CLI resolves
-    getGlobalClaudeFile() via CLAUDE_CONFIG_DIR with no fallback to the
-    home directory).
+    Writes exactly one file: ~/.claude/{cmd}/.claude.json when command-names
+    creates an isolated environment, ~/.claude.json otherwise (see
+    global_config_target_file()). An isolated run never touches the base
+    file, so a configuration that deletes account keys signs out only the
+    profile it installs.
 
-    ~/.claude.json is a collaborative surface managed by the Claude Code
+    A .claude.json is a collaborative surface managed by the Claude Code
     CLI at runtime (OAuth tokens, per-project trust decisions,
     user-scoped MCP server approvals via /mcp approve, enabledPlugins,
     enabledMcpjsonServers, disabledMcpjsonServers, etc.). The writer
     MUST NOT destroy these contributions, so it delegates to
     _write_merged_json() -- exactly the same semantics as
-    write_user_settings() and write_profile_settings_to_settings(): each
-    target file is merged separately, and every array at every depth is
+    write_user_settings() and write_profile_settings_to_settings(): the
+    target file is merged in place, and every array at every depth is
     unioned with the array that file already holds (existing elements
     first, new ones appended, duplicates dropped). A YAML array therefore
     only adds elements; a None value deletes the whole key.
@@ -3932,14 +3987,13 @@ def write_global_config(
 
     Args:
         global_config: Global config dict from YAML global-config section.
-        artifact_base_dir: Isolated config directory path, or None.
+        artifact_base_dir: Isolated profile directory, or None for the base
+            profile.
 
     Returns:
-        True if config was written successfully to all targets, False on
-        any failure.
+        True if the file was written successfully, False on failure.
     """
-    home_dir = get_real_user_home()
-    config_file = home_dir / '.claude.json'
+    config_file = global_config_target_file(artifact_base_dir)
 
     ok, _ = _write_merged_json(config_file, global_config)
 
@@ -3947,16 +4001,6 @@ def write_global_config(
         success(f'Wrote global config to {config_file}')
     else:
         warning(f'Failed to write global config to {config_file}')
-
-    # Dual-write to isolated environment when command-names is present
-    if artifact_base_dir is not None and artifact_base_dir != home_dir:
-        isolated_config_file = artifact_base_dir / '.claude.json'
-        iso_ok, _ = _write_merged_json(isolated_config_file, global_config)
-        if iso_ok:
-            success(f'Wrote global config to {isolated_config_file}')
-        else:
-            warning(f'Failed to write global config to {isolated_config_file}')
-        ok = ok and iso_ok
 
     return ok
 
@@ -3971,9 +4015,9 @@ def _propagate_install_method(
     install_claude.py records installMethod only in the base ~/.claude.json,
     while isolated sessions resolve their global config exclusively through
     CLAUDE_CONFIG_DIR. Injecting the machine-baseline value into the
-    global-config dict lets the Step 15 dual-write carry it to both the base
-    and the isolated .claude.json, so the CLI sees the correct installation
-    type in isolated sessions.
+    global-config dict lets the Step 15 write carry it to the profile's own
+    .claude.json, so the CLI sees the correct installation type in isolated
+    sessions.
 
     WARN-but-Respect: a user-declared YAML global-config value wins with a
     warning when it differs from the baseline. When the base file or the key
@@ -4072,6 +4116,19 @@ IDE_AUTO_INSTALL_KEY = 'autoInstallIdeExtension'
 IDE_AUTO_INSTALL_DISABLED_VALUE = False
 IDE_SKIP_AUTO_INSTALL_KEY = 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'
 IDE_SKIP_AUTO_INSTALL_VALUE = '1'
+# The environment controls that hold the one Claude Code binary this
+# machine has: the two auto-update controls and the IDE extension control.
+# They are machine-wide from any run, so an isolated run writes them to the
+# OS environment while every other os-env-variables entry of that run goes
+# to the profile's env loader files only. Every place that handles the
+# three together reads this tuple.
+MACHINE_WIDE_ENV_CONTROLS: tuple[str, ...] = (
+    *(key for key, _ in AUTO_UPDATE_ENV_CONTROLS),
+    IDE_SKIP_AUTO_INSTALL_KEY,
+)
+# The .claude.json controls a version pin sets to false; the Step 16 sweep
+# removes a false value the YAML does not declare.
+MACHINE_WIDE_JSON_CONTROLS: tuple[str, ...] = (AUTO_UPDATE_KEY, IDE_AUTO_INSTALL_KEY)
 IDE_EXTENSION_ID = 'anthropic.claude-code'
 IDE_EXTENSION_PUBLISHER = 'anthropic'
 IDE_EXTENSION_NAME = 'claude-code'
@@ -4639,13 +4696,168 @@ def _collect_user_declared_control_keys(
     """
     declared: set[str] = set()
     env_section = user_settings.get('env') if user_settings is not None else None
-    for key in (*(name for name, _ in AUTO_UPDATE_ENV_CONTROLS), IDE_SKIP_AUTO_INSTALL_KEY):
+    for key in MACHINE_WIDE_ENV_CONTROLS:
         if isinstance(env_section, dict) and env_section.get(key) is not None:
             declared.add(key)
-    for key in (AUTO_UPDATE_KEY, IDE_AUTO_INSTALL_KEY):
+    for key in MACHINE_WIDE_JSON_CONTROLS:
         if global_config is not None and global_config.get(key) is False:
             declared.add(key)
     return frozenset(declared)
+
+
+def _profile_control_files(home_dir: Path, profile_dir: Path | None) -> tuple[Path, Path]:
+    """Resolve the settings.json and .claude.json a profile owns.
+
+    Args:
+        home_dir: User home directory.
+        profile_dir: Isolated profile directory, or None for the base
+            profile.
+
+    Returns:
+        The (settings.json, .claude.json) pair: ~/.claude/settings.json and
+        ~/.claude.json for the base profile, the two files inside the
+        profile directory for an isolated one.
+    """
+    if profile_dir is None:
+        return home_dir / '.claude' / 'settings.json', home_dir / '.claude.json'
+    return profile_dir / 'settings.json', profile_dir / '.claude.json'
+
+
+def _stale_control_keys(user_declared_keys: frozenset[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split the managed controls into the keys an unpinned sweep removes.
+
+    Args:
+        user_declared_keys: Control keys the sweeps keep, as returned by
+            _collect_user_declared_control_keys().
+
+    Returns:
+        The environment control keys a settings.json sweep removes and the
+        .claude.json control keys whose false value a .claude.json sweep
+        removes, each decided independently of the others.
+    """
+    env_keys = tuple(key for key in MACHINE_WIDE_ENV_CONTROLS if key not in user_declared_keys)
+    json_keys = tuple(key for key in MACHINE_WIDE_JSON_CONTROLS if key not in user_declared_keys)
+    return env_keys, json_keys
+
+
+def _present_env_controls(settings_path: Path, keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Report which of the given environment controls a settings.json holds.
+
+    Args:
+        settings_path: Path to a settings.json file.
+        keys: Environment control keys to look for.
+
+    Returns:
+        The keys present in the file's env object, in the given order;
+        empty for a missing, unreadable, or non-object file.
+    """
+    content = _read_json_object(settings_path)
+    if not content:
+        return ()
+    env_section = content.get('env')
+    if not isinstance(env_section, dict):
+        return ()
+    return tuple(key for key in keys if key in env_section)
+
+
+def _present_false_controls(claude_json_path: Path, keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Report which of the given .claude.json controls a file holds as false.
+
+    Args:
+        claude_json_path: Path to a .claude.json file.
+        keys: Control keys whose false value counts.
+
+    Returns:
+        The keys the file holds with the value false, in the given order;
+        empty for a missing, unreadable, or non-object file. A true value is
+        a user preference and never counts.
+    """
+    content = _read_json_object(claude_json_path)
+    if not content:
+        return ()
+    return tuple(key for key in keys if content.get(key) is False)
+
+
+def find_stale_controls_in_other_profiles(
+    home_dir: Path,
+    *,
+    profile_dir: Path | None,
+    machine_pinned: bool,
+    user_declared_keys: frozenset[str],
+) -> list[StaleControlCopy]:
+    """List the stale update controls other installed profiles hold.
+
+    The Step 16 sweeps edit only the running profile's files, so a control
+    a previous pinned run left in another profile stays where it is. This
+    read-only scan names such copies under the same two gates the sweeps
+    apply -- nothing counts while any installed profile pins a version, and
+    a key the current YAML declares is not stale -- so the report lists
+    exactly what the sweeps would have removed had the file belonged to the
+    running profile. Nothing is edited; re-running the owning profile's
+    install removes the copies.
+
+    Args:
+        home_dir: User home directory.
+        profile_dir: The running profile's directory, or None for the base
+            profile.
+        machine_pinned: Whether any installed profile pins a Claude Code
+            version -- this run's own pin or another profile's.
+        user_declared_keys: Control keys the sweeps keep, as returned by
+            _collect_user_declared_control_keys().
+
+    Returns:
+        One entry per file holding at least one stale control, base profile
+        first, then the isolated profiles in directory order.
+    """
+    if machine_pinned:
+        return []
+
+    env_keys, json_keys = _stale_control_keys(user_declared_keys)
+    claude_dir = home_dir / '.claude'
+    own_dir_key = _normalize_config_dir_key(str(profile_dir if profile_dir is not None else claude_dir))
+
+    profiles: list[tuple[str, Path]] = [('base', claude_dir)]
+    try:
+        if claude_dir.is_dir():
+            profiles.extend(
+                (subdir.name, subdir)
+                for subdir in sorted(claude_dir.iterdir())
+                if subdir.is_dir()
+            )
+    except OSError:
+        pass  # Unlisted profiles cannot be reported; the sweeps never touch them
+
+    found: list[StaleControlCopy] = []
+    for name, directory in profiles:
+        if _normalize_config_dir_key(str(directory)) == own_dir_key:
+            continue
+        settings_path, claude_json_path = _profile_control_files(
+            home_dir, None if name == 'base' else directory,
+        )
+        env_present = _present_env_controls(settings_path, env_keys)
+        if env_present:
+            found.append(StaleControlCopy(name, settings_path, env_present))
+        json_present = _present_false_controls(claude_json_path, json_keys)
+        if json_present:
+            found.append(StaleControlCopy(name, claude_json_path, json_present))
+    return found
+
+
+def _stale_control_copy_line(copy: StaleControlCopy) -> str:
+    """Render one stale-control report entry.
+
+    Args:
+        copy: The stale controls found in another profile's file.
+
+    Returns:
+        A one-line description naming the profile, the file, and the keys.
+    """
+    return f'{copy.profile}: {copy.file} ({", ".join(copy.keys)})'
+
+
+STALE_CONTROLS_RERUN_NOTE = (
+    "This run edits only its own profile; re-run each listed profile's install to remove them."
+)
 
 
 def cleanup_stale_auto_update_controls(
@@ -4653,24 +4865,29 @@ def cleanup_stale_auto_update_controls(
     machine_pinned: bool,
     *,
     user_declared_keys: frozenset[str],
+    profile_dir: Path | None,
 ) -> None:
-    """Remove stale auto-update controls from filesystem locations.
+    """Remove stale auto-update controls from the running profile's files.
 
-    Implements write-remove symmetry: writes go to specific locations
-    via scope-based routing, while removal sweeps the locations that can
-    hold artifacts from prior configurations. Three guards bound the sweep:
+    Implements write-remove symmetry inside one profile: a pinned run writes
+    its controls into the profile's own files, and an unpinned run removes
+    them from the same two files -- ~/.claude/settings.json and
+    ~/.claude.json for the base profile, settings.json and .claude.json
+    inside the profile directory for an isolated one. Other profiles' files
+    are never edited; find_stale_controls_in_other_profiles() reports the
+    copies they hold. Three guards bound the sweep:
 
     - The sweep runs only when NO installed profile pins a version. The
       controls are machine-global, so while this run or any other profile
       recorded in the profile manifests pins a version, every location
       keeps its controls.
-    - settings.json files additionally keep each AUTO_UPDATE_ENV_CONTROLS
-      key (DISABLE_AUTOUPDATER, DISABLE_UPDATES) the current YAML sets to a
+    - settings.json additionally keeps each AUTO_UPDATE_ENV_CONTROLS key
+      (DISABLE_AUTOUPDATER, DISABLE_UPDATES) the current YAML sets to a
       non-null value in user-settings.env (the removal counterpart of
       WARN-but-Respect on the write side). Each key is decided
       independently: declaring one never keeps or removes the other.
-    - .claude.json files likewise keep autoUpdates: false when the current
-      YAML sets it to false in global-config.
+    - .claude.json likewise keeps autoUpdates: false when the current YAML
+      sets it to false in global-config.
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
 
@@ -4680,40 +4897,22 @@ def cleanup_stale_auto_update_controls(
             version -- this run's own pin or another profile's.
         user_declared_keys: Control keys the sweep keeps, as returned by
             _collect_user_declared_control_keys().
+        profile_dir: The running profile's directory, or None for the base
+            profile.
     """
     if machine_pinned:
         return
 
-    # Nothing on the machine pins a version: remove auto-update controls
-    # from EVERYWHERE, preserving the keys user_declared_keys names
-    claude_dir = home_dir / '.claude'
+    settings_path, claude_json_path = _profile_control_files(home_dir, profile_dir)
     stale_env_keys = tuple(
         key for key, _ in AUTO_UPDATE_ENV_CONTROLS if key not in user_declared_keys
     )
 
     if stale_env_keys:
-        # 1. Clean the undeclared environment controls from ~/.claude/settings.json
-        _cleanup_settings_json_env_controls(claude_dir / 'settings.json', stale_env_keys)
-
-        # 2. Clean the undeclared environment controls from ALL ~/.claude/*/settings.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    settings_path = subdir / 'settings.json'
-                    if settings_path.exists():
-                        _cleanup_settings_json_env_controls(settings_path, stale_env_keys)
+        _cleanup_settings_json_env_controls(settings_path, stale_env_keys)
 
     if AUTO_UPDATE_KEY not in user_declared_keys:
-        # 3. Clean autoUpdates: false from ~/.claude.json
-        _cleanup_claude_json_auto_updates(home_dir / '.claude.json')
-
-        # 4. Clean autoUpdates: false from ALL ~/.claude/*/.claude.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    claude_json_path = subdir / '.claude.json'
-                    if claude_json_path.exists():
-                        _cleanup_claude_json_auto_updates(claude_json_path)
+        _cleanup_claude_json_auto_updates(claude_json_path)
 
 
 def _cleanup_settings_json_env_controls(settings_path: Path, keys: tuple[str, ...]) -> None:
@@ -4778,14 +4977,24 @@ def _cleanup_claude_json_auto_updates(claude_json_path: Path) -> None:
 def _run_stale_controls_cleanup(
     machine_pinned: bool,
     user_declared_keys: frozenset[str],
-) -> None:
+    profile_dir: Path | None,
+) -> list[StaleControlCopy]:
     """Execute Step 16: cleanup stale auto-update and IDE extension controls.
+
+    Sweeps the running profile's own settings.json and .claude.json, then
+    reports -- without editing -- the stale controls other installed
+    profiles still hold.
 
     Args:
         machine_pinned: Whether any installed profile pins a Claude Code
             version -- this run's own pin or another profile's.
         user_declared_keys: Control keys both sweeps keep, computed before
             injection by _collect_user_declared_control_keys().
+        profile_dir: The running profile's directory, or None for the base
+            profile.
+
+    Returns:
+        The stale controls found in other profiles, for the final summary.
     """
     print()
     print(f'{Colors.CYAN}Step 16: Cleaning stale auto-update and IDE extension controls...{Colors.NC}')
@@ -4794,12 +5003,26 @@ def _run_stale_controls_cleanup(
         home_dir=home,
         machine_pinned=machine_pinned,
         user_declared_keys=user_declared_keys,
+        profile_dir=profile_dir,
     )
     cleanup_stale_ide_extension_controls(
         home_dir=home,
         machine_pinned=machine_pinned,
         user_declared_keys=user_declared_keys,
+        profile_dir=profile_dir,
     )
+    stale_elsewhere = find_stale_controls_in_other_profiles(
+        home,
+        profile_dir=profile_dir,
+        machine_pinned=machine_pinned,
+        user_declared_keys=user_declared_keys,
+    )
+    if stale_elsewhere:
+        warning('Stale update controls remain in other profiles (not edited by this run):')
+        for copy in stale_elsewhere:
+            warning(f'  {_stale_control_copy_line(copy)}')
+        warning(f'  {STALE_CONTROLS_RERUN_NOTE}')
+    return stale_elsewhere
 
 
 def apply_ide_extension_settings(
@@ -5005,21 +5228,23 @@ def cleanup_stale_ide_extension_controls(
     machine_pinned: bool,
     *,
     user_declared_keys: frozenset[str],
+    profile_dir: Path | None,
 ) -> None:
-    """Remove stale IDE extension auto-install controls from filesystem locations.
+    """Remove stale IDE extension auto-install controls from the running profile's files.
 
-    Implements write-remove symmetry: writes go to specific locations
-    via scope-based routing, while removal sweeps the locations that can
-    hold artifacts from prior configurations. Two guards bound the sweep:
+    Implements write-remove symmetry inside one profile, exactly like
+    cleanup_stale_auto_update_controls(): the sweep edits only the
+    settings.json and .claude.json the running profile owns and never
+    another profile's files. Two guards bound the sweep:
 
     - The sweep runs only when NO installed profile pins a version. The
       controls are machine-global, so while this run or any other profile
       recorded in the profile manifests pins a version, every location
       keeps its controls.
-    - settings.json files additionally keep CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
+    - settings.json additionally keeps CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL
       when the current YAML sets it to a non-null value in user-settings.env,
-      and .claude.json files keep autoInstallIdeExtension: false when the
-      YAML sets it to false in global-config (the removal counterpart of
+      and .claude.json keeps autoInstallIdeExtension: false when the YAML
+      sets it to false in global-config (the removal counterpart of
       WARN-but-Respect on the write side).
 
     Called AFTER all write steps in main() as a post-write cleanup pass.
@@ -5030,37 +5255,19 @@ def cleanup_stale_ide_extension_controls(
             version -- this run's own pin or another profile's.
         user_declared_keys: Control keys the sweep keeps, as returned by
             _collect_user_declared_control_keys().
+        profile_dir: The running profile's directory, or None for the base
+            profile.
     """
     if machine_pinned:
         return
 
-    # Nothing on the machine pins a version: remove IDE extension controls
-    # from EVERYWHERE, preserving the keys user_declared_keys names
-    claude_dir = home_dir / '.claude'
+    settings_path, claude_json_path = _profile_control_files(home_dir, profile_dir)
 
     if IDE_SKIP_AUTO_INSTALL_KEY not in user_declared_keys:
-        # 1. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ~/.claude/settings.json
-        _cleanup_settings_json_env_controls(claude_dir / 'settings.json', (IDE_SKIP_AUTO_INSTALL_KEY,))
-
-        # 2. Clean CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL from ALL ~/.claude/*/settings.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    settings_path = subdir / 'settings.json'
-                    if settings_path.exists():
-                        _cleanup_settings_json_env_controls(settings_path, (IDE_SKIP_AUTO_INSTALL_KEY,))
+        _cleanup_settings_json_env_controls(settings_path, (IDE_SKIP_AUTO_INSTALL_KEY,))
 
     if IDE_AUTO_INSTALL_KEY not in user_declared_keys:
-        # 3. Clean autoInstallIdeExtension: false from ~/.claude.json
-        _cleanup_claude_json_ide_auto_install(home_dir / '.claude.json')
-
-        # 4. Clean autoInstallIdeExtension: false from ALL ~/.claude/*/.claude.json
-        if claude_dir.is_dir():
-            for subdir in claude_dir.iterdir():
-                if subdir.is_dir():
-                    claude_json_path = subdir / '.claude.json'
-                    if claude_json_path.exists():
-                        _cleanup_claude_json_ide_auto_install(claude_json_path)
+        _cleanup_claude_json_ide_auto_install(claude_json_path)
 
 
 def _vscode_target_platform() -> str | None:
@@ -8252,6 +8459,149 @@ def resolve_config_inheritance(
     return merged, chain
 
 
+def account_key_deletion_warnings(
+    global_config: dict[str, Any] | None,
+    target_file: Path,
+    profile_label: str,
+) -> list[str]:
+    """Warn about global-config deletions that sign an account out.
+
+    A null for one of GLOBAL_CONFIG_ACCOUNT_KEYS deletes the key from the
+    .claude.json the run writes. When that file holds a value for the key,
+    the profile it belongs to is signed out by the write, which is the
+    configuration author's choice and never blocked, so the summary and
+    --dry-run name the profile and the file before consent. The values
+    themselves are never printed.
+
+    Args:
+        global_config: The resolved global-config section, or None.
+        target_file: The .claude.json this run writes (see
+            global_config_target_file()).
+        profile_label: Display name of the profile the file belongs to
+            ('base' or the primary command name).
+
+    Returns:
+        One warning per affected key; empty when nothing is deleted, the
+        file lacks the key or holds null for it, or the file cannot be read.
+    """
+    if not global_config:
+        return []
+    deleted = [key for key in GLOBAL_CONFIG_ACCOUNT_KEYS if key in global_config and global_config[key] is None]
+    if not deleted:
+        return []
+    content = _read_json_object(target_file)
+    if not content:
+        return []
+    return [
+        f"global-config deletes {key} from {target_file} (profile '{profile_label}'): "
+        'the account signed in there is signed out'
+        for key in deleted
+        if content.get(key) is not None
+    ]
+
+
+def collect_machine_wide_writes(
+    *,
+    profile_dir: Path,
+    command_names: list[str],
+    skip_install: bool,
+    install_version: str | None,
+    keep_installed: bool,
+    pinned_version: str | None,
+    os_level_env: dict[str, str | None],
+    mcp_servers: list[dict[str, Any]],
+    files_to_download: list[dict[str, Any]],
+    has_dependency_commands: bool,
+) -> list[str]:
+    """Name every write of an isolated run that reaches beyond its profile.
+
+    An isolated run keeps its files inside its profile directory, so the
+    writes that leave it are the ones every profile on the machine shares:
+    the one Claude Code binary and the installMethod the installer records
+    in the base ~/.claude.json, a version pin holding that binary, the
+    machine-wide environment controls, the command wrappers in
+    ~/.local/bin, project-scope MCP registrations in the working
+    directory, files-to-download destinations outside the profile, and the
+    side effects of dependency commands. The summary lists them before
+    consent.
+
+    Args:
+        profile_dir: The isolated profile directory.
+        command_names: Every command name the run registers.
+        skip_install: Whether Step 1 is skipped.
+        install_version: The Claude Code version Step 1 installs or keeps.
+        keep_installed: Whether Step 1 keeps the installed version.
+        pinned_version: The version this run pins, or None.
+        os_level_env: The os-env-variables entries written to the OS
+            environment (see partition_os_env_variables()).
+        mcp_servers: The resolved mcp-servers list.
+        files_to_download: The resolved files-to-download list.
+        has_dependency_commands: Whether any dependency command runs on
+            this platform.
+
+    Returns:
+        One line per machine-wide write, in execution order.
+    """
+    writes: list[str] = []
+    if not skip_install:
+        version = install_version or 'latest'
+        if keep_installed:
+            writes.append(f'Claude Code binary: keep the installed version {version} (used by every profile)')
+        else:
+            writes.append(f'Claude Code binary: install or upgrade to {version} (used by every profile)')
+        writes.append(
+            f'{get_real_user_home() / ".claude.json"}: {INSTALL_METHOD_KEY}, recorded by the '
+            'Claude Code installer when it installs, upgrades or migrates the binary',
+        )
+    if pinned_version is not None:
+        writes.append(f'Claude Code version pin {pinned_version}: holds the binary every profile uses')
+    for key, value in os_level_env.items():
+        if value is None:
+            writes.append(f'OS environment: delete {key}')
+        else:
+            writes.append(f'OS environment: {key}="{value}"')
+    if command_names:
+        writes.append(f'{get_real_user_home() / ".local" / "bin"}: command wrapper(s) {", ".join(command_names)}')
+    project_servers = [
+        str(server.get('name', '<unnamed>'))
+        for server in mcp_servers
+        if 'project' in _mcp_scopes_or_empty(server.get('scope'))
+    ]
+    if project_servers:
+        writes.append(
+            f'.mcp.json in the working directory: project-scope MCP server(s) {", ".join(project_servers)}',
+        )
+    profile_key = _normalize_config_dir_key(str(profile_dir))
+    for item in files_to_download:
+        dest = item.get('dest')
+        if not isinstance(dest, str) or not dest:
+            continue
+        dest_key = _normalize_config_dir_key(normalize_tilde_path(dest))
+        if dest_key != profile_key and not dest_key.startswith(profile_key + '/'):
+            writes.append(f'files-to-download outside the profile: {dest}')
+    if has_dependency_commands:
+        writes.append('Dependency commands: run machine-wide (listed above)')
+    return writes
+
+
+def _mcp_scopes_or_empty(scope_value: object) -> list[str]:
+    """Normalize an MCP scope value for the summary, tolerating invalid ones.
+
+    Args:
+        scope_value: Raw scope value from the YAML entry.
+
+    Returns:
+        The normalized scopes, or an empty list when the value is not a
+        string, a list of strings, or None (validation reports it later).
+    """
+    if scope_value is not None and not isinstance(scope_value, str | list):
+        return []
+    try:
+        return normalize_scope(cast(str | list[str] | None, scope_value))
+    except ValueError:
+        return []
+
+
 def collect_installation_plan(
     config: dict[str, Any],
     config_source: str,
@@ -8526,7 +8876,14 @@ def display_installation_summary(
     if plan.system_prompt:
         settings_items.append(f'System prompt: {plan.system_prompt_mode}')
     if plan.os_env_variables:
-        settings_items.append(f'OS environment variables: {len(plan.os_env_variables)}')
+        if plan.command_names:
+            os_level, loader = partition_os_env_variables(plan.os_env_variables, isolated=True)
+            settings_items.append(
+                f'OS environment variables: {len(loader)} in the profile env loaders, '
+                f'{len(os_level)} machine-wide (listed below)',
+            )
+        else:
+            settings_items.append(f'OS environment variables: {len(plan.os_env_variables)} (machine-wide)')
     if plan.user_settings:
         null_keys = [k for k, v in plan.user_settings.items() if v is None]
         set_keys = [k for k, v in plan.user_settings.items() if v is not None]
@@ -8576,11 +8933,29 @@ def display_installation_summary(
         for item in plan.auto_injected_items:
             _print(f'  {Colors.GREEN}[auto] {item}{Colors.NC}')
 
+    # Machine-wide writes of an isolated run (yellow): everything that
+    # leaves the profile directory is named before consent
+    if plan.machine_wide_writes:
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}Machine-wide writes (shared by every profile on this machine):{Colors.NC}')
+        for item in plan.machine_wide_writes:
+            _print(f'  {Colors.YELLOW}[machine-wide]{Colors.NC} {item}')
+
+    # Stale update controls other profiles hold: listed, never edited
+    if plan.stale_controls_elsewhere:
+        _print()
+        _print(f'{Colors.YELLOW}{Colors.BOLD}Stale update controls in other profiles (not edited by this run):{Colors.NC}')
+        for copy in plan.stale_controls_elsewhere:
+            _print(f'  * {_stale_control_copy_line(copy)}')
+        _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
+
     # Attention section (red)
-    has_attention = plan.sensitive_paths or plan.unknown_keys
+    has_attention = plan.sensitive_paths or plan.unknown_keys or plan.account_key_warnings
     if has_attention:
         _print()
         _print(f'{Colors.RED}{Colors.BOLD}[!] ATTENTION:{Colors.NC}')
+        for account_warning in plan.account_key_warnings:
+            _print(f'  {Colors.RED}[!] {account_warning}{Colors.NC}')
         for path in plan.sensitive_paths:
             _print(f'  {Colors.RED}[!] Sensitive path: {path}{Colors.NC}')
         for key in plan.unknown_keys:
@@ -9414,6 +9789,37 @@ def set_all_os_env_variables(env_vars: dict[str, str | None]) -> bool:
     return failed_count == 0
 
 
+def partition_os_env_variables(
+    os_env_variables: dict[str, str | None],
+    *,
+    isolated: bool,
+) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    """Split os-env-variables into the OS-level part and the profile-loader part.
+
+    A base run writes every entry to the OS environment, so everything is
+    OS-level and nothing goes to a loader. An isolated run writes only the
+    MACHINE_WIDE_ENV_CONTROLS entries to the OS environment -- they hold the
+    one Claude Code binary every profile uses -- and every other entry to its
+    own env loader files, so a profile's variables reach that profile's
+    sessions and nothing else on the machine. A machine-wide control never
+    enters a loader file: an unset line there would strip the control from
+    the profile's sessions after another profile pinned a version.
+
+    Args:
+        os_env_variables: The run's resolved os-env-variables (None values
+            are deletion requests).
+        isolated: Whether command-names creates an isolated environment.
+
+    Returns:
+        The (OS-level, loader) dicts, each keeping the input order.
+    """
+    if not isolated:
+        return dict(os_env_variables), {}
+    os_level = {k: v for k, v in os_env_variables.items() if k in MACHINE_WIDE_ENV_CONTROLS}
+    loader = {k: v for k, v in os_env_variables.items() if k not in MACHINE_WIDE_ENV_CONTROLS}
+    return os_level, loader
+
+
 def generate_env_loader_files(
     os_env_vars: dict[str, str | None],
     command_names: list[str] | None,
@@ -9431,23 +9837,23 @@ def generate_env_loader_files(
         ~/.claude/{cmd}/env.ps1     (PowerShell, Windows only)
         ~/.claude/{cmd}/env.cmd     (CMD batch, Windows only)
 
-    Loader files are toolbox-owned artifacts rebuilt on every run: when no
-    active variable remains (every entry is a deletion, or the dict is
-    empty), the files are still rewritten header-only so that stale exports
-    from a prior run stop being re-applied by the launcher at session start.
+    A None value is a deletion request and is rendered as an unset line in
+    each shell's syntax, so a variable the profile's sessions inherit from
+    the OS environment is removed when the launcher sources the file.
+    Loader files are toolbox-owned artifacts rebuilt on every run: when the
+    dict is empty, the files are still rewritten header-only so that stale
+    lines from a prior run stop being applied by the launcher at session
+    start.
 
     Args:
         os_env_vars: Dict of env var names to values. None values = deletions
-                     (excluded from loader files since the var should not exist).
+                     (rendered as unset lines).
         command_names: List of command names, or None for non-command configs.
         config_base_dir: Base dir for per-command files (e.g., ~/.claude/{cmd}/).
 
     Returns:
         Dict mapping file type to generated Path (e.g., {"sh": Path(...)}).
     """
-    # Filter to only non-None values (deletions are excluded from loader files)
-    active_vars = {k: str(v) for k, v in os_env_vars.items() if v is not None}
-
     generated: dict[str, Path] = {}
 
     # Build file content for each shell type
@@ -9462,24 +9868,36 @@ def generate_env_loader_files(
 
     # Bash/Zsh content
     sh_lines = [sh_header]
-    for name, value in active_vars.items():
+    for name, raw in os_env_vars.items():
+        if raw is None:
+            sh_lines.append(f'unset {name}')
+            continue
         # Escape special characters for double-quoted bash strings
+        value = str(raw)
         escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
         sh_lines.append(f'export {name}="{escaped}"')
     sh_content = '\n'.join(sh_lines) + '\n'
 
     # Fish content
     fish_lines = [fish_header]
-    for name, value in active_vars.items():
+    for name, raw in os_env_vars.items():
+        if raw is None:
+            fish_lines.append(f'set -q {name}; and set -e {name}')
+            continue
         # Escape special characters for double-quoted fish strings
+        value = str(raw)
         escaped = value.replace('\\', '\\\\').replace('"', '\\"')
         fish_lines.append(f'set -gx {name} "{escaped}"')
     fish_content = '\n'.join(fish_lines) + '\n'
 
     # PowerShell content
     ps1_lines = [ps1_header]
-    for name, value in active_vars.items():
+    for name, raw in os_env_vars.items():
+        if raw is None:
+            ps1_lines.append(f'Remove-Item -Path Env:{name} -ErrorAction SilentlyContinue')
+            continue
         # Single-quote for literal PowerShell strings; double internal single-quotes
+        value = str(raw)
         escaped = value.replace("'", "''")
         ps1_lines.append(f"$env:{name} = '{escaped}'")
     ps1_content = '\n'.join(ps1_lines) + '\n'
@@ -9490,8 +9908,12 @@ def generate_env_loader_files(
     cmd_header += 'REM Re-run setup to update. Call this file to load OS env vars.\n'
 
     cmd_lines = [cmd_header]
-    for name, value in active_vars.items():
+    for name, raw in os_env_vars.items():
+        if raw is None:
+            cmd_lines.append(f'SET "{name}="')
+            continue
         # Double percent signs for batch files (% -> %%)
+        value = str(raw)
         escaped = value.replace('%', '%%')
         cmd_lines.append(f'SET "{name}={escaped}"')
     cmd_content = '\n'.join(cmd_lines) + '\n'
@@ -14796,6 +15218,38 @@ def main() -> None:
         if claude_install_decision.note_is_warning:
             plan.claude_install_warning = claude_install_decision.note
 
+        # Everything a run writes outside its own profile is named before
+        # consent: the machine-wide writes of an isolated run, the account
+        # keys a global-config null signs out of the .claude.json this run
+        # writes, and the stale update controls other profiles still hold
+        # (which Step 16 lists again and never edits).
+        pre_consent_profile_dir = target_config_dir if primary_command_name else None
+        os_level_env, _ = partition_os_env_variables(os_env_variables or {}, isolated=bool(primary_command_name))
+        if primary_command_name:
+            plan.machine_wide_writes = collect_machine_wide_writes(
+                profile_dir=target_config_dir,
+                command_names=command_names or [],
+                skip_install=args.skip_install,
+                install_version=claude_install_decision.version,
+                keep_installed=claude_install_decision.kept,
+                pinned_version=claude_code_version_normalized,
+                os_level_env=os_level_env,
+                mcp_servers=plan.mcp_servers,
+                files_to_download=plan.files_to_download,
+                has_dependency_commands=bool(plan.dependency_commands),
+            )
+        plan.account_key_warnings = account_key_deletion_warnings(
+            global_config,
+            global_config_target_file(pre_consent_profile_dir),
+            primary_command_name or 'base',
+        )
+        plan.stale_controls_elsewhere = find_stale_controls_in_other_profiles(
+            get_real_user_home(),
+            profile_dir=pre_consent_profile_dir,
+            machine_pinned=machine_pinned,
+            user_declared_keys=user_declared_control_keys,
+        )
+
         auto_confirm = args.yes
         dry_run = args.dry_run
 
@@ -14928,19 +15382,25 @@ def main() -> None:
         dependencies = config.get('dependencies', {})
         dependency_failures = install_dependencies(dependencies)
 
-        # Step 7: Set OS environment variables. An empty or absent dict is a
-        # no-op inside set_all_os_env_variables(), which prints its own
-        # informational message.
+        # Step 7: OS environment variables. A base run writes every entry to
+        # the OS environment. An isolated run writes only the machine-wide
+        # binary controls there and routes everything else to its own env
+        # loader files, so the profile's variables reach its sessions and
+        # nothing else on the machine. An empty dict is a no-op inside
+        # set_all_os_env_variables(), which prints its own message.
         print()
         print(f'{Colors.CYAN}Step 7: Setting OS environment variables...{Colors.NC}')
-        set_all_os_env_variables(os_env_variables or {})
+        os_level_env_variables, loader_env_variables = partition_os_env_variables(
+            os_env_variables or {}, isolated=bool(primary_command_name),
+        )
+        set_all_os_env_variables(os_level_env_variables)
 
-        # Rebuild env loader files for OS environment variables. Loader files
-        # are toolbox-owned and rebuilt even when every entry is a deletion,
-        # so stale exports from a prior run are cleared instead of being
-        # re-applied by the launcher at session start.
+        # Rebuild env loader files for the profile's OS environment variables.
+        # Loader files are toolbox-owned and rebuilt even when every entry is
+        # a deletion, so stale exports from a prior run are cleared instead
+        # of being re-applied by the launcher at session start.
         generated_env_files: dict[str, Path] = generate_env_loader_files(
-            os_env_variables or {}, command_names, artifact_base_dir if command_names else None,
+            loader_env_variables, command_names, artifact_base_dir if command_names else None,
         )
         if generated_env_files:
             success(f'Generated {len(generated_env_files)} env loader file(s)')
@@ -15082,10 +15542,13 @@ def main() -> None:
         else:
             info('No global config to write')
 
-        # Step 16: Cleanup stale auto-update and IDE extension controls
-        _run_stale_controls_cleanup(
+        # Step 16: Cleanup stale auto-update and IDE extension controls in
+        # this profile's own files; stale copies in other profiles are
+        # listed and left alone.
+        stale_controls_elsewhere = _run_stale_controls_cleanup(
             machine_pinned=machine_pinned,
             user_declared_keys=user_declared_control_keys,
+            profile_dir=isolated_config_dir,
         )
 
         # Check if command creation is needed
@@ -15409,17 +15872,29 @@ def main() -> None:
                 else:
                     clean_name = Path(status_line_file_val).name
                 print(f'   * Status line: {clean_name}')
-        if os_env_variables:
-            set_vars = sum(1 for v in os_env_variables.values() if v is not None)
-            del_vars = sum(1 for v in os_env_variables.values() if v is None)
+        if os_level_env_variables:
+            set_vars = sum(1 for v in os_level_env_variables.values() if v is not None)
+            del_vars = sum(1 for v in os_level_env_variables.values() if v is None)
+            scope_label = ' (machine-wide)' if primary_command_name else ''
             if set_vars > 0:
-                print(f'   * OS environment variables: {set_vars} configured')
+                print(f'   * OS environment variables: {set_vars} configured{scope_label}')
             if del_vars > 0:
-                print(f'   * OS environment variables: {del_vars} deleted')
+                print(f'   * OS environment variables: {del_vars} deleted{scope_label}')
+        if loader_env_variables:
+            set_vars = sum(1 for v in loader_env_variables.values() if v is not None)
+            del_vars = sum(1 for v in loader_env_variables.values() if v is None)
+            if set_vars > 0:
+                print(f'   * Profile environment variables: {set_vars} exported by the env loaders')
+            if del_vars > 0:
+                print(f'   * Profile environment variables: {del_vars} unset by the env loaders')
         if user_settings:
             print('   * User settings: configured in ~/.claude/settings.json')
         if global_config:
-            print('   * Global config: configured in ~/.claude.json')
+            print(f'   * Global config: configured in {global_config_target_file(isolated_config_dir)}')
+        if stale_controls_elsewhere:
+            print('   * Stale update controls left in other profiles (re-run their installs to remove them):')
+            for copy in stale_controls_elsewhere:
+                print(f'       - {_stale_control_copy_line(copy)}')
         if claude_code_version_normalized is not None:
             print(f'   * IDE extensions: {IDE_EXTENSION_ID} v{claude_code_version_normalized} (auto-install disabled)')
         # Show hooks count with routing information

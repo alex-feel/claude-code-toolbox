@@ -1337,208 +1337,97 @@ def validate_global_config_output(
     return errors
 
 
-def validate_auto_update_controls(
-    home_dir: Path, pinned: bool, command_name: str | None = None,
+def _validate_false_control_in_claude_json(
+    home_dir: Path, key: str, pinned: bool, command_name: str | None,
 ) -> list[str]:
-    """Validate the autoUpdates control in the .claude.json files.
+    """Validate a pin's false-valued control in the .claude.json a run writes.
 
-    Covers the global-config autoUpdates dual-write only; the
-    env.DISABLE_AUTOUPDATER and env.DISABLE_UPDATES contribution is asserted
-    in test_auto_update.py (in memory) and test_profile_settings_routing.py
-    (settings.json).
-
-    When pinned=True, expects:
-    - ~/.claude.json has autoUpdates: false
-
-    When pinned=True AND command_name is provided, additionally expects:
-    - ~/.claude/{command_name}/.claude.json has autoUpdates: false
-
-    When pinned=False, expects:
-    - No autoUpdates key injected in ~/.claude.json (or None for null-as-delete)
-
-    Args:
-        home_dir: Isolated home directory path
-        pinned: Whether a specific version is pinned
-        command_name: Command name for isolated environment check, or None
-
-    Returns:
-        List of error strings (empty = all validations passed)
-    """
-    errors: list[str] = []
-
-    # Check ~/.claude.json
-    claude_json_path = home_dir / '.claude.json'
-    if claude_json_path.exists():
-        data, json_errors = validate_json_file(claude_json_path)
-        errors.extend(json_errors)
-        if data is not None:
-            if pinned:
-                if 'autoUpdates' not in data:
-                    errors.append('Pinned version: autoUpdates missing from ~/.claude.json')
-                elif data['autoUpdates'] is not False:
-                    errors.append(
-                        f'Pinned version: autoUpdates should be false, got {data["autoUpdates"]!r}',
-                    )
-            else:
-                if 'autoUpdates' in data and data['autoUpdates'] is False:
-                    errors.append(
-                        'Latest/absent version: autoUpdates=false should not be injected',
-                    )
-    elif pinned:
-        errors.append('Pinned version: ~/.claude.json does not exist')
-
-    # Check isolated .claude.json when command_name provided
-    if command_name and pinned:
-        isolated_json = home_dir / '.claude' / command_name / '.claude.json'
-        if isolated_json.exists():
-            data, json_errors = validate_json_file(isolated_json)
-            errors.extend(json_errors)
-            if data is not None:
-                if 'autoUpdates' not in data:
-                    errors.append(
-                        f'Pinned: autoUpdates missing from isolated {isolated_json}',
-                    )
-                elif data['autoUpdates'] is not False:
-                    errors.append(
-                        f'Pinned: autoUpdates in {isolated_json} should be false, '
-                        f'got {data["autoUpdates"]!r}',
-                    )
-        else:
-            errors.append(f'Pinned: isolated {isolated_json} does not exist')
-
-    return errors
-
-
-def validate_ide_extension_controls(
-    home_dir: Path, pinned: bool, command_name: str | None = None,
-) -> list[str]:
-    """Validate the autoInstallIdeExtension control in the .claude.json files.
-
-    Covers the global-config autoInstallIdeExtension dual-write only; the
-    env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL settings.json contribution is
-    validated by validate_settings.
-
-    When pinned=True, expects:
-    - ~/.claude.json has autoInstallIdeExtension: false
-
-    When pinned=True AND command_name is provided, additionally expects:
-    - ~/.claude/{command_name}/.claude.json has autoInstallIdeExtension: false
-
-    When pinned=False, expects:
-    - No autoInstallIdeExtension key injected
-
-    Args:
-        home_dir: Isolated home directory path
-        pinned: Whether a specific version is pinned
-        command_name: Command name for isolated environment check, or None
-
-    Returns:
-        List of error strings (empty = all validations passed)
-    """
-    errors: list[str] = []
-
-    # Check ~/.claude.json
-    claude_json_path = home_dir / '.claude.json'
-    if claude_json_path.exists():
-        data, json_errors = validate_json_file(claude_json_path)
-        errors.extend(json_errors)
-        if data is not None:
-            if pinned:
-                if 'autoInstallIdeExtension' not in data:
-                    errors.append('Pinned version: autoInstallIdeExtension missing from ~/.claude.json')
-                elif data['autoInstallIdeExtension'] is not False:
-                    errors.append(
-                        f'Pinned version: autoInstallIdeExtension should be false, '
-                        f'got {data["autoInstallIdeExtension"]!r}',
-                    )
-            else:
-                if 'autoInstallIdeExtension' in data and data['autoInstallIdeExtension'] is False:
-                    errors.append(
-                        'Latest/absent version: autoInstallIdeExtension=false should not be injected',
-                    )
-    elif pinned:
-        errors.append('Pinned version: ~/.claude.json does not exist')
-
-    # Check isolated .claude.json when command_name provided
-    if command_name and pinned:
-        isolated_json = home_dir / '.claude' / command_name / '.claude.json'
-        if isolated_json.exists():
-            data, json_errors = validate_json_file(isolated_json)
-            errors.extend(json_errors)
-            if data is not None:
-                if 'autoInstallIdeExtension' not in data:
-                    errors.append(
-                        f'Pinned: autoInstallIdeExtension missing from isolated {isolated_json}',
-                    )
-                elif data['autoInstallIdeExtension'] is not False:
-                    errors.append(
-                        f'Pinned: autoInstallIdeExtension in {isolated_json} should be false, '
-                        f'got {data["autoInstallIdeExtension"]!r}',
-                    )
-        else:
-            errors.append(f'Pinned: isolated {isolated_json} does not exist')
-
-    return errors
-
-
-def validate_global_config_dual_write(
-    home_dir: Path,
-    global_config: dict[str, Any],
-    command_name: str | None = None,
-) -> list[str]:
-    """Validate that global-config is dual-written when command-names is present.
+    A run writes exactly one .claude.json: ~/.claude/{command_name}/.claude.json
+    for an isolated run, ~/.claude.json for a base run. When pinned, that
+    file must hold ``key: false``; when unpinned, it must not hold
+    ``key: false``. An isolated run must also leave the base file alone: a
+    pinned isolated run that created or changed ~/.claude.json's control is
+    an error.
 
     Args:
         home_dir: Isolated home directory path.
-        global_config: Expected global config key-value pairs.
-        command_name: Command name for isolated environment, or None.
+        key: The .claude.json control key (autoUpdates or
+            autoInstallIdeExtension).
+        pinned: Whether a specific version is pinned.
+        command_name: Command name for an isolated run, or None for a base run.
 
     Returns:
         List of error strings (empty = all validations passed).
     """
     errors: list[str] = []
+    target = home_dir / '.claude' / command_name / '.claude.json' if command_name else home_dir / '.claude.json'
 
-    # Check home .claude.json
-    home_json_path = home_dir / '.claude.json'
-    if home_json_path.exists():
-        data, json_errors = validate_json_file(home_json_path)
+    if target.exists():
+        data, json_errors = validate_json_file(target)
         errors.extend(json_errors)
         if data is not None:
-            for key, value in global_config.items():
-                if value is None:
-                    # Null-as-delete: key should be absent
-                    if key in data:
-                        errors.append(f'Home .claude.json: {key} should be deleted (null)')
-                elif key not in data:
-                    errors.append(f'Home .claude.json: missing key {key}')
-                elif data[key] != value:
-                    errors.append(
-                        f'Home .claude.json: {key} expected {value!r}, got {data[key]!r}',
-                    )
-    else:
-        errors.append('Home .claude.json does not exist')
+            if pinned:
+                if key not in data:
+                    errors.append(f'Pinned version: {key} missing from {target}')
+                elif data[key] is not False:
+                    errors.append(f'Pinned version: {key} in {target} should be false, got {data[key]!r}')
+            elif data.get(key) is False:
+                errors.append(f'Latest/absent version: {key}=false should not be injected into {target}')
+    elif pinned:
+        errors.append(f'Pinned version: {target} does not exist')
 
-    # Check isolated .claude.json when command-names present
-    if command_name:
-        isolated_path = home_dir / '.claude' / command_name / '.claude.json'
-        if isolated_path.exists():
-            data, json_errors = validate_json_file(isolated_path)
+    if command_name and pinned:
+        base_json = home_dir / '.claude.json'
+        if base_json.exists():
+            data, json_errors = validate_json_file(base_json)
             errors.extend(json_errors)
-            if data is not None:
-                for key, value in global_config.items():
-                    if value is None:
-                        if key in data:
-                            errors.append(f'Isolated .claude.json: {key} should be deleted')
-                    elif key not in data:
-                        errors.append(f'Isolated .claude.json: missing key {key}')
-                    elif data[key] != value:
-                        errors.append(
-                            f'Isolated .claude.json: {key} expected {value!r}, got {data[key]!r}',
-                        )
-        else:
-            errors.append(f'Isolated .claude.json does not exist at {isolated_path}')
+            if data is not None and data.get(key) is False:
+                errors.append(f'Isolated run wrote {key}: false into the base {base_json}')
 
     return errors
+
+
+def validate_auto_update_controls(
+    home_dir: Path, pinned: bool, command_name: str | None = None,
+) -> list[str]:
+    """Validate the autoUpdates control in the .claude.json a run writes.
+
+    Covers the global-config autoUpdates write only; the
+    env.DISABLE_AUTOUPDATER and env.DISABLE_UPDATES contribution is asserted
+    in test_auto_update.py (in memory) and test_profile_settings_routing.py
+    (settings.json). See _validate_false_control_in_claude_json() for the
+    single-file contract.
+
+    Args:
+        home_dir: Isolated home directory path
+        pinned: Whether a specific version is pinned
+        command_name: Command name for an isolated run, or None
+
+    Returns:
+        List of error strings (empty = all validations passed)
+    """
+    return _validate_false_control_in_claude_json(home_dir, 'autoUpdates', pinned, command_name)
+
+
+def validate_ide_extension_controls(
+    home_dir: Path, pinned: bool, command_name: str | None = None,
+) -> list[str]:
+    """Validate the autoInstallIdeExtension control in the .claude.json a run writes.
+
+    Covers the global-config autoInstallIdeExtension write only; the
+    env.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL settings.json contribution is
+    validated by validate_settings. See
+    _validate_false_control_in_claude_json() for the single-file contract.
+
+    Args:
+        home_dir: Isolated home directory path
+        pinned: Whether a specific version is pinned
+        command_name: Command name for an isolated run, or None
+
+    Returns:
+        List of error strings (empty = all validations passed)
+    """
+    return _validate_false_control_in_claude_json(home_dir, 'autoInstallIdeExtension', pinned, command_name)
 
 
 def validate_json_arrays(
@@ -1599,12 +1488,13 @@ def validate_env_loader_files(
     """Validate env loader files exist with correct content.
 
     Checks that generate_env_loader_files() produced the expected shell-specific
-    loader files containing ONLY non-None os-env-variables with proper syntax.
+    loader files: an export line for every non-None os-env-variables entry and
+    an unset line for every None (deletion) entry, in each shell's syntax.
 
     Validates:
     - Per-command env.sh exists in ~/.claude/{cmd}/ (when command_name provided)
     - File content contains correct export syntax for each shell type
-    - None-valued (deletion) variables are excluded from loader files
+    - None-valued (deletion) variables are rendered as unset lines, never exports
     - Header comment is present
 
     Args:
@@ -1617,11 +1507,11 @@ def validate_env_loader_files(
     """
     errors: list[str] = []
 
-    # Determine which vars should appear (non-None only)
+    # Determine which vars are exported and which are unset
     active_vars = {k: str(v) for k, v in os_env_vars.items() if v is not None}
     deletion_vars = [k for k, v in os_env_vars.items() if v is None]
 
-    if not active_vars:
+    if not os_env_vars:
         return errors
 
     # --- Per-command files ---
@@ -1668,7 +1558,7 @@ def _validate_sh_loader_content(
     Args:
         content: File content
         active_vars: Variables that should be present (name -> value, non-None only)
-        deletion_vars: Variable names that must NOT appear
+        deletion_vars: Variable names that must appear as unset lines, never exports
         filename: Filename for error messages
 
     Returns:
@@ -1687,11 +1577,16 @@ def _validate_sh_loader_content(
         if f'export {name}=' not in content
     )
 
-    # Deletion vars must NOT appear
+    # Deletion vars are unset lines and never exports
     errors.extend(
-        f'{filename}: deletion var {name} should not appear'
+        f'{filename}: deletion var {name} must not be exported'
         for name in deletion_vars
         if f'export {name}=' in content
+    )
+    errors.extend(
+        f'{filename}: missing unset line for deletion var {name}'
+        for name in deletion_vars
+        if f'unset {name}\n' not in content
     )
 
     return errors
@@ -1708,7 +1603,7 @@ def _validate_ps1_loader_content(
     Args:
         content: File content
         active_vars: Variables that should be present (name -> value, non-None only)
-        deletion_vars: Variable names that must NOT appear
+        deletion_vars: Variable names that must appear as Remove-Item lines, never assignments
         filename: Filename for error messages
 
     Returns:
@@ -1727,11 +1622,16 @@ def _validate_ps1_loader_content(
         if f'$env:{name} =' not in content
     )
 
-    # Deletion vars must NOT appear
+    # Deletion vars are Remove-Item lines and never assignments
     errors.extend(
-        f'{filename}: deletion var {name} should not appear'
+        f'{filename}: deletion var {name} must not be assigned'
         for name in deletion_vars
         if f'$env:{name} =' in content
+    )
+    errors.extend(
+        f'{filename}: missing Remove-Item line for deletion var {name}'
+        for name in deletion_vars
+        if f'Remove-Item -Path Env:{name} -ErrorAction SilentlyContinue' not in content
     )
 
     return errors
@@ -1748,7 +1648,7 @@ def _validate_cmd_loader_content(
     Args:
         content: File content
         active_vars: Variables that should be present (name -> value, non-None only)
-        deletion_vars: Variable names that must NOT appear
+        deletion_vars: Variable names that must appear as empty SET lines, never with a value
         filename: Filename for error messages
 
     Returns:
@@ -1767,11 +1667,11 @@ def _validate_cmd_loader_content(
         if f'SET "{name}=' not in content
     )
 
-    # Deletion vars must NOT appear
+    # Deletion vars are empty SET lines (which delete the variable), never valued ones
     errors.extend(
-        f'{filename}: deletion var {name} should not appear'
+        f'{filename}: missing SET "{name}=" line for deletion var {name}'
         for name in deletion_vars
-        if f'SET "{name}=' in content
+        if f'SET "{name}="\n' not in content
     )
 
     return errors

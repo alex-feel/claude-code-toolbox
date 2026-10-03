@@ -173,8 +173,9 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         assert os_env is None, \
             'No OS-level CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL deletion may be scheduled'
 
-        setup_environment._run_stale_controls_cleanup(
+        report = setup_environment._run_stale_controls_cleanup(
             machine_pinned=machine_pinned, user_declared_keys=frozenset(),
+            profile_dir=claude_dir / 'claude-personal',
         )
 
         claude_json = json.loads((home / '.claude.json').read_text())
@@ -182,6 +183,7 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
             'An unpinned run must keep the controls a pinned sibling profile needs'
         settings = json.loads((claude_dir / 'settings.json').read_text())
         assert settings['env'] == CONTROLLED_SETTINGS_ENV
+        assert report == [], 'Controls a pinned profile needs are not stale, so none is reported'
 
 
 class TestUnpinnedIsolatedRunKeepsPinnedBinary:
@@ -257,14 +259,11 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
 
 
 class TestSingleUnpinnedProfile:
-    """Scenario (c): with no pinned profile anywhere, the full sweep still runs."""
+    """Scenario (c): with no pinned profile anywhere, each run sweeps its own files and reports the rest."""
 
-    def test_unpinned_lone_profile_sweeps_every_location(
-        self, e2e_isolated_home: dict[str, Path],
-    ) -> None:
-        home = e2e_isolated_home['home']
-        claude_dir = e2e_isolated_home['claude_dir']
-
+    @staticmethod
+    def _seed_two_unpinned_profiles(home: Path, claude_dir: Path) -> Path:
+        """Seed an unpinned base profile and an unpinned isolated profile, both holding every control."""
         _write_profile_manifest(claude_dir, None, None)
         _seed_base_profile_controls(claude_dir, home)
         isolated_dir = claude_dir / 'claude-personal'
@@ -275,6 +274,14 @@ class TestSingleUnpinnedProfile:
         (isolated_dir / '.claude.json').write_text(
             json.dumps(dict(CONTROLLED_CLAUDE_JSON)), encoding='utf-8',
         )
+        return isolated_dir
+
+    def test_unpinned_base_run_sweeps_its_own_files_and_reports_the_isolated_copies(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        isolated_dir = self._seed_two_unpinned_profiles(home, claude_dir)
 
         scan = setup_environment._other_profile_pins(home, None)
         assert scan.other_profile_pinned is False
@@ -288,19 +295,51 @@ class TestSingleUnpinnedProfile:
         )
         assert os_env == {'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL': None}
 
-        setup_environment._run_stale_controls_cleanup(
-            machine_pinned=False, user_declared_keys=frozenset(),
+        report = setup_environment._run_stale_controls_cleanup(
+            machine_pinned=False, user_declared_keys=frozenset(), profile_dir=None,
         )
 
-        for settings_path in (claude_dir / 'settings.json', isolated_dir / 'settings.json'):
-            env_section = json.loads(settings_path.read_text()).get('env', {})
-            assert 'DISABLE_AUTOUPDATER' not in env_section, settings_path
-            assert 'DISABLE_UPDATES' not in env_section, settings_path
-            assert 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' not in env_section, settings_path
-        for claude_json_path in (home / '.claude.json', isolated_dir / '.claude.json'):
-            data = json.loads(claude_json_path.read_text())
-            assert 'autoUpdates' not in data, claude_json_path
-            assert 'autoInstallIdeExtension' not in data, claude_json_path
+        env_section = json.loads((claude_dir / 'settings.json').read_text()).get('env', {})
+        for key in CONTROLLED_SETTINGS_ENV:
+            assert key not in env_section, key
+        data = json.loads((home / '.claude.json').read_text())
+        for key in CONTROLLED_CLAUDE_JSON:
+            assert key not in data, key
+        # The isolated profile's copies are another profile's files: reported, never edited
+        assert json.loads((isolated_dir / 'settings.json').read_text())['env'] == CONTROLLED_SETTINGS_ENV
+        assert json.loads((isolated_dir / '.claude.json').read_text()) == CONTROLLED_CLAUDE_JSON
+        assert report == [
+            setup_environment.StaleControlCopy(
+                'claude-personal', isolated_dir / 'settings.json', tuple(CONTROLLED_SETTINGS_ENV),
+            ),
+            setup_environment.StaleControlCopy(
+                'claude-personal', isolated_dir / '.claude.json', tuple(CONTROLLED_CLAUDE_JSON),
+            ),
+        ]
+
+    def test_unpinned_isolated_run_sweeps_its_own_files_and_reports_the_base_copies(
+        self, e2e_isolated_home: dict[str, Path],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        isolated_dir = self._seed_two_unpinned_profiles(home, claude_dir)
+
+        report = setup_environment._run_stale_controls_cleanup(
+            machine_pinned=False, user_declared_keys=frozenset(), profile_dir=isolated_dir,
+        )
+
+        env_section = json.loads((isolated_dir / 'settings.json').read_text()).get('env', {})
+        for key in CONTROLLED_SETTINGS_ENV:
+            assert key not in env_section, key
+        data = json.loads((isolated_dir / '.claude.json').read_text())
+        for key in CONTROLLED_CLAUDE_JSON:
+            assert key not in data, key
+        assert json.loads((claude_dir / 'settings.json').read_text())['env'] == CONTROLLED_SETTINGS_ENV
+        assert json.loads((home / '.claude.json').read_text()) == CONTROLLED_CLAUDE_JSON
+        assert report == [
+            setup_environment.StaleControlCopy('base', claude_dir / 'settings.json', tuple(CONTROLLED_SETTINGS_ENV)),
+            setup_environment.StaleControlCopy('base', home / '.claude.json', tuple(CONTROLLED_CLAUDE_JSON)),
+        ]
 
 
 class TestBaseProfileManifest:
