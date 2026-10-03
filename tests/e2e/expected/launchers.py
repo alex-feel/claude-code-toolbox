@@ -31,15 +31,15 @@ SETTINGS_PATH="$HOME/.claude/golden-cmd/config.json"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
 echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
 
 # Pass any additional arguments to Claude
-claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
 ''',
     'unix/launch.sh/prompt-append': r'''#!/usr/bin/env bash
 # Claude Code Environment Launcher
@@ -57,9 +57,9 @@ PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -131,20 +131,20 @@ SAFE_PROMPT_SIZE=4096
 # Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 ''',
@@ -164,9 +164,9 @@ PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -252,37 +252,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\033[0;32mResuming Claude Code session with golden-cmd configuration...\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+      claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_PATH"
     fi
   fi
 else
   echo -e "\033[0;32mStarting Claude Code with golden-cmd configuration...\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 ''',
@@ -346,13 +346,13 @@ SETTINGS_WIN="$(cygpath -m "$HOME/.claude/golden-cmd/config.json" 2>/dev/null ||
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
 ''',
     'windows/launch.sh/prompt-append': r'''#!/usr/bin/env bash
 set -euo pipefail
@@ -370,10 +370,10 @@ SETTINGS_WIN="$(cygpath -m "$HOME/.claude/golden-cmd/config.json" 2>/dev/null ||
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
 PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
@@ -444,20 +444,20 @@ SAFE_PROMPT_SIZE=4096
 
 # Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 ''',
@@ -477,10 +477,10 @@ SETTINGS_WIN="$(cygpath -m "$HOME/.claude/golden-cmd/config.json" 2>/dev/null ||
 
 # MCP configuration for profile-scoped servers
 MCP_CONFIG_PATH="$HOME/.claude/golden-cmd/mcp.json"
-MCP_FLAGS=""
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
 PROMPT_PATH="$HOME/.claude/golden-cmd/prompts/golden-prompt.md"
@@ -561,35 +561,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 ''',
