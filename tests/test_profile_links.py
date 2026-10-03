@@ -422,8 +422,28 @@ class TestLinkRules:
             LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path / 'b'),
             primary_command_name='p1', this_identity='other', typed_selectors=False,
         )
-        assert len(other_identity) == 1
-        assert 'link only between installs of one configuration' in other_identity[0]
+        assert other_identity == [
+            (
+                'Content entries (skills) link only between installs of one configuration: profile "aegis-1" was '
+                'installed from https://example.com/aegis.yaml, and this run was given a different configuration. '
+                'Install one full profile of the configuration this run was given first (--command-names SOURCE '
+                'with no link keys), then link the others from it with --link-from SOURCE; or run the setup with '
+                'the configuration profile "aegis-1" was installed from (the identity is its resolved path or URL); '
+                'or link only projects.'
+            ),
+        ]
+        remembered = link_request_errors(
+            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli', dirs_remembered=True, source_remembered=True),
+            self._source(tmp_path / 'b'), primary_command_name='p1', this_identity='other', typed_selectors=False,
+        )
+        assert remembered == [
+            (
+                'Content entries (skills) link only between installs of one configuration: profile "aegis-1" was '
+                'installed from https://example.com/aegis.yaml, and this run was given a different configuration. '
+                'Pass --link-dirs none, or --link-from naming a profile installed from the configuration this run '
+                'was given, so profile "p1" stops following "aegis-1"; or link only projects.'
+            ),
+        ]
         chained = link_request_errors(
             LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path / 'c', link=_record(['hooks'], 'base')),
             primary_command_name='p1', this_identity=identity, typed_selectors=False,

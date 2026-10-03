@@ -2489,7 +2489,7 @@ Links live inside an isolated profile's directory, so a configuration that decla
 
 ### Content entries link only between installs of one configuration
 
-Every entry but `projects` shows the source's installed content, so the profile that links it must be installed from the configuration the source was installed from (the same resolved path or URL). Run the setup with that configuration, or link only `projects`.
+Every entry but `projects` shows the source's installed content, so the profile that links it must be installed from the configuration the source was installed from (the same resolved path or URL). To run several profiles of one configuration beside a base of another (an `aegis-corp` base with `aegis` profiles), install one full profile of that configuration first (`--command-names aegis-1`, no link keys) and link the others from it (`--command-names aegis-2 --link-dirs all --link-from aegis-1`); or run the setup with the source's configuration; or link only `projects`. A profile that already follows a source stops following it with `--link-dirs none`, or with `--link-from` naming a profile of the new configuration, before it switches configuration.
 
 ### Profile "NAME" is the link source of other profiles
 

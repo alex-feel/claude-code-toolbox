@@ -15380,11 +15380,27 @@ def link_request_errors(
         source_identity = manifest_config_identity(source.manifest)
         source_config = source.manifest.get('config_source')
         if this_identity is None or source_identity != this_identity:
+            # A profile that already follows the source is re-pointed or
+            # unlinked before it switches; a new link request is pointed at
+            # the working topology: one full profile of this configuration,
+            # the rest linked from it
+            if spec.dirs_remembered:
+                remedy = (
+                    f'Pass --link-dirs {LINK_NONE_TOKEN}, or --link-from naming a profile installed from the '
+                    f'configuration this run was given, so profile "{primary_command_name}" stops following '
+                    f'"{source.name}"'
+                )
+            else:
+                remedy = (
+                    'Install one full profile of the configuration this run was given first (--command-names SOURCE '
+                    'with no link keys), then link the others from it with --link-from SOURCE; or run the setup with '
+                    f'the configuration profile "{source.name}" was installed from (the identity is its resolved '
+                    'path or URL)'
+                )
             errors.append(
                 f'Content entries ({content}) link only between installs of one configuration: profile '
                 f'"{source.name}" was installed from {source_config}, and this run was given a different '
-                f'configuration. Run the setup with that configuration (the identity is its resolved path or URL), '
-                f'or link only {SESSIONS_PROFILE_DIR}.',
+                f'configuration. {remedy}; or link only {SESSIONS_PROFILE_DIR}.',
             )
         source_record = manifest_link(source.manifest)
         source_links_content = source_record is not None and any(

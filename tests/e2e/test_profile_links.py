@@ -39,6 +39,10 @@ from tests.e2e.profile_support import write_legacy_manifest
 
 SKIP = ['--skip-install', '--no-admin']
 CONTENT_ENTRIES = [entry for entry in LINKABLE_PROFILE_DIRS if entry != 'projects']
+TOPOLOGY_REMEDY = (
+    'Install one full profile of the configuration this run was given first (--command-names SOURCE with no link '
+    'keys), then link the others from it with --link-from SOURCE'
+)
 
 
 @pytest.fixture
@@ -560,7 +564,32 @@ class TestLinkRules:
             'installs of one configuration'
         ) in output
         assert 'profile "aegis-1" was installed from' in output
+        assert TOPOLOGY_REMEDY in output
+        assert 'or link only projects' in output
         assert not (claude_dir / 'x1').exists()
+
+    def test_content_links_to_a_base_of_another_configuration_name_the_working_topology(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Beside a corporate base, aegis.yaml with --link-dirs all is refused with the full-profile-first remedy."""
+        corp = write_config(configs, 'aegis-corp.yaml', {**_aegis(), 'name': 'Corp'})
+        assert run_main([str(corp), *SKIP, '--yes']) == 0
+        cfg = write_config(configs, 'aegis.yaml', _aegis())
+        claude_dir = e2e_isolated_home['claude_dir']
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-2', '--link-dirs', 'all']) == 1
+
+        output = _output(capsys)
+        assert f'profile "base" was installed from {corp.resolve()}' in output
+        assert TOPOLOGY_REMEDY in output
+        assert not (claude_dir / 'aegis-2').exists()
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1']) == 0, 'the remedy: a full profile first'
+        _install_dependent(cfg, 'aegis-2')
+
+        assert _links_to(claude_dir / 'aegis-2' / 'agents', claude_dir / 'aegis-1' / 'agents')
 
     def test_chain_is_refused_with_the_source_as_the_remedy(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
@@ -754,6 +783,11 @@ class TestLinkRules:
         load.assert_not_called()
         output = _output(capsys)
         assert 'link only between installs of one configuration' in output
+        assert (
+            'Pass --link-dirs none, or --link-from naming a profile installed from the configuration this run was '
+            'given, so profile "aegis-2" stops following "aegis-1"'
+        ) in output
+        assert TOPOLOGY_REMEDY not in output, 'a profile that already follows a source is re-pointed or unlinked instead'
         assert 'Profile "aegis-2" was installed from' not in output, 'the identity check runs before the switch guard'
         assert (e2e_isolated_home['claude_dir'] / 'aegis-2' / 'manifest.json').is_file()
 
