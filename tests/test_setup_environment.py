@@ -6551,6 +6551,38 @@ class TestMergeKeys:
         result = setup_environment._merge_config_key('user-settings', parent, child)
         assert set(result['permissions']['allow']) == {'Read', 'Write'}
 
+    def test_merge_config_key_global_config_child_array_replaces_parent_array(self) -> None:
+        """Dispatch: a global-config child array replaces the parent's at every depth."""
+        parent = {
+            'enabledMcpjsonServers': ['parent-server'],
+            'customApiKeyResponses': {'approved': ['parent-key'], 'rejected': ['old']},
+        }
+        child = {
+            'enabledMcpjsonServers': ['child-server'],
+            'customApiKeyResponses': {'approved': ['child-key']},
+        }
+        result = setup_environment._merge_config_key('global-config', parent, child)
+        assert result == {
+            'enabledMcpjsonServers': ['child-server'],
+            'customApiKeyResponses': {'approved': ['child-key'], 'rejected': ['old']},
+        }
+
+    def test_merge_config_key_user_settings_replaces_non_permission_arrays(self) -> None:
+        """Dispatch: user-settings unions only permissions.allow/deny/ask and replaces other arrays."""
+        parent = {
+            'permissions': {'deny': ['Bash(rm *)'], 'additionalDirectories': ['/parent']},
+            'companyAnnouncements': ['parent'],
+        }
+        child = {
+            'permissions': {'deny': ['WebFetch'], 'additionalDirectories': ['/child']},
+            'companyAnnouncements': ['child'],
+        }
+        result = setup_environment._merge_config_key('user-settings', parent, child)
+        assert result == {
+            'permissions': {'deny': ['Bash(rm *)', 'WebFetch'], 'additionalDirectories': ['/child']},
+            'companyAnnouncements': ['child'],
+        }
+
     def test_merge_config_key_os_env_variables(self):
         """Dispatch: os-env-variables composes shallowly; a child null is carried forward."""
         parent = {'X': 'val1'}
@@ -9253,6 +9285,48 @@ class TestWriteGlobalConfig:
         data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
         assert 'srv1' in data['mcpServers']
         assert 'srv2' in data['mcpServers']
+
+    def test_global_config_nested_arrays_unioned_with_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A nested YAML array is appended to the file's array, existing elements first."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        (tmp_path / '.claude.json').write_text(
+            json.dumps({'customApiKeyResponses': {'approved': ['cli-key'], 'rejected': ['old']}}),
+            encoding='utf-8',
+        )
+        setup_environment.write_global_config(
+            {'customApiKeyResponses': {'approved': ['yaml-key', 'cli-key']}},
+        )
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert data['customApiKeyResponses'] == {
+            'approved': ['cli-key', 'yaml-key'],
+            'rejected': ['old'],
+        }
+
+    def test_isolated_claude_json_arrays_unioned_with_its_own_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each target file unions the YAML array with the array that file holds."""
+        home = tmp_path / 'home'
+        profile_dir = home / '.claude' / 'profile'
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: home)
+        (home / '.claude.json').write_text(
+            json.dumps({'enabledMcpjsonServers': ['base-server']}), encoding='utf-8',
+        )
+        (profile_dir / '.claude.json').write_text(
+            json.dumps({'enabledMcpjsonServers': ['profile-server']}), encoding='utf-8',
+        )
+
+        assert setup_environment.write_global_config(
+            {'enabledMcpjsonServers': ['yaml-server']}, artifact_base_dir=profile_dir,
+        )
+
+        base = json.loads((home / '.claude.json').read_text(encoding='utf-8'))
+        isolated = json.loads((profile_dir / '.claude.json').read_text(encoding='utf-8'))
+        assert base['enabledMcpjsonServers'] == ['base-server', 'yaml-server']
+        assert isolated['enabledMcpjsonServers'] == ['profile-server', 'yaml-server']
 
 
 class TestResolveInheritPath:

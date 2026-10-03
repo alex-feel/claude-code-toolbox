@@ -229,6 +229,9 @@ global-config:
   editorMode: "vim"
   showTurnDuration: true
   terminalProgressBarEnabled: false
+  customApiKeyResponses:
+    approved:
+      - "e2e-approved-key"
   oauthAccount: null
   staleConfigToDelete: null
 

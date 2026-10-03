@@ -291,6 +291,10 @@ global-config:
   editorMode: "vim"
   showTurnDuration: true
   terminalProgressBarEnabled: false
+  # Arrays at any depth are unioned with the arrays ~/.claude.json already holds
+  customApiKeyResponses:
+    approved:
+      - "e2e-approved-key"
   oauthAccount: null
   staleConfigToDelete: null  # RFC 7396: this key should be ABSENT from output
 

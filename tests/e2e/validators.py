@@ -1510,6 +1510,56 @@ def validate_global_config_dual_write(
     return errors
 
 
+def validate_json_arrays(
+    path: Path,
+    expected: dict[tuple[str, ...], list[object] | None],
+) -> list[str]:
+    """Validate the arrays a JSON file holds at the given key paths.
+
+    Each expected array is compared exactly, element order included: a
+    writer that unions arrays keeps the elements the file already held
+    first and appends only the elements it did not hold, so the order
+    tells a union apart from a replacement. A ``None`` expectation
+    requires the final key to be absent (deleted by a YAML null).
+
+    Args:
+        path: Path to the JSON file to inspect.
+        expected: Mapping from a key path (one tuple element per nesting
+            level, so keys containing dots stay unambiguous) to the exact
+            expected array, or ``None`` when the key must be absent.
+
+    Returns:
+        List of error strings (empty if every key path matches).
+    """
+    data, errors = validate_json_file(path)
+    if data is None:
+        return errors
+
+    for key_path, expected_value in expected.items():
+        label = f'{path.name}:{".".join(key_path)}'
+        node: object = data
+        for key in key_path[:-1]:
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = cast(dict[str, object], node)[key]
+        if not isinstance(node, dict):
+            errors.append(f'{label}: parent object missing')
+            continue
+        parent = cast(dict[str, object], node)
+        final_key = key_path[-1]
+        if expected_value is None:
+            if final_key in parent:
+                errors.append(f'{label}: expected ABSENT, got {parent[final_key]!r}')
+            continue
+        if final_key not in parent:
+            errors.append(f'{label}: missing, expected {expected_value!r}')
+        elif parent[final_key] != expected_value:
+            errors.append(f'{label}: expected {expected_value!r}, got {parent[final_key]!r}')
+
+    return errors
+
+
 def validate_env_loader_files(
     claude_dir: Path,
     os_env_vars: dict[str, str | None],
