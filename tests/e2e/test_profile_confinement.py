@@ -403,6 +403,34 @@ class TestStep16StaysInsideTheProfile:
         assert setup_environment.STALE_CONTROLS_RERUN_NOTE in output
         assert 'Stale update controls left in other profiles' in output
 
+    def test_stale_copy_lines_name_the_profile_command_that_removes_them(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Each stale copy is reported with the --profile command of the profile that owns the file."""
+        home = e2e_isolated_home['home']
+        claude_dir = e2e_isolated_home['claude_dir']
+        base_settings = claude_dir / 'settings.json'
+        other_settings = claude_dir / 'aegis-1' / 'settings.json'
+        _write_json(base_settings, {'env': {'DISABLE_UPDATES': '1'}})
+        _write_json(other_settings, {'env': {'DISABLE_UPDATES': '1'}})
+        config_path = _write_yaml(
+            tmp_path / 'aegis-2.yaml',
+            {'name': 'Aegis 2', 'command-names': ['aegis-2'], 'user-settings': {'theme': 'dark'}},
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        output = _output(capsys)
+        assert f'aegis-1: {other_settings} (DISABLE_UPDATES) -- re-run with --profile aegis-1' in output
+        assert f'base: {base_settings} (DISABLE_UPDATES) -- re-run with --profile base' in output
+        assert 're-run each listed profile with --profile <name> to remove them' in output
+        assert _read_json(base_settings) == {'env': {'DISABLE_UPDATES': '1'}}
+        assert _read_json(other_settings) == {'env': {'DISABLE_UPDATES': '1'}}
+
     def test_unpinned_base_run_edits_its_own_files_and_reports_the_isolated_copy(
         self,
         e2e_isolated_home: dict[str, Path],
