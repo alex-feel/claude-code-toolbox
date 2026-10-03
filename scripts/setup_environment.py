@@ -9525,9 +9525,7 @@ def generate_env_loader_files(
     # Bash/Zsh content
     sh_lines = [sh_header]
     for name, value in active_vars.items():
-        # Escape special characters for double-quoted bash strings
-        escaped = value.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
-        sh_lines.append(f'export {name}="{escaped}"')
+        sh_lines.append(f'export {name}="{_escape_bash_double_quoted(value)}"')
     sh_content = '\n'.join(sh_lines) + '\n'
 
     # Fish content
@@ -9553,9 +9551,7 @@ def generate_env_loader_files(
 
     cmd_lines = [cmd_header]
     for name, value in active_vars.items():
-        # Double percent signs for batch files (% -> %%)
-        escaped = value.replace('%', '%%')
-        cmd_lines.append(f'SET "{name}={escaped}"')
+        cmd_lines.append(f'SET "{name}={_escape_cmd_set_value(value)}"')
     cmd_content = '\n'.join(cmd_lines) + '\n'
 
     has_fish = bool(shutil.which('fish'))
@@ -13518,6 +13514,101 @@ def write_manifest(
         return False
 
 
+def _escape_bash_double_quoted(text: str) -> str:
+    """Escape text for a literal inside a double-quoted bash string.
+
+    Args:
+        text: The literal text.
+
+    Returns:
+        The text with backslash, double quote, dollar sign and backtick escaped.
+    """
+    return text.replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$').replace('`', '\\`')
+
+
+def _escape_cmd_set_value(text: str) -> str:
+    """Escape text for a literal inside a batch-file ``set "NAME=value"`` assignment.
+
+    Args:
+        text: The literal text.
+
+    Returns:
+        The text with every percent sign doubled.
+    """
+    return text.replace('%', '%%')
+
+
+def _escape_powershell_double_quoted(text: str) -> str:
+    """Escape text for a literal inside a double-quoted PowerShell string.
+
+    Args:
+        text: The literal text.
+
+    Returns:
+        The text with backtick, dollar sign and double quote prefixed by a backtick.
+    """
+    return text.replace('`', '``').replace('$', '`$').replace('"', '`"')
+
+
+class _ProfileDirSpelling(NamedTuple):
+    """How generated launchers and wrappers spell one profile directory.
+
+    A directory below the user's home is spelled relative to the home each
+    shell resolves when the script runs; any other directory is spelled
+    absolute.
+
+    Attributes:
+        posix: The directory inside a double-quoted bash string.
+        cmd: The directory inside a batch-file ``set "NAME=value"`` assignment.
+        powershell_parent: PowerShell expression for the directory holding it.
+        powershell_leaf: Its name, escaped for a double-quoted PowerShell string.
+    """
+
+    posix: str
+    cmd: str
+    powershell_parent: str
+    powershell_leaf: str
+
+
+def _spell_profile_dir(profile_dir: Path) -> _ProfileDirSpelling:
+    """Spell a profile directory for every shell a launcher or wrapper runs in.
+
+    Args:
+        profile_dir: The profile directory setup writes into; a relative path
+            names the directory below the current working directory.
+
+    Returns:
+        The spelling of profile_dir for bash, CMD and PowerShell.
+    """
+    directory = Path(os.path.abspath(profile_dir))
+    home_parts = Path(os.path.abspath(get_real_user_home())).parts
+    parts = directory.parts
+    leaf = _escape_powershell_double_quoted(directory.name)
+    below_home = len(parts) > len(home_parts) and [os.path.normcase(part) for part in parts[:len(home_parts)]] == [
+        os.path.normcase(part) for part in home_parts
+    ]
+    if not below_home:
+        parent = _escape_powershell_double_quoted(str(directory.parent).replace('/', '\\'))
+        return _ProfileDirSpelling(
+            posix=_escape_bash_double_quoted(directory.as_posix()),
+            cmd=_escape_cmd_set_value(str(directory).replace('/', '\\')),
+            powershell_parent=f'"{parent}"',
+            powershell_leaf=leaf,
+        )
+    relative = parts[len(home_parts):]
+    parent_parts = relative[:-1]
+    powershell_parent = '$env:USERPROFILE'
+    if parent_parts:
+        relative_parent = _escape_powershell_double_quoted('\\'.join(parent_parts))
+        powershell_parent = f'Join-Path $env:USERPROFILE "{relative_parent}"'
+    return _ProfileDirSpelling(
+        posix='$HOME/' + '/'.join(_escape_bash_double_quoted(part) for part in relative),
+        cmd='%USERPROFILE%\\' + '\\'.join(_escape_cmd_set_value(part) for part in relative),
+        powershell_parent=powershell_parent,
+        powershell_leaf=leaf,
+    )
+
+
 def create_launcher_script(
     config_base_dir: Path,
     command_name: str,
@@ -13535,8 +13626,14 @@ def create_launcher_script(
     On Unix, creates one file inside config_base_dir:
       - launch.sh (the launcher, entry point for symlinks)
 
+    Every path a launcher reads -- the exported CLAUDE_CONFIG_DIR, config.json,
+    mcp.json, the system prompt and the env loaders -- is spelled from
+    config_base_dir: relative to the home directory the shell resolves at run
+    time when config_base_dir lies below the user's home, absolute otherwise.
+
     Args:
-        config_base_dir: Path to the isolated environment directory (e.g., ~/.claude/{cmd}/)
+        config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
+            directory a user-settings.env CLAUDE_CONFIG_DIR names)
         command_name: Name of the command to create launcher for
         system_prompt_file: Optional system prompt filename (if None, only settings are used)
         mode: System prompt mode ('append' or 'replace'), defaults to 'replace'
@@ -13552,6 +13649,8 @@ def create_launcher_script(
         info('Launcher will use --strict-mcp-config for profile MCP isolation')
 
     system = platform.system()
+    spelling = _spell_profile_dir(config_base_dir)
+    profile_sh = spelling.posix
 
     # Will hold the shared POSIX launch script path (Windows only; on Unix, same as launcher_path)
     shared_sh: Path | None = None
@@ -13564,10 +13663,10 @@ def create_launcher_script(
             launcher_content = f'''# Claude Code Environment Launcher
 # This script starts Claude Code with the configured environment
 
-$claudeUserDir = Join-Path $env:USERPROFILE ".claude"
+$claudeUserDir = {spelling.powershell_parent}
 
 # Source OS-level environment variables (if configured)
-$envFile = Join-Path (Join-Path $claudeUserDir "{command_name}") "env.ps1"
+$envFile = Join-Path (Join-Path $claudeUserDir "{spelling.powershell_leaf}") "env.ps1"
 if (Test-Path $envFile) {{ . $envFile }}
 
 Write-Host "Starting Claude Code with {command_name} configuration..." -ForegroundColor Green
@@ -13584,7 +13683,7 @@ if (Test-Path "C:\\Program Files\\Git\\bin\\bash.exe") {{
 }}
 
 # Call the shared launch script
-$scriptPath = Join-Path (Join-Path $claudeUserDir "{command_name}") "launch.sh"
+$scriptPath = Join-Path (Join-Path $claudeUserDir "{spelling.powershell_leaf}") "launch.sh"
 
 if ($args.Count -gt 0) {{
     Write-Host "Passing additional arguments: $args" -ForegroundColor Cyan
@@ -13602,7 +13701,7 @@ REM Claude Code Environment Launcher for CMD
 REM This script starts Claude Code with the configured environment
 
 REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+set "ENV_FILE={spelling.cmd}\\env.cmd"
 if exist "%ENV_FILE%" call "%ENV_FILE%"
 
 echo Starting Claude Code with {command_name} configuration...
@@ -13611,7 +13710,7 @@ REM Call shared script
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 
-set "SCRIPT_WIN=%USERPROFILE%\\.claude\\{command_name}\\launch.sh"
+set "SCRIPT_WIN={spelling.cmd}\\launch.sh"
 
 if "%~1"=="" (
     "%BASH_EXE%" --login "%SCRIPT_WIN%"
@@ -13632,25 +13731,25 @@ if "%~1"=="" (
 set -euo pipefail
 
 # Set isolated environment directory
-export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+export CLAUDE_CONFIG_DIR="{profile_sh}"
 
 # Source OS-level environment variables (if configured)
-ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+ENV_FILE="{profile_sh}/env.sh"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}/config.json")"
+SETTINGS_WIN="$(cygpath -m "{profile_sh}/config.json" 2>/dev/null ||
+  echo "{profile_sh}/config.json")"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
-MCP_FLAGS=""
+MCP_CONFIG_PATH="{profile_sh}/mcp.json"
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-PROMPT_PATH="$HOME/.claude/{command_name}/prompts/{system_prompt_file}"
+PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
@@ -13732,35 +13831,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -13768,20 +13867,20 @@ fi
                     # Append mode: use --append-system-prompt-file if available
                     shared_sh_content += '''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -13791,25 +13890,25 @@ fi
 set -euo pipefail
 
 # Set isolated environment directory
-export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+export CLAUDE_CONFIG_DIR="{profile_sh}"
 
 # Source OS-level environment variables (if configured)
-ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+ENV_FILE="{profile_sh}/env.sh"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
 # Get Windows path for settings
-SETTINGS_WIN="$(cygpath -m "$HOME/.claude/{command_name}/config.json" 2>/dev/null ||
-  echo "$HOME/.claude/{command_name}/config.json")"
+SETTINGS_WIN="$(cygpath -m "{profile_sh}/config.json" 2>/dev/null ||
+  echo "{profile_sh}/config.json")"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
-MCP_FLAGS=""
+MCP_CONFIG_PATH="{profile_sh}/mcp.json"
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_WIN"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
+exec claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -13827,20 +13926,20 @@ exec claude $MCP_FLAGS "$@" --settings "$SETTINGS_WIN"
 # This script starts Claude Code with the configured environment
 
 # Set isolated environment directory
-export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+export CLAUDE_CONFIG_DIR="{profile_sh}"
 
 # Source OS-level environment variables (if configured)
-ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+ENV_FILE="{profile_sh}/env.sh"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
-SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
-PROMPT_PATH="$HOME/.claude/{command_name}/prompts/{system_prompt_file}"
+SETTINGS_PATH="{profile_sh}/config.json"
+PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
-MCP_FLAGS=""
+MCP_CONFIG_PATH="{profile_sh}/mcp.json"
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
 if [ ! -f "$PROMPT_PATH" ]; then
@@ -13930,37 +14029,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
     fi
   fi
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude $MCP_FLAGS --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude $MCP_FLAGS --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -13969,20 +14068,20 @@ fi
                     launcher_content += f'''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude $MCP_FLAGS --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude $MCP_FLAGS --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -13992,25 +14091,25 @@ fi
 # This script starts Claude Code with the configured environment
 
 # Set isolated environment directory
-export CLAUDE_CONFIG_DIR="$HOME/.claude/{command_name}"
+export CLAUDE_CONFIG_DIR="{profile_sh}"
 
 # Source OS-level environment variables (if configured)
-ENV_FILE="$HOME/.claude/{command_name}/env.sh"
+ENV_FILE="{profile_sh}/env.sh"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
-SETTINGS_PATH="$HOME/.claude/{command_name}/config.json"
+SETTINGS_PATH="{profile_sh}/config.json"
 
 # MCP configuration for profile-scoped servers
-MCP_CONFIG_PATH="$HOME/.claude/{command_name}/mcp.json"
-MCP_FLAGS=""
+MCP_CONFIG_PATH="{profile_sh}/mcp.json"
+MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
-  MCP_FLAGS="--strict-mcp-config --mcp-config $MCP_CONFIG_PATH"
+  MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
-claude $MCP_FLAGS "$@" --settings "$SETTINGS_PATH"
+claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
@@ -14036,8 +14135,11 @@ def register_global_command(
     """Register global command(s) in ~/.local/bin/.
 
     On Windows, creates wrappers for PowerShell (.ps1), CMD (.cmd), and Git Bash
-    in ~/.local/bin/. PowerShell wrappers reference launcher_path (start.ps1);
-    CMD and Git Bash wrappers reference launch_script_path (launch.sh).
+    in ~/.local/bin/. PowerShell wrappers name launcher_path (start.ps1) by its
+    absolute path. CMD and Git Bash wrappers reference launch_script_path
+    (launch.sh), and the CMD wrappers source the env.cmd loader beside it; they
+    spell its directory relative to the home directory when it lies below the
+    user's home, absolute otherwise.
 
     On Unix, creates symlinks in ~/.local/bin/ pointing to launcher_path.
 
@@ -14046,9 +14148,9 @@ def register_global_command(
             launch.sh on Unix).
         command_name: Primary command name (used for file naming).
         additional_names: Optional list of additional command names (aliases).
-        launch_script_path: Path to the shared POSIX launch script (launch.sh).
-            Required on Windows for CMD and Git Bash wrappers. On Unix this
-            parameter is not used (symlinks point to launcher_path directly).
+        launch_script_path: Path to the shared POSIX launch script, by default
+            launch.sh beside launcher_path. On Unix this parameter is not used
+            (symlinks point to launcher_path directly).
 
     Returns:
         True if registration succeeded, False otherwise.
@@ -14063,20 +14165,12 @@ def register_global_command(
             local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            # Derive shell-format paths for the launch script
-            if launch_script_path is not None:
-                home_str = str(get_real_user_home())
-                # Windows CMD path: convert to %USERPROFILE% form
-                launch_sh_str = str(launch_script_path).replace('/', '\\')
-                cmd_script_path = launch_sh_str.replace(home_str, '%USERPROFILE%')
-                # Git Bash path: convert to $HOME form
-                bash_script_path = str(launch_script_path).replace('\\', '/')
-                bash_home = home_str.replace('\\', '/')
-                bash_script_path = bash_script_path.replace(bash_home, '$HOME')
-            else:
-                # Fallback for backward compatibility
-                cmd_script_path = f'%USERPROFILE%\\.claude\\{command_name}\\launch.sh'
-                bash_script_path = f'$HOME/.claude/{command_name}/launch.sh'
+            # Spell the profile's launch.sh and env loader for each shell
+            launch_script = launch_script_path if launch_script_path is not None else launcher_path.parent / 'launch.sh'
+            spelling = _spell_profile_dir(launch_script.parent)
+            cmd_script_path = f'{spelling.cmd}\\{launch_script.name}'
+            bash_script_path = f'{spelling.posix}/{launch_script.name}'
+            ps1_launcher_path = _escape_powershell_double_quoted(str(launcher_path))
 
             # Create wrappers for all Windows shells
             # CMD wrapper
@@ -14084,7 +14178,7 @@ def register_global_command(
             batch_content = f'''@echo off
 REM Global {command_name} command for CMD
 REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+set "ENV_FILE={spelling.cmd}\\env.cmd"
 if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
@@ -14100,7 +14194,7 @@ if "%~1"=="" (
             # PowerShell wrapper (as a simple forwarder to the PS1 launcher)
             ps1_wrapper_path = local_bin / f'{command_name}.ps1'
             ps1_wrapper_content = f'''# Global {command_name} command for PowerShell
-& "{launcher_path}" @args
+& "{ps1_launcher_path}" @args
 '''
             ps1_wrapper_path.write_text(ps1_wrapper_content)
 
@@ -14126,7 +14220,7 @@ exec "{bash_script_path}" "$@"
                     alias_batch_content = f'''@echo off
 REM Global {alias_name} command for CMD (alias for {command_name})
 REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\\.claude\\{command_name}\\env.cmd"
+set "ENV_FILE={spelling.cmd}\\env.cmd"
 if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
@@ -14142,7 +14236,7 @@ if "%~1"=="" (
                     # PowerShell wrapper for alias
                     alias_ps1_path = local_bin / f'{alias_name}.ps1'
                     alias_ps1_content = f'''# Global {alias_name} command for PowerShell (alias for {command_name})
-& "{launcher_path}" @args
+& "{ps1_launcher_path}" @args
 '''
                     alias_ps1_path.write_text(alias_ps1_content)
 
