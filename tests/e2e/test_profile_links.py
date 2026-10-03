@@ -995,12 +995,18 @@ class TestSourceRunRefreshesDependents:
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
         capfd: pytest.CaptureFixture[str],
     ) -> None:
-        """aegis-2 and aegis-3 follow aegis-1; --profile aegis-2 alone applies aegis-1's record, not the YAML."""
+        """Beside a corporate base, aegis-2 and aegis-3 follow aegis-1; the base is never touched and refreshes nobody."""
+        corp = write_config(configs, 'aegis-corp.yaml', {**_aegis(), 'name': 'Corp', 'user-settings': {'theme': 'corp'}})
+        assert run_main([str(corp), *SKIP, '--yes']) == 0, 'the corporate base installs first'
         cfg = _install_source(configs)
         _install_dependent(cfg, 'aegis-2')
         _install_dependent(cfg, 'aegis-3')
         claude_dir = e2e_isolated_home['claude_dir']
-        base_manifest_before = (claude_dir / 'manifest.json').exists()
+        base_manifest = read_manifest(claude_dir)
+        base_before = (
+            base_manifest['installed_at'], base_manifest['config_digest'],
+            (claude_dir / 'settings.json').read_bytes(), home_state(claude_dir / 'agents'),
+        )
         write_config(configs, 'aegis.yaml', {**_aegis(), 'user-settings': {'theme': 'light'}})
         runner = write_child_runner(tmp_path, monkeypatch)
 
@@ -1017,9 +1023,32 @@ class TestSourceRunRefreshesDependents:
         for name in ('aegis-2', 'aegis-3'):
             assert _theme(claude_dir / name) == 'light', name
             assert read_manifest(claude_dir / name)['config_digest'] == source_digest
-        assert (claude_dir / 'manifest.json').exists() == base_manifest_before, 'the base profile is untouched'
+            assert _links_to(claude_dir / name / 'agents', claude_dir / 'aegis-1' / 'agents'), name
+            assert not _links_to(claude_dir / name / 'agents', claude_dir / 'agents'), name
+        base_manifest = read_manifest(claude_dir)
+        assert (
+            base_manifest['installed_at'], base_manifest['config_digest'],
+            (claude_dir / 'settings.json').read_bytes(), home_state(claude_dir / 'agents'),
+        ) == base_before, 'the base profile is untouched'
+        assert json.loads((claude_dir / 'settings.json').read_text(encoding='utf-8'))['theme'] == 'corp'
         parent_summary = output[output.index('* Dependent profiles refreshed from this run:'):]
-        assert 'Installed profiles this run did not refresh' not in parent_summary
+        assert '- base (--profile base)' in parent_summary, 'the base is the one profile this run did not refresh'
+        assert '- aegis-2 (--profile aegis-2)' not in parent_summary
+        assert '- aegis-3 (--profile aegis-3)' not in parent_summary
+        installed_at = {name: _installed_at(claude_dir / name) for name in ('aegis-1', 'aegis-2', 'aegis-3')}
+        capfd.readouterr()
+
+        code = run_main([str(corp), *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert 'Step 23: No installed profile links content from "base"' in output
+        assert '=== Dependent profile' not in output
+        assert '* Installed profiles this run did not refresh:' in output
+        for name in ('aegis-1', 'aegis-2', 'aegis-3'):
+            assert f'- {name} (--profile {name})' in output, name
+            assert _installed_at(claude_dir / name) == installed_at[name], name
+        assert read_manifest(claude_dir)['installed_at'] != base_before[0], 'the base itself was re-installed'
 
     def test_dependent_run_fetches_nothing_and_reads_the_snapshot(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
