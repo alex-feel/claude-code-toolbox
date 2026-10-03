@@ -14167,18 +14167,19 @@ exec "{bash_script_path}" "$@"
             local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            symlink_path = local_bin / command_name
-            if symlink_path.exists():
-                symlink_path.unlink()
-            symlink_path.symlink_to(launcher_path)
+            def _link_to_launcher(link_path: Path) -> None:
+                # exists() follows the link and reports False for one whose
+                # profile is gone, yet that dangling link still holds the name
+                if link_path.is_symlink() or link_path.exists():
+                    link_path.unlink()
+                link_path.symlink_to(launcher_path)
+
+            _link_to_launcher(local_bin / command_name)
 
             # Create additional symlinks for aliases (Linux/macOS)
             if additional_names:
                 for alias_name in additional_names:
-                    alias_symlink_path = local_bin / alias_name
-                    if alias_symlink_path.exists():
-                        alias_symlink_path.unlink()
-                    alias_symlink_path.symlink_to(launcher_path)
+                    _link_to_launcher(local_bin / alias_name)
 
                 info(f'Created {len(additional_names)} alias symlink(s): {", ".join(additional_names)}')
 

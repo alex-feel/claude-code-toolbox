@@ -252,6 +252,25 @@ class TestOwnershipByForeignFile:
 
 
 @unix_only
+class TestRegistrationOverADanglingLink:
+    """A wrapper link whose profile is gone is replaced, not left blocking the name."""
+
+    @pytest.mark.parametrize(('primary', 'aliases'), [('p2', ['x']), ('x', None)])
+    def test_dangling_link_is_replaced_by_the_new_profile_link(
+        self, home: Path, primary: str, aliases: list[str] | None,
+    ) -> None:
+        """Registration succeeds and x points at the registering profile's launcher."""
+        link = home / '.local' / 'bin' / 'x'
+        link.symlink_to(home / '.claude' / 'old' / 'launch.sh')
+        assert not link.exists()
+
+        local_bin = _register(home, 'Linux', primary, aliases)
+
+        assert Path(os.readlink(local_bin / 'x')) == home / '.claude' / primary / 'launch.sh'
+        assert (local_bin / 'x').exists()
+
+
+@unix_only
 class TestUnixLayout:
     """The bare-name entry is the only file a Unix name maps to."""
 

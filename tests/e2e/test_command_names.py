@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -558,6 +559,51 @@ class TestNamesAForeignFileHolds:
 
         assert f'Command name "claude" is taken by {link}' in capsys.readouterr().err
         assert Path(os.readlink(link)) == target
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='Unix wrappers are links that dangle once their profile is gone')
+class TestNameOfADeletedProfile:
+    """A wrapper link left dangling by a profile deleted by hand is replaced by the next owner."""
+
+    @staticmethod
+    def _install_and_delete_old_profile(paths: dict[str, Path]) -> Path:
+        """Install profile old with alias x, then delete its directory the way a user would."""
+        assert _install(['--yes', '--command-names', 'old,x']) == 0
+        shutil.rmtree(paths['claude_dir'] / 'old')
+        link = paths['local_bin'] / 'x'
+        assert link.is_symlink()
+        assert not link.exists(), 'the link to the deleted profile should dangle'
+        return link
+
+    def test_alias_of_a_deleted_profile_becomes_an_alias_of_a_new_one(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The dangling x link is replaced by a link to the new profile's launcher."""
+        link = self._install_and_delete_old_profile(e2e_isolated_home)
+        capsys.readouterr()
+
+        assert _install(['--yes', '--command-names', 'p2,x']) == 0
+
+        captured = capsys.readouterr()
+        assert 'Failed to register global command' not in captured.out + captured.err
+        profile_dir = _assert_profile_installed(e2e_isolated_home, 'p2', ['p2', 'x'])
+        assert Path(os.readlink(link)) == profile_dir / 'launch.sh'
+        assert link.resolve() == (profile_dir / 'launch.sh').resolve()
+
+    def test_alias_of_a_deleted_profile_becomes_the_primary_of_a_new_one(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The dangling x link is replaced when x is the new profile's primary name."""
+        link = self._install_and_delete_old_profile(e2e_isolated_home)
+        capsys.readouterr()
+
+        assert _install(['--yes', '--command-names', 'x']) == 0
+
+        captured = capsys.readouterr()
+        assert 'Failed to register global command' not in captured.out + captured.err
+        profile_dir = _assert_profile_installed(e2e_isolated_home, 'x', ['x'])
+        assert Path(os.readlink(link)) == profile_dir / 'launch.sh'
+        assert link.resolve() == (profile_dir / 'launch.sh').resolve()
 
 
 class TestPackagedCli:
