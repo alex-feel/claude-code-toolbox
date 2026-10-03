@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -53,6 +54,22 @@ def _isolate_claude_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     the guard or the export set the variable themselves.
     """
     monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore PATH after every test, whatever the code under test assigned to it.
+
+    The setup code updates the session PATH in place: refresh_path_from_registry()
+    rebuilds it from the Windows registry after installs (main() Step 13
+    among other places), and the installers prepend the directories they
+    create. A main()-flow test would hand that PATH to every later test, and
+    a registry rebuild drops each directory that exists only in the process
+    PATH -- such as the one a CI runner installs uv into -- so later lookups
+    of those tools fail. Recording the current value through monkeypatch
+    makes its undo put that value back.
+    """
+    monkeypatch.setenv('PATH', os.environ['PATH'])
 
 
 @pytest.fixture
@@ -315,7 +332,6 @@ def _guard_real_home_writes(request: pytest.FixtureRequest, monkeypatch: pytest.
     e2e_isolated_home fixture providing complete isolation).
     """
     import builtins
-    import os
 
     # Skip for tests explicitly marked as allowing real home access
     if request.node.get_closest_marker('allow_real_home'):
