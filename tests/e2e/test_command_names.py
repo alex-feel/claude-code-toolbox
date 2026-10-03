@@ -4,7 +4,8 @@
 CLAUDE_CODE_TOOLBOX_COMMAND_NAMES) installs any configuration as the isolated
 profile ~/.claude/NAME. The value replaces the configuration's command-names
 whole, a flag beats its variable and the variable beats the configuration,
-and reserved names are refused before anything is written. The tests drive
+and reserved names are refused before anything is written, as are names
+another profile's manifest lists or a foreign ~/.local/bin file holds. The tests drive
 main() with the real launcher, wrapper, profile-config and manifest writers
 in an isolated home; only network access, the Claude Code binary, MCP
 registration, OS-level variables and the Windows PATH registry are replaced.
@@ -331,6 +332,192 @@ class TestReservedNames:
         assert 'Command name "hooks" in --command-names is reserved' in captured.err
         assert 'Installation Summary' not in captured.out + captured.err
         _assert_nothing_written(e2e_isolated_home)
+
+
+def _home_state(home: Path) -> dict[str, str]:
+    """Snapshot every entry under the home: links by target, files by content, directories by name."""
+    state: dict[str, str] = {}
+    for entry in sorted(home.rglob('*')):
+        key = entry.relative_to(home).as_posix()
+        if entry.is_symlink():
+            state[key] = f'link:{os.readlink(entry)}'
+        elif entry.is_file():
+            state[key] = f'file:{entry.read_bytes().hex()}'
+        else:
+            state[key] = 'dir'
+    return state
+
+
+def _foreign_entry(local_bin: Path, name: str) -> Path:
+    """Create a file the toolbox did not write under the name's wrapper path."""
+    path = local_bin / (f'{name}.cmd' if sys.platform == 'win32' else name)
+    path.write_text('@echo off\r\necho mine\r\n' if sys.platform == 'win32' else '#!/bin/sh\necho mine\n', encoding='utf-8')
+    return path
+
+
+class TestNamesAnotherProfileOwns:
+    """A name another profile's manifest lists is refused before anything is written."""
+
+    @pytest.mark.parametrize(
+        ('typed', 'message'),
+        [
+            ('claude-b', 'Command name "claude-b" belongs to the profile "claude-a"'),
+            ('fresh,claude-c', 'Command name "claude-c" belongs to the profile "claude-a"'),
+            ('fresh,claude-a', 'Command name "claude-a" is the primary name of the profile "claude-a"'),
+        ],
+    )
+    def test_owned_name_is_refused_and_nothing_changes(
+        self,
+        typed: str,
+        message: str,
+        e2e_isolated_home: dict[str, Path],
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Neither the other profile's wrappers nor any new profile is written."""
+        home = e2e_isolated_home['home']
+        assert _install(['--yes']) == 0
+        capsys.readouterr()
+        before = _home_state(home)
+
+        assert _install(['--yes', '--command-names', typed]) == 1
+
+        err = capsys.readouterr().err
+        assert message in err
+        assert str(e2e_isolated_home['claude_dir'] / 'claude-a' / 'manifest.json') in err
+        assert _home_state(home) == before
+
+    def test_variable_naming_an_owned_name_is_refused(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The check applies to names from the environment twin too."""
+        home = e2e_isolated_home['home']
+        assert _install(['--yes']) == 0
+        before = _home_state(home)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'claude-b')
+
+        assert _install(['--yes']) == 1
+
+        assert 'Command name "claude-b" belongs to the profile "claude-a"' in capsys.readouterr().err
+        assert _home_state(home) == before
+
+    def test_dry_run_reports_the_owner(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A preview reports the refusal instead of a plan for a run that cannot proceed."""
+        assert _install(['--yes']) == 0
+        capsys.readouterr()
+        before = _home_state(e2e_isolated_home['home'])
+
+        assert _install(['--dry-run', '--command-names', 'claude-c']) == 1
+
+        captured = capsys.readouterr()
+        assert 'Command name "claude-c" belongs to the profile "claude-a"' in captured.err
+        assert 'Installation Summary' not in captured.out + captured.err
+        assert _home_state(e2e_isolated_home['home']) == before
+
+    def test_re_run_of_the_same_profile_keeps_its_names(self, e2e_isolated_home: dict[str, Path]) -> None:
+        """The profile that owns the names installs again under them."""
+        assert _install(['--yes']) == 0
+        assert _install(['--yes']) == 0
+        assert _install(['--yes', '--command-names', 'claude-a,claude-b']) == 0
+
+        _assert_profile_installed(e2e_isolated_home, 'claude-a', ['claude-a', 'claude-b'])
+
+    def test_wrapper_of_a_dropped_alias_is_free_to_reuse(self, e2e_isolated_home: dict[str, Path]) -> None:
+        """Once its profile stops listing an alias, another profile may take the name."""
+        assert _install(['--yes', '--command-names', 'old-main,old-alias']) == 0
+        assert _install(['--yes', '--command-names', 'old-main']) == 0
+
+        assert _install(['--yes', '--command-names', 'new-main,old-alias']) == 0
+
+        new_profile = _assert_profile_installed(e2e_isolated_home, 'new-main', ['new-main', 'old-alias'])
+        _assert_wrapper_targets_profile(e2e_isolated_home['local_bin'], 'old-alias', new_profile)
+
+    def test_profile_with_an_unreadable_manifest_keeps_its_name(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A manifest that cannot be read still marks its directory's name as taken."""
+        broken = e2e_isolated_home['claude_dir'] / 'broken'
+        broken.mkdir()
+        (broken / 'manifest.json').write_text('{not json', encoding='utf-8')
+
+        assert _install(['--yes', '--command-names', 'fresh,broken']) == 1
+
+        assert 'Command name "broken" names the profile directory' in capsys.readouterr().err
+        assert not (e2e_isolated_home['claude_dir'] / 'fresh').exists()
+
+
+class TestNamesAForeignFileHolds:
+    """A name ~/.local/bin holds as a file the toolbox did not create is refused."""
+
+    def test_foreign_file_is_refused_and_left_alone(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The file keeps its content and no profile is created."""
+        home = e2e_isolated_home['home']
+        foreign = _foreign_entry(e2e_isolated_home['local_bin'], 'mytool')
+        before = _home_state(home)
+
+        assert _install(['--yes', '--command-names', 'mytool']) == 1
+
+        err = capsys.readouterr().err
+        assert f'Command name "mytool" is taken by {foreign}, which the toolbox did not create' in err
+        assert _home_state(home) == before
+
+    def test_foreign_file_under_an_alias_is_refused(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Every name of the run is checked, not only the primary."""
+        _foreign_entry(e2e_isolated_home['local_bin'], 'mytool')
+
+        assert _install(['--yes', '--command-names', 'fresh,mytool']) == 1
+
+        assert 'Command name "mytool" is taken by' in capsys.readouterr().err
+        assert not (e2e_isolated_home['claude_dir'] / 'fresh').exists()
+
+    def test_configuration_names_are_checked_too(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A name from the YAML gets the same protection as a typed one."""
+        _foreign_entry(e2e_isolated_home['local_bin'], 'claude-b')
+
+        assert _install(['--yes']) == 1
+
+        assert 'Command name "claude-b" is taken by' in capsys.readouterr().err
+        assert not (e2e_isolated_home['claude_dir'] / 'claude-a').exists()
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows shells resolve name.exe for the bare name')
+    def test_windows_executable_with_the_name_is_refused(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A wrapper named claude next to claude.exe would hijack the real binary."""
+        binary = e2e_isolated_home['local_bin'] / 'claude.exe'
+        binary.write_bytes(b'MZ')
+
+        assert _install(['--yes', '--command-names', 'claude']) == 1
+
+        assert f'Command name "claude" is taken by {binary}' in capsys.readouterr().err
+        assert sorted(entry.name for entry in e2e_isolated_home['local_bin'].iterdir()) == ['claude.exe']
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='the native Claude Code link is the Unix layout')
+    def test_unix_link_to_a_binary_is_refused(
+        self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Replacing the native Claude Code link would make the launcher call itself."""
+        home = e2e_isolated_home['home']
+        target = home / '.local' / 'share' / 'claude' / 'versions' / '2.1.0'
+        target.parent.mkdir(parents=True)
+        target.write_text('binary', encoding='utf-8')
+        link = e2e_isolated_home['local_bin'] / 'claude'
+        link.symlink_to(target)
+
+        assert _install(['--yes', '--command-names', 'claude']) == 1
+
+        assert f'Command name "claude" is taken by {link}' in capsys.readouterr().err
+        assert Path(os.readlink(link)) == target
 
 
 class TestPackagedCli:

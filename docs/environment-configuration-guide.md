@@ -303,6 +303,15 @@ $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/
 
 The installation summary marks where the names came from: `Command names: aegis-1 [cli]` for the flag, `[env]` for the variable, `[yaml]` for the configuration. When the configuration defines components, the summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
 
+##### Names another profile or program holds
+
+Setup registers each command name as a wrapper in `~/.local/bin`, so before it writes anything (and in `--dry-run` too) it refuses a name that is already taken, whatever source the name came from:
+
+- **Another profile's name.** Every isolated profile lists its names in `~/.claude/<primary>/manifest.json`. A name another profile lists is refused with the owning profile and its manifest in the message. To move an alias to a new profile, install the owning profile again with a `command-names` list that leaves the alias out, then install the new profile. A re-run of the profile that owns the names keeps working, and so does a re-run that drops some of its aliases.
+- **A program in `~/.local/bin`.** A file there under the name that setup did not create, such as the native Claude Code link `claude`, is refused with its path. On Windows, `name.exe`, `name.bat` and `name.com` count too, because the shells run them for the bare name. Choose another name, or move the file away if you no longer need it.
+
+A wrapper that setup created and no profile lists any more, for instance one an alias left behind, is free to reuse. Setup compares a name with other profiles' names without regard to case, because Windows and macOS map both spellings onto the same wrapper files.
+
 #### `base-url`
 
 Base URL for resolving relative resource paths (agents, commands, skills, hooks, and other files).

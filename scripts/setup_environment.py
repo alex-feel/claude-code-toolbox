@@ -12555,6 +12555,158 @@ def resolve_command_names(
     return CommandNames(names, origin), command_name_errors(names, COMMAND_NAMES_SOURCES['yaml'])
 
 
+# The first lines of the wrappers register_global_command() writes on
+# Windows, by file suffix; each names the command the wrapper serves. A Unix
+# wrapper is a symlink to the profile's launcher instead (see
+# is_toolbox_wrapper()).
+_TOOLBOX_WRAPPER_MARKERS: dict[str, str] = {
+    '.cmd': r'^REM Global {name} command for CMD(?=\s|$)',
+    '.ps1': r'^# Global {name} command for PowerShell(?=\s|$)',
+    '': r'^# Bash wrapper for {name}(?=\s|$)',
+}
+
+# Suffixes Windows shells resolve a bare command name to, beyond the
+# wrappers the toolbox writes: a name.exe answers to the name just like the
+# name.cmd wrapper would
+_WINDOWS_EXECUTABLE_SUFFIXES: tuple[str, ...] = ('.exe', '.bat', '.com')
+
+
+def is_toolbox_wrapper(path: Path, name: str) -> bool:
+    """Report whether a ~/.local/bin entry is a wrapper the toolbox wrote for a name.
+
+    register_global_command() links name to the profile's launch.sh on Unix
+    and writes name.cmd, name.ps1 and name on Windows, each opening with a
+    comment that names the command. A dangling link still counts: its
+    profile is gone, but the toolbox created it.
+
+    Args:
+        path: The ~/.local/bin entry to inspect.
+        name: The command name the entry stands for.
+
+    Returns:
+        True when the entry is a toolbox wrapper for that name.
+    """
+    if path.is_symlink():
+        try:
+            return Path(os.readlink(path)).name == 'launch.sh'
+        except OSError:
+            return False
+    marker = _TOOLBOX_WRAPPER_MARKERS.get(path.suffix.lower())
+    if marker is None:
+        return False
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            head = handle.read(512)
+    except OSError:
+        return False
+    pattern = marker.format(name=re.escape(name))
+    return re.search(pattern, head, flags=re.MULTILINE | re.IGNORECASE) is not None
+
+
+def _command_names_of_other_profiles(home_dir: Path, primary_command_name: str) -> dict[str, str]:
+    """Map every command name another isolated profile holds to the reason it is taken.
+
+    Each isolated profile records its command names in
+    ~/.claude/{primary}/manifest.json. A manifest whose 'name' is this run's
+    primary name belongs to this run's own profile. A manifest that cannot
+    be read still holds its directory name, which is that profile's primary
+    name. Names are compared without regard to case, because Windows and
+    macOS file systems map both spellings onto the same wrapper files.
+
+    Args:
+        home_dir: User home directory.
+        primary_command_name: This run's primary command name.
+
+    Returns:
+        Casefolded command name mapped to the error message refusing it,
+        with '{name}' left for the name as typed.
+    """
+    claude_dir = home_dir / '.claude'
+    own = primary_command_name.casefold()
+    taken: dict[str, str] = {}
+    try:
+        profile_dirs = sorted(entry for entry in claude_dir.iterdir() if entry.is_dir())
+    except OSError:
+        return taken
+    for profile_dir in profile_dirs:
+        manifest_path = profile_dir / MANIFEST_FILENAME
+        try:
+            content = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            content = None
+        if not isinstance(content, dict):
+            if profile_dir.name.casefold() != own:
+                taken[profile_dir.name.casefold()] = (
+                    f'Command name "{{name}}" names the profile directory {profile_dir}, whose '
+                    f'{MANIFEST_FILENAME} could not be read. Choose another name, or repair or '
+                    'remove that profile first.'
+                )
+            continue
+        manifest = cast(dict[str, Any], content)
+        owner = str(manifest.get('name') or profile_dir.name)
+        if owner.casefold() == own:
+            continue
+        listed = manifest.get('command_names')
+        names = [str(item) for item in cast(list[object], listed)] if isinstance(listed, list) else []
+        for name in [owner, *names]:
+            if name.casefold() == owner.casefold():
+                reason = (
+                    f'Command name "{{name}}" is the primary name of the profile "{owner}" '
+                    f'({manifest_path}). Choose a name no other profile uses.'
+                )
+            else:
+                reason = (
+                    f'Command name "{{name}}" belongs to the profile "{owner}" (listed in '
+                    f'{manifest_path}). Choose a name no other profile uses, or install that '
+                    'profile again with a command-names list that leaves it out.'
+                )
+            taken.setdefault(name.casefold(), reason)
+    return taken
+
+
+def command_name_conflicts(command_names: list[str], home_dir: Path) -> list[str]:
+    """Find the command names of a run that another owner already holds.
+
+    Registering a name writes its wrappers into ~/.local/bin, which would
+    silently take the command over from whoever holds it. A name is held
+    when another profile's manifest lists it, or when ~/.local/bin has an
+    entry for it that the toolbox did not create: on Windows that covers the
+    wrapper files and every executable the shells resolve the name to. A
+    toolbox wrapper that no other manifest lists, such as one a dropped
+    alias left behind, is free to reuse.
+
+    Args:
+        command_names: This run's command names, primary first.
+        home_dir: User home directory.
+
+    Returns:
+        One error message per held name, naming the owner and the remedy;
+        empty when every name is free.
+    """
+    taken = _command_names_of_other_profiles(home_dir, command_names[0])
+    local_bin = home_dir / '.local' / 'bin'
+    suffixes: tuple[str, ...] = ('',)
+    if platform.system() == 'Windows':
+        suffixes = ('', '.cmd', '.ps1', *_WINDOWS_EXECUTABLE_SUFFIXES)
+    errors: list[str] = []
+    for name in command_names:
+        reason = taken.get(name.casefold())
+        if reason is not None:
+            errors.append(reason.replace('{name}', name))
+            continue
+        for suffix in suffixes:
+            entry = local_bin / f'{name}{suffix}'
+            if (entry.exists() or entry.is_symlink()) and not is_toolbox_wrapper(entry, name):
+                errors.append(
+                    f'Command name "{name}" is taken by {entry}, which the toolbox did not create. '
+                    f'Choose another name, or move that file out of {local_bin} if it is no longer needed.',
+                )
+                break
+    return errors
+
+
 def download_hook_files(
     hooks: dict[str, Any] | None,
     claude_user_dir: Path,
@@ -14662,8 +14814,14 @@ def main() -> None:
 
         # The run's command names: --command-names, then its environment twin,
         # then the configuration. A typed or environment list replaces the
-        # configuration's list, which every later step reads.
+        # configuration's list, which every later step reads. A name another
+        # profile or a foreign ~/.local/bin file holds is refused here, before
+        # the summary, consent, or any write.
         effective_command_names, command_names_errors = resolve_command_names(args, config)
+        if not command_names_errors and effective_command_names.names:
+            command_names_errors = command_name_conflicts(
+                effective_command_names.names, get_real_user_home(),
+            )
         if command_names_errors:
             for err in command_names_errors:
                 error(err)
