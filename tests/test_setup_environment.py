@@ -16996,6 +16996,7 @@ class TestRequestAdminElevationEnvVars:
             'CLAUDE_CODE_TOOLBOX_SELECT',
             'CLAUDE_CODE_TOOLBOX_WITH',
             'CLAUDE_CODE_TOOLBOX_WITHOUT',
+            'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
         }
 
     def test_backslash_ending_value_round_trips_msvcrt_quoting(self) -> None:
@@ -17419,28 +17420,28 @@ class TestValidateComponents:
         assert any('hooks/h-config.json' in text for text in warning_texts)
 
 
-class TestParseComponentCsv:
-    """Test _parse_component_csv() absent/empty distinction."""
+class TestParseCsv:
+    """Test _parse_csv() absent/empty distinction."""
 
     def test_none_stays_none(self) -> None:
         """Absent input returns None."""
-        assert setup_environment._parse_component_csv(None) is None
+        assert setup_environment._parse_csv(None) is None
 
     def test_simple_split(self) -> None:
         """Comma-separated names split into tokens."""
-        assert setup_environment._parse_component_csv('a,b') == ['a', 'b']
+        assert setup_environment._parse_csv('a,b') == ['a', 'b']
 
     def test_whitespace_stripped(self) -> None:
         """Tokens are whitespace-stripped."""
-        assert setup_environment._parse_component_csv(' a , b ') == ['a', 'b']
+        assert setup_environment._parse_csv(' a , b ') == ['a', 'b']
 
     def test_empty_string_is_empty_list(self) -> None:
         """An empty string parses to an empty list, not None."""
-        assert setup_environment._parse_component_csv('') == []
+        assert setup_environment._parse_csv('') == []
 
     def test_only_commas_is_empty_list(self) -> None:
         """Separators without tokens parse to an empty list."""
-        assert setup_environment._parse_component_csv(',,') == []
+        assert setup_environment._parse_csv(',,') == []
 
 
 class TestValidateComponentSelectorArgs:

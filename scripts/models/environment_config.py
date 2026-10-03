@@ -179,6 +179,27 @@ RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
 # must start with a letter or digit
 COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
+# Command names no profile may take, compared without regard to case: none,
+# base and all are reserved words of the profile interface, and the rest are
+# entries of a Claude Code configuration directory, so a profile named after
+# one would install into that entry of the base ~/.claude. Inline copy of
+# RESERVED_COMMAND_NAMES in scripts/setup_environment.py (standalone script
+# policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_reserved_command_names_parity.py.
+RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({
+    'none',
+    'base',
+    'all',
+    'skills',
+    'agents',
+    'commands',
+    'rules',
+    'hooks',
+    'output-styles',
+    'prompts',
+    'projects',
+})
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -1487,6 +1508,11 @@ class EnvironmentConfig(BaseModel):
             if not name.replace('-', '').replace('_', '').isalnum():
                 raise ValueError(
                     f'command_names[{i}] must contain only alphanumeric characters, hyphens, and underscores: "{name}"',
+                )
+            if name.casefold() in RESERVED_COMMAND_NAMES:
+                reserved = ', '.join(sorted(RESERVED_COMMAND_NAMES))
+                raise ValueError(
+                    f'command_names[{i}] "{name}" is reserved; choose a name other than: {reserved}',
                 )
         return v
 

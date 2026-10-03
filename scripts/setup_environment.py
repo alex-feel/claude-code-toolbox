@@ -161,6 +161,27 @@ RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
 # must start with a letter or digit
 COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
+# Command names no profile may take, compared without regard to case: none,
+# base and all are reserved words of the profile interface, and the rest are
+# entries of a Claude Code configuration directory, so a profile named after
+# one would install into that entry of the base ~/.claude. Inline copy of
+# RESERVED_COMMAND_NAMES in scripts/models/environment_config.py (standalone
+# script policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_reserved_command_names_parity.py.
+RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({
+    'none',
+    'base',
+    'all',
+    'skills',
+    'agents',
+    'commands',
+    'rules',
+    'hooks',
+    'output-styles',
+    'prompts',
+    'projects',
+})
+
 # Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
 # other name at configuration load time. _build_hooks_json() warns (rather
 # than errors) on names outside this set so a configuration written for a
@@ -614,6 +635,7 @@ ENV_TWINS: tuple[EnvTwin, ...] = (
     EnvTwin('CLAUDE_CODE_TOOLBOX_SELECT', 'select', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_WITH', 'with_', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_WITHOUT', 'without', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'command_names', 'value'),
 )
 
 # Variables the elevated process needs that no argument stands in for: the
@@ -970,6 +992,8 @@ class InstallationPlan:
     system_prompt: str | None = None
     system_prompt_mode: str = 'replace'
     command_names: list[str] = field(default_factory=lambda: list[str]())
+    # 'cli', 'env', or 'yaml' (see CommandNames); None without command names
+    command_names_origin: str | None = None
     claude_code_version: str | None = None
     install_nodejs: bool = False
     skip_install: bool = False
@@ -3061,8 +3085,8 @@ def validate_hooks_files_consistency(
     return errors
 
 
-def _parse_component_csv(value: str | None) -> list[str] | None:
-    """Parse a comma-separated component list, distinguishing absent from empty.
+def _parse_csv(value: str | None) -> list[str] | None:
+    """Parse a comma-separated flag or environment value, distinguishing absent from empty.
 
     Args:
         value: Raw flag or environment variable value, or None when absent.
@@ -3098,7 +3122,7 @@ def _validate_component_selector_args(
         ('--with', args.with_),
         ('--without', args.without),
     ):
-        tokens = _parse_component_csv(raw)
+        tokens = _parse_csv(raw)
         if tokens is None:
             continue
         if not tokens:
@@ -3231,9 +3255,9 @@ def resolve_component_selection(
         for name, c in zip(names, components, strict=True)
     }
 
-    select_tokens = _parse_component_csv(args.select)
-    with_tokens = _parse_component_csv(args.with_) or []
-    without_set = set(_parse_component_csv(args.without) or [])
+    select_tokens = _parse_csv(args.select)
+    with_tokens = _parse_csv(args.with_) or []
+    without_set = set(_parse_csv(args.without) or [])
 
     if select_tokens is not None:
         if select_tokens == ['all']:
@@ -8511,7 +8535,12 @@ def display_installation_summary(
             cause = component_selection.auto_included.get(name)
             cause_str = f' {Colors.GREEN}[auto: {cause}]{Colors.NC}' if cause else ''
             _print(f'  {mark} {label}{suffix}{cause_str}')
-        _print(f'  Replay: {component_selection.replay}')
+        replay = component_selection.replay
+        # Names from the flag or its variable are not in the configuration,
+        # so a replay without them would install the configuration's profile
+        if plan.command_names_origin in ('cli', 'env'):
+            replay += f" --command-names {','.join(plan.command_names)}"
+        _print(f'  Replay: {replay}')
 
     deselected = plan.deselected_items
     if deselected and has_deselected_items(deselected):
@@ -8584,7 +8613,8 @@ def display_installation_summary(
             f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
         )
     if plan.command_names:
-        settings_items.append(f"Command names: {', '.join(plan.command_names)}")
+        origin_marker = f' [{plan.command_names_origin}]' if plan.command_names_origin else ''
+        settings_items.append(f"Command names: {', '.join(plan.command_names)}{origin_marker}")
 
     if settings_items:
         _print()
@@ -12428,6 +12458,103 @@ def validate_command_name_for_path(name: str) -> bool:
     return bool(_SAFE_COMMAND_NAME_PATTERN.match(name))
 
 
+# Where each origin of a run's command names is set, as error messages name it
+COMMAND_NAMES_SOURCES: dict[str, str] = {
+    'cli': '--command-names',
+    'env': 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
+    'yaml': 'command-names',
+}
+
+
+class CommandNames(NamedTuple):
+    """The command names of a run and where they came from.
+
+    Attributes:
+        names: The primary name first, then the aliases; empty for a run that
+            installs into the base ~/.claude.
+        origin: 'cli' for --command-names, 'env' for
+            CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, 'yaml' for the configuration's
+            command-names, or None when no source names a command.
+    """
+
+    names: list[str]
+    origin: str | None
+
+
+def command_name_errors(names: list[str], source: str) -> list[str]:
+    """Validate command names for use as a profile directory and a global command.
+
+    Args:
+        names: Command names to validate, primary first.
+        source: The flag, variable, or configuration key the names came from,
+            named in every message.
+
+    Returns:
+        One error message per invalid name; empty when every name is valid.
+    """
+    errors: list[str] = []
+    for name in names:
+        if not name.strip():
+            errors.append(f'Invalid command name in {source}: names cannot be empty')
+        elif ' ' in name:
+            errors.append(f'Invalid command name "{name}" in {source}: names cannot contain spaces')
+        elif not validate_command_name_for_path(name):
+            errors.append(
+                f'Invalid command name "{name}" in {source}: use only letters, digits, hyphens, and '
+                'underscores, starting with a letter or digit',
+            )
+        elif name.casefold() in RESERVED_COMMAND_NAMES:
+            reserved = ', '.join(sorted(RESERVED_COMMAND_NAMES))
+            errors.append(
+                f'Command name "{name}" in {source} is reserved; choose a name other than: {reserved}',
+            )
+    return errors
+
+
+def resolve_command_names(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[CommandNames, list[str]]:
+    """Determine the command names of a run and validate them.
+
+    --command-names wins over CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, which wins
+    over the configuration's command-names. A typed or environment value
+    replaces the configuration's list whole and never merges with it: a
+    single name is the complete list, with no aliases. Every source goes
+    through command_name_errors().
+
+    Args:
+        args: Arguments after resolve_args(), which records in args.origins
+            whether args.command_names was typed or came from the environment.
+        config: The resolved configuration.
+
+    Returns:
+        The effective command names with their origin, and the validation
+        errors (empty when the names are usable).
+    """
+    if args.command_names is not None:
+        origin = args.origins['command_names']
+        source = COMMAND_NAMES_SOURCES[origin]
+        names = _parse_csv(args.command_names) or []
+        if not names:
+            return CommandNames([], origin), [f'{source} requires at least one command name']
+        return CommandNames(names, origin), command_name_errors(names, source)
+
+    raw = config.get('command-names')
+    if raw is None:
+        names = []
+    elif isinstance(raw, str):
+        names = [raw]
+    elif isinstance(raw, list):
+        names = [str(item) for item in cast(list[object], raw)]
+    else:
+        return CommandNames([], None), [
+            f'Invalid command-names value: expected string or list, got {type(raw).__name__}',
+        ]
+    origin = 'yaml' if names else None
+    return CommandNames(names, origin), command_name_errors(names, COMMAND_NAMES_SOURCES['yaml'])
+
+
 def download_hook_files(
     hooks: dict[str, Any] | None,
     claude_user_dir: Path,
@@ -14415,6 +14542,13 @@ def main() -> None:
         action='store_true',
         help='List the components defined by the configuration and exit',
     )
+    parser.add_argument(
+        '--command-names',
+        type=str,
+        metavar='NAME[,ALIAS...]',
+        help='Install as the isolated profile ~/.claude/NAME with these command names '
+        "(comma-separated, primary first); replaces the configuration's command-names",
+    )
     args = parser.parse_args()
     resolve_args(args)
 
@@ -14526,36 +14660,17 @@ def main() -> None:
             display_component_registry(components_list)
             sys.exit(0)
 
-        # Extract command-names
-        command_names_raw = config.get('command-names')
-
-        # Normalize to list
-        command_names: list[str] | None = None
-        if command_names_raw is not None:
-            if isinstance(command_names_raw, str):
-                command_names = [command_names_raw]
-            elif isinstance(command_names_raw, list):
-                # Convert all items to strings (handles mixed types from YAML)
-                command_names = [str(item) for item in cast(list[object], command_names_raw)]
-            else:
-                error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
-                sys.exit(1)
-
-        # Validate command names
+        # The run's command names: --command-names, then its environment twin,
+        # then the configuration. A typed or environment list replaces the
+        # configuration's list, which every later step reads.
+        effective_command_names, command_names_errors = resolve_command_names(args, config)
+        if command_names_errors:
+            for err in command_names_errors:
+                error(err)
+            sys.exit(1)
+        command_names: list[str] | None = effective_command_names.names or None
         if command_names:
-            for cmd_name in command_names:
-                if not cmd_name.strip():
-                    error('Invalid command name: empty or whitespace-only name')
-                    sys.exit(1)
-                if ' ' in cmd_name:
-                    error(f'Invalid command name: "{cmd_name}" contains spaces')
-                    sys.exit(1)
-                # Validate path safety (rejects path separators, traversal, leading dots)
-                if not validate_command_name_for_path(cmd_name):
-                    error(f'Invalid command name for isolation: "{cmd_name}"')
-                    error('Command names must contain only alphanumeric characters, hyphens, and underscores.')
-                    error('Leading dots, path separators, and traversal patterns are not allowed.')
-                    sys.exit(1)
+            config['command-names'] = command_names
 
         # Get primary command name (first in list) for file naming
         primary_command_name = command_names[0] if command_names else None
@@ -14829,6 +14944,7 @@ def main() -> None:
             selection=selection,
         )
         plan.auto_injected_items = auto_injected_items
+        plan.command_names_origin = effective_command_names.origin
         plan.claude_code_version = claude_install_decision.version
         plan.keep_installed_claude = claude_install_decision.kept
         plan.claude_install_reason = claude_install_decision.reason

@@ -6,6 +6,8 @@
 # To specify configuration:
 #   export CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python
 #   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/linux/setup-environment.sh | bash
+# To install it as the isolated profile ~/.claude/<name> (same as --command-names):
+#   export CLAUDE_CODE_TOOLBOX_COMMAND_NAMES=<name>[,<alias>...]
 
 set -euo pipefail
 

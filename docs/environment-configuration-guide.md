@@ -263,7 +263,7 @@ Configuration version. Setup records it as `version` in the profile manifest (`m
 
 #### `command-names`
 
-Creates global shell commands that launch Claude Code with this environment configuration. The first name is the primary command (used for file naming), and subsequent entries are aliases.
+Creates global shell commands that launch Claude Code with this environment configuration. The first name is the primary command and names the isolated profile directory `~/.claude/<primary>`; the remaining entries are aliases.
 
 - **Type:** `list[str] | None`
 - **Default:** `[]`
@@ -271,9 +271,10 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Cannot be empty or whitespace-only
   - Cannot contain spaces
   - Must be alphanumeric, hyphens, and underscores only
+  - Cannot be a reserved name, compared without regard to case: `none`, `base`, `all`, `skills`, `agents`, `commands`, `rules`, `hooks`, `output-styles`, `prompts`, `projects`
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
-- **Note:** If empty or not specified, hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, recording `name` as `null`, an empty `command_names` list, the configuration `version`, and the `claude-code-version` pin as `claude_code_version`; setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
+- **Note:** If no command names are given (neither here nor through `--command-names`), hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, recording `name` as `null`, an empty `command_names` list, the configuration `version`, and the `claude-code-version` pin as `claude_code_version`; setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
 ```yaml
@@ -281,6 +282,26 @@ command-names:
   - "my-env"       # Primary (used for file names)
   - "my-env-alias" # Alias
 ```
+
+##### Choosing the command names at install time
+
+`--command-names NAME[,ALIAS...]` (environment variable `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`) sets the command names of one run, and it works with every configuration. A configuration without `command-names` installs as the isolated profile `~/.claude/NAME` instead of into the base `~/.claude`. A configuration with `command-names` installs under the names you give in place of its own. The value replaces the configuration's list whole and never merges with it: a single `NAME` is the complete list, with none of the configuration's aliases. The flag wins over the variable, and the variable wins over the configuration. Every source goes through the same validation and reserved names, and setup stops before writing anything when a name fails.
+
+```bash
+# One configuration, several isolated profiles
+uvx cc-toolbox setup aegis.yaml --command-names aegis-1
+uvx cc-toolbox setup aegis.yaml --command-names aegis-2
+
+# A second profile from a configuration that declares its own names: one command, claude-p2
+uvx cc-toolbox setup claude-personal.yaml --command-names claude-p2
+```
+
+```powershell
+# Windows one-liner: iex (irm ...) takes no arguments, so use the variable
+$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='my-env-2'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
+The installation summary marks where the names came from: `Command names: aegis-1 [cli]` for the flag, `[env]` for the variable, `[yaml]` for the configuration. When the configuration defines components, the summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
 
 #### `base-url`
 
@@ -1348,7 +1369,7 @@ Validation fails fast on duplicate component names, dangling `requires`/`bundles
 3. The interactive picker (a questionary checkbox, falling back to a numbered toggle prompt when questionary is unavailable or the console cannot render it) runs only when no selector flag was given, neither `--yes` nor `--dry-run` is set, and an interactive terminal is available. Non-interactive runs silently use the author defaults.
 4. The hard `requires` closure runs last: deselecting a component that a selected component requires brings it back with a warning and an `[auto: required by '...']` marker in the summary.
 
-The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto-include causes, and a copy-pasteable `Replay:` selector line (`--select ...`, plus `--without ...` for the skipped components so bundle edges do not re-add them) reproducing the selection non-interactively. `--list-components` prints the registry (names, labels, defaults, edges, and per-section item counts) and exits without installing.
+The installation summary shows a `Components:` block with `[x]`/`[ ]` rows, auto-include causes, and a copy-pasteable `Replay:` selector line (`--select ...`, plus `--without ...` for the skipped components so bundle edges do not re-add them, plus `--command-names ...` when the command names came from that flag or its variable) reproducing the selection non-interactively. `--list-components` prints the registry (names, labels, defaults, edges, and per-section item counts) and exits without installing.
 
 Selection resolves before the Windows admin-elevation check and before remote file validation, so deselected items never trigger UAC prompts, network fetches, or authentication prompts.
 
@@ -2307,20 +2328,21 @@ hooks:
 
 ### Workflow Control and Behavior
 
-| Variable                               | Purpose                                                                | Accepted Values                        |
-|----------------------------------------|------------------------------------------------------------------------|----------------------------------------|
-| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)                                    | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)                                | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`)                       | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)                            | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS                                   | Exact value `1` only                   |
-| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                                           | `1`, `true`, or `yes`                  |
-| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers                                   | Integer (default: 2)                   |
-| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                                             | `1`, `true`, or `yes`                  |
-| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)                            | Path to `bash.exe`                     |
-| `CLAUDE_CODE_TOOLBOX_SELECT`           | Install these components plus bundled/required components (`--select`) | Comma-separated names, or `all`/`none` |
-| `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)                              | Comma-separated names                  |
-| `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`)                     | Comma-separated names                  |
+| Variable                               | Purpose                                                                  | Accepted Values                        |
+|----------------------------------------|--------------------------------------------------------------------------|----------------------------------------|
+| `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL`  | Auto-confirm installation (`--yes`)                                      | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DRY_RUN`          | Preview installation plan (`--dry-run`)                                  | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`     | Skip Claude Code installation (`--skip-install`)                         | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_NO_ADMIN`         | Skip Windows admin elevation (`--no-admin`)                              | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_ALLOW_ROOT`       | Allow running as root on Linux/macOS                                     | Exact value `1` only                   |
+| `CLAUDE_CODE_TOOLBOX_DEBUG`            | Enable verbose debug logging                                             | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_PARALLEL_WORKERS` | Override concurrent download workers                                     | Integer (default: 2)                   |
+| `CLAUDE_CODE_TOOLBOX_SEQUENTIAL_MODE`  | Disable parallel downloads                                               | `1`, `true`, or `yes`                  |
+| `CLAUDE_CODE_TOOLBOX_GIT_BASH_PATH`    | Override Git Bash executable path (Windows)                              | Path to `bash.exe`                     |
+| `CLAUDE_CODE_TOOLBOX_SELECT`           | Install these components plus bundled/required components (`--select`)   | Comma-separated names, or `all`/`none` |
+| `CLAUDE_CODE_TOOLBOX_WITH`             | Add components to the defaults (`--with`)                                | Comma-separated names                  |
+| `CLAUDE_CODE_TOOLBOX_WITHOUT`          | Remove components from the selection (`--without`)                       | Comma-separated names                  |
+| `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`    | Command names of this run, replacing `command-names` (`--command-names`) | Comma-separated names, primary first   |
 
 ### Authentication
 
@@ -2333,19 +2355,20 @@ hooks:
 
 ### CLI Flags and Environment Variable Equivalents
 
-| Flag                | Environment Variable                  | Purpose                                                                              |
-|---------------------|---------------------------------------|--------------------------------------------------------------------------------------|
-| `--yes` / `-y`      | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)                                  |
-| `--dry-run`         | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing or requesting admin elevation     |
-| `--skip-install`    | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                                        |
-| `--no-admin`        | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                                            |
-| `--env KEY=VALUE`   | --                                    | Set an environment variable for this run (repeatable; any documented variable)       |
-| `--select`          | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install these components plus bundled/required components (sentinels: `all`, `none`) |
-| `--with`            | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                                              |
-| `--without`         | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win)                     |
-| `--list-components` | --                                    | List the configuration's components and exit                                         |
+| Flag                              | Environment Variable                  | Purpose                                                                                       |
+|-----------------------------------|---------------------------------------|-----------------------------------------------------------------------------------------------|
+| `--yes` / `-y`                    | `CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL` | Auto-confirm installation (skip interactive prompt)                                           |
+| `--dry-run`                       | `CLAUDE_CODE_TOOLBOX_DRY_RUN`         | Show installation plan and exit without installing or requesting admin elevation              |
+| `--skip-install`                  | `CLAUDE_CODE_TOOLBOX_SKIP_INSTALL`    | Skip Claude Code installation                                                                 |
+| `--no-admin`                      | `CLAUDE_CODE_TOOLBOX_NO_ADMIN`        | Do not request admin elevation on Windows                                                     |
+| `--env KEY=VALUE`                 | --                                    | Set an environment variable for this run (repeatable; any documented variable)                |
+| `--select`                        | `CLAUDE_CODE_TOOLBOX_SELECT`          | Install these components plus bundled/required components (sentinels: `all`, `none`)          |
+| `--with`                          | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                                                       |
+| `--without`                       | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win)                              |
+| `--list-components`               | --                                    | List the configuration's components and exit                                                  |
+| `--command-names NAME[,ALIAS...]` | `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`   | Install as the isolated profile `~/.claude/NAME` under these names (replaces `command-names`) |
 
-CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`.
+CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`. In PowerShell, quote a comma-separated flag value (`--command-names 'main,alias'`), because PowerShell reads an unquoted `main,alias` as an array.
 
 ## Troubleshooting
 

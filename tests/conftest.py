@@ -55,6 +55,24 @@ def _isolate_claude_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_argument_twins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no environment twin of a setup argument.
+
+    Each ENV_TWINS variable stands in for an argument of setup_environment's
+    main(), and --env KEY=VALUE writes into the process environment for the
+    rest of the process, so a main()-flow test that passes --env leaves its
+    variable behind for the rest of the session. A developer whose shell
+    exports one, CLAUDE_CODE_TOOLBOX_COMMAND_NAMES for instance, would steer
+    every main()-flow test into another profile. Tests that exercise a twin
+    set it themselves.
+    """
+    from scripts.setup_environment import ENV_TWINS
+
+    for twin in ENV_TWINS:
+        monkeypatch.delenv(twin.variable, raising=False)
+
+
 @pytest.fixture
 def temp_dir() -> Generator[Path, None, None]:
     """Create a temporary directory for testing."""
