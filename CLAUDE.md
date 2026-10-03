@@ -407,6 +407,8 @@ Step comments/print statements in `main()` MUST use continuous whole integers (n
 | Linux    | `'linux'`      | `'Linux'`           | `'posix'` |
 | macOS    | `'darwin'`     | `'Darwin'`          | `'posix'` |
 
+**Machine-state isolation:** `tests/conftest.py`'s autouse `_guard_real_home_writes` fails a unit test that writes, creates a directory, or unlinks a file under the real `~/.claude/` or `~/.local/bin/`, or writes `~/.claude.json` or a shell config file, so a function that touches those locations by design is replaced by an autouse mock rather than patched test by test. `_mock_old_binary_cleanup` is one of them: `install_claude_native_windows()` first runs `_cleanup_old_claude_files()`, which on Windows deletes the `claude.exe.old*` files that replacing a running binary leaves in the real `~/.local/bin`, so the fixture replaces it in both module objects the installer is imported as (`install_claude` and `scripts.install_claude`). The tests of `_cleanup_old_claude_files()` itself call the reference `tests/test_install_claude.py` captures at import time, the same bypass the stale-controls and `installMethod`-propagation mocks use.
+
 ### Agent Development Pitfalls
 
 Recurring patterns that cause CI failures. Every item below has caused at least one real CI failure. Read this section before modifying `setup_environment.py` or its tests.
