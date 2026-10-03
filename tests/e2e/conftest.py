@@ -227,6 +227,33 @@ def golden_config() -> dict[str, Any]:
 
 
 @pytest.fixture
+def golden_resolved_config(golden_config: dict[str, Any]) -> dict[str, Any]:
+    """The golden configuration as a run records it in resolved-config.yaml.
+
+    Applies the author-default component selection the way main() does
+    (the golden components all default to selected) and strips the keys
+    that name the profile, so the result is what write_manifest() renders
+    and what validate_resolved_config() expects.
+
+    Args:
+        golden_config: The parsed golden configuration.
+
+    Returns:
+        The component-selected snapshot without command-names.
+    """
+    import argparse
+    import copy
+
+    config = copy.deepcopy(golden_config)
+    components = [c for c in config.get('components') or [] if isinstance(c, dict)]
+    args = argparse.Namespace(select=None, with_=None, without=None, yes=True, dry_run=False, origins={})
+    selection = setup_environment.resolve_component_selection(components, args)
+    if selection.is_active:
+        setup_environment.apply_component_selection(config, selection)
+    return setup_environment.resolved_config_snapshot(config)
+
+
+@pytest.fixture
 def mock_repo_path() -> Path:
     """Return the path to the mock repository for E2E testing.
 

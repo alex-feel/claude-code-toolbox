@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 # Add scripts directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
@@ -5523,12 +5524,50 @@ class TestWriteManifest:
         data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
         assert set(data) == {
             'name', 'version', 'claude_code_version', 'config_source',
-            'config_source_url', 'config_source_type', 'installed_at', 'command_names',
+            'config_source_url', 'config_source_type', 'config_identity', 'config_digest',
+            'installed_at', 'command_names', 'components', 'link', 'origins', 'yaml_values',
+            'machine_wide_destinations', 'os_env_written', 'settings_keys_written',
+            'mcp_servers', 'files_written',
         }
         assert data['name'] == command_name
         assert data['version'] == '1.2.0'
         assert data['claude_code_version'] == '2.1.85'
         assert data['command_names'] == command_names
+        assert data['config_identity'] == setup_environment.config_identity_of('test.yaml')
+        assert data['config_digest'] is None
+        assert data['link'] is None
+        assert data['origins'] == {'command_names': 'yaml' if command_names else None, 'components': 'yaml'}
+        assert not (tmp_path / 'resolved-config.yaml').exists()
+
+    def test_manifest_writes_the_resolved_configuration_and_its_digest(self, tmp_path: Path) -> None:
+        """resolved-config.yaml holds the installed configuration without command-names, hashed into the manifest."""
+        config = {'name': 'Env', 'command-names': ['test-env'], 'agents': ['agents/a.md'], 'user-settings': {'theme': 'dark'}}
+
+        assert _real_write_manifest(
+            tmp_path, 'test-env', None, '/abs/env.yaml', 'local', None, ['test-env'], None,
+            resolved_config=config,
+            origins={'command_names': 'cli', 'components': 'yaml'},
+            components={'select': 'core', 'with': None, 'without': None},
+            yaml_values={'command_names': [], 'components': ['core']},
+            machine_wide_destinations=[{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}],
+            os_env_written=['MY_VAR'],
+            settings_keys_written=['theme'],
+            mcp_servers=[{'name': 'srv', 'scopes': ['user']}],
+            files_written=['agents/a.md'],
+        )
+
+        resolved = (tmp_path / 'resolved-config.yaml').read_text(encoding='utf-8')
+        assert yaml.safe_load(resolved) == {'name': 'Env', 'agents': ['agents/a.md'], 'user-settings': {'theme': 'dark'}}
+        data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
+        assert data['config_digest'] == setup_environment.config_digest_of(resolved)
+        assert data['origins'] == {'command_names': 'cli', 'components': 'yaml'}
+        assert data['components'] == {'select': 'core', 'with': None, 'without': None}
+        assert data['yaml_values'] == {'command_names': [], 'components': ['core']}
+        assert data['machine_wide_destinations'] == [{'dest': '/opt/x', 'source': 'https://s/x', 'sha256': 'ab'}]
+        assert data['os_env_written'] == ['MY_VAR']
+        assert data['settings_keys_written'] == ['theme']
+        assert data['mcp_servers'] == [{'name': 'srv', 'scopes': ['user']}]
+        assert data['files_written'] == ['agents/a.md']
 
 
 class TestRegisterGlobalCommand:
@@ -15021,7 +15060,9 @@ class TestFindStaleControlsInOtherProfiles:
 
     def test_report_line_names_profile_file_and_keys(self, tmp_path: Path) -> None:
         copy = setup_environment.StaleControlCopy('alpha', tmp_path / 'settings.json', ('DISABLE_UPDATES',))
-        assert setup_environment._stale_control_copy_line(copy) == f'alpha: {tmp_path / "settings.json"} (DISABLE_UPDATES)'
+        assert setup_environment._stale_control_copy_line(copy) == (
+            f'alpha: {tmp_path / "settings.json"} (DISABLE_UPDATES) -- re-run with --profile alpha'
+        )
 
 
 class TestRunStaleControlsCleanup:

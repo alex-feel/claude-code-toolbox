@@ -191,13 +191,24 @@ class TestReservedNames:
 
     @pytest.mark.parametrize(
         'name',
-        ['none', 'base', 'all', 'skills', 'agents', 'commands', 'rules', 'hooks', 'output-styles', 'prompts', 'projects'],
+        ['base', 'all', 'skills', 'agents', 'commands', 'rules', 'hooks', 'output-styles', 'prompts', 'projects'],
     )
     def test_every_reserved_name_is_refused_when_typed(self, name: str) -> None:
         """Each reserved name is refused from the flag."""
         _resolved, errors = resolve_command_names(_args(name), {})
         assert len(errors) == 1
         assert f'Command name "{name}" in --command-names is reserved' in errors[0]
+
+    @pytest.mark.parametrize('value', ['none', 'none,mine', 'mine,a,none', 'mine,none,a', 'None'])
+    def test_none_anywhere_but_second_and_last_is_refused(self, value: str) -> None:
+        """The alias-dropping token is valid only as NAME,none, so it never names a profile."""
+        _resolved, errors = resolve_command_names(_args(value), {})
+        assert errors == [
+            (
+                '"none" in --command-names drops every alias of the profile and must follow the primary '
+                'name alone: NAME,none'
+            ),
+        ]
 
     def test_reserved_names_are_matched_without_regard_to_case(self) -> None:
         """Case-insensitive file systems map Projects onto the base projects directory."""

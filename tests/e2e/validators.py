@@ -1172,6 +1172,59 @@ def validate_tilde_preservation_on_unix(
     return []
 
 
+def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any]) -> list[str]:
+    """Validate the resolved-config.yaml a run writes beside its manifest.
+
+    Validates:
+    - The file exists and parses as a YAML mapping
+    - command-names is absent (the snapshot names what a profile installs,
+      never which profile)
+    - The content equals the expected snapshot, null-as-delete entries of
+      user-settings, global-config and os-env-variables, hooks and
+      components included
+    - Its sha256 equals the config_digest the manifest beside it records
+
+    Args:
+        profile_dir: The profile directory holding manifest.json and
+            resolved-config.yaml
+        expected_snapshot: resolved_config_snapshot() of the configuration
+            the run installed, after component selection
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    import yaml
+
+    from scripts.setup_environment import MANIFEST_FILENAME
+    from scripts.setup_environment import RESOLVED_CONFIG_FILENAME
+    from scripts.setup_environment import config_digest_of
+
+    resolved_path = profile_dir / RESOLVED_CONFIG_FILENAME
+    if not resolved_path.is_file():
+        return [f'{resolved_path} does not exist']
+    text = resolved_path.read_text(encoding='utf-8')
+    try:
+        content = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return [f'{resolved_path} is not valid YAML: {exc}']
+    if not isinstance(content, dict):
+        return [f'{resolved_path} does not hold a mapping']
+    errors: list[str] = []
+    if 'command-names' in content:
+        errors.append(f'{RESOLVED_CONFIG_FILENAME} carries command-names, which names the profile, not the configuration')
+    errors.extend(
+        f'{RESOLVED_CONFIG_FILENAME} key {key!r}: expected {expected_snapshot.get(key)!r}, got {content.get(key)!r}'
+        for key in sorted(set(content) | set(expected_snapshot))
+        if content.get(key) != expected_snapshot.get(key)
+    )
+    manifest, manifest_errors = validate_json_file(profile_dir / MANIFEST_FILENAME)
+    if manifest_errors:
+        errors.extend(manifest_errors)
+    elif manifest is not None and manifest.get('config_digest') != config_digest_of(text):
+        errors.append(f'Manifest config_digest does not equal the sha256 of {RESOLVED_CONFIG_FILENAME}')
+    return errors
+
+
 def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate manifest.json structure and content.
 
@@ -1180,16 +1233,20 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
 
     Validates:
     - File exists and is valid JSON
-    - The field set is exactly EXPECTED_JSON_KEYS['manifest']: name, version,
-      claude_code_version, config_source, config_source_url,
-      config_source_type, installed_at, command_names
+    - The field set is exactly EXPECTED_JSON_KEYS['manifest']
     - version matches config['version'] if present
     - claude_code_version matches the normalized config pin ('latest' and an
       absent key both normalize to None)
     - config_source_type is one of: url, local, repo
+    - config_identity is the identity of config_source, and config_digest
+      is the sha256 of the resolved-config.yaml beside the manifest, which
+      every written manifest has (a None digest or a missing file is an
+      error)
     - command_names and name match the profile shape: the primary command
       name and a non-empty list for an isolated profile, None and an empty
       list for the base profile
+    - origins maps command_names and components to an origin, yaml_values
+      and the written records have their declared shapes, and link is None
     - installed_at is a valid ISO timestamp string
 
     Args:
@@ -1251,6 +1308,62 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"Manifest config_source_type: expected one of {valid_types}, "
             f"got {data['config_source_type']!r}",
         )
+
+    # Identity and digest: the identity derives from the recorded source, the
+    # digest from the resolved-config.yaml written beside the manifest
+    from scripts.setup_environment import RESOLVED_CONFIG_FILENAME
+    from scripts.setup_environment import config_digest_of
+    from scripts.setup_environment import config_identity_of
+
+    expected_identity = config_identity_of(str(data['config_source']))
+    if data['config_identity'] != expected_identity:
+        errors.append(
+            f"Manifest config_identity: expected {expected_identity!r}, got {data['config_identity']!r}",
+        )
+    resolved_path = path.parent / RESOLVED_CONFIG_FILENAME
+    if not resolved_path.is_file():
+        errors.append(f'{RESOLVED_CONFIG_FILENAME} is absent beside the manifest')
+    elif data['config_digest'] is None:
+        errors.append(f'Manifest config_digest is None although {RESOLVED_CONFIG_FILENAME} exists')
+    elif data['config_digest'] != config_digest_of(resolved_path.read_text(encoding='utf-8')):
+        errors.append(f'Manifest config_digest does not match {RESOLVED_CONFIG_FILENAME}')
+
+    # Remembered values and their origins
+    origins = data['origins']
+    if not isinstance(origins, dict) or set(origins) != {'command_names', 'components'}:
+        errors.append(f'Manifest origins: expected command_names and components, got {origins!r}')
+    else:
+        if origins['command_names'] not in ('cli', 'env', 'yaml', 'default', None):
+            errors.append(f"Manifest origins.command_names: unexpected value {origins['command_names']!r}")
+        if origins['components'] not in ('cli', 'env', 'yaml'):
+            errors.append(f"Manifest origins.components: unexpected value {origins['components']!r}")
+    components = data['components']
+    if components is not None and (
+        not isinstance(components, dict) or set(components) != {'select', 'with', 'without'}
+    ):
+        errors.append(f'Manifest components: expected None or the three selector values, got {components!r}')
+    if not isinstance(data['yaml_values'], dict):
+        errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
+    if data['link'] is not None:
+        errors.append(f"Manifest link: expected None, got {data['link']!r}")
+    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
+    errors.extend(
+        f'Manifest {record_key}: expected a list, got {data[record_key]!r}'
+        for record_key in record_keys
+        if not isinstance(data[record_key], list)
+    )
+    destinations = data['machine_wide_destinations'] if isinstance(data['machine_wide_destinations'], list) else []
+    errors.extend(
+        f'Manifest machine_wide_destinations entry: expected dest, source and sha256, got {record!r}'
+        for record in destinations
+        if not isinstance(record, dict) or set(record) != {'dest', 'source', 'sha256'}
+    )
+    servers = data['mcp_servers'] if isinstance(data['mcp_servers'], list) else []
+    errors.extend(
+        f'Manifest mcp_servers entry: expected name and scopes, got {record!r}'
+        for record in servers
+        if not isinstance(record, dict) or set(record) != {'name', 'scopes'}
+    )
 
     # command_names validation: an isolated profile lists its command names,
     # the base profile lists none.

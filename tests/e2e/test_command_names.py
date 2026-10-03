@@ -608,15 +608,18 @@ class TestNamesAnotherProfileOwns:
 
         _assert_profile_installed(e2e_isolated_home, 'claude-a', ['claude-a', 'claude-b'])
 
-    def test_wrapper_of_a_dropped_alias_is_free_to_reuse(self, e2e_isolated_home: dict[str, Path]) -> None:
-        """Once its profile stops listing an alias, another profile may take the name."""
+    def test_name_of_a_dropped_alias_is_free_to_reuse(self, e2e_isolated_home: dict[str, Path]) -> None:
+        """Once NAME,none drops an alias and removes its wrapper, another profile may take the name."""
+        local_bin = e2e_isolated_home['local_bin']
         assert _install(['--yes', '--command-names', 'old-main,old-alias']) == 0
-        assert _install(['--yes', '--command-names', 'old-main']) == 0
+        assert _install(['--yes', '--command-names', 'old-main,none']) == 0
+        assert not any(path.exists() or path.is_symlink() for path in _wrapper_paths(local_bin, 'old-alias'))
 
         assert _install(['--yes', '--command-names', 'new-main,old-alias']) == 0
 
         new_profile = _assert_profile_installed(e2e_isolated_home, 'new-main', ['new-main', 'old-alias'])
-        _assert_wrapper_targets_profile(e2e_isolated_home['local_bin'], 'old-alias', new_profile)
+        _assert_wrapper_targets_profile(local_bin, 'old-alias', new_profile)
+        _assert_profile_installed(e2e_isolated_home, 'old-main', ['old-main'])
 
     def test_profile_with_an_unreadable_manifest_keeps_its_name(
         self, e2e_isolated_home: dict[str, Path], capsys: pytest.CaptureFixture[str],

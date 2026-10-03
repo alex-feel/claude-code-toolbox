@@ -15,6 +15,7 @@ import concurrent.futures
 import contextlib
 import glob as glob_module
 import gzip
+import hashlib
 import http.client
 import json
 import os
@@ -35,6 +36,7 @@ import urllib.request
 import zipfile
 import zlib
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import UTC
@@ -642,7 +644,14 @@ ENV_TWINS: tuple[EnvTwin, ...] = (
     EnvTwin('CLAUDE_CODE_TOOLBOX_WITH', 'with_', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_WITHOUT', 'without', 'value'),
     EnvTwin('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'command_names', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_PROFILE', 'profile', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG', 'switch_config', 'switch'),
 )
+
+# Twins a child run started by --profile all keeps: the repository credential
+# names nothing in the child's own arguments, while every other twin would
+# change what the child installs
+CHILD_RUN_INHERITED_TWINS: frozenset[str] = frozenset({'CLAUDE_CODE_TOOLBOX_ENV_AUTH'})
 
 # Variables the elevated process needs that no argument stands in for: the
 # repository credentials and the Claude Code version the installer pins.
@@ -792,6 +801,32 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
         error(f'Failed to request elevation: {e}')
         error('Please run this script as administrator manually')
         sys.exit(1)
+
+
+def _hold_elevated_window(title: str, color: str, notes: tuple[str, ...] = ()) -> None:
+    """Keep the window a UAC relaunch opened on screen until the user presses Enter.
+
+    An elevated process runs in a console of its own that closes the moment
+    the process exits, so the outcome is shown under a banner and the
+    process waits for Enter. Under pytest the function returns at once.
+
+    Args:
+        title: The banner title.
+        color: The banner color.
+        notes: Lines printed below the banner.
+    """
+    if is_running_in_pytest():
+        return
+    print()
+    print(f'{color}========================================================================{Colors.NC}')
+    print(f'{color}     {title}{Colors.NC}')
+    print(f'{color}========================================================================{Colors.NC}')
+    print()
+    for note in notes:
+        print(f'{Colors.YELLOW}{note}{Colors.NC}')
+    if notes:
+        print()
+    input('Press Enter to exit...')
 
 
 def _is_global_npm_install(dep: str) -> bool:
@@ -944,6 +979,17 @@ class ComponentSelection:
     auto_included: dict[str, str] = field(default_factory=lambda: dict[str, str]())
     # Copy-pasteable --select flag reproducing this selection
     replay: str = ''
+    # The --select, --with and --without values the selection came from (a
+    # picker choice that changed the set is recorded in the same form), or
+    # None when the author defaults applied
+    delta: dict[str, str | None] | None = None
+    # 'cli', 'env' or 'yaml' (the author defaults); for a remembered delta,
+    # the origin the manifest recorded
+    origin: str = 'yaml'
+    # Whether the delta came from the profile's manifest
+    remembered: bool = False
+    # Component names the author selects by default, registry order
+    defaults: list[str] = field(default_factory=lambda: list[str]())
 
     @property
     def skipped(self) -> list[str]:
@@ -1015,9 +1061,13 @@ class InstallationPlan:
     # The resolved command-defaults section (empty when not declared)
     command_defaults: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
     command_names: list[str] = field(default_factory=lambda: list[str]())
-    # 'cli', 'env', or 'yaml' (see CommandNames); None without command names
+    # 'cli', 'env', 'yaml' or 'default' (see CommandNames); None without command names
     command_names_origin: str | None = None
+    # Whether the command names came from the profile's manifest
+    command_names_remembered: bool = False
     claude_code_version: str | None = None
+    # What this run's version pin does to the binary other profiles use
+    pin_effect: str | None = None
     install_nodejs: bool = False
     skip_install: bool = False
     keep_installed_claude: bool = False
@@ -1053,6 +1103,10 @@ class InstallationPlan:
     stale_controls_elsewhere: list[StaleControlCopy] = field(
         default_factory=lambda: list[StaleControlCopy](),
     )
+
+    # Destinations outside ~/.claude that a profile of another configuration
+    # recorded from a different source
+    destination_warnings: list[str] = field(default_factory=lambda: list[str]())
 
     @property
     def total_resources(self) -> int:
@@ -3327,6 +3381,7 @@ def resolve_component_selection(
         for name, c in zip(names, components, strict=True)
     }
 
+    defaults = [name for name, c in zip(names, components, strict=True) if c.get('default', True)]
     select_tokens = _parse_csv(args.select)
     with_tokens = _parse_csv(args.with_) or []
     without_set = set(_parse_csv(args.without) or [])
@@ -3339,7 +3394,7 @@ def resolve_component_selection(
         else:
             base = set(select_tokens)
     else:
-        base = {name for name, c in zip(names, components, strict=True) if c.get('default', True)}
+        base = set(defaults)
 
     base |= set(with_tokens)
     expanded = _bundle_closure([name for name in names if name in base], bundles_map)
@@ -3348,11 +3403,14 @@ def resolve_component_selection(
     selectors_given = any(
         value is not None for value in (args.select, args.with_, args.without)
     )
+    picker_changed = False
     if picker is not None and not selectors_given and not args.yes and not args.dry_run:
         picked = picker([name for name in names if name in trimmed])
         if picked is not None:
             known_names = set(names)
+            before_picker = trimmed
             trimmed = {name for name in picked if name in known_names}
+            picker_changed = trimmed != before_picker
 
     final, causes = _requires_closure([name for name in names if name in trimmed], requires_map)
 
@@ -3373,6 +3431,34 @@ def resolve_component_selection(
     replay = '--select ' + (','.join(selected) if selected else 'none')
     if selected and skipped:
         replay += ' --without ' + ','.join(skipped)
+
+    # The delta a later run replays: the selectors as given, or the exact
+    # set a picker choice produced; the author defaults leave no delta
+    origins: dict[str, str] = getattr(args, 'origins', {})
+    selector_origins = {
+        origins.get(dest)
+        for dest in ('select', 'with_', 'without')
+        if getattr(args, dest, None) is not None
+    }
+    delta: dict[str, str | None] | None = None
+    origin = 'yaml'
+    remembered = False
+    if selectors_given:
+        delta = {'select': args.select, 'with': args.with_, 'without': args.without}
+        if 'remembered' in selector_origins:
+            remembered = True
+            origin = origins.get('components') or 'cli'
+        elif 'env' in selector_origins and 'cli' not in selector_origins:
+            origin = 'env'
+        else:
+            origin = 'cli'
+    elif picker_changed:
+        delta = {
+            'select': ','.join(selected) if selected else 'none',
+            'with': None,
+            'without': ','.join(skipped) if selected and skipped else None,
+        }
+        origin = 'cli'
     return ComponentSelection(
         is_active=True,
         available=names,
@@ -3380,7 +3466,115 @@ def resolve_component_selection(
         selected=selected,
         auto_included={name: f"required by '{cause}'" for name, cause in causes.items()},
         replay=replay,
+        delta=delta,
+        origin=origin,
+        remembered=remembered,
+        defaults=defaults,
     )
+
+
+def remembered_component_delta(manifest: dict[str, Any] | None) -> tuple[dict[str, str | None] | None, str | None]:
+    """Read the component delta a profile manifest remembers.
+
+    A manifest remembers its delta only when the selectors were typed for
+    the run or came from the environment; the author defaults are read
+    from the configuration again on every run.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The remembered --select, --with and --without values and their
+        recorded origin, or (None, None).
+    """
+    if manifest is None:
+        return None, None
+    origins = manifest.get('origins')
+    origin = origins.get('components') if isinstance(origins, dict) else None
+    delta = manifest.get('components')
+    if origin not in ('cli', 'env') or not isinstance(delta, dict):
+        return None, None
+    values = {
+        key: str(value) if isinstance(value, str) and value else None
+        for key, value in cast(dict[str, Any], delta).items()
+        if key in ('select', 'with', 'without')
+    }
+    if not any(values.values()):
+        return None, None
+    return values, str(origin)
+
+
+def apply_remembered_component_delta(
+    args: argparse.Namespace,
+    manifest: dict[str, Any] | None,
+    component_names: list[str],
+    *,
+    profile_name: str,
+    manifest_path: Path | None,
+) -> list[str]:
+    """Fill the selectors of a run that gave none from the profile's remembered delta.
+
+    A remembered delta counts as supplied selectors: the picker does not
+    run, and the summary marks the selection [remembered]. The recorded
+    origin is kept in args.origins['components'] so the manifest records it
+    again. The delta is checked against the configuration's current
+    components before the selector validation sees it, because nobody typed
+    it for this run: a remembered --without naming a component the
+    configuration no longer declares has no install effect, so the name is
+    dropped with a warning and the cleaned delta is what the manifest
+    records next; a remembered --select or --with naming one would change
+    what gets installed, so the run refuses and names the manifest.
+
+    Args:
+        args: Arguments after resolve_args().
+        manifest: The manifest of the profile the run installs into, or
+            None when the profile is new.
+        component_names: The names the configuration's components declare.
+        profile_name: The profile's display name.
+        manifest_path: The manifest the delta came from, named in an error.
+
+    Returns:
+        The errors a remembered --select or --with produced, empty when the
+        delta applies.
+    """
+    if any(getattr(args, dest) is not None for dest in ('select', 'with_', 'without')):
+        return []
+    delta, origin = remembered_component_delta(manifest)
+    if delta is None:
+        return []
+    known = set(component_names) | RESERVED_COMPONENT_NAMES
+    errors: list[str] = []
+    cleaned: dict[str, str | None] = {}
+    for key, flag in (('select', '--select'), ('with', '--with'), ('without', '--without')):
+        tokens = _parse_csv(delta.get(key)) or []
+        unknown = [token for token in tokens if token not in known]
+        if not unknown:
+            cleaned[key] = delta.get(key)
+        elif key == 'without':
+            for name in unknown:
+                warning(
+                    f"components: the remembered selection of profile {profile_name} names '{name}', "
+                    'which the configuration no longer declares; dropped [remembered]',
+                )
+            kept = [token for token in tokens if token in known]
+            cleaned[key] = ','.join(kept) if kept else None
+        else:
+            names = ', '.join(f"'{name}'" for name in unknown)
+            errors.append(
+                f'components: the remembered selection of profile {profile_name} (recorded in {manifest_path}) '
+                f'names {names} in {flag}, which the configuration no longer declares; pass {flag} explicitly '
+                'to replace the remembered selection, or --select all.',
+            )
+    if errors:
+        return errors
+    for key, dest in (('select', 'select'), ('with', 'with_'), ('without', 'without')):
+        value = cleaned.get(key)
+        if value:
+            setattr(args, dest, value)
+            args.origins[dest] = 'remembered'
+    if any(cleaned.values()):
+        args.origins['components'] = origin
+    return []
 
 
 def _component_claim_sets(
@@ -4946,11 +5140,11 @@ def _stale_control_copy_line(copy: StaleControlCopy) -> str:
     Returns:
         A one-line description naming the profile, the file, and the keys.
     """
-    return f'{copy.profile}: {copy.file} ({", ".join(copy.keys)})'
+    return f'{copy.profile}: {copy.file} ({", ".join(copy.keys)}) -- re-run with --profile {copy.profile}'
 
 
 STALE_CONTROLS_RERUN_NOTE = (
-    "This run edits only its own profile; re-run each listed profile's install to remove them."
+    'This run edits only its own profile; re-run each listed profile with --profile <name> to remove them.'
 )
 
 
@@ -8607,6 +8801,7 @@ def collect_machine_wide_writes(
     mcp_servers: list[dict[str, Any]],
     files_to_download: list[dict[str, Any]],
     has_dependency_commands: bool,
+    pin_effect: str | None = None,
 ) -> list[str]:
     """Name every write of an isolated run that reaches beyond its profile.
 
@@ -8638,6 +8833,8 @@ def collect_machine_wide_writes(
         files_to_download: The resolved files-to-download list.
         has_dependency_commands: Whether any dependency command runs on
             this platform.
+        pin_effect: The pin_effect_line() of this run's pin, naming the
+            other installed profiles, or None to describe the pin alone.
 
     Returns:
         One line per machine-wide write, in execution order.
@@ -8654,7 +8851,7 @@ def collect_machine_wide_writes(
             'Claude Code installer when it installs, upgrades or migrates the binary',
         )
     if pinned_version is not None:
-        writes.append(f'Claude Code version pin {pinned_version}: holds the binary every profile uses')
+        writes.append(pin_effect or pin_effect_line(pinned_version, None, []))
         if not skip_install and ide_clis:
             writes.append(
                 f'IDE extension {IDE_EXTENSION_ID} {pinned_version}: installed into '
@@ -8926,7 +9123,8 @@ def display_installation_summary(
     component_selection = plan.component_selection
     if component_selection is not None and component_selection.is_active:
         _print()
-        _print(f'{Colors.BOLD}Components:{Colors.NC}')
+        selection_marker = origin_marker(component_selection.origin, remembered=component_selection.remembered)
+        _print(f'{Colors.BOLD}Components:{Colors.NC}{selection_marker}')
         selected_set = set(component_selection.selected)
         for name in component_selection.available:
             mark = '[x]' if name in selected_set else '[ ]'
@@ -8979,6 +9177,9 @@ def display_installation_summary(
         _print(f'  * Claude Code: install (version: {version_str}){reason_str}')
     if not plan.skip_install and plan.claude_install_warning:
         _print(f'    {Colors.YELLOW}Warning: {plan.claude_install_warning}{Colors.NC}')
+    # An isolated run lists its pin among the machine-wide writes below
+    if plan.pin_effect and not plan.command_names:
+        _print(f'  * {plan.pin_effect}')
     if plan.install_nodejs:
         _print('  * Node.js: install if needed')
 
@@ -9022,8 +9223,8 @@ def display_installation_summary(
             f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
         )
     if plan.command_names:
-        origin_marker = command_names_origin_marker(plan.command_names_origin)
-        settings_items.append(f"Command names: {', '.join(plan.command_names)}{origin_marker}")
+        names_marker = origin_marker(plan.command_names_origin, remembered=plan.command_names_remembered)
+        settings_items.append(f"Command names: {', '.join(plan.command_names)}{names_marker}")
 
     if settings_items:
         _print()
@@ -9064,12 +9265,16 @@ def display_installation_summary(
         _print(f'  {STALE_CONTROLS_RERUN_NOTE}')
 
     # Attention section (red)
-    has_attention = plan.sensitive_paths or plan.unknown_keys or plan.account_key_warnings
+    has_attention = (
+        plan.sensitive_paths or plan.unknown_keys or plan.account_key_warnings or plan.destination_warnings
+    )
     if has_attention:
         _print()
         _print(f'{Colors.RED}{Colors.BOLD}[!] ATTENTION:{Colors.NC}')
         for account_warning in plan.account_key_warnings:
             _print(f'  {Colors.RED}[!] {account_warning}{Colors.NC}')
+        for destination_warning in plan.destination_warnings:
+            _print(f'  {Colors.RED}[!] {destination_warning}{Colors.NC}')
         for path in plan.sensitive_paths:
             _print(f'  {Colors.RED}[!] Sensitive path: {path}{Colors.NC}')
         for key in plan.unknown_keys:
@@ -11208,8 +11413,11 @@ def handle_resource(
     resolved_path, is_remote = resolve_resource_path(resource_path, config_source, base_url)
     filename = destination.name
 
-    # Check if destination already exists
-    if destination.exists():
+    # An existing destination is overwritten, except when the new content is
+    # identical: a file two profiles install to the same machine-wide
+    # destination is then left untouched
+    exists = destination.exists()
+    if exists:
         info(f'File already exists: {filename} (overwriting)')
 
     try:
@@ -11222,13 +11430,16 @@ def handle_resource(
                 content_bytes = fetch_url_bytes_with_auth(
                     resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
                 )
-                _write_file_atomic(destination, lambda p: p.write_bytes(content_bytes))
             else:
-                # Text file - fetch as text and write text
+                # Text file - fetch as text and write it UTF-8 encoded
                 content = fetch_url_with_auth(
                     resolved_path, auth_param=auth_param, rate_limiter=rate_limiter, auth_cache=auth_cache,
                 )
-                _write_file_atomic(destination, lambda p: p.write_text(content, encoding='utf-8'))
+                content_bytes = content.encode('utf-8')
+            if exists and _file_content_equals(destination, content_bytes):
+                success(f'Unchanged: {filename}')
+                return True
+            _write_file_atomic(destination, lambda p: p.write_bytes(content_bytes))
             success(f'Downloaded: {filename}')
         else:
             # Copy from local path
@@ -11237,6 +11448,9 @@ def handle_resource(
                 error(f'Local file not found: {resolved_path}')
                 return False
 
+            if exists and _file_content_equals(destination, source_path.read_bytes()):
+                success(f'Unchanged: {filename}')
+                return True
             # Copy the file
             _write_file_atomic(destination, lambda p: shutil.copy2(source_path, p))
             success(f'Copied: {filename} from {source_path}')
@@ -11244,6 +11458,23 @@ def handle_resource(
         return True
     except Exception as e:
         error(f'Failed to handle {filename}: {e}')
+        return False
+
+
+def _file_content_equals(path: Path, content: bytes) -> bool:
+    """Report whether a file holds exactly the given bytes.
+
+    Args:
+        path: The file to compare.
+        content: The bytes a write would store.
+
+    Returns:
+        True when the file exists and its content equals the bytes; False
+        when it differs or cannot be read.
+    """
+    try:
+        return path.read_bytes() == content
+    except OSError:
         return False
 
 
@@ -11302,6 +11533,26 @@ def process_resources(
     # Execute downloads in parallel with stagger delay to avoid rate limiting
     results = execute_parallel_safe(download_tasks, download_single_resource, False, stagger_delay=0.5)
     return all(results)
+
+
+def _download_destination(source: str, dest: str) -> Path:
+    """Resolve the file a files-to-download entry writes to.
+
+    Expands the destination with normalize_tilde_path() (WSL-safe tilde
+    expansion) and appends the source filename when the destination names a
+    directory: it ends with a separator, or it exists as a directory.
+
+    Args:
+        source: The entry's source path or URL.
+        dest: The entry's destination as written.
+
+    Returns:
+        The final file path.
+    """
+    dest_path = Path(normalize_tilde_path(dest))
+    if dest.endswith(('/', '\\')) or (dest_path.exists() and dest_path.is_dir()):
+        dest_path = dest_path / _source_filename(source)
+    return dest_path
 
 
 def process_file_downloads(
@@ -11364,17 +11615,7 @@ def process_file_downloads(
             invalid_count += 1
             continue
 
-        # Expand destination path using normalize_tilde_path for WSL-safe tilde expansion
-        expanded_dest = normalize_tilde_path(str(dest))
-        dest_path = Path(expanded_dest)
-
-        # Handle both file and directory destinations
-        # If dest ends with separator or is existing directory, append source filename
-        dest_str = str(dest)
-        if dest_str.endswith(('/', '\\')) or (dest_path.exists() and dest_path.is_dir()):
-            dest_path = dest_path / _source_filename(str(source))
-
-        valid_downloads.append((str(source), dest_path))
+        valid_downloads.append((str(source), _download_destination(str(source), str(dest))))
 
     # Entries resolving to the same final file would race in the parallel
     # download phase; keep only the last one (later-overrides-earlier
@@ -12933,6 +13174,23 @@ COMMAND_NAMES_SOURCES: dict[str, str] = {
     'yaml': 'command-names',
 }
 
+# Where a run's --profile value is set, as error messages name it
+PROFILE_SOURCES: dict[str, str] = {
+    'cli': '--profile',
+    'env': 'CLAUDE_CODE_TOOLBOX_PROFILE',
+}
+
+# The --profile value that refreshes every installed profile
+ALL_PROFILES = 'all'
+
+# The hidden argument --profile all passes to each child run: the parent's
+# report covers every installed profile, so a child lists none as unrefreshed
+REFRESH_ALL_CHILD_FLAG = '--refresh-all-child'
+
+# The second --command-names entry that drops every alias of a profile:
+# NAME,none installs the profile NAME under that one command
+DROP_ALIASES_TOKEN = 'none'
+
 
 class CommandNames(NamedTuple):
     """The command names of a run and where they came from.
@@ -12942,24 +13200,17 @@ class CommandNames(NamedTuple):
             installs into the base ~/.claude.
         origin: 'cli' for --command-names, 'env' for
             CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, 'yaml' for the configuration's
-            command-names, or None when no source names a command.
+            command-names, 'default' for a profile selected by name alone
+            when no source lists its aliases, or None when no source names a
+            command. For a remembered value this is the origin the manifest
+            recorded, which the manifest records again.
+        remembered: Whether this run took the list from the profile's
+            manifest instead of a source of its own.
     """
 
     names: list[str]
     origin: str | None
-
-
-def command_names_origin_marker(origin: str | None) -> str:
-    """Render where a run's command names came from, for the summaries that list them.
-
-    Args:
-        origin: The CommandNames origin: 'cli', 'env', 'yaml', or None.
-
-    Returns:
-        ' [cli]', ' [env]' or ' [yaml]' to append to the names; empty when
-        no source names a command.
-    """
-    return f' [{origin}]' if origin else ''
+    remembered: bool = False
 
 
 def command_name_errors(names: list[str], source: str) -> list[str]:
@@ -12992,48 +13243,243 @@ def command_name_errors(names: list[str], source: str) -> list[str]:
     return errors
 
 
+def yaml_command_names(config: dict[str, Any]) -> tuple[list[str], str | None]:
+    """Read the configuration's own command-names.
+
+    Args:
+        config: The resolved configuration.
+
+    Returns:
+        The names (empty without the key) and an error message for a value
+        that is neither a string nor a list, else None.
+    """
+    raw = config.get('command-names')
+    if raw is None:
+        return [], None
+    if isinstance(raw, str):
+        return [raw], None
+    if isinstance(raw, list):
+        return [str(item) for item in cast(list[object], raw)], None
+    return [], f'Invalid command-names value: expected string or list, got {type(raw).__name__}'
+
+
+def remembered_command_names(manifest: dict[str, Any] | None) -> tuple[list[str] | None, str | None]:
+    """Read the command names a profile manifest remembers.
+
+    A manifest remembers its names only when they were typed for the run or
+    came from the environment; names the configuration declared are read
+    from the configuration again on every run.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The remembered names and their recorded origin, or (None, None).
+    """
+    if manifest is None:
+        return None, None
+    origins = manifest.get('origins')
+    origin = origins.get('command_names') if isinstance(origins, dict) else None
+    names = manifest.get('command_names')
+    if origin in ('cli', 'env') and isinstance(names, list) and names:
+        return [str(item) for item in cast(list[object], names)], str(origin)
+    return None, None
+
+
+def profile_target_name(args: argparse.Namespace, config: dict[str, Any]) -> str | None:
+    """Name the profile a run installs into.
+
+    Args:
+        args: Arguments after resolve_args().
+        config: The resolved configuration.
+
+    Returns:
+        The primary command name: the --profile value, the first typed or
+        environment command name, or the configuration's first name; None
+        for the base profile.
+    """
+    if args.profile:
+        return None if args.profile == 'base' else str(args.profile)
+    typed = _parse_csv(args.command_names)
+    if typed:
+        return typed[0]
+    names, _ = yaml_command_names(config)
+    return names[0] if names else None
+
+
+def _split_alias_drop(tokens: list[str], source: str) -> tuple[list[str], bool, list[str]]:
+    """Separate the alias-dropping token from a typed command-names list.
+
+    Args:
+        tokens: The parsed --command-names tokens.
+        source: The flag or variable the tokens came from.
+
+    Returns:
+        The names without the token, whether the token dropped the aliases,
+        and an error when the token stands anywhere but second and last.
+    """
+    positions = [index for index, token in enumerate(tokens) if token.casefold() == DROP_ALIASES_TOKEN]
+    if not positions:
+        return tokens, False, []
+    if positions == [1] and len(tokens) == 2:
+        return tokens[:1], True, []
+    names = [token for index, token in enumerate(tokens) if index not in positions]
+    return names, False, [
+        f'"{DROP_ALIASES_TOKEN}" in {source} drops every alias of the profile and must follow '
+        f'the primary name alone: NAME,{DROP_ALIASES_TOKEN}',
+    ]
+
+
 def resolve_command_names(
     args: argparse.Namespace,
     config: dict[str, Any],
+    manifest: dict[str, Any] | None = None,
 ) -> tuple[CommandNames, list[str]]:
     """Determine the command names of a run and validate them.
 
-    --command-names wins over CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, which wins
-    over the configuration's command-names. A typed or environment value
-    replaces the configuration's list whole and never merges with it: a
-    single name is the complete list, with no aliases. Every source goes
-    through command_name_errors().
+    Per profile the sources rank: a value typed for this run, an environment
+    value for this run, the value the profile's manifest remembers when it
+    was typed or came from the environment, the configuration's own list,
+    then the default. A typed or environment list replaces the
+    configuration's list whole and never merges with it: NAME,ALIAS... sets
+    the aliases, NAME,none drops them. A single NAME on a profile that has
+    a manifest selects the profile and takes its aliases from the next
+    source; on a new profile it is the whole list, recorded as typed, also
+    when it equals the configuration's primary name. --profile NAME re-runs
+    the profile with the same ranking and no typed value; --profile base
+    re-runs the base profile, which has no names. Every source goes through
+    command_name_errors().
 
     Args:
         args: Arguments after resolve_args(), which records in args.origins
-            whether args.command_names was typed or came from the environment.
+            where args.command_names and args.profile came from.
         config: The resolved configuration.
+        manifest: The manifest of the profile the run installs into (see
+            profile_target_name()), or None when the profile is new.
 
     Returns:
         The effective command names with their origin, and the validation
         errors (empty when the names are usable).
     """
+    yaml_names, yaml_error = yaml_command_names(config)
+    if yaml_error:
+        return CommandNames([], None), [yaml_error]
+    yaml_source = COMMAND_NAMES_SOURCES['yaml']
+    profile = str(args.profile) if args.profile else None
+    profile_source = PROFILE_SOURCES[args.origins['profile']] if profile else ''
+    remembered, remembered_origin = remembered_command_names(manifest)
+
     if args.command_names is not None:
         origin = args.origins['command_names']
         source = COMMAND_NAMES_SOURCES[origin]
-        names = _parse_csv(args.command_names) or []
-        if not names:
+        tokens = _parse_csv(args.command_names) or []
+        if not tokens:
             return CommandNames([], origin), [f'{source} requires at least one command name']
-        return CommandNames(names, origin), command_name_errors(names, source)
+        names, drops_aliases, errors = _split_alias_drop(tokens, source)
+        errors = errors or command_name_errors(names, source)
+        if errors:
+            return CommandNames(names, origin), errors
+        if profile == 'base':
+            return CommandNames(names, origin), [
+                f'{source} names the profile "{names[0]}", but {profile_source} selects the base '
+                f'profile, which has no command names; clear {source} to re-run the base profile.',
+            ]
+        if profile and names[0].casefold() != profile.casefold():
+            return CommandNames(names, origin), [
+                f'{source} names the profile "{names[0]}", but {profile_source} selects "{profile}"; '
+                f'clear {source}, or pass {source} {profile}[,ALIAS...] to change the aliases of '
+                f'"{profile}".',
+            ]
+        if len(names) > 1 or drops_aliases or manifest is None:
+            return CommandNames(names, origin), []
+        # A single name on an installed profile selects it; the aliases come
+        # from the next source that lists them
+        if remembered is not None:
+            return CommandNames(remembered, remembered_origin, remembered=True), []
+        if yaml_names and yaml_names[0].casefold() == names[0].casefold():
+            return CommandNames(yaml_names, 'yaml'), command_name_errors(yaml_names, yaml_source)
+        return CommandNames(names, origin), []
 
-    raw = config.get('command-names')
-    if raw is None:
-        names = []
-    elif isinstance(raw, str):
-        names = [raw]
-    elif isinstance(raw, list):
-        names = [str(item) for item in cast(list[object], raw)]
-    else:
-        return CommandNames([], None), [
-            f'Invalid command-names value: expected string or list, got {type(raw).__name__}',
-        ]
-    origin = 'yaml' if names else None
-    return CommandNames(names, origin), command_name_errors(names, COMMAND_NAMES_SOURCES['yaml'])
+    if profile == 'base':
+        if yaml_names:
+            return CommandNames([], None), [
+                f'The configuration declares command-names {", ".join(yaml_names)}, but '
+                f'{profile_source} base re-runs the base profile, which has none; pass '
+                f'--command-names {yaml_names[0]} to re-run that profile, or remove command-names '
+                'from the configuration.',
+            ]
+        return CommandNames([], None), []
+
+    if profile:
+        if remembered is not None:
+            return CommandNames(remembered, remembered_origin, remembered=True), []
+        if yaml_names:
+            if yaml_names[0].casefold() != profile.casefold():
+                return CommandNames([], None), [
+                    f"The configuration's command-names start with \"{yaml_names[0]}\", but "
+                    f'{profile_source} selects "{profile}"; pass --command-names {profile}[,ALIAS...] '
+                    f'to keep the profile under its name, or install the configuration under its '
+                    f'own names without {profile_source}.',
+                ]
+            return CommandNames(yaml_names, 'yaml'), command_name_errors(yaml_names, yaml_source)
+        return CommandNames([profile], 'default'), []
+
+    if remembered is not None and yaml_names and remembered[0].casefold() == yaml_names[0].casefold():
+        return CommandNames(remembered, remembered_origin, remembered=True), []
+    return CommandNames(yaml_names, 'yaml' if yaml_names else None), command_name_errors(yaml_names, yaml_source)
+
+
+def _format_names(names: list[str]) -> str:
+    """Render a list of names for a message, 'none' when empty."""
+    return ', '.join(names) if names else 'none'
+
+
+def remembered_value_warnings(
+    names: CommandNames,
+    selection: ComponentSelection | None,
+    configured_names: list[str],
+    manifest: dict[str, Any] | None,
+) -> list[str]:
+    """Warn when a remembered value overrides a configuration value that changed.
+
+    Args:
+        names: The run's effective command names.
+        selection: The run's component selection, or None without components.
+        configured_names: The configuration's own command-names for this run.
+        manifest: The manifest the remembered values came from.
+
+    Returns:
+        One warning per remembered key whose configuration value differs
+        from the value the manifest recorded at install time.
+    """
+    if manifest is None:
+        return []
+    recorded = manifest.get('yaml_values')
+    if not isinstance(recorded, dict):
+        return []
+    recorded_values = cast(dict[str, Any], recorded)
+    warnings: list[str] = []
+    if names.remembered:
+        then = recorded_values.get('command_names')
+        now = configured_names
+        if isinstance(then, list) and [str(item) for item in cast(list[object], then)] != now:
+            then_names = _format_names([str(item) for item in cast(list[object], then)])
+            warnings.append(
+                f'command-names: using the remembered value {_format_names(names.names)} [remembered]; '
+                f"the configuration's command-names changed from {then_names} to {_format_names(now)} "
+                'since the profile was installed. Pass --command-names to replace the remembered value.',
+            )
+    if selection is not None and selection.is_active and selection.remembered:
+        then = recorded_values.get('components')
+        if isinstance(then, list) and [str(item) for item in cast(list[object], then)] != selection.defaults:
+            then_defaults = _format_names([str(item) for item in cast(list[object], then)])
+            warnings.append(
+                f'components: using the remembered selection {_format_names(selection.selected)} [remembered]; '
+                f"the configuration's default components changed from {then_defaults} to "
+                f'{_format_names(selection.defaults)} since the profile was installed. Pass --select, --with '
+                'or --without to replace the remembered selection.',
+            )
+    return warnings
 
 
 # The first lines of the wrappers register_global_command() writes on
@@ -13929,6 +14375,680 @@ def create_profile_config(
         return False
 
 
+RESOLVED_CONFIG_FILENAME = 'resolved-config.yaml'
+
+# Top-level configuration keys that name the profile instead of describing
+# what it installs. A profile's resolved-config.yaml leaves them out, so the
+# snapshot of a configuration is the same whichever profile installed it.
+PROFILE_IDENTITY_CONFIG_KEYS: tuple[str, ...] = ('command-names',)
+
+# Where each remembered value of a profile came from, as the manifest records
+# it and the summaries mark it. 'yaml' is the configuration's own value (for
+# components: the author defaults); 'default' is the value a run falls back to
+# when no source names one.
+VALUE_ORIGINS: tuple[str, ...] = ('cli', 'env', 'yaml', 'default')
+
+
+def origin_marker(origin: str | None, *, remembered: bool = False) -> str:
+    """Render where a run's value came from, for the summaries that list it.
+
+    Args:
+        origin: The value's origin: 'cli', 'env', 'yaml', 'default', or None
+            when no source names a value.
+        remembered: Whether this run took the value from the profile's
+            manifest instead of a source of its own.
+
+    Returns:
+        ' [remembered]' for a remembered value, ' [<origin>]' otherwise, or
+        an empty string without an origin.
+    """
+    if remembered:
+        return ' [remembered]'
+    return f' [{origin}]' if origin else ''
+
+
+def config_identity_of(config_source: str) -> str:
+    """Normalize a resolved configuration source for comparison across runs.
+
+    Args:
+        config_source: The resolved source load_config_from_source() returns:
+            a URL, or an absolute local path.
+
+    Returns:
+        The URL as given, or the local path made absolute with normalized
+        separators (and case, on Windows).
+    """
+    if config_source.startswith(('http://', 'https://')):
+        return config_source.strip()
+    return _normalize_config_dir_key(config_source)
+
+
+def resolved_config_snapshot(config: dict[str, Any]) -> dict[str, Any]:
+    """Copy a resolved configuration without the keys that name the profile.
+
+    Args:
+        config: The resolved, component-selected configuration a run installs.
+
+    Returns:
+        A deep copy without PROFILE_IDENTITY_CONFIG_KEYS.
+    """
+    return {
+        key: deepcopy(value)
+        for key, value in config.items()
+        if key not in PROFILE_IDENTITY_CONFIG_KEYS
+    }
+
+
+def render_resolved_config(config: dict[str, Any]) -> str:
+    """Serialize a configuration snapshot the way resolved-config.yaml stores it.
+
+    Args:
+        config: The resolved, component-selected configuration a run installs.
+
+    Returns:
+        YAML text of resolved_config_snapshot(config), keys in their original
+        order so the same configuration always renders to the same bytes.
+    """
+    return yaml.safe_dump(
+        resolved_config_snapshot(config), sort_keys=False, allow_unicode=True, default_flow_style=False,
+    )
+
+
+def config_digest_of(text: str) -> str:
+    """Compute the digest a manifest records for a resolved-config.yaml text.
+
+    Args:
+        text: The YAML text render_resolved_config() produced.
+
+    Returns:
+        The hex sha256 of the UTF-8 encoded text.
+    """
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
+def profile_directory(home_dir: Path, primary_command_name: str | None) -> Path:
+    """Return the directory of a profile under the user's configuration home.
+
+    Args:
+        home_dir: User home directory.
+        primary_command_name: The profile's primary command name, or None
+            for the base profile.
+
+    Returns:
+        ~/.claude/{primary} for an isolated profile, ~/.claude for the base.
+    """
+    claude_dir = home_dir / '.claude'
+    return claude_dir / primary_command_name if primary_command_name else claude_dir
+
+
+def profile_display_name(primary_command_name: str | None) -> str:
+    """Return the name the summaries and --profile use for a profile.
+
+    Args:
+        primary_command_name: The profile's primary command name, or None
+            for the base profile.
+
+    Returns:
+        The primary command name, or 'base'.
+    """
+    return primary_command_name or 'base'
+
+
+def read_profile_manifest(manifest_path: Path) -> dict[str, Any] | None:
+    """Read one profile manifest.
+
+    Args:
+        manifest_path: Path to a profile's manifest.json.
+
+    Returns:
+        The manifest, or None when no file exists at the path.
+
+    Raises:
+        ValueError: When the file exists but cannot be read or is not a JSON
+            object; the message names the file and the cause.
+    """
+    try:
+        raw = manifest_path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise ValueError(f'{manifest_path} could not be read: {e}') from None
+    try:
+        content = json.loads(raw)
+    except ValueError as e:
+        raise ValueError(f'{manifest_path} is not valid JSON: {e}') from None
+    if not isinstance(content, dict):
+        raise ValueError(f'{manifest_path} does not hold a JSON object')
+    return cast(dict[str, Any], content)
+
+
+class InstalledProfile(NamedTuple):
+    """A profile recorded under the user's configuration home.
+
+    Attributes:
+        name: 'base' for the base profile, the directory name otherwise.
+        directory: The profile directory.
+        manifest_path: The profile's manifest.json.
+        manifest: Its content, or None when the file cannot be read.
+    """
+
+    name: str
+    directory: Path
+    manifest_path: Path
+    manifest: dict[str, Any] | None
+
+
+def installed_profiles(home_dir: Path) -> list[InstalledProfile]:
+    """List every profile under ~/.claude that has a manifest.
+
+    Args:
+        home_dir: User home directory.
+
+    Returns:
+        The base profile first when it has a manifest, then the isolated
+        profiles in sorted directory order. A profile whose manifest cannot
+        be read is listed with manifest None.
+    """
+    claude_dir = home_dir / '.claude'
+    candidates: list[tuple[str, Path]] = [('base', claude_dir)]
+    try:
+        if claude_dir.is_dir():
+            candidates.extend(
+                (subdir.name, subdir)
+                for subdir in sorted(claude_dir.iterdir())
+                if subdir.is_dir()
+            )
+    except OSError:
+        pass  # A directory that cannot be listed records no readable profile
+    profiles: list[InstalledProfile] = []
+    for name, directory in candidates:
+        manifest_path = directory / MANIFEST_FILENAME
+        try:
+            manifest = read_profile_manifest(manifest_path)
+        except ValueError:
+            profiles.append(InstalledProfile(name, directory, manifest_path, None))
+            continue
+        if manifest is not None:
+            profiles.append(InstalledProfile(name, directory, manifest_path, manifest))
+    return profiles
+
+
+def manifest_config_identity(manifest: dict[str, Any]) -> str | None:
+    """Return the configuration identity a manifest records.
+
+    A manifest written without config_identity is matched by its
+    config_source_url when present, else by its resolved config_source: a
+    URL as is, a repository name through the URL the loader fetches, an
+    absolute local path as is, and a relative local path only when it
+    resolves from the current directory.
+
+    Args:
+        manifest: The profile manifest.
+
+    Returns:
+        The identity, or None when the manifest records a relative local
+        source that cannot be resolved from here.
+    """
+    identity = manifest.get('config_identity')
+    if isinstance(identity, str) and identity:
+        return identity
+    url = manifest.get('config_source_url')
+    if isinstance(url, str) and url:
+        return config_identity_of(url)
+    source = manifest.get('config_source')
+    if not isinstance(source, str) or not source:
+        return None
+    if source.startswith(('http://', 'https://')):
+        return config_identity_of(source)
+    if manifest.get('config_source_type') == 'repo':
+        return config_identity_of(resolve_config_source_url(source, 'repo') or source)
+    if os.path.isabs(source) or Path(source).exists():
+        return config_identity_of(source)
+    return None
+
+
+def _relative_inside(target: Path, directory: Path) -> Path | None:
+    """Return a path relative to a directory when it lies inside it.
+
+    Args:
+        target: The path to test.
+        directory: The directory that may contain it.
+
+    Returns:
+        The relative path in the target's own spelling, or None when the
+        target lies outside the directory (separators and, on Windows, case
+        do not matter).
+    """
+    target_abs = Path(os.path.abspath(target))
+    directory_key = _normalize_config_dir_key(str(directory))
+    if not _normalize_config_dir_key(str(target_abs)).startswith(directory_key + '/'):
+        return None
+    depth = len(Path(os.path.abspath(directory)).parts)
+    return Path(*target_abs.parts[depth:])
+
+
+def planned_profile_files(config: dict[str, Any], profile_dir: Path) -> list[str]:
+    """List the profile-relative paths of the files a configuration installs.
+
+    Mirrors each installer's target-path resolution: agents, slash commands,
+    rules and hook files (scripts and helpers) by query-stripped basename in
+    their directories, skill files under skills/<name>/, the system prompt
+    under prompts/, and files-to-download entries whose destination lies
+    inside the profile directory. Launchers, settings, env loaders and the
+    manifest are toolbox-owned and rebuilt on every run, so they are not
+    listed.
+
+    Args:
+        config: The resolved, component-selected configuration.
+        profile_dir: The profile directory the run installs into.
+
+    Returns:
+        Sorted relative POSIX paths.
+    """
+    files: set[str] = set()
+    for section, directory in (('agents', 'agents'), ('slash-commands', 'commands'), ('rules', 'rules')):
+        files.update(
+            f'{directory}/{_installed_resource_name(item)}'
+            for item in cast(list[object], config.get(section) or [])
+        )
+    hooks = config.get('hooks')
+    if isinstance(hooks, dict):
+        hooks_dict = cast(dict[str, Any], hooks)
+        files.update(
+            f'hooks/{_installed_resource_name(item)}'
+            for item in cast(list[object], [*(hooks_dict.get('files') or []), *(hooks_dict.get('helpers') or [])])
+        )
+    for skill in cast(list[object], config.get('skills') or []):
+        if not isinstance(skill, dict):
+            continue
+        skill_dict = cast(dict[str, Any], skill)
+        name = str(skill_dict.get('name') or '').strip()
+        for file_path in cast(list[object], skill_dict.get('files') or []):
+            if name and isinstance(file_path, str):
+                files.add(f'skills/{name}/{file_path.replace(os.sep, "/")}')
+    defaults = config.get('command-defaults')
+    prompt = cast(dict[str, Any], defaults).get('system-prompt') if isinstance(defaults, dict) else None
+    if prompt:
+        files.add(f'prompts/{_installed_resource_name(prompt)}')
+    for entry in cast(list[object], config.get('files-to-download') or []):
+        if not isinstance(entry, dict):
+            continue
+        entry_dict = cast(dict[str, Any], entry)
+        source, dest = entry_dict.get('source'), entry_dict.get('dest')
+        if not source or not dest:
+            continue
+        relative = _relative_inside(_download_destination(str(source), str(dest)), profile_dir)
+        if relative is not None:
+            files.add(relative.as_posix())
+    return sorted(files)
+
+
+def _sha256_of_file(path: Path) -> str | None:
+    """Hash a file's content.
+
+    Args:
+        path: The file to hash.
+
+    Returns:
+        The hex sha256, or None when the file cannot be read.
+    """
+    digest = hashlib.sha256()
+    try:
+        with path.open('rb') as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b''):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def machine_wide_download_records(
+    files_to_download: list[dict[str, Any]],
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+) -> list[dict[str, str | None]]:
+    """Record the files-to-download destinations outside ~/.claude a run wrote.
+
+    Args:
+        files_to_download: The resolved files-to-download list.
+        config_source: Where the configuration was loaded from.
+        base_url: The configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        One record per destination outside claude_dir: its absolute path,
+        the resolved source, and the sha256 of the file on disk (None when
+        the file is absent or unreadable).
+    """
+    claude_key = _normalize_config_dir_key(str(claude_dir))
+    records: list[dict[str, str | None]] = []
+    for entry in files_to_download:
+        source, dest = entry.get('source'), entry.get('dest')
+        if not source or not dest:
+            continue
+        target = Path(os.path.abspath(_download_destination(str(source), str(dest))))
+        target_key = _normalize_config_dir_key(str(target))
+        if target_key == claude_key or target_key.startswith(claude_key + '/'):
+            continue
+        resolved_source, _ = resolve_resource_path(str(source), config_source, base_url)
+        records.append({'dest': str(target), 'source': resolved_source, 'sha256': _sha256_of_file(target)})
+    return records
+
+
+# The prefix of a settings record that names one env entry instead of a
+# top-level key: 'env.FOO' is the FOO variable of the settings env object
+SETTINGS_ENV_ENTRY_PREFIX = 'env.'
+
+
+def written_settings_keys(
+    user_settings: dict[str, Any] | None,
+    status_line: object,
+    hooks: object,
+) -> list[str]:
+    """List the settings keys a run writes.
+
+    Args:
+        user_settings: The resolved user-settings section, or None.
+        status_line: The resolved status-line section, or None.
+        hooks: The resolved hooks section, or None.
+
+    Returns:
+        Sorted keys: every non-null top-level user-settings key except env,
+        one 'env.<VAR>' entry per non-null env variable, statusLine when a
+        status line is configured, hooks when events are.
+    """
+    keys: set[str] = set()
+    for key, value in (user_settings or {}).items():
+        if value is None:
+            continue
+        if key == 'env' and isinstance(value, dict):
+            keys.update(
+                f'{SETTINGS_ENV_ENTRY_PREFIX}{variable}'
+                for variable, entry in cast(dict[str, Any], value).items()
+                if entry is not None
+            )
+            continue
+        keys.add(key)
+    if status_line:
+        keys.add('statusLine')
+    if isinstance(hooks, dict) and cast(dict[str, Any], hooks).get('events'):
+        keys.add('hooks')
+    return sorted(keys)
+
+
+def _is_machine_wide_control_record(key: str) -> bool:
+    """Report whether a settings or OS record names a machine-wide binary control.
+
+    Args:
+        key: An os_env_written entry or a settings_keys_written entry.
+
+    Returns:
+        True for a MACHINE_WIDE_ENV_CONTROLS variable, bare or as an env
+        entry. Those controls belong to the pin gate and the Step 16
+        sweep, never to the residue of a configuration switch.
+    """
+    return key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX) in MACHINE_WIDE_ENV_CONTROLS
+
+
+def mcp_server_records(mcp_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Record the MCP servers a run registers with their scopes.
+
+    Args:
+        mcp_servers: The resolved mcp-servers list.
+
+    Returns:
+        One record per named server: its name and normalized scopes.
+    """
+    records: list[dict[str, Any]] = []
+    for server in mcp_servers:
+        name = str(server.get('name') or '').strip()
+        if name:
+            records.append({'name': name, 'scopes': _mcp_scopes_or_empty(server.get('scope', 'user'))})
+    return records
+
+
+class ProfileResidue(NamedTuple):
+    """What a profile's previous configuration left that a new one does not install.
+
+    Attributes:
+        files: Absolute paths of recorded profile files the new
+            configuration does not install and that still exist.
+        mcp_servers: (name, scopes) of recorded MCP servers the new
+            configuration does not declare, non-profile scopes only.
+        os_env: OS environment variables the previous run set and the new
+            configuration does not, the machine-wide binary controls
+            excluded.
+        settings_keys: Settings keys of a base profile the previous run
+            wrote and the new configuration does not: top-level keys, and
+            'env.<VAR>' entries other than the machine-wide binary controls.
+        destinations: Recorded destinations outside ~/.claude the new
+            configuration does not install, whose file still holds the
+            recorded content and which no other installed profile records.
+        kept_destinations: (path, profile names) of recorded destinations
+            outside ~/.claude the new configuration does not install but
+            another installed profile still records; they are listed and
+            never removed.
+    """
+
+    files: list[Path]
+    mcp_servers: list[tuple[str, list[str]]]
+    os_env: list[str]
+    settings_keys: list[str]
+    destinations: list[Path]
+    kept_destinations: list[tuple[Path, list[str]]]
+
+    def __bool__(self) -> bool:
+        return any((self.files, self.mcp_servers, self.os_env, self.settings_keys, self.destinations))
+
+    def lines(self) -> list[str]:
+        """Render the residue one item per line, for a guard message."""
+        rendered = [f'file: {path}' for path in self.files]
+        rendered.extend(f'MCP server: {name} (scope: {", ".join(scopes)})' for name, scopes in self.mcp_servers)
+        rendered.extend(f'OS environment variable: {key}' for key in self.os_env)
+        for key in self.settings_keys:
+            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
+                rendered.append(f'settings.json env variable: {key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)}')
+            else:
+                rendered.append(f'settings.json key: {key}')
+        rendered.extend(f'file outside ~/.claude: {path}' for path in self.destinations)
+        rendered.extend(
+            f'file outside ~/.claude kept: {path} (recorded by profile {", ".join(names)})'
+            for path, names in self.kept_destinations
+        )
+        return rendered
+
+
+def _destinations_recorded_elsewhere(home_dir: Path, profile_dir: Path) -> dict[str, list[str]]:
+    """Map each destination outside ~/.claude to the other installed profiles that record it.
+
+    Args:
+        home_dir: User home directory.
+        profile_dir: The directory of the profile being switched, whose own
+            manifest is left out.
+
+    Returns:
+        Normalized destination path to the display names of the profiles
+        whose manifests record it.
+    """
+    own_key = _normalize_config_dir_key(str(profile_dir))
+    recorded: dict[str, list[str]] = {}
+    for profile in installed_profiles(home_dir):
+        if profile.manifest is None or _normalize_config_dir_key(str(profile.directory)) == own_key:
+            continue
+        for record in cast(list[object], profile.manifest.get('machine_wide_destinations') or []):
+            if not isinstance(record, dict):
+                continue
+            dest = cast(dict[str, Any], record).get('dest')
+            if isinstance(dest, str) and dest:
+                recorded.setdefault(_normalize_config_dir_key(dest), []).append(profile.name)
+    return recorded
+
+
+def profile_residue(
+    manifest: dict[str, Any],
+    profile_dir: Path,
+    config: dict[str, Any],
+    *,
+    isolated: bool,
+    config_source: str,
+    base_url: str | None,
+    claude_dir: Path,
+) -> ProfileResidue:
+    """Compute what switching a profile to another configuration leaves behind.
+
+    Args:
+        manifest: The profile's current manifest.
+        profile_dir: The profile directory.
+        config: The new resolved, component-selected configuration.
+        isolated: Whether the profile is isolated; the base profile's
+            settings.json and OS environment carry residue, an isolated
+            profile's config.json and env loaders are rebuilt each run.
+        config_source: Where the new configuration was loaded from.
+        base_url: The new configuration's base-url, or None.
+        claude_dir: The base ~/.claude directory.
+
+    Returns:
+        The residue; empty when the new configuration covers everything the
+        previous run recorded.
+    """
+    def _strings(key: str) -> list[str]:
+        value = manifest.get(key)
+        return [str(item) for item in cast(list[object], value)] if isinstance(value, list) else []
+
+    planned = set(planned_profile_files(config, profile_dir))
+    files = [
+        profile_dir / relative
+        for relative in _strings('files_written')
+        if relative not in planned and (profile_dir / relative).is_file()
+    ]
+
+    new_servers = {record['name'] for record in mcp_server_records(
+        [cast(dict[str, Any], s) for s in cast(list[object], config.get('mcp-servers') or []) if isinstance(s, dict)],
+    )}
+    servers: list[tuple[str, list[str]]] = []
+    for record in cast(list[object], manifest.get('mcp_servers') or []):
+        if not isinstance(record, dict):
+            continue
+        record_dict = cast(dict[str, Any], record)
+        name = str(record_dict.get('name') or '')
+        scopes = [str(s) for s in cast(list[object], record_dict.get('scopes') or []) if str(s) != 'profile']
+        if name and name not in new_servers and scopes:
+            servers.append((name, scopes))
+
+    # The machine-wide binary controls are never residue: the pin gate and
+    # the Step 16 sweep decide their removal, and a run that drops a pin
+    # while another installed profile still pins must leave them in place
+    os_env: list[str] = []
+    settings_keys: list[str] = []
+    if not isolated:
+        new_env = {key for key, value in (config.get('os-env-variables') or {}).items() if value is not None}
+        os_env = [
+            key for key in _strings('os_env_written')
+            if key not in new_env and not _is_machine_wide_control_record(key)
+        ]
+        new_keys = set(written_settings_keys(config.get('user-settings'), config.get('status-line'), config.get('hooks')))
+        settings_keys = [
+            key for key in _strings('settings_keys_written')
+            if key not in new_keys and not _is_machine_wide_control_record(key)
+        ]
+
+    new_downloads = [
+        cast(dict[str, Any], entry)
+        for entry in cast(list[object], config.get('files-to-download') or [])
+        if isinstance(entry, dict)
+    ]
+    new_destinations = {
+        _normalize_config_dir_key(str(record['dest']))
+        for record in machine_wide_download_records(new_downloads, config_source, base_url, claude_dir)
+        if record['dest']
+    }
+    # A destination another installed profile records is that profile's
+    # file too, so a switch lists it as kept instead of removing it
+    recorded_elsewhere = _destinations_recorded_elsewhere(claude_dir.parent, profile_dir)
+    destinations: list[Path] = []
+    kept_destinations: list[tuple[Path, list[str]]] = []
+    for record in cast(list[object], manifest.get('machine_wide_destinations') or []):
+        if not isinstance(record, dict):
+            continue
+        record_dict = cast(dict[str, Any], record)
+        dest = record_dict.get('dest')
+        if not isinstance(dest, str) or _normalize_config_dir_key(dest) in new_destinations:
+            continue
+        path = Path(dest)
+        if not path.is_file():
+            continue
+        holders = recorded_elsewhere.get(_normalize_config_dir_key(dest))
+        if holders:
+            kept_destinations.append((path, holders))
+        elif _sha256_of_file(path) == record_dict.get('sha256'):
+            destinations.append(path)
+    return ProfileResidue(files, servers, os_env, settings_keys, destinations, kept_destinations)
+
+
+def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude_dir: Path) -> None:
+    """Remove what a profile's previous configuration left behind.
+
+    Args:
+        residue: The residue profile_residue() computed.
+        profile_dir: The profile directory.
+        claude_dir: The base ~/.claude directory, whose settings.json holds
+            a base profile's settings residue.
+    """
+    for path in [*residue.files, *residue.destinations]:
+        try:
+            path.unlink()
+            success(f'Removed {path}')
+        except OSError as e:
+            warning(f'Cannot remove {path}: {e}')
+    skills_dir = profile_dir / 'skills'
+    for path in residue.files:
+        parent = path.parent
+        while _relative_inside(parent, skills_dir) is not None:
+            try:
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+    if residue.mcp_servers:
+        claude_cmd = find_command('claude')
+        if claude_cmd:
+            for name, scopes in residue.mcp_servers:
+                _remove_mcp_server_from_cli_scopes(
+                    claude_cmd, name, scopes, None, profile_dir if profile_dir != claude_dir else None,
+                )
+        else:
+            warning('Cannot remove the previous MCP servers: claude command not found')
+    if residue.os_env:
+        set_all_os_env_variables(dict.fromkeys(residue.os_env))
+    if residue.settings_keys:
+        # One null-as-delete write: top-level keys, and each recorded env
+        # entry on its own, so the env object keeps every other variable
+        settings_path = claude_dir / 'settings.json'
+        deletions: dict[str, Any] = {}
+        env_deletions: dict[str, None] = {}
+        for key in residue.settings_keys:
+            if key.startswith(SETTINGS_ENV_ENTRY_PREFIX):
+                env_deletions[key.removeprefix(SETTINGS_ENV_ENTRY_PREFIX)] = None
+            else:
+                deletions[key] = None
+        if env_deletions:
+            deletions['env'] = env_deletions
+        written, merged = _write_merged_json(settings_path, deletions)
+        if written and merged.get('env') == {}:
+            merged.pop('env')
+            try:
+                settings_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+            except OSError as e:
+                warning(f'Cannot drop the emptied env object of {settings_path}: {e}')
+        if written:
+            success(f'Removed settings.json key(s): {", ".join(residue.settings_keys)}')
+        else:
+            warning(f'Cannot remove settings.json key(s): {", ".join(residue.settings_keys)}')
+
+
 def write_manifest(
     config_base_dir: Path,
     command_name: str | None,
@@ -13938,32 +15058,69 @@ def write_manifest(
     config_source_url: str | None,
     command_names: list[str],
     claude_code_version: str | None,
+    *,
+    resolved_config: dict[str, Any] | None = None,
+    origins: dict[str, str | None] | None = None,
+    components: dict[str, str | None] | None = None,
+    yaml_values: dict[str, Any] | None = None,
+    machine_wide_destinations: list[dict[str, str | None]] | None = None,
+    os_env_written: list[str] | None = None,
+    settings_keys_written: list[str] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    files_written: list[str] | None = None,
 ) -> bool:
-    """Write installation manifest for the environment configuration.
+    """Write the installation manifest of a profile.
 
     Creates manifest.json recording the profile's primary command name
-    (None for the base profile), the configuration version and source, all
-    command names, and the Claude Code version the profile pins.
-    _other_profile_pins() reads the recorded pin across profiles to decide
-    whether the machine-global auto-update controls are still needed.
+    (None for the base profile), the configuration version, source and
+    identity, the digest of the resolved configuration, all command names
+    and the component delta with their origins, the configuration's own
+    values at install time, the Claude Code version the profile pins, and
+    what the run wrote: destinations outside ~/.claude with their source
+    and content hash, OS environment variables, settings keys, MCP servers,
+    and the profile files. A re-run reads the names, the delta and the
+    identity; the switch guard reads the written records to list the
+    residue another configuration would leave; _other_profile_pins() reads
+    the pin to decide whether the machine-global update controls are still
+    needed. When resolved_config is given, resolved-config.yaml is written
+    beside the manifest and config_digest is its sha256.
 
     Args:
         config_base_dir: Path to the profile directory -- ~/.claude/{cmd}/
             for an isolated profile, ~/.claude/ for the base profile
         command_name: Primary command name, or None for the base profile
         config_version: Optional semantic version from config (e.g., "1.3.0")
-        config_source: Raw config source as provided by user
+        config_source: The resolved configuration source: a URL, or an
+            absolute local path
         config_source_type: Classified source type ("url", "local", "repo")
         config_source_url: Resolved fetch URL, or None for local sources
         command_names: List of all command names (primary + aliases), empty
             for the base profile
         claude_code_version: Claude Code version this profile pins, or None
             when the profile tracks the latest release
+        resolved_config: The resolved, component-selected configuration this
+            run installed, or None to leave resolved-config.yaml untouched
+        origins: Origin per remembered key ('command_names', 'components')
+        components: The component delta as typed: the --select, --with and
+            --without values, or None when the author defaults applied
+        yaml_values: The configuration's own command-names and default
+            component names at install time
+        machine_wide_destinations: files-to-download destinations outside
+            ~/.claude, each with its source and sha256
+        os_env_written: OS environment variables this run set
+        settings_keys_written: Top-level settings keys this run wrote
+        mcp_servers: MCP servers this run registered, with their scopes
+        files_written: Profile-relative paths of the files this run installs
 
     Returns:
         True if manifest was written successfully, False otherwise.
     """
     manifest_path = config_base_dir / MANIFEST_FILENAME
+    config_digest: str | None = None
+    rendered_config: str | None = None
+    if resolved_config is not None:
+        rendered_config = render_resolved_config(resolved_config)
+        config_digest = config_digest_of(rendered_config)
 
     manifest: dict[str, Any] = {
         'name': command_name,
@@ -13972,12 +15129,29 @@ def write_manifest(
         'config_source': config_source,
         'config_source_url': config_source_url,
         'config_source_type': config_source_type,
+        'config_identity': config_identity_of(config_source),
+        'config_digest': config_digest,
         'installed_at': datetime.now(UTC).isoformat(),
         'command_names': command_names,
+        'components': components,
+        'link': None,
+        'origins': origins if origins is not None else {
+            'command_names': 'yaml' if command_names else None,
+            'components': 'yaml',
+        },
+        'yaml_values': yaml_values if yaml_values is not None else {},
+        'machine_wide_destinations': machine_wide_destinations or [],
+        'os_env_written': os_env_written or [],
+        'settings_keys_written': settings_keys_written or [],
+        'mcp_servers': mcp_servers or [],
+        'files_written': files_written or [],
     }
 
     try:
         config_base_dir.mkdir(parents=True, exist_ok=True)
+        if rendered_config is not None:
+            (config_base_dir / RESOLVED_CONFIG_FILENAME).write_text(rendered_config, encoding='utf-8')
+            success(f'Created {RESOLVED_CONFIG_FILENAME}')
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
         success(f'Created {MANIFEST_FILENAME}')
         return True
@@ -15202,6 +16376,606 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+class ProfileRerun(NamedTuple):
+    """The installed profile a --profile value names.
+
+    Attributes:
+        primary: The profile's primary command name, None for the base profile.
+        manifest_path: Its manifest.json.
+        manifest: The manifest content.
+        identity: The configuration identity the manifest records or derives,
+            or None when it records a relative local source that cannot be
+            resolved from the current directory.
+    """
+
+    primary: str | None
+    manifest_path: Path
+    manifest: dict[str, Any]
+    identity: str | None
+
+    @property
+    def name(self) -> str:
+        """The profile's display name."""
+        return profile_display_name(self.primary)
+
+
+def resolve_profile_rerun(args: argparse.Namespace, home_dir: Path) -> ProfileRerun:
+    """Locate the installed profile --profile names.
+
+    Args:
+        args: Arguments after resolve_args(), with a --profile value other
+            than ALL_PROFILES.
+        home_dir: User home directory.
+
+    Returns:
+        The profile and its manifest. The run exits with code 1 when the
+        name is invalid, no profile of that name is installed, or its
+        manifest cannot be read.
+    """
+    source = PROFILE_SOURCES[args.origins['profile']]
+    value = str(args.profile)
+    primary = None if value == 'base' else value
+    if primary is not None:
+        name_errors = command_name_errors([primary], source)
+        if name_errors:
+            for err in name_errors:
+                error(err)
+            sys.exit(1)
+    display = profile_display_name(primary)
+    manifest_path = profile_directory(home_dir, primary) / MANIFEST_FILENAME
+    try:
+        manifest = read_profile_manifest(manifest_path)
+    except ValueError as e:
+        error(f'Profile "{display}" cannot be re-run: {e}')
+        info('Repair or remove the manifest, then run the setup again.')
+        sys.exit(1)
+    if manifest is None:
+        error(f'No installed profile named "{display}": {manifest_path} does not exist.')
+        if primary is not None:
+            info(f'Install it first: run the setup with a configuration and --command-names {primary}')
+        else:
+            info('Install the base profile first: run the setup with a configuration and no command names')
+        sys.exit(1)
+    return ProfileRerun(primary, manifest_path, manifest, manifest_config_identity(manifest))
+
+
+def rerun_config_source(rerun: ProfileRerun) -> str:
+    """Return the configuration a --profile re-run loads when none is given.
+
+    Args:
+        rerun: The profile being re-run.
+
+    Returns:
+        The configuration source the manifest records, in a form
+        load_config_from_source() accepts. The run exits with code 1 when
+        the manifest records a relative local source that cannot be
+        resolved from the current directory.
+    """
+    source = rerun.manifest.get('config_source')
+    if rerun.identity is None or not isinstance(source, str) or not source:
+        error(
+            f'The manifest of profile "{rerun.name}" records the configuration {source!r}, which cannot '
+            f'be resolved from this directory; pass the configuration: --profile {rerun.name} <configuration>',
+        )
+        sys.exit(1)
+    return source
+
+
+def _read_target_manifest(primary_command_name: str | None, config: dict[str, Any]) -> dict[str, Any] | None:
+    """Read the manifest of the profile a run installs into.
+
+    Args:
+        primary_command_name: The profile's primary command name, None for
+            the base profile.
+        config: The resolved configuration, whose user-settings may relocate
+            the profile directory.
+
+    Returns:
+        The manifest, or None when the profile is new or its name is not a
+        valid command name (validation reports that later). The run exits
+        with code 1 when the manifest exists but cannot be read.
+    """
+    if primary_command_name is not None and command_name_errors([primary_command_name], 'command-names'):
+        return None
+    target_dir, _ = resolve_artifact_base_dir(primary_command_name, config.get('user-settings'))
+    try:
+        return read_profile_manifest(target_dir / MANIFEST_FILENAME)
+    except ValueError as e:
+        error(f'The manifest of profile "{profile_display_name(primary_command_name)}" cannot be read: {e}')
+        info('Repair or remove it, then run the setup again.')
+        sys.exit(1)
+
+
+def _consent_is_interactive(args: argparse.Namespace) -> bool:
+    """Report whether this run asks the user before it acts.
+
+    Args:
+        args: Arguments after resolve_args().
+
+    Returns:
+        True when neither --yes nor --dry-run is set and a terminal (or
+        /dev/tty) can answer a prompt.
+    """
+    return not args.yes and not args.dry_run and (sys.stdin.isatty() or _dev_tty_available())
+
+
+def guard_decision(
+    args: argparse.Namespace,
+    *,
+    title: str,
+    lines: list[str],
+    question: str,
+    remedy: list[str],
+    accepted_by: str | None = None,
+) -> None:
+    """Hold a run back until a change it would make is accepted.
+
+    A flag that accepts the change lets the run continue. An interactive
+    run asks; a declined question cancels the setup with exit code 0.
+    Under --yes, --dry-run, or without a terminal the run stops with exit
+    code 1 and the remedy, so nothing changes without consent.
+
+    Args:
+        args: Arguments after resolve_args().
+        title: What the run would change.
+        lines: Details printed under the title.
+        question: The y/N question an interactive run asks.
+        remedy: How to accept the change or avoid it, one line each.
+        accepted_by: The flag or variable that accepted the change, or None.
+    """
+    print()
+    warning(title)
+    for line in lines:
+        warning(f'  {line}')
+    if accepted_by:
+        info(f'Accepted via {accepted_by}.')
+        return
+    if _consent_is_interactive(args):
+        print()
+        if _ask_yes_no(f'{Colors.YELLOW}{question} [y/N]: {Colors.NC}'):
+            return
+        info('Setup cancelled by user.')
+        sys.exit(0)
+    print()
+    if args.dry_run:
+        error('Dry run: a real run stops here.')
+    else:
+        error('Refusing to continue without consent.')
+    for line in remedy:
+        info(f'  {line}')
+    sys.exit(1)
+
+
+def guard_environment_name_change(
+    args: argparse.Namespace,
+    names: CommandNames,
+    manifest: dict[str, Any] | None,
+    profile_name: str,
+) -> None:
+    """Hold a run back when the environment would change a profile's command names.
+
+    A typed --command-names value proceeds; a value from
+    CLAUDE_CODE_TOOLBOX_COMMAND_NAMES that differs from the names the
+    profile's manifest records needs consent, because a leftover variable
+    must not rename a profile silently.
+
+    Args:
+        args: Arguments after resolve_args().
+        names: The run's effective command names.
+        manifest: The manifest of the profile the run installs into.
+        profile_name: The profile's display name.
+    """
+    if names.origin != 'env' or names.remembered or manifest is None:
+        return
+    recorded = [str(item) for item in cast(list[object], manifest.get('command_names') or [])]
+    if not recorded or recorded == names.names:
+        return
+    variable = COMMAND_NAMES_SOURCES['env']
+    guard_decision(
+        args,
+        title=(
+            f'{variable} changes the command names of profile "{profile_name}" from '
+            f'{_format_names(recorded)} to {_format_names(names.names)}.'
+        ),
+        lines=[],
+        question=f'Change the command names of profile "{profile_name}" to {_format_names(names.names)}?',
+        remedy=[
+            f'Pass --command-names {",".join(names.names)} to change them.',
+            f'Clear {variable} to keep {_format_names(recorded)}.',
+        ],
+    )
+
+
+def guard_configuration_switch(
+    args: argparse.Namespace,
+    *,
+    manifest: dict[str, Any],
+    profile_name: str,
+    old_identity: str,
+    new_identity: str,
+    new_source: str,
+    residue: ProfileResidue,
+) -> bool:
+    """Hold a run back when a different configuration would re-provision a profile.
+
+    Args:
+        args: Arguments after resolve_args().
+        manifest: The profile's current manifest.
+        profile_name: The profile's display name.
+        old_identity: The configuration identity the manifest records.
+        new_identity: The identity of the configuration this run was given.
+        new_source: The resolved source of that configuration.
+        residue: What the previous configuration leaves behind.
+
+    Returns:
+        True when the run switches the profile (and removes the residue
+        after consent); False when both identities match.
+    """
+    if old_identity == new_identity:
+        return False
+    from_environment = args.origins.get('config') == 'env'
+    given = 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if from_environment else 'the configuration argument'
+    old_source = manifest.get('config_source')
+    rendered = [f'  {line}' for line in residue.lines()]
+    lines = (
+        ['The previous configuration leaves behind:', *rendered] if residue
+        else ['The previous configuration leaves nothing behind.', *rendered]
+    )
+    accepted = '--switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1' if args.switch_config else None
+    # The remedy undoes the source the configuration came from
+    if from_environment:
+        keep_remedy = (
+            'Clear CLAUDE_CODE_TOOLBOX_ENV_CONFIG (unset CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or '
+            'Remove-Item Env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG in PowerShell) and re-run the profile '
+            f'with its own configuration: --profile {profile_name}.'
+        )
+    else:
+        keep_remedy = (
+            'Drop the configuration argument and re-run the profile with its own configuration: '
+            f'--profile {profile_name}.'
+        )
+    guard_decision(
+        args,
+        title=(
+            f'Profile "{profile_name}" was installed from {old_source}; {given} names a different '
+            f'configuration, {new_source}.'
+        ),
+        lines=lines,
+        question=f'Switch profile "{profile_name}" to {new_source} and remove what the previous configuration left?',
+        remedy=[
+            (
+                'Pass --switch-config (or set CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1) to accept the switch '
+                'and remove what the previous configuration left.'
+            ),
+            keep_remedy,
+        ],
+        accepted_by=accepted,
+    )
+    return True
+
+
+def remove_dropped_command_wrappers(previous_names: list[str], current_names: list[str], home_dir: Path) -> list[str]:
+    """Remove the ~/.local/bin wrappers of names a profile no longer registers.
+
+    Only wrappers the toolbox wrote are removed (see is_toolbox_wrapper()).
+
+    Args:
+        previous_names: The names the profile's previous manifest lists.
+        current_names: The names this run registers.
+        home_dir: User home directory.
+
+    Returns:
+        The dropped names.
+    """
+    current = {name.casefold() for name in current_names}
+    dropped = [name for name in previous_names if name.casefold() not in current]
+    if not dropped:
+        return []
+    local_bin = home_dir / '.local' / 'bin'
+    suffixes: tuple[str, ...] = ('', '.cmd', '.ps1') if platform.system() == 'Windows' else ('',)
+    for name in dropped:
+        for suffix in suffixes:
+            entry = local_bin / f'{name}{suffix}'
+            if (entry.exists() or entry.is_symlink()) and is_toolbox_wrapper(entry, name):
+                try:
+                    entry.unlink()
+                except OSError as e:
+                    warning(f'Cannot remove the wrapper {entry}: {e}')
+    success(f'Removed the wrapper(s) of dropped alias(es): {", ".join(dropped)}')
+    return dropped
+
+
+def pin_effect_line(pinned_version: str, installed_version: str | None, other_profiles: list[str]) -> str:
+    """Describe what a run's version pin does to the binary other profiles use.
+
+    Args:
+        pinned_version: The version this run pins.
+        installed_version: The version installed now, or None when unknown.
+        other_profiles: Display names of the other installed profiles.
+
+    Returns:
+        One summary line.
+    """
+    if not other_profiles:
+        return f'Claude Code version pin {pinned_version}: holds the binary every profile uses'
+    profiles = ', '.join(other_profiles)
+    if installed_version and installed_version != pinned_version:
+        return (
+            f'Claude Code version pin {pinned_version}: moves the binary from {installed_version} to '
+            f'{pinned_version} for the other installed profile(s) {profiles}'
+        )
+    return (
+        f'Claude Code version pin {pinned_version}: holds the binary at {pinned_version} for the other '
+        f'installed profile(s) {profiles}'
+    )
+
+
+def shared_destination_warnings(
+    files_to_download: list[dict[str, Any]],
+    config_source: str,
+    base_url: str | None,
+    *,
+    home_dir: Path,
+    this_identity: str,
+    this_profile: str,
+) -> list[str]:
+    """Warn about destinations outside ~/.claude another configuration's profile also installs.
+
+    Args:
+        files_to_download: This run's resolved files-to-download list.
+        config_source: Where this configuration was loaded from.
+        base_url: This configuration's base-url, or None.
+        home_dir: User home directory.
+        this_identity: This configuration's identity.
+        this_profile: This run's profile display name.
+
+    Returns:
+        One warning per destination that a profile of a different
+        configuration recorded from a different source.
+    """
+    records = machine_wide_download_records(files_to_download, config_source, base_url, home_dir / '.claude')
+    if not records:
+        return []
+    warnings: list[str] = []
+    for profile in installed_profiles(home_dir):
+        if profile.name == this_profile or profile.manifest is None:
+            continue
+        if manifest_config_identity(profile.manifest) == this_identity:
+            continue
+        theirs: dict[str, dict[str, Any]] = {}
+        for recorded in cast(list[object], profile.manifest.get('machine_wide_destinations') or []):
+            if isinstance(recorded, dict) and isinstance(cast(dict[str, Any], recorded).get('dest'), str):
+                recorded_dict = cast(dict[str, Any], recorded)
+                theirs[_normalize_config_dir_key(str(recorded_dict['dest']))] = recorded_dict
+        for record in records:
+            other = theirs.get(_normalize_config_dir_key(str(record['dest'])))
+            if other is not None and other.get('source') != record['source']:
+                warnings.append(
+                    f'{record["dest"]} is also installed by profile "{profile.name}" '
+                    f'({profile.manifest.get("config_source")}) from {other.get("source")}; this run writes '
+                    f'it from {record["source"]} and leaves it untouched only when the content is identical',
+                )
+    return warnings
+
+
+def unrefreshed_profile_lines(home_dir: Path, this_profile: str) -> list[str]:
+    """List the installed profiles a run did not refresh, each with its --profile command.
+
+    Args:
+        home_dir: User home directory.
+        this_profile: This run's profile display name.
+
+    Returns:
+        One line per other installed profile.
+    """
+    return [
+        f'{profile.name} (--profile {profile.name})'
+        for profile in installed_profiles(home_dir)
+        if profile.name != this_profile
+    ]
+
+
+def child_run_environment() -> dict[str, str]:
+    """Build the environment of a child run started by --profile all.
+
+    Every argument twin except the repository credential is dropped, so a
+    variable set for the parent cannot change what a child installs, and
+    CLAUDE_CONFIG_DIR is dropped so each child resolves its own profile.
+
+    Returns:
+        The child's environment.
+    """
+    env = dict(os.environ)
+    for twin in ENV_TWINS:
+        if twin.variable not in CHILD_RUN_INHERITED_TWINS:
+            env.pop(twin.variable, None)
+    env.pop('CLAUDE_CONFIG_DIR', None)
+    return env
+
+
+def read_resolved_config_snapshot(profile_dir: Path) -> dict[str, Any] | None:
+    """Read the configuration a profile's last run installed.
+
+    Args:
+        profile_dir: The profile directory holding resolved-config.yaml.
+
+    Returns:
+        The snapshot, or None when the file is missing, unreadable, or not
+        a YAML mapping.
+    """
+    try:
+        content = yaml.safe_load((profile_dir / RESOLVED_CONFIG_FILENAME).read_text(encoding='utf-8'))
+    except (OSError, yaml.YAMLError):
+        return None
+    return cast(dict[str, Any], content) if isinstance(content, dict) else None
+
+
+def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argparse.Namespace) -> list[str]:
+    """List why a --profile all run needs administrator rights before any child starts.
+
+    Elevation is decided once, in the parent: a child relaunched through
+    UAC opens its own window and exits 0, so the parent would report it as
+    refreshed while it still runs. Without --skip-install every profile
+    installs Claude Code, which needs elevation; with it, each profile's
+    resolved-config.yaml decides, and a profile whose snapshot cannot be
+    read counts as needing it.
+
+    Args:
+        profiles: The installed profiles the run refreshes.
+        args: Arguments after resolve_args().
+
+    Returns:
+        The union of reasons, in profile order; empty off Windows, when the
+        process already holds administrator rights, under --no-admin, and
+        under --dry-run (a preview never elevates).
+    """
+    if args.no_admin or args.dry_run or platform.system() != 'Windows' or is_admin():
+        return []
+    if not args.skip_install:
+        return admin_elevation_reasons({}, args)
+    reasons: list[str] = []
+    for profile in profiles:
+        snapshot = read_resolved_config_snapshot(profile.directory)
+        if snapshot is None:
+            reasons.append(
+                f'Profile "{profile.name}": {RESOLVED_CONFIG_FILENAME} is missing or unreadable, '
+                'so its run may need elevation',
+            )
+            continue
+        reasons.extend(reason for reason in admin_elevation_reasons(snapshot, args) if reason not in reasons)
+    return reasons
+
+
+def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = False) -> int:
+    """Re-run every installed profile, the base first, each in its own child run.
+
+    The parent decides elevation once: when any profile's run needs
+    administrator rights the parent lacks, it relaunches itself through UAC
+    before asking for consent, so every child inherits the rights and none
+    opens a window of its own. The parent then asks for consent once (or
+    takes --yes); every child runs with --yes, --refresh-all-child, the
+    parent's --dry-run and --skip-install, and --no-admin (a dry run
+    forwards the parent's --no-admin instead, so each child still prints
+    what a real run would elevate for). The report at the end names each
+    profile with its result and the --profile command that retries a
+    failed one; a parent relaunched through UAC then holds its window
+    under the success or errors banner until Enter, because that window
+    closes when the process exits.
+
+    Args:
+        args: Arguments after resolve_args().
+        elevated_via_uac: Whether this process is the window a UAC
+            relaunch opened.
+
+    Returns:
+        The exit code: 1 when any child failed, the request was invalid, or
+        elevation was denied; 0 otherwise.
+    """
+    conflicts = [
+        name for name, present in (
+            (
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG' if args.origins.get('config') == 'env' else 'a configuration',
+                bool(args.config),
+            ),
+            ('--command-names', args.command_names is not None),
+            ('--select', args.select is not None),
+            ('--with', args.with_ is not None),
+            ('--without', args.without is not None),
+            ('--switch-config', bool(args.switch_config)),
+            ('--list-components', bool(args.list_components)),
+        ) if present
+    ]
+    if conflicts:
+        error(
+            f'--profile {ALL_PROFILES} refreshes every installed profile from its own manifest and cannot '
+            f'be combined with {", ".join(conflicts)}; clear the flag or its variable.',
+        )
+        return 1
+    home_dir = get_real_user_home()
+    profiles = installed_profiles(home_dir)
+    if not profiles:
+        error('No installed profile has a manifest under ~/.claude; install a configuration first.')
+        return 1
+    print()
+    info(f'Refreshing {len(profiles)} installed profile(s): {", ".join(profile.name for profile in profiles)}')
+    elevation_reasons = refresh_all_elevation_reasons(profiles, args)
+    if elevation_reasons:
+        print()
+        print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+        print(f'{Colors.YELLOW}     Administrator Privileges Required{Colors.NC}')
+        print(f'{Colors.YELLOW}========================================================================{Colors.NC}')
+        print()
+        info('Refreshing the installed profiles requires administrator privileges for:')
+        for reason in elevation_reasons:
+            info(f'  - {reason}')
+        print()
+        info('Requesting administrator elevation...')
+        info('A new window will open with administrator privileges.')
+        info('Please look for the UAC dialog and click "Yes" to continue.')
+        print()
+        request_admin_elevation()
+        # If we reach here, elevation was denied
+        error('Administrator elevation was denied')
+        error('Please run this script as administrator manually, or pass --no-admin to skip elevation')
+        return 1
+    if not args.yes and not args.dry_run:
+        if not (sys.stdin.isatty() or _dev_tty_available()):
+            print()
+            error('Cannot proceed: no interactive terminal available')
+            info('Pass --yes (or set CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL=1) to refresh every profile, '
+                 'or --dry-run to preview each one.')
+            return 1
+        print()
+        if not _ask_yes_no(f'{Colors.YELLOW}Refresh these {len(profiles)} profile(s)? [y/N]: {Colors.NC}'):
+            info('Setup cancelled by user.')
+            return 0
+    # A child never decides elevation for itself: the parent did, so a
+    # child that relaunched through UAC could only exit 0 unobserved
+    child_flags = ['--yes', REFRESH_ALL_CHILD_FLAG]
+    for flag, present in (
+        ('--dry-run', args.dry_run),
+        ('--skip-install', args.skip_install),
+        ('--no-admin', args.no_admin or not args.dry_run),
+    ):
+        if present:
+            child_flags.append(flag)
+    launch = [sys.executable, *_elevation_launch_args(__name__, sys.argv[0])]
+    env = child_run_environment()
+    results: list[tuple[str, int]] = []
+    for profile in profiles:
+        print()
+        print(f'{Colors.CYAN}=== Profile {profile.name} ==={Colors.NC}')
+        try:
+            code = subprocess.run([*launch, '--profile', profile.name, *child_flags], env=env, check=False).returncode
+        except OSError as e:
+            error(f'Cannot start the run of profile "{profile.name}": {e}')
+            code = 1
+        results.append((profile.name, code))
+    print()
+    print(f'{Colors.YELLOW}Profiles refreshed:{Colors.NC}')
+    failed = 0
+    for name, code in results:
+        if code == 0:
+            print(f'   * {name}: ok')
+        else:
+            failed += 1
+            print(f'   * {name}: failed (exit code {code}); retry with --profile {name}')
+    print()
+    if elevated_via_uac:
+        if failed:
+            _hold_elevated_window('Setup Completed with Errors', Colors.RED)
+        else:
+            _hold_elevated_window(
+                'Setup Completed Successfully!',
+                Colors.GREEN,
+                (
+                    'Every installed profile has been refreshed.',
+                    'You can now close this window and use the configured environments.',
+                ),
+            )
+    return 1 if failed else 0
+
+
 def main() -> None:
     """Main setup flow."""
     # Track if we were elevated via UAC (new window opened) for better UX
@@ -15279,8 +17053,23 @@ def main() -> None:
         type=str,
         metavar='NAME[,ALIAS...]',
         help='Install as the isolated profile ~/.claude/NAME with these command names '
-        "(comma-separated, primary first); replaces the configuration's command-names",
+        "(comma-separated, primary first); replaces the configuration's command-names; "
+        'NAME,none drops every alias',
     )
+    parser.add_argument(
+        '--profile',
+        type=str,
+        metavar='NAME',
+        help='Re-run the installed profile NAME from its manifest, with no configuration '
+        'argument needed; base re-runs the base profile, all refreshes every installed profile',
+    )
+    parser.add_argument(
+        '--switch-config',
+        action='store_true',
+        help='Accept a different configuration for an existing profile and remove what the '
+        'previous configuration left behind',
+    )
+    parser.add_argument(REFRESH_ALL_CHILD_FLAG, dest='refresh_all_child', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
 
@@ -15303,13 +17092,27 @@ def main() -> None:
             info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
             sys.exit(1)
 
-    # The positional configuration, or CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    # --profile all refreshes every installed profile, each in its own child run
+    if args.profile == ALL_PROFILES:
+        sys.exit(refresh_all_profiles(args, elevated_via_uac=was_elevated_via_uac))
+
+    # --profile NAME re-runs an installed profile from its manifest; the
+    # configuration defaults to the one the manifest records
+    rerun: ProfileRerun | None = None
+    if args.profile:
+        rerun = resolve_profile_rerun(args, get_real_user_home())
+
+    # The positional configuration, CLAUDE_CODE_TOOLBOX_ENV_CONFIG, or the
+    # re-run profile's recorded configuration
     config_name = args.config
+    if not config_name and rerun is not None:
+        config_name = rerun_config_source(rerun)
 
     if not config_name:
         error('No configuration specified!')
         info('Usage: setup_environment.py <config_name>')
         info('   or: CLAUDE_CODE_TOOLBOX_ENV_CONFIG=<config_name> setup_environment.py')
+        info('   or: setup_environment.py --profile <name>  (re-run an installed profile)')
         info('Example: setup_environment.py python')
         sys.exit(1)
 
@@ -15327,6 +17130,9 @@ def main() -> None:
             for path in removed_paths:
                 info(f'  Removed: {path}')
             print()
+
+    # Set once a step below has already held the UAC window for its outcome
+    elevated_window_held = False
 
     try:
         # Load configuration from source (URL, local file, or repository)
@@ -15364,16 +17170,40 @@ def main() -> None:
                 name=config.get('name', config_name),
             )]
 
-        # Resolve author-defined component selection at the single choke
-        # point: after inheritance resolution and before the admin check and
-        # remote file validation, so deselected items never trigger UAC
-        # elevation, network fetches, or auth prompts. Downstream consumers
-        # re-read config keys fresh, so one in-place filter pass suffices.
+        # The profile this run installs into and what its manifest remembers:
+        # the component delta and the command names an earlier run typed or
+        # took from the environment. Read before the selectors are validated,
+        # so a remembered delta counts as supplied selectors.
+        this_identity = config_identity_of(config_source)
+        target_profile = profile_target_name(args, config)
+        target_manifest: dict[str, Any] | None = (
+            rerun.manifest if rerun is not None else _read_target_manifest(target_profile, config)
+        )
         components_list: list[dict[str, Any]] = [
             cast(dict[str, Any], c)
             for c in config.get('components') or []
             if isinstance(c, dict)
         ]
+        remembered_delta_errors = apply_remembered_component_delta(
+            args,
+            target_manifest,
+            [str(c.get('name', '')).strip() for c in components_list],
+            profile_name=profile_display_name(target_profile),
+            manifest_path=(
+                rerun.manifest_path if rerun is not None
+                else resolve_artifact_base_dir(target_profile, config.get('user-settings'))[0] / MANIFEST_FILENAME
+            ),
+        )
+        if remembered_delta_errors:
+            for err in remembered_delta_errors:
+                error(err)
+            sys.exit(1)
+
+        # Resolve author-defined component selection at the single choke
+        # point: after inheritance resolution and before the admin check and
+        # remote file validation, so deselected items never trigger UAC
+        # elevation, network fetches, or auth prompts. Downstream consumers
+        # re-read config keys fresh, so one in-place filter pass suffices.
         component_errors = validate_components(config)
         hooks_consistency_errors = validate_hooks_files_consistency(config)
         if component_errors or hooks_consistency_errors:
@@ -15393,11 +17223,12 @@ def main() -> None:
             sys.exit(0)
 
         # The run's command names: --command-names, then its environment twin,
-        # then the configuration. A typed or environment list replaces the
+        # then the names the profile's manifest remembers, then the
+        # configuration. A typed or environment list replaces the
         # configuration's list, which every later step reads. A name another
         # profile or a foreign ~/.local/bin file holds is refused here, before
         # the summary, consent, or any write.
-        effective_command_names, command_names_errors = resolve_command_names(args, config)
+        effective_command_names, command_names_errors = resolve_command_names(args, config, target_manifest)
         if not command_names_errors and effective_command_names.names:
             command_names_errors = command_name_conflicts(
                 effective_command_names.names, get_real_user_home(),
@@ -15407,20 +17238,57 @@ def main() -> None:
                 error(err)
             sys.exit(1)
         command_names: list[str] | None = effective_command_names.names or None
+        # The configuration's own names, recorded so a later run can tell
+        # whether they changed since this install
+        configured_command_names, _ = yaml_command_names(config)
         if command_names:
             config['command-names'] = command_names
 
         # Get primary command name (first in list) for file naming
         primary_command_name = command_names[0] if command_names else None
         additional_command_names = command_names[1:] if command_names and len(command_names) > 1 else None
+        profile_name = profile_display_name(primary_command_name)
+        target_config_dir, _ = resolve_artifact_base_dir(
+            primary_command_name, config.get('user-settings'),
+        )
+
+        # Hold the run back, before any write, when the environment would
+        # change the names an installed profile remembers, or when a
+        # different configuration would re-provision it; the switch guard
+        # lists what the previous configuration leaves behind, and the run
+        # removes it after consent
+        guard_environment_name_change(args, effective_command_names, target_manifest, profile_name)
+        residue_to_remove: ProfileResidue | None = None
+        if target_manifest is not None:
+            recorded_identity = manifest_config_identity(target_manifest)
+            if recorded_identity is None:
+                info(
+                    f'Recording {config_source} as the configuration of profile "{profile_name}": its manifest '
+                    'records a configuration that cannot be resolved from this directory.',
+                )
+            else:
+                residue = profile_residue(
+                    target_manifest, target_config_dir, config,
+                    isolated=bool(primary_command_name),
+                    config_source=config_source,
+                    base_url=config.get('base-url'),
+                    claude_dir=get_real_user_home() / '.claude',
+                )
+                if guard_configuration_switch(
+                    args,
+                    manifest=target_manifest,
+                    profile_name=profile_name,
+                    old_identity=recorded_identity,
+                    new_identity=this_identity,
+                    new_source=config_source,
+                    residue=residue,
+                ):
+                    residue_to_remove = residue
 
         # Guard the run against a CLAUDE_CONFIG_DIR inherited from the
         # environment. Runs as soon as the target directory is known, so no
         # component picker and no elevation prompt precedes the refusal, and
         # --dry-run reports it instead of a plan it cannot execute.
-        target_config_dir, _ = resolve_artifact_base_dir(
-            primary_command_name, config.get('user-settings'),
-        )
         if not check_ambient_claude_config_dir(primary_command_name, target_config_dir):
             sys.exit(1)
 
@@ -15456,6 +17324,15 @@ def main() -> None:
                     'file together.',
                 )
                 sys.exit(1)
+
+        # The configuration this run installs, recorded beside the manifest
+        # as resolved-config.yaml; a remembered value that overrides a
+        # configuration value which changed since the install is reported
+        installed_config_snapshot = resolved_config_snapshot(config)
+        for warn_msg in remembered_value_warnings(
+            effective_command_names, selection, configured_command_names, target_manifest,
+        ):
+            warning(warn_msg)
 
         # Relaunch elevated on Windows when this configuration needs admin rights
         request_admin_elevation_if_needed(config, args)
@@ -15683,17 +17560,32 @@ def main() -> None:
         )
         plan.auto_injected_items = auto_injected_items
         plan.command_names_origin = effective_command_names.origin
+        plan.command_names_remembered = effective_command_names.remembered
         plan.claude_code_version = claude_install_decision.version
         plan.keep_installed_claude = claude_install_decision.kept
         plan.claude_install_reason = claude_install_decision.reason
         if claude_install_decision.note_is_warning:
             plan.claude_install_warning = claude_install_decision.note
 
+        # A pin holds or moves the one binary the other installed profiles
+        # use, so the summary names them; the installed version is probed
+        # only when the pin has other profiles to affect
+        other_profile_names = [
+            profile.name for profile in installed_profiles(get_real_user_home()) if profile.name != profile_name
+        ]
+        if claude_code_version_normalized is not None:
+            plan.pin_effect = pin_effect_line(
+                claude_code_version_normalized,
+                _installed_claude_version() if other_profile_names and not args.skip_install else None,
+                other_profile_names,
+            )
+
         # Everything a run writes outside its own profile is named before
         # consent: the machine-wide writes of an isolated run, the account
         # keys a global-config null signs out of the .claude.json this run
-        # writes, and the stale update controls other profiles still hold
-        # (which Step 16 lists again and never edits).
+        # writes, the destinations outside ~/.claude a profile of another
+        # configuration also installs, and the stale update controls other
+        # profiles still hold (which Step 16 lists again and never edits).
         pre_consent_profile_dir = target_config_dir if primary_command_name else None
         os_level_env, _ = partition_os_env_variables(os_env_variables or {}, isolated=bool(primary_command_name))
         if primary_command_name:
@@ -15713,7 +17605,12 @@ def main() -> None:
                 mcp_servers=plan.mcp_servers,
                 files_to_download=plan.files_to_download,
                 has_dependency_commands=bool(plan.dependency_commands),
+                pin_effect=plan.pin_effect,
             )
+        plan.destination_warnings = shared_destination_warnings(
+            plan.files_to_download, config_source, base_url,
+            home_dir=get_real_user_home(), this_identity=this_identity, this_profile=profile_name,
+        )
         plan.account_key_warnings = account_key_deletion_warnings(
             global_config,
             global_config_target_file(pre_consent_profile_dir),
@@ -15773,6 +17670,13 @@ def main() -> None:
         # config.json (the runtime launcher export is the authoritative runtime
         # source).
         export_setup_time_config_dir(primary_command_name, artifact_base_dir)
+
+        # A profile switched to another configuration sheds what the previous
+        # one left behind before the new one installs
+        if residue_to_remove:
+            print()
+            print(f'{Colors.CYAN}Removing what the previous configuration of "{profile_name}" left behind...{Colors.NC}')
+            remove_profile_residue(residue_to_remove, profile_dir=artifact_base_dir, claude_dir=claude_user_dir)
 
         # Derive all artifact directories from artifact_base_dir
         agents_dir = artifact_base_dir / 'agents'
@@ -16027,6 +17931,32 @@ def main() -> None:
             profile_dir=isolated_config_dir,
         )
 
+        # What this run wrote and chose, as Step 19 records it: a later
+        # re-run reads the names and the component delta, and the switch
+        # guard reads the written records to list the residue
+        manifest_records: dict[str, Any] = {
+            'resolved_config': installed_config_snapshot,
+            'origins': {
+                'command_names': effective_command_names.origin,
+                'components': selection.origin if selection.is_active else 'yaml',
+            },
+            'components': selection.delta if selection.is_active else None,
+            'yaml_values': {
+                'command_names': configured_command_names,
+                'components': selection.defaults if selection.is_active else [],
+            },
+            'machine_wide_destinations': machine_wide_download_records(
+                [cast(dict[str, Any], f) for f in cast(list[object], files_to_download or []) if isinstance(f, dict)],
+                config_source, base_url, claude_user_dir,
+            ),
+            'os_env_written': [key for key, value in os_level_env_variables.items() if value is not None],
+            'settings_keys_written': written_settings_keys(user_settings, status_line, config.get('hooks')),
+            'mcp_servers': mcp_server_records(mcp_servers),
+            'files_written': planned_profile_files(config, artifact_base_dir),
+        }
+        config_source_type = classify_config_source(config_source)
+        config_source_url = resolve_config_source_url(config_source, config_source_type)
+
         # Check if command creation is needed
         if primary_command_name:
             # Step 17: Download hooks
@@ -16064,17 +17994,16 @@ def main() -> None:
             # Step 19: Write installation manifest
             print()
             print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
-            config_source_type = classify_config_source(config_source)
-            config_source_url = resolve_config_source_url(config_source, config_source_type)
             write_manifest(
                 config_base_dir=artifact_base_dir,
                 command_name=primary_command_name,
                 config_version=config_version,
-                config_source=config_name,
+                config_source=config_source,
                 config_source_type=config_source_type,
                 config_source_url=config_source_url,
                 command_names=command_names or [primary_command_name],
                 claude_code_version=claude_code_version_normalized,
+                **manifest_records,
             )
 
             # Step 20: Create launcher script
@@ -16089,7 +18018,8 @@ def main() -> None:
                 artifact_base_dir, primary_command_name, prompt_filename, mode, has_profile_mcp_servers,
             )
 
-            # Step 21: Register global command(s)
+            # Step 21: Register global command(s); the wrappers of aliases the
+            # profile's previous manifest listed and this run drops go first
             if launcher_result:
                 main_launcher, launch_script = launcher_result
                 print()
@@ -16098,6 +18028,13 @@ def main() -> None:
                     print(f'{Colors.CYAN}Step 21: Registering global commands: {all_names}...{Colors.NC}')
                 else:
                     print(f'{Colors.CYAN}Step 21: Registering global {primary_command_name} command...{Colors.NC}')
+                previous_names = [
+                    str(item)
+                    for item in cast(list[object], (target_manifest or {}).get('command_names') or [])
+                ]
+                remove_dropped_command_wrappers(
+                    previous_names, command_names or [primary_command_name], get_real_user_home(),
+                )
                 register_global_command(
                     main_launcher, primary_command_name, additional_command_names,
                     launch_script_path=launch_script,
@@ -16197,17 +18134,16 @@ def main() -> None:
             # machine-global auto-update controls are still needed.
             print()
             print(f'{Colors.CYAN}Step 19: Writing installation manifest...{Colors.NC}')
-            config_source_type = classify_config_source(config_source)
-            config_source_url = resolve_config_source_url(config_source, config_source_type)
             write_manifest(
                 config_base_dir=claude_user_dir,
                 command_name=None,
                 config_version=config_version,
-                config_source=config_name,
+                config_source=config_source,
                 config_source_type=config_source_type,
                 config_source_url=config_source_url,
                 command_names=[],
                 claude_code_version=claude_code_version_normalized,
+                **manifest_records,
             )
 
             # Steps 20-21: Skip command creation
@@ -16259,14 +18195,10 @@ def main() -> None:
             error('Configuration steps were completed, but some components are missing.')
             print()
 
-            # If running elevated via UAC, add a pause so user can see the error
-            if was_elevated_via_uac and not is_running_in_pytest():
-                print()
-                print(f'{Colors.RED}========================================================================{Colors.NC}')
-                print(f'{Colors.RED}     Setup Completed with Errors{Colors.NC}')
-                print(f'{Colors.RED}========================================================================{Colors.NC}')
-                print()
-                input('Press Enter to exit...')
+            # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the error
+            if was_elevated_via_uac:
+                _hold_elevated_window('Setup Completed with Errors', Colors.RED)
+                elevated_window_held = True
 
             sys.exit(1)
 
@@ -16349,9 +18281,16 @@ def main() -> None:
         if global_config:
             print(f'   * Global config: configured in {global_config_target_file(isolated_config_dir)}')
         if stale_controls_elsewhere:
-            print('   * Stale update controls left in other profiles (re-run their installs to remove them):')
+            print('   * Stale update controls left in other profiles (re-run each with --profile to remove them):')
             for copy in stale_controls_elsewhere:
                 print(f'       - {_stale_control_copy_line(copy)}')
+        # A child of --profile all lists nothing here: the parent's report
+        # covers every installed profile
+        unrefreshed = [] if args.refresh_all_child else unrefreshed_profile_lines(get_real_user_home(), profile_name)
+        if unrefreshed:
+            print('   * Installed profiles this run did not refresh:')
+            for line in unrefreshed:
+                print(f'       - {line}')
         if claude_code_version_normalized is not None:
             print(f'   * IDE extensions: {IDE_EXTENSION_ID} v{claude_code_version_normalized} (auto-install disabled)')
         # Show hooks count with routing information
@@ -16359,13 +18298,15 @@ def main() -> None:
         hook_event_count = len(hooks.get('events', [])) if hooks else 0
         # Under --yes nobody reads the installation summary before the run,
         # so the closing lines name where the command names came from too
-        origin_marker = command_names_origin_marker(effective_command_names.origin)
+        names_marker = origin_marker(
+            effective_command_names.origin, remembered=effective_command_names.remembered,
+        )
         if command_names:
             print(f'   * Hooks: {hook_event_count} configured (in config.json)')
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)} registered{origin_marker}')
+                print(f'   * Global commands: {", ".join(command_names)} registered{names_marker}')
             else:
-                print(f'   * Global command: {primary_command_name} registered{origin_marker}')
+                print(f'   * Global command: {primary_command_name} registered{names_marker}')
         else:
             if hook_event_count > 0:
                 print(f'   * Hooks: {hook_event_count} configured (in settings.json)')
@@ -16375,9 +18316,9 @@ def main() -> None:
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
         if command_names:
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)}{origin_marker}')
+                print(f'   * Global commands: {", ".join(command_names)}{names_marker}')
             else:
-                print(f'   * Global command: {primary_command_name}{origin_marker}')
+                print(f'   * Global command: {primary_command_name}{names_marker}')
         else:
             print('   * Use "claude" to start Claude Code with configured environment')
 
@@ -16419,17 +18360,23 @@ def main() -> None:
                 print(f'  {line}')
             print()
 
-        # If running elevated via UAC, add a pause so user can see the results
-        if was_elevated_via_uac and not is_running_in_pytest():
-            print()
-            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
-            print(f'{Colors.GREEN}     Setup Completed Successfully!{Colors.NC}')
-            print(f'{Colors.GREEN}========================================================================{Colors.NC}')
-            print()
-            print(f'{Colors.YELLOW}The environment has been configured successfully.{Colors.NC}')
-            print(f'{Colors.YELLOW}You can now close this window and use the configured environment.{Colors.NC}')
-            print()
-            input('Press Enter to exit...')
+        # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the results
+        if was_elevated_via_uac:
+            _hold_elevated_window(
+                'Setup Completed Successfully!',
+                Colors.GREEN,
+                (
+                    'The environment has been configured successfully.',
+                    'You can now close this window and use the configured environment.',
+                ),
+            )
+
+    except SystemExit as exit_request:
+        # A UAC relaunch runs in a window that closes on exit: a failed exit that no step held yet
+        # (a validation error, a refused guard) is held here so the user can read its error
+        if was_elevated_via_uac and not elevated_window_held and exit_request.code not in (None, 0):
+            _hold_elevated_window('Setup Failed', Colors.RED)
+        raise
 
     except Exception as e:
         print()
@@ -16439,14 +18386,9 @@ def main() -> None:
         print(f'{Colors.YELLOW}For help, visit: https://github.com/alex-feel/claude-code-toolbox{Colors.NC}')
         print()
 
-        # If running elevated via UAC, add a pause so user can see the error
-        if was_elevated_via_uac and not is_running_in_pytest():
-            print()
-            print(f'{Colors.RED}========================================================================{Colors.NC}')
-            print(f'{Colors.RED}     Setup Failed{Colors.NC}')
-            print(f'{Colors.RED}========================================================================{Colors.NC}')
-            print()
-            input('Press Enter to exit...')
+        # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the error
+        if was_elevated_via_uac:
+            _hold_elevated_window('Setup Failed', Colors.RED)
 
         sys.exit(1)
 
