@@ -206,6 +206,7 @@ LINKABLE_PROFILE_DIRS: tuple[str, ...] = (
 # content; it links to any source, needs no manifest there, and leaves the
 # component selection to the profile
 SESSIONS_PROFILE_DIR = 'projects'
+SKILLS_PROFILE_DIR = 'skills'
 
 # The linkable entries that hold installed content; they link only between
 # installs of one configuration, and a profile that links one takes its
@@ -4462,6 +4463,12 @@ MANIFEST_VERSION_PIN_KEY = 'claude_code_version'
 # be propagated into ~/.claude/{cmd}/.claude.json for the CLI to see it there.
 INSTALL_METHOD_KEY = 'installMethod'
 
+# Constants for the claude.ai skill sync: a profile whose skills/ directory
+# is a link into another profile must not let Claude Code sync claude.ai
+# skills into it, because every file the sync writes lands in the source.
+SKILLS_SYNC_KEY = 'syncClaudeAiSkills'
+SKILLS_SYNC_DISABLED_VALUE = False
+
 # Constants for IDE extension version management
 IDE_AUTO_INSTALL_KEY = 'autoInstallIdeExtension'
 IDE_AUTO_INSTALL_DISABLED_VALUE = False
@@ -5551,6 +5558,42 @@ def _remove_ide_extension_controls(
         os_env_variables[IDE_SKIP_AUTO_INSTALL_KEY] = None
 
     return global_config, user_settings, os_env_variables
+
+
+def apply_skills_sync_settings(
+    user_settings: dict[str, Any] | None,
+    *,
+    links_skills: bool,
+) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+    """Switch the claude.ai skill sync off in a profile whose skills/ is a link.
+
+    The sync writes into the skills directory of the profile it runs in; when
+    that directory is a link, every file would land in the source profile.
+    Injection is gated on key MEMBERSHIP (WARN-but-Respect): a value the
+    configuration declares, a null included, is kept, and a value other than
+    the disabled one produces a warning.
+
+    Args:
+        user_settings: The resolved user-settings section, or None.
+        links_skills: Whether this run links the skills entry.
+
+    Returns:
+        Tuple of (user_settings, warnings, auto_injected_items); the first is
+        unchanged when nothing is linked.
+    """
+    if not links_skills:
+        return user_settings, [], []
+    if user_settings is None:
+        user_settings = {}
+    if SKILLS_SYNC_KEY not in user_settings:
+        user_settings[SKILLS_SYNC_KEY] = SKILLS_SYNC_DISABLED_VALUE
+        return user_settings, [], [f'user-settings.{SKILLS_SYNC_KEY}: false']
+    if user_settings[SKILLS_SYNC_KEY] == SKILLS_SYNC_DISABLED_VALUE:
+        return user_settings, [], []
+    return user_settings, [
+        f'User set user-settings.{SKILLS_SYNC_KEY} to {user_settings[SKILLS_SYNC_KEY]!r} '
+        f'(linked skills intent is {SKILLS_SYNC_DISABLED_VALUE!r}). Respecting user value.',
+    ], []
 
 
 def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
@@ -18733,6 +18776,16 @@ def main() -> None:
             warning(warn_msg)
         # Merge auto-injected items from both auto-update and IDE extension management
         auto_injected_items.extend(ide_ext_auto_injected)
+
+        # A linked skills/ directory belongs to the source profile, so the
+        # claude.ai skill sync of this profile is switched off
+        user_settings, skills_sync_warnings, skills_sync_auto_injected = apply_skills_sync_settings(
+            user_settings, links_skills=SKILLS_PROFILE_DIR in linked_entries,
+        )
+        for warn_msg in skills_sync_warnings:
+            warning(warn_msg)
+        auto_injected_items.extend(skills_sync_auto_injected)
+
         # Validate user-settings section (excluded keys and known key values)
         if user_settings:
             user_settings_errors = validate_user_settings(user_settings)

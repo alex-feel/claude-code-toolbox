@@ -1030,3 +1030,77 @@ class TestDependentIntegrity:
         assert 'Profile "aegis-2" wires hook files that profile "aegis-1" does not hold:' in output
         assert str(claude_dir / 'aegis-2' / 'hooks' / 'hook.py') in output
         assert 'Re-run the source first: --profile aegis-1' in output
+
+
+def _profile_settings(profile_dir: Path) -> dict[str, Any]:
+    """The settings a profile's config.json carries."""
+    content: dict[str, Any] = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
+    return content
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestSkillsSync:
+    """A profile whose skills/ is a link gets syncClaudeAiSkills switched off, so the sync never writes into the source."""
+
+    def test_profile_linking_skills_disables_the_sync_and_marks_it_auto(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The dependent's config.json carries syncClaudeAiSkills false; the source's config.json does not."""
+        cfg = _install_source(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        capsys.readouterr()
+
+        _install_dependent(cfg, 'aegis-2')
+
+        output = _output(capsys)
+        assert '[auto] user-settings.syncClaudeAiSkills: false' in output
+        assert _profile_settings(claude_dir / 'aegis-2')['syncClaudeAiSkills'] is False
+        assert 'syncClaudeAiSkills' not in _profile_settings(claude_dir / 'aegis-1')
+        assert _links_to(claude_dir / 'aegis-2' / 'skills', claude_dir / 'aegis-1' / 'skills')
+
+    def test_projects_only_link_leaves_the_sync_alone(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A sessions-only link installs its own skills/, so the sync stays as the configuration leaves it."""
+        cfg = _install_source(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        capsys.readouterr()
+
+        _install_dependent(cfg, 'sessions-only', dirs='projects')
+
+        assert '[auto] user-settings.syncClaudeAiSkills' not in _output(capsys)
+        assert 'syncClaudeAiSkills' not in _profile_settings(claude_dir / 'sessions-only')
+
+    def test_declared_value_is_kept_with_a_warning(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A configuration that sets syncClaudeAiSkills true keeps it in the linked profile; the run warns."""
+        cfg = write_config(configs, 'aegis.yaml', {**_aegis(), 'user-settings': {'syncClaudeAiSkills': True}})
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1']) == 0
+        claude_dir = e2e_isolated_home['claude_dir']
+        capsys.readouterr()
+
+        _install_dependent(cfg, 'aegis-2')
+
+        output = _output(capsys)
+        assert (
+            'User set user-settings.syncClaudeAiSkills to True (linked skills intent is False). Respecting user value.'
+        ) in output
+        assert '[auto] user-settings.syncClaudeAiSkills' not in output
+        assert _profile_settings(claude_dir / 'aegis-2')['syncClaudeAiSkills'] is True
+
+    def test_dry_run_shows_the_auto_row_and_writes_nothing(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--dry-run of a profile that would link skills lists the injected value before anything exists."""
+        cfg = _install_source(configs)
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        code = run_main([
+            str(cfg), *SKIP, '--dry-run', '--command-names', 'aegis-2', '--link-dirs', 'all', '--link-from', 'aegis-1',
+        ])
+
+        assert code == 0
+        assert '[auto] user-settings.syncClaudeAiSkills: false' in _output(capsys)
+        assert home_state(e2e_isolated_home['home']) == before

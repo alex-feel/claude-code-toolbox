@@ -773,3 +773,51 @@ class TestUnrefreshedLines:
         with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
             assert setup_environment.unrefreshed_profile_lines(tmp_path, 'a') == ['base (--profile base)', 'b (--profile b)']
             assert setup_environment.unrefreshed_profile_lines(tmp_path, 'a', frozenset({'b'})) == ['base (--profile base)']
+
+
+class TestSkillsSyncSettings:
+    """apply_skills_sync_settings() keeps the claude.ai skill sync out of a linked skills/ directory."""
+
+    def test_linked_skills_inject_the_disable(self) -> None:
+        settings, warnings, auto = setup_environment.apply_skills_sync_settings({'theme': 'dark'}, links_skills=True)
+        assert settings == {'theme': 'dark', 'syncClaudeAiSkills': False}
+        assert warnings == []
+        assert auto == ['user-settings.syncClaudeAiSkills: false']
+
+    def test_absent_user_settings_become_the_disable_alone(self) -> None:
+        settings, warnings, auto = setup_environment.apply_skills_sync_settings(None, links_skills=True)
+        assert settings == {'syncClaudeAiSkills': False}
+        assert warnings == []
+        assert auto == ['user-settings.syncClaudeAiSkills: false']
+
+    def test_user_value_is_kept_with_a_warning(self) -> None:
+        settings, warnings, auto = setup_environment.apply_skills_sync_settings(
+            {'syncClaudeAiSkills': True}, links_skills=True,
+        )
+        assert settings == {'syncClaudeAiSkills': True}
+        assert warnings == [
+            'User set user-settings.syncClaudeAiSkills to True (linked skills intent is False). Respecting user value.',
+        ]
+        assert auto == []
+
+    def test_user_null_is_kept_with_a_warning(self) -> None:
+        settings, warnings, auto = setup_environment.apply_skills_sync_settings(
+            {'syncClaudeAiSkills': None}, links_skills=True,
+        )
+        assert settings == {'syncClaudeAiSkills': None}
+        assert len(warnings) == 1
+        assert auto == []
+
+    def test_matching_user_value_is_silent(self) -> None:
+        settings, warnings, auto = setup_environment.apply_skills_sync_settings(
+            {'syncClaudeAiSkills': False}, links_skills=True,
+        )
+        assert settings == {'syncClaudeAiSkills': False}
+        assert warnings == []
+        assert auto == []
+
+    def test_without_linked_skills_nothing_changes(self) -> None:
+        assert setup_environment.apply_skills_sync_settings(None, links_skills=False) == (None, [], [])
+        assert setup_environment.apply_skills_sync_settings({'theme': 'dark'}, links_skills=False) == (
+            {'theme': 'dark'}, [], [],
+        )
