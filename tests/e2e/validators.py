@@ -1944,3 +1944,106 @@ def validate_selected_artifacts(
                 f'(claimed by {sorted(claimers)})',
             )
     return errors
+
+
+def validate_launcher_profile_spelling(
+    profile_dir: Path,
+    *,
+    posix_dir: str,
+    cmd_dir: str,
+    powershell_parent: str,
+    windows_launchers: bool,
+    local_bin: Path | None = None,
+    wrapper_names: tuple[str, ...] = (),
+) -> list[str]:
+    """Validate that launchers and wrappers name the profile directory.
+
+    Every path a generated script reads -- the exported CLAUDE_CONFIG_DIR,
+    config.json, mcp.json, the system prompt, the env loaders and launch.sh --
+    must be spelled from profile_dir: home-relative ($HOME, %USERPROFILE%,
+    $env:USERPROFILE) when profile_dir lies below the home directory, absolute
+    otherwise. No other home-relative path may appear.
+
+    Args:
+        profile_dir: The profile directory the scripts must name.
+        posix_dir: Its expected spelling inside a double-quoted bash string.
+        cmd_dir: Its expected spelling inside a CMD ``set`` assignment.
+        powershell_parent: The expected PowerShell expression of its parent.
+        windows_launchers: Whether start.ps1 and start.cmd were generated.
+        local_bin: Directory holding the global wrappers, when checked.
+        wrapper_names: Command names whose Windows wrappers are checked.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    errors: list[str] = []
+
+    def read(path: Path) -> str | None:
+        if not path.exists():
+            errors.append(f'{path} not found')
+            return None
+        return path.read_text(encoding='utf-8')
+
+    def expect(content: str, path: Path, fragments: list[str]) -> None:
+        errors.extend(f'{path.name} lacks {fragment!r}' for fragment in fragments if fragment not in content)
+
+    def expect_only_profile(content: str, path: Path, prefix: str, spelled: str) -> None:
+        if not spelled.startswith(prefix):
+            if prefix in content:
+                errors.append(f'{path.name} names {prefix} although the profile lies outside the home directory')
+        elif content.count(prefix) != content.count(spelled):
+            errors.append(f'{path.name} names a {prefix} path other than the profile directory {spelled}')
+
+    launch_sh = profile_dir / 'launch.sh'
+    content = read(launch_sh)
+    if content is not None:
+        expect(content, launch_sh, [
+            f'export CLAUDE_CONFIG_DIR="{posix_dir}"',
+            f'ENV_FILE="{posix_dir}/env.sh"',
+            f'"{posix_dir}/config.json"',
+            f'MCP_CONFIG_PATH="{posix_dir}/mcp.json"',
+        ])
+        if 'PROMPT_PATH=' in content:
+            expect(content, launch_sh, [f'PROMPT_PATH="{posix_dir}/prompts/'])
+        expect_only_profile(content, launch_sh, '$HOME', posix_dir)
+
+    if windows_launchers:
+        start_cmd = profile_dir / 'start.cmd'
+        content = read(start_cmd)
+        if content is not None:
+            expect(content, start_cmd, [
+                f'set "ENV_FILE={cmd_dir}\\env.cmd"',
+                f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"',
+            ])
+            expect_only_profile(content, start_cmd, '%USERPROFILE%', cmd_dir)
+        start_ps1 = profile_dir / 'start.ps1'
+        content = read(start_ps1)
+        if content is not None:
+            leaf = f'(Join-Path $claudeUserDir "{profile_dir.name}")'
+            expect(content, start_ps1, [
+                f'$claudeUserDir = {powershell_parent}\n',
+                f'{leaf} "env.ps1"',
+                f'{leaf} "launch.sh"',
+            ])
+
+    if local_bin is not None:
+        for name in wrapper_names:
+            cmd_wrapper = local_bin / f'{name}.cmd'
+            content = read(cmd_wrapper)
+            if content is not None:
+                expect(content, cmd_wrapper, [
+                    f'set "ENV_FILE={cmd_dir}\\env.cmd"',
+                    f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"',
+                ])
+                expect_only_profile(content, cmd_wrapper, '%USERPROFILE%', cmd_dir)
+            ps1_wrapper = local_bin / f'{name}.ps1'
+            content = read(ps1_wrapper)
+            if content is not None:
+                expect(content, ps1_wrapper, [f'& "{profile_dir / "start.ps1"}" @args'])
+            bash_wrapper = local_bin / name
+            content = read(bash_wrapper)
+            if content is not None:
+                expect(content, bash_wrapper, [f'exec "{posix_dir}/launch.sh" "$@"'])
+                expect_only_profile(content, bash_wrapper, '$HOME', posix_dir)
+
+    return errors

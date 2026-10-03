@@ -17025,6 +17025,11 @@ class TestCollectMachineWideWrites:
 class TestLauncherEnvSourcing:
     """Tests for env loader sourcing in launcher scripts."""
 
+    @pytest.fixture(autouse=True)
+    def _home_is_tmp_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Place each profile below an isolated home directory, as setup does."""
+        monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+
     def test_unix_launcher_contains_env_source_guard(self, tmp_path: Path) -> None:
         """Unix launch.sh contains guarded env.sh source line."""
         config_dir = tmp_path / '.claude' / 'test-cmd'
