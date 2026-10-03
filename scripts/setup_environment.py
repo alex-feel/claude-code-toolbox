@@ -8613,7 +8613,7 @@ def display_installation_summary(
             f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
         )
     if plan.command_names:
-        origin_marker = f' [{plan.command_names_origin}]' if plan.command_names_origin else ''
+        origin_marker = command_names_origin_marker(plan.command_names_origin)
         settings_items.append(f"Command names: {', '.join(plan.command_names)}{origin_marker}")
 
     if settings_items:
@@ -12481,6 +12481,19 @@ class CommandNames(NamedTuple):
     origin: str | None
 
 
+def command_names_origin_marker(origin: str | None) -> str:
+    """Render where a run's command names came from, for the summaries that list them.
+
+    Args:
+        origin: The CommandNames origin: 'cli', 'env', 'yaml', or None.
+
+    Returns:
+        ' [cli]', ' [env]' or ' [yaml]' to append to the names; empty when
+        no source names a command.
+    """
+    return f' [{origin}]' if origin else ''
+
+
 def command_name_errors(names: list[str], source: str) -> list[str]:
     """Validate command names for use as a profile directory and a global command.
 
@@ -15739,12 +15752,15 @@ def main() -> None:
         # Show hooks count with routing information
         hooks = config.get('hooks', {})
         hook_event_count = len(hooks.get('events', [])) if hooks else 0
+        # Under --yes nobody reads the installation summary before the run,
+        # so the closing lines name where the command names came from too
+        origin_marker = command_names_origin_marker(effective_command_names.origin)
         if command_names:
             print(f'   * Hooks: {hook_event_count} configured (in config.json)')
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)} registered')
+                print(f'   * Global commands: {", ".join(command_names)} registered{origin_marker}')
             else:
-                print(f'   * Global command: {primary_command_name} registered')
+                print(f'   * Global command: {primary_command_name} registered{origin_marker}')
         else:
             if hook_event_count > 0:
                 print(f'   * Hooks: {hook_event_count} configured (in settings.json)')
@@ -15754,9 +15770,9 @@ def main() -> None:
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
         if command_names:
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)}')
+                print(f'   * Global commands: {", ".join(command_names)}{origin_marker}')
             else:
-                print(f'   * Global command: {primary_command_name}')
+                print(f'   * Global command: {primary_command_name}{origin_marker}')
         else:
             print('   * Use "claude" to start Claude Code with configured environment')
 

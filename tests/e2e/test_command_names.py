@@ -260,6 +260,51 @@ class TestPrecedence:
         assert not (e2e_isolated_home['claude_dir'] / 'claude-a').exists()
 
 
+class TestCompletionSummaryOrigin:
+    """The closing summary names where the command names came from, as the installation summary does."""
+
+    @pytest.mark.parametrize(
+        ('source', 'names'),
+        [
+            ('cli', ['solo']),
+            ('cli', ['main', 'alt']),
+            ('env', ['solo']),
+            ('env', ['main', 'alt']),
+            ('yaml', ['solo']),
+            ('yaml', ['claude-a', 'claude-b', 'claude-c']),
+        ],
+    )
+    def test_registered_and_quick_start_lines_carry_the_origin(
+        self,
+        source: str,
+        names: list[str],
+        e2e_isolated_home: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A leftover variable under --yes shows up in the lines printed after the run."""
+        config = copy.deepcopy(PERSONAL_CONFIG)
+        extra = ['--yes']
+        if source == 'cli':
+            extra += ['--command-names', ','.join(names)]
+        elif source == 'env':
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', ','.join(names))
+        else:
+            config['command-names'] = names
+
+        assert _install(extra, config) == 0
+
+        out = capsys.readouterr().out
+        listed = ', '.join(names)
+        if len(names) > 1:
+            assert f'* Global commands: {listed} registered [{source}]' in out
+            assert f'* Global commands: {listed} [{source}]' in out
+        else:
+            assert f'* Global command: {listed} registered [{source}]' in out
+            assert f'* Global command: {listed} [{source}]' in out
+        _assert_profile_installed(e2e_isolated_home, names[0], names)
+
+
 class TestReplayLine:
     """The Components replay line reproduces the profile a typed list selected."""
 

@@ -301,7 +301,7 @@ uvx cc-toolbox setup claude-personal.yaml --command-names claude-p2
 $env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='https://raw.githubusercontent.com/org/repo/main/config.yaml'; $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='my-env-2'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
 ```
 
-The installation summary marks where the names came from: `Command names: aegis-1 [cli]` for the flag, `[env]` for the variable, `[yaml]` for the configuration. When the configuration defines components, the summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
+The installation summary and the completion summary both mark where the names came from: `Command names: aegis-1 [cli]` before the run and `Global command: aegis-1 registered [cli]` after it for the flag, `[env]` for the variable, `[yaml]` for the configuration. Under `--yes` nobody reviews the installation summary, so the completion summary is where a leftover `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES` shows up. When the configuration defines components, the installation summary's `Replay:` line carries `--command-names` for names from the flag or the variable, so a replay installs the same profile.
 
 ##### Names another profile or program holds
 
