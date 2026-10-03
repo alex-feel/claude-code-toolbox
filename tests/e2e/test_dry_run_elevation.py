@@ -1,12 +1,14 @@
-"""E2E tests for Windows administrator elevation under --dry-run.
+"""E2E tests for Windows administrator elevation: the main() gate, --dry-run and --no-admin.
 
 A real run on Windows that needs administrator rights relaunches itself
-through a UAC prompt before anything is installed. A dry run only previews
-the plan, so it never requests elevation: it reports what the real run would
-elevate for and continues to the installation summary. The tests drive main()
-against the golden configuration with the privilege probe and the UAC relaunch
-replaced, so no prompt opens and the outcome does not depend on whether the
-test process itself runs elevated.
+through a UAC prompt before anything is installed, and that gate in main() is
+the only place a run requests elevation. A dry run only previews the plan, so
+it never requests elevation: it reports what the real run would elevate for
+and continues to the installation summary. --no-admin turns the gate off, and
+every installation step then runs in the non-elevated process. The tests drive
+main() against the golden configuration with the privilege probe and the UAC
+relaunch replaced, so no prompt opens and the outcome does not depend on
+whether the test process itself runs elevated.
 
 UAC elevation exists only on Windows, where main() takes this path from the
 real platform, so the module runs on Windows only.
@@ -15,6 +17,9 @@ real platform, so the module runs on Windows only.
 from __future__ import annotations
 
 import copy
+import os
+import shutil
+import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -26,6 +31,7 @@ import pytest
 import yaml
 
 from scripts import setup_environment
+from tests.conftest import empty_mcp_stats
 
 pytestmark = pytest.mark.skipif(
     sys.platform != 'win32', reason='UAC elevation exists only on Windows',
@@ -250,3 +256,79 @@ class TestRealRunElevation:
         assert 'Installation Summary' in captured.out + captured.err
         assert 'Cannot proceed: no interactive terminal available' in captured.err
         _assert_nothing_installed(e2e_isolated_home)
+
+
+class TestNoAdminRunsEveryStepUnelevated:
+    """Under --no-admin no installation step requests elevation on its own."""
+
+    @pytest.mark.parametrize('via', ['flag', 'environment variable'])
+    def test_no_admin_installs_claude_code_and_elevated_dependencies_unelevated(
+        self,
+        via: str,
+        e2e_isolated_home: dict[str, Path],
+        mock_repo_path: Path,
+        mock_request_elevation: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Step 1 runs the installer and Step 6 the winget and npm commands, and the run completes."""
+        if via == 'flag':
+            extra_argv = ['--yes', '--no-admin']
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_NO_ADMIN', '1')
+            extra_argv = ['--yes']
+        # Step 6 refreshes PATH from the registry; restore the test process PATH afterwards
+        monkeypatch.setenv('PATH', os.environ.get('PATH', ''))
+
+        # A local configuration file resolves every resource relative to its own directory
+        config = _golden_with_elevated_dependencies()
+        del config['base-url']
+        repo = e2e_isolated_home['home'].parent / 'repo'
+        shutil.copytree(mock_repo_path, repo)
+        config_file = repo / 'golden.yaml'
+        config_file.write_text(yaml.safe_dump(config), encoding='utf-8')
+
+        commands: list[list[str]] = []
+
+        def record_command(cmd: list[str], *_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            commands.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, '', '')
+
+        installer = [sys.executable, str(Path(setup_environment.__file__).resolve().parent / 'install_claude.py')]
+        winget: list[str] = WINGET_DEPENDENCY.split()
+        npm: list[str] = NPM_DEPENDENCY.split()
+
+        with (
+            patch('scripts.setup_environment.load_config_from_source',
+                  return_value=(config, str(config_file))),
+            patch('scripts.setup_environment.validate_all_config_files',
+                  return_value=(True, [])),
+            patch('scripts.setup_environment.is_admin', return_value=False),
+            patch('scripts.setup_environment.run_command', side_effect=record_command),
+            # MCP registration needs the real Claude CLI, which E2E tests never run
+            patch('scripts.setup_environment.configure_all_mcp_servers',
+                  return_value=(True, [], empty_mcp_stats())),
+            # Step 7 writes the Windows registry; it has nothing to do with elevation
+            patch('scripts.setup_environment.set_all_os_env_variables', return_value=True),
+            patch('scripts.setup_environment._dev_tty_available', return_value=False),
+            patch('sys.stdin.isatty', return_value=False),
+            patch('sys.argv', ['setup_environment.py', 'golden', *extra_argv]),
+            patch('sys.exit') as mock_exit,
+        ):
+            setup_environment.main()
+
+        mock_exit.assert_not_called()
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert BANNER_TITLE not in captured.out
+        assert 'Step 1: Installing Claude Code...' in captured.out
+        assert 'Claude Code installation complete' in captured.out
+        assert 'Step 6: Installing dependencies...' in captured.out
+        assert 'Setup Completed with Errors' not in captured.out
+        assert installer in commands
+        assert winget in commands
+        assert npm in commands
+        assert commands.index(installer) < commands.index(winget) < commands.index(npm)
+        profile_dir = e2e_isolated_home['claude_dir'] / 'e2e-test-cmd'
+        assert (profile_dir / 'config.json').is_file()
+        assert (profile_dir / 'agents' / 'e2e-test-agent.md').is_file()

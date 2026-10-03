@@ -2528,6 +2528,8 @@ export CLAUDE_CODE_TOOLBOX_SKIP_INSTALL=1
 
 From a terminal without administrator rights, a real run on Windows requests elevation through a UAC prompt when it installs Claude Code (unless `--skip-install` is set) or runs a `winget ... --scope machine` or `npm install -g` dependency. It prints the reasons, then continues in a new elevated window; if elevation is denied, the run exits 1. A dry run never requests elevation (see [Dry-run mode](#dry-run-mode)).
 
+With `--no-admin`, no step of the run requests elevation: the setup installs Claude Code and runs the `winget ... --scope machine` and `npm install -g` dependencies without administrator rights. An operation that needs those rights fails and the run exits 1: a failed Claude Code installation stops the setup, and a failed dependency appears in the error summary at the end of the run.
+
 To prevent the setup from requesting Windows admin elevation:
 
 **Environment variable (all platforms, works in piped mode):**

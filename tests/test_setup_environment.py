@@ -2117,6 +2117,54 @@ class TestInstallDependencies:
         assert result == []
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
+    def test_install_dependencies_windows_never_requests_elevation(self) -> None:
+        """Machine-scope winget and global npm commands run in a non-elevated process."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        npm_dep = 'npm install -g typescript'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            failed = setup_environment.install_dependencies({'windows': [winget_dep], 'common': [npm_dep]})
+
+        assert failed == []
+        mock_request.assert_not_called()
+        assert [call.args[0] for call in mock_run.call_args_list] == [
+            ['winget', 'install', 'Some.Tool', '--scope', 'machine'],
+            ['npm', 'install', '-g', 'typescript'],
+        ]
+
+    def test_install_dependencies_windows_unelevated_winget_failure_is_reported(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A machine-scope winget command that fails unelevated is a recorded failure with guidance."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', ''),
+            ),
+        ):
+            failed = setup_environment.install_dependencies(
+                {'windows': [winget_dep], 'common': ['pip install requests']},
+            )
+
+        assert failed == [winget_dep, 'pip install requests']
+        mock_request.assert_not_called()
+        captured = capsys.readouterr()
+        assert f'Failed to install dependency: {winget_dep}' in captured.err
+        assert 'This may have failed due to lack of admin rights' in captured.out + captured.err
+
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
     @patch('setup_environment.expand_tildes_in_command')
@@ -5474,13 +5522,11 @@ class TestInstallClaude:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system, mock_is_file):
+    def test_install_claude_windows(self, mock_run, mock_urlopen, mock_system, mock_is_file):
         """Test installing Claude on Windows via bootstrap download."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         assert mock_is_file.return_value is False  # No sibling installer: bootstrap path
-        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer'
         mock_urlopen.return_value = mock_response
@@ -5491,7 +5537,24 @@ class TestInstallClaude:
         assert result is True
         mock_run.assert_called_once()
         assert 'powershell' in mock_run.call_args[0][0]
-        mock_is_admin.assert_called()  # Verify is_admin was called
+
+    def test_install_claude_windows_never_requests_elevation(self) -> None:
+        """A non-elevated Windows process runs the installer; elevation is decided before Step 1."""
+        installer = Path(setup_environment.__file__).resolve().parent / 'install_claude.py'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            result = setup_environment.install_claude()
+
+        assert result is True
+        mock_request.assert_not_called()
+        mock_run.assert_called_once_with([sys.executable, str(installer)], capture_output=False)
 
     @patch('platform.system', return_value='Darwin')
     @patch('pathlib.Path.is_file', return_value=False)
