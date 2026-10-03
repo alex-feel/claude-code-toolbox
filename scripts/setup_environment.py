@@ -42,6 +42,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 from typing import Any
+from typing import Literal
 from typing import NamedTuple
 from typing import TextIO
 from typing import TypeVar
@@ -159,6 +160,27 @@ RESERVED_COMPONENT_NAMES: frozenset[str] = frozenset({'all', 'none'})
 # Component names: lowercase letters, digits, dots, underscores, hyphens;
 # must start with a letter or digit
 COMPONENT_NAME_PATTERN: re.Pattern[str] = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
+
+# Command names no profile may take, compared without regard to case: none,
+# base and all are reserved words of the profile interface, and the rest are
+# entries of a Claude Code configuration directory, so a profile named after
+# one would install into that entry of the base ~/.claude. Inline copy of
+# RESERVED_COMMAND_NAMES in scripts/models/environment_config.py (standalone
+# script policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_reserved_command_names_parity.py.
+RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({
+    'none',
+    'base',
+    'all',
+    'skills',
+    'agents',
+    'commands',
+    'rules',
+    'hooks',
+    'output-styles',
+    'prompts',
+    'projects',
+})
 
 # Hook event names recognized by Claude Code 2.1.238; Claude Code rejects any
 # other name at configuration load time. _build_hooks_json() warns (rather
@@ -588,6 +610,50 @@ def execute_parallel_safe(
     return execute_parallel(items, safe_func, max_workers, stagger_delay=stagger_delay)
 
 
+class EnvTwin(NamedTuple):
+    """A CLAUDE_CODE_TOOLBOX_* environment variable that stands in for an argument.
+
+    Attributes:
+        variable: Environment variable name.
+        dest: argparse destination the variable fills when the argument is
+            absent.
+        kind: 'switch' for a store_true flag that only the exact value '1'
+            turns on; 'value' for a string argument that any non-empty value
+            fills.
+    """
+
+    variable: str
+    dest: str
+    kind: Literal['switch', 'value']
+
+
+# Every environment variable that stands in for a command-line argument. This
+# table is the single source for the fallbacks resolve_args() applies and for
+# the variables request_admin_elevation() forwards: the elevated process does
+# not inherit the environment of the process that requested elevation.
+ENV_TWINS: tuple[EnvTwin, ...] = (
+    EnvTwin('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'config', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL', 'yes', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_DRY_RUN', 'dry_run', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL', 'skip_install', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_NO_ADMIN', 'no_admin', 'switch'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_ENV_AUTH', 'auth', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_SELECT', 'select', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_WITH', 'with_', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_WITHOUT', 'without', 'value'),
+    EnvTwin('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'command_names', 'value'),
+)
+
+# Variables the elevated process needs that no argument stands in for: the
+# repository credentials and the Claude Code version the installer pins.
+UAC_FORWARDED_ENV_VARS: tuple[str, ...] = (
+    'GITHUB_TOKEN',
+    'GITLAB_TOKEN',
+    'REPO_TOKEN',
+    'CLAUDE_CODE_TOOLBOX_VERSION',
+)
+
+
 # Windows UAC elevation helper functions
 def is_admin() -> bool:
     """Check if running with admin privileges on Windows.
@@ -652,25 +718,13 @@ def request_admin_elevation(script_args: list[str] | None = None) -> None:
     try:
         import ctypes
 
-        # Collect critical environment variables to pass to elevated process
+        # The elevated process does not inherit this environment, so every
+        # argument twin and every credential travels as an --env-VAR=value
+        # argument that restore_env_vars_from_args() puts back
         env_vars_to_pass: list[str] = []
-        critical_env_vars = [
-            'CLAUDE_CODE_TOOLBOX_ENV_CONFIG',
-            'GITHUB_TOKEN',
-            'GITLAB_TOKEN',
-            'REPO_TOKEN',
-            'CLAUDE_CODE_TOOLBOX_VERSION',
-            'CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL',
-            'CLAUDE_CODE_TOOLBOX_DRY_RUN',
-            'CLAUDE_CODE_TOOLBOX_SKIP_INSTALL',
-            'CLAUDE_CODE_TOOLBOX_NO_ADMIN',
-            'CLAUDE_CODE_TOOLBOX_ENV_AUTH',
-            'CLAUDE_CODE_TOOLBOX_SELECT',
-            'CLAUDE_CODE_TOOLBOX_WITH',
-            'CLAUDE_CODE_TOOLBOX_WITHOUT',
-        ]
+        forwarded_env_vars = [twin.variable for twin in ENV_TWINS] + list(UAC_FORWARDED_ENV_VARS)
 
-        for var_name in critical_env_vars:
+        for var_name in forwarded_env_vars:
             var_value = os.environ.get(var_name)
             if var_value:
                 # Don't escape here - we'll handle escaping when building the params string
@@ -959,6 +1013,8 @@ class InstallationPlan:
     system_prompt: str | None = None
     system_prompt_mode: str = 'replace'
     command_names: list[str] = field(default_factory=lambda: list[str]())
+    # 'cli', 'env', or 'yaml' (see CommandNames); None without command names
+    command_names_origin: str | None = None
     claude_code_version: str | None = None
     install_nodejs: bool = False
     skip_install: bool = False
@@ -3063,8 +3119,8 @@ def validate_hooks_files_consistency(
     return errors
 
 
-def _parse_component_csv(value: str | None) -> list[str] | None:
-    """Parse a comma-separated component list, distinguishing absent from empty.
+def _parse_csv(value: str | None) -> list[str] | None:
+    """Parse a comma-separated flag or environment value, distinguishing absent from empty.
 
     Args:
         value: Raw flag or environment variable value, or None when absent.
@@ -3100,7 +3156,7 @@ def _validate_component_selector_args(
         ('--with', args.with_),
         ('--without', args.without),
     ):
-        tokens = _parse_component_csv(raw)
+        tokens = _parse_csv(raw)
         if tokens is None:
             continue
         if not tokens:
@@ -3233,9 +3289,9 @@ def resolve_component_selection(
         for name, c in zip(names, components, strict=True)
     }
 
-    select_tokens = _parse_component_csv(args.select)
-    with_tokens = _parse_component_csv(args.with_) or []
-    without_set = set(_parse_component_csv(args.without) or [])
+    select_tokens = _parse_csv(args.select)
+    with_tokens = _parse_csv(args.with_) or []
+    without_set = set(_parse_csv(args.without) or [])
 
     if select_tokens is not None:
         if select_tokens == ['all']:
@@ -8840,7 +8896,12 @@ def display_installation_summary(
             cause = component_selection.auto_included.get(name)
             cause_str = f' {Colors.GREEN}[auto: {cause}]{Colors.NC}' if cause else ''
             _print(f'  {mark} {label}{suffix}{cause_str}')
-        _print(f'  Replay: {component_selection.replay}')
+        replay = component_selection.replay
+        # Names from the flag or its variable are not in the configuration,
+        # so a replay without them would install the configuration's profile
+        if plan.command_names_origin in ('cli', 'env'):
+            replay += f" --command-names {','.join(plan.command_names)}"
+        _print(f'  Replay: {replay}')
 
     deselected = plan.deselected_items
     if deselected and has_deselected_items(deselected):
@@ -8920,7 +8981,8 @@ def display_installation_summary(
             f'  {Colors.RED}[DELETE]{Colors.NC} {k}' for k in null_keys
         )
     if plan.command_names:
-        settings_items.append(f"Command names: {', '.join(plan.command_names)}")
+        origin_marker = command_names_origin_marker(plan.command_names_origin)
+        settings_items.append(f"Command names: {', '.join(plan.command_names)}{origin_marker}")
 
     if settings_items:
         _print()
@@ -12823,6 +12885,268 @@ def validate_command_name_for_path(name: str) -> bool:
     return bool(_SAFE_COMMAND_NAME_PATTERN.match(name))
 
 
+# Where each origin of a run's command names is set, as error messages name it
+COMMAND_NAMES_SOURCES: dict[str, str] = {
+    'cli': '--command-names',
+    'env': 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
+    'yaml': 'command-names',
+}
+
+
+class CommandNames(NamedTuple):
+    """The command names of a run and where they came from.
+
+    Attributes:
+        names: The primary name first, then the aliases; empty for a run that
+            installs into the base ~/.claude.
+        origin: 'cli' for --command-names, 'env' for
+            CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, 'yaml' for the configuration's
+            command-names, or None when no source names a command.
+    """
+
+    names: list[str]
+    origin: str | None
+
+
+def command_names_origin_marker(origin: str | None) -> str:
+    """Render where a run's command names came from, for the summaries that list them.
+
+    Args:
+        origin: The CommandNames origin: 'cli', 'env', 'yaml', or None.
+
+    Returns:
+        ' [cli]', ' [env]' or ' [yaml]' to append to the names; empty when
+        no source names a command.
+    """
+    return f' [{origin}]' if origin else ''
+
+
+def command_name_errors(names: list[str], source: str) -> list[str]:
+    """Validate command names for use as a profile directory and a global command.
+
+    Args:
+        names: Command names to validate, primary first.
+        source: The flag, variable, or configuration key the names came from,
+            named in every message.
+
+    Returns:
+        One error message per invalid name; empty when every name is valid.
+    """
+    errors: list[str] = []
+    for name in names:
+        if not name.strip():
+            errors.append(f'Invalid command name in {source}: names cannot be empty')
+        elif ' ' in name:
+            errors.append(f'Invalid command name "{name}" in {source}: names cannot contain spaces')
+        elif not validate_command_name_for_path(name):
+            errors.append(
+                f'Invalid command name "{name}" in {source}: use only letters, digits, hyphens, and '
+                'underscores, starting with a letter or digit',
+            )
+        elif name.casefold() in RESERVED_COMMAND_NAMES:
+            reserved = ', '.join(sorted(RESERVED_COMMAND_NAMES))
+            errors.append(
+                f'Command name "{name}" in {source} is reserved; choose a name other than: {reserved}',
+            )
+    return errors
+
+
+def resolve_command_names(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> tuple[CommandNames, list[str]]:
+    """Determine the command names of a run and validate them.
+
+    --command-names wins over CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, which wins
+    over the configuration's command-names. A typed or environment value
+    replaces the configuration's list whole and never merges with it: a
+    single name is the complete list, with no aliases. Every source goes
+    through command_name_errors().
+
+    Args:
+        args: Arguments after resolve_args(), which records in args.origins
+            whether args.command_names was typed or came from the environment.
+        config: The resolved configuration.
+
+    Returns:
+        The effective command names with their origin, and the validation
+        errors (empty when the names are usable).
+    """
+    if args.command_names is not None:
+        origin = args.origins['command_names']
+        source = COMMAND_NAMES_SOURCES[origin]
+        names = _parse_csv(args.command_names) or []
+        if not names:
+            return CommandNames([], origin), [f'{source} requires at least one command name']
+        return CommandNames(names, origin), command_name_errors(names, source)
+
+    raw = config.get('command-names')
+    if raw is None:
+        names = []
+    elif isinstance(raw, str):
+        names = [raw]
+    elif isinstance(raw, list):
+        names = [str(item) for item in cast(list[object], raw)]
+    else:
+        return CommandNames([], None), [
+            f'Invalid command-names value: expected string or list, got {type(raw).__name__}',
+        ]
+    origin = 'yaml' if names else None
+    return CommandNames(names, origin), command_name_errors(names, COMMAND_NAMES_SOURCES['yaml'])
+
+
+# The first lines of the wrappers register_global_command() writes on
+# Windows, by file suffix; each names the command the wrapper serves. A Unix
+# wrapper is a symlink to the profile's launcher instead (see
+# is_toolbox_wrapper()).
+_TOOLBOX_WRAPPER_MARKERS: dict[str, str] = {
+    '.cmd': r'^REM Global {name} command for CMD(?=\s|$)',
+    '.ps1': r'^# Global {name} command for PowerShell(?=\s|$)',
+    '': r'^# Bash wrapper for {name}(?=\s|$)',
+}
+
+# Suffixes Windows shells resolve a bare command name to, beyond the
+# wrappers the toolbox writes: a name.exe answers to the name just like the
+# name.cmd wrapper would
+_WINDOWS_EXECUTABLE_SUFFIXES: tuple[str, ...] = ('.exe', '.bat', '.com')
+
+
+def is_toolbox_wrapper(path: Path, name: str) -> bool:
+    """Report whether a ~/.local/bin entry is a wrapper the toolbox wrote for a name.
+
+    register_global_command() links name to the profile's launch.sh on Unix
+    and writes name.cmd, name.ps1 and name on Windows, each opening with a
+    comment that names the command. A dangling link still counts: its
+    profile is gone, but the toolbox created it.
+
+    Args:
+        path: The ~/.local/bin entry to inspect.
+        name: The command name the entry stands for.
+
+    Returns:
+        True when the entry is a toolbox wrapper for that name.
+    """
+    if path.is_symlink():
+        try:
+            return Path(os.readlink(path)).name == 'launch.sh'
+        except OSError:
+            return False
+    marker = _TOOLBOX_WRAPPER_MARKERS.get(path.suffix.lower())
+    if marker is None:
+        return False
+    try:
+        with path.open('r', encoding='utf-8', errors='replace') as handle:
+            head = handle.read(512)
+    except OSError:
+        return False
+    pattern = marker.format(name=re.escape(name))
+    return re.search(pattern, head, flags=re.MULTILINE | re.IGNORECASE) is not None
+
+
+def _command_names_of_other_profiles(home_dir: Path, primary_command_name: str) -> dict[str, str]:
+    """Map every command name another isolated profile holds to the reason it is taken.
+
+    Each isolated profile records its command names in
+    ~/.claude/{primary}/manifest.json. A manifest whose 'name' is this run's
+    primary name belongs to this run's own profile. A manifest that cannot
+    be read still holds its directory name, which is that profile's primary
+    name. Names are compared without regard to case, because Windows and
+    macOS file systems map both spellings onto the same wrapper files.
+
+    Args:
+        home_dir: User home directory.
+        primary_command_name: This run's primary command name.
+
+    Returns:
+        Casefolded command name mapped to the error message refusing it,
+        with '{name}' left for the name as typed.
+    """
+    claude_dir = home_dir / '.claude'
+    own = primary_command_name.casefold()
+    taken: dict[str, str] = {}
+    try:
+        profile_dirs = sorted(entry for entry in claude_dir.iterdir() if entry.is_dir())
+    except OSError:
+        return taken
+    for profile_dir in profile_dirs:
+        manifest_path = profile_dir / MANIFEST_FILENAME
+        try:
+            content = json.loads(manifest_path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            content = None
+        if not isinstance(content, dict):
+            if profile_dir.name.casefold() != own:
+                taken[profile_dir.name.casefold()] = (
+                    f'Command name "{{name}}" names the profile directory {profile_dir}, whose '
+                    f'{MANIFEST_FILENAME} could not be read. Choose another name, or repair or '
+                    'remove that profile first.'
+                )
+            continue
+        manifest = cast(dict[str, Any], content)
+        owner = str(manifest.get('name') or profile_dir.name)
+        if owner.casefold() == own:
+            continue
+        listed = manifest.get('command_names')
+        names = [str(item) for item in cast(list[object], listed)] if isinstance(listed, list) else []
+        for name in [owner, *names]:
+            if name.casefold() == owner.casefold():
+                reason = (
+                    f'Command name "{{name}}" is the primary name of the profile "{owner}" '
+                    f'({manifest_path}). Choose a name no other profile uses.'
+                )
+            else:
+                reason = (
+                    f'Command name "{{name}}" belongs to the profile "{owner}" (listed in '
+                    f'{manifest_path}). Choose a name no other profile uses, or install that '
+                    'profile again with a command-names list that leaves it out.'
+                )
+            taken.setdefault(name.casefold(), reason)
+    return taken
+
+
+def command_name_conflicts(command_names: list[str], home_dir: Path) -> list[str]:
+    """Find the command names of a run that another owner already holds.
+
+    Registering a name writes its wrappers into ~/.local/bin, which would
+    silently take the command over from whoever holds it. A name is held
+    when another profile's manifest lists it, or when ~/.local/bin has an
+    entry for it that the toolbox did not create: on Windows that covers the
+    wrapper files and every executable the shells resolve the name to. A
+    toolbox wrapper that no other manifest lists, such as one a dropped
+    alias left behind, is free to reuse.
+
+    Args:
+        command_names: This run's command names, primary first.
+        home_dir: User home directory.
+
+    Returns:
+        One error message per held name, naming the owner and the remedy;
+        empty when every name is free.
+    """
+    taken = _command_names_of_other_profiles(home_dir, command_names[0])
+    local_bin = home_dir / '.local' / 'bin'
+    suffixes: tuple[str, ...] = ('',)
+    if platform.system() == 'Windows':
+        suffixes = ('', '.cmd', '.ps1', *_WINDOWS_EXECUTABLE_SUFFIXES)
+    errors: list[str] = []
+    for name in command_names:
+        reason = taken.get(name.casefold())
+        if reason is not None:
+            errors.append(reason.replace('{name}', name))
+            continue
+        for suffix in suffixes:
+            entry = local_bin / f'{name}{suffix}'
+            if (entry.exists() or entry.is_symlink()) and not is_toolbox_wrapper(entry, name):
+                errors.append(
+                    f'Command name "{name}" is taken by {entry}, which the toolbox did not create. '
+                    f'Choose another name, or move that file out of {local_bin} if it is no longer needed.',
+                )
+                break
+    return errors
+
+
 def download_hook_files(
     hooks: dict[str, Any] | None,
     claude_user_dir: Path,
@@ -14381,18 +14705,19 @@ exec "{bash_script_path}" "$@"
             local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            symlink_path = local_bin / command_name
-            if symlink_path.exists():
-                symlink_path.unlink()
-            symlink_path.symlink_to(launcher_path)
+            def _link_to_launcher(link_path: Path) -> None:
+                # exists() follows the link and reports False for one whose
+                # profile is gone, yet that dangling link still holds the name
+                if link_path.is_symlink() or link_path.exists():
+                    link_path.unlink()
+                link_path.symlink_to(launcher_path)
+
+            _link_to_launcher(local_bin / command_name)
 
             # Create additional symlinks for aliases (Linux/macOS)
             if additional_names:
                 for alias_name in additional_names:
-                    alias_symlink_path = local_bin / alias_name
-                    if alias_symlink_path.exists():
-                        alias_symlink_path.unlink()
-                    alias_symlink_path.symlink_to(launcher_path)
+                    _link_to_launcher(local_bin / alias_name)
 
                 info(f'Created {len(additional_names)} alias symlink(s): {", ".join(additional_names)}')
 
@@ -14793,13 +15118,21 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
 
     Applies --env KEY=VALUE overrides to the process environment FIRST,
     so every env-var read below (and every later consumer, including
-    child processes) sees them. CLI flags take precedence over
-    environment variables. For boolean flags (store_true), argparse
-    defaults to False when the flag is absent, so the env var acts as a
-    fallback for piped invocations where CLI flags cannot be passed.
+    child processes) sees them. Every fallback comes from ENV_TWINS, and
+    CLI arguments take precedence over their environment variables:
 
-    args.auth carries the CLAUDE_CODE_TOOLBOX_ENV_AUTH value (settable
-    via --env), or None when the variable is empty or unset.
+    - A switch twin turns its store_true flag on only with the exact
+      value '1'; argparse leaves the flag False when it is absent, so the
+      variable is the channel for piped invocations that cannot pass flags.
+    - A value twin fills its argument only when the argument is absent.
+      An empty export (a common CI-template default) counts as absent
+      instead of aborting the run over a flag the user never passed; an
+      explicit CLI value, empty or not, is kept.
+
+    args.origins maps every value argument that ended up set to 'cli' or
+    'env'. args.auth carries CLAUDE_CODE_TOOLBOX_ENV_AUTH, which has no
+    flag, or None. args.config carries the positional configuration or
+    CLAUDE_CODE_TOOLBOX_ENV_CONFIG.
 
     Called immediately after parse_args() and before any flag-dependent
     logic (admin checks, confirmation gates, installation flow).
@@ -14811,21 +15144,20 @@ def resolve_args(args: argparse.Namespace) -> argparse.Namespace:
         Modified args namespace with environment variables merged.
     """
     _apply_env_overrides(getattr(args, 'env_vars', None))
-    args.yes = args.yes or os.environ.get('CLAUDE_CODE_TOOLBOX_CONFIRM_INSTALL') == '1'
-    args.dry_run = args.dry_run or os.environ.get('CLAUDE_CODE_TOOLBOX_DRY_RUN') == '1'
-    args.skip_install = args.skip_install or os.environ.get('CLAUDE_CODE_TOOLBOX_SKIP_INSTALL') == '1'
-    args.no_admin = args.no_admin or os.environ.get('CLAUDE_CODE_TOOLBOX_NO_ADMIN') == '1'
-    args.auth = os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_AUTH') or None
-    # 'or None' treats an empty-string export (a common CI-template
-    # default) as absent, matching every other toolbox env var, instead of
-    # aborting the run with an error about a flag the user never passed;
-    # an explicit CLI --select '' still errors through argparse
-    if args.select is None:
-        args.select = os.environ.get('CLAUDE_CODE_TOOLBOX_SELECT') or None
-    if args.with_ is None:
-        args.with_ = os.environ.get('CLAUDE_CODE_TOOLBOX_WITH') or None
-    if args.without is None:
-        args.without = os.environ.get('CLAUDE_CODE_TOOLBOX_WITHOUT') or None
+    origins: dict[str, str] = {}
+    for twin in ENV_TWINS:
+        env_value = os.environ.get(twin.variable)
+        if twin.kind == 'switch':
+            setattr(args, twin.dest, bool(getattr(args, twin.dest, False)) or env_value == '1')
+            continue
+        if getattr(args, twin.dest, None) is not None:
+            origins[twin.dest] = 'cli'
+        elif env_value:
+            setattr(args, twin.dest, env_value)
+            origins[twin.dest] = 'env'
+        else:
+            setattr(args, twin.dest, None)
+    args.origins = origins
     return args
 
 
@@ -14901,6 +15233,13 @@ def main() -> None:
         action='store_true',
         help='List the components defined by the configuration and exit',
     )
+    parser.add_argument(
+        '--command-names',
+        type=str,
+        metavar='NAME[,ALIAS...]',
+        help='Install as the isolated profile ~/.claude/NAME with these command names '
+        "(comma-separated, primary first); replaces the configuration's command-names",
+    )
     args = parser.parse_args()
     resolve_args(args)
 
@@ -14923,8 +15262,8 @@ def main() -> None:
             info('To force root execution: CLAUDE_CODE_TOOLBOX_ALLOW_ROOT=1 <command>')
             sys.exit(1)
 
-    # Get configuration from args or environment
-    config_name = args.config or os.environ.get('CLAUDE_CODE_TOOLBOX_ENV_CONFIG')
+    # The positional configuration, or CLAUDE_CODE_TOOLBOX_ENV_CONFIG
+    config_name = args.config
 
     if not config_name:
         error('No configuration specified!')
@@ -15012,36 +15351,23 @@ def main() -> None:
             display_component_registry(components_list)
             sys.exit(0)
 
-        # Extract command-names
-        command_names_raw = config.get('command-names')
-
-        # Normalize to list
-        command_names: list[str] | None = None
-        if command_names_raw is not None:
-            if isinstance(command_names_raw, str):
-                command_names = [command_names_raw]
-            elif isinstance(command_names_raw, list):
-                # Convert all items to strings (handles mixed types from YAML)
-                command_names = [str(item) for item in cast(list[object], command_names_raw)]
-            else:
-                error(f'Invalid command-names value: expected string or list, got {type(command_names_raw).__name__}')
-                sys.exit(1)
-
-        # Validate command names
+        # The run's command names: --command-names, then its environment twin,
+        # then the configuration. A typed or environment list replaces the
+        # configuration's list, which every later step reads. A name another
+        # profile or a foreign ~/.local/bin file holds is refused here, before
+        # the summary, consent, or any write.
+        effective_command_names, command_names_errors = resolve_command_names(args, config)
+        if not command_names_errors and effective_command_names.names:
+            command_names_errors = command_name_conflicts(
+                effective_command_names.names, get_real_user_home(),
+            )
+        if command_names_errors:
+            for err in command_names_errors:
+                error(err)
+            sys.exit(1)
+        command_names: list[str] | None = effective_command_names.names or None
         if command_names:
-            for cmd_name in command_names:
-                if not cmd_name.strip():
-                    error('Invalid command name: empty or whitespace-only name')
-                    sys.exit(1)
-                if ' ' in cmd_name:
-                    error(f'Invalid command name: "{cmd_name}" contains spaces')
-                    sys.exit(1)
-                # Validate path safety (rejects path separators, traversal, leading dots)
-                if not validate_command_name_for_path(cmd_name):
-                    error(f'Invalid command name for isolation: "{cmd_name}"')
-                    error('Command names must contain only alphanumeric characters, hyphens, and underscores.')
-                    error('Leading dots, path separators, and traversal patterns are not allowed.')
-                    sys.exit(1)
+            config['command-names'] = command_names
 
         # Get primary command name (first in list) for file naming
         primary_command_name = command_names[0] if command_names else None
@@ -15315,6 +15641,7 @@ def main() -> None:
             selection=selection,
         )
         plan.auto_injected_items = auto_injected_items
+        plan.command_names_origin = effective_command_names.origin
         plan.claude_code_version = claude_install_decision.version
         plan.keep_installed_claude = claude_install_decision.kept
         plan.claude_install_reason = claude_install_decision.reason
@@ -16011,12 +16338,15 @@ def main() -> None:
         # Show hooks count with routing information
         hooks = config.get('hooks', {})
         hook_event_count = len(hooks.get('events', [])) if hooks else 0
+        # Under --yes nobody reads the installation summary before the run,
+        # so the closing lines name where the command names came from too
+        origin_marker = command_names_origin_marker(effective_command_names.origin)
         if command_names:
             print(f'   * Hooks: {hook_event_count} configured (in config.json)')
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)} registered')
+                print(f'   * Global commands: {", ".join(command_names)} registered{origin_marker}')
             else:
-                print(f'   * Global command: {primary_command_name} registered')
+                print(f'   * Global command: {primary_command_name} registered{origin_marker}')
         else:
             if hook_event_count > 0:
                 print(f'   * Hooks: {hook_event_count} configured (in settings.json)')
@@ -16026,9 +16356,9 @@ def main() -> None:
         print(f'{Colors.YELLOW}Quick Start:{Colors.NC}')
         if command_names:
             if len(command_names) > 1:
-                print(f'   * Global commands: {", ".join(command_names)}')
+                print(f'   * Global commands: {", ".join(command_names)}{origin_marker}')
             else:
-                print(f'   * Global command: {primary_command_name}')
+                print(f'   * Global command: {primary_command_name}{origin_marker}')
         else:
             print('   * Use "claude" to start Claude Code with configured environment')
 

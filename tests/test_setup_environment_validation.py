@@ -1208,6 +1208,8 @@ class TestMainFlowWithValidation:
             with_=None,
             without=None,
             list_components=False,
+            command_names=None,
+            auth=None,
         )
         mock_load.return_value = (
             {
@@ -1279,6 +1281,8 @@ class TestMainFlowWithValidation:
             with_=None,
             without=None,
             list_components=False,
+            command_names=None,
+            auth=None,
         )
         mock_load.return_value = (
             {

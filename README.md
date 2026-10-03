@@ -25,6 +25,7 @@ Define your complete Claude Code environment in a single YAML file -- custom age
 - **Configuration inheritance** -- extend and override parent configurations with selective per-key merge
 - **Component selection** -- author-defined component groups the end user picks at setup time, interactively (checkbox picker) or via `--select`/`--with`/`--without`; unclaimed items stay mandatory
 - **Isolated profiles** -- `command-names` installs a configuration as a separate profile under `~/.claude/{cmd}/` with its own commands, settings, `.claude.json`, MCP registrations, and environment loaders; an isolated install leaves the base profile's `settings.json` and `.claude.json` alone, apart from the `installMethod` record the Claude Code installer keeps in `~/.claude.json`, and names every write outside the profile before you confirm: the binary and its `installMethod` record, a version pin and its IDE extension, the update controls, the command wrappers, project-scope MCP servers, `files-to-download` destinations outside the profile, and the dependency commands
+- **One configuration, many profiles** -- `--command-names NAME[,ALIAS...]` installs any configuration under the names you give, placing its agents, commands, rules, skills, hooks, and launchers in the isolated profile `~/.claude/NAME`, so one YAML file serves as many profiles as you need; `files-to-download` destinations and dependency commands run as written, and a name another profile or program already holds is refused before anything is written
 - **Shared projects directory** -- optionally link an isolated profile's `projects/` to the base `~/.claude/projects/` so the isolated and default Claude share session history
 - **Dependency management** -- platform-specific package installation (apt, brew, choco, and more)
 - **File downloads** -- arbitrary files downloaded to specified destinations during setup
@@ -116,6 +117,9 @@ uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/
 
 # Private repositories: pass tokens inline with --env, or export them as regular environment variables
 uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' --env GITHUB_TOKEN=ghp_your-token --env GITLAB_TOKEN=glpat-your-token
+
+# The same configuration as a second isolated profile with its own command
+uvx cc-toolbox setup 'https://raw.githubusercontent.com/your-org/your-repo/main/config.yaml' --command-names my-env-2
 ```
 
 For a persistent `cc-toolbox` command, install it once with `uv tool install cc-toolbox` (or `pipx install cc-toolbox`).

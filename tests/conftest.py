@@ -59,6 +59,24 @@ def _isolate_claude_config_dir(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_argument_twins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no environment twin of a setup argument.
+
+    Each ENV_TWINS variable stands in for an argument of setup_environment's
+    main(), and --env KEY=VALUE writes into the process environment for the
+    rest of the process, so a main()-flow test that passes --env leaves its
+    variable behind for the rest of the session. A developer whose shell
+    exports one, CLAUDE_CODE_TOOLBOX_COMMAND_NAMES for instance, would steer
+    every main()-flow test into another profile. Tests that exercise a twin
+    set it themselves.
+    """
+    from scripts.setup_environment import ENV_TWINS
+
+    for twin in ENV_TWINS:
+        monkeypatch.delenv(twin.variable, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _restore_session_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Restore PATH after every test, whatever the code under test assigned to it.
 
@@ -521,6 +539,32 @@ def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
         monkeypatch.setattr(setup_environment, 'write_manifest', lambda *_a, **_kw: True)
     except (ImportError, AttributeError):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_command_name_conflicts(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace command_name_conflicts with a check that finds nothing in unit tests.
+
+    The real check reads every ~/.claude/*/manifest.json and ~/.local/bin of
+    the machine running the suite, so a main()-flow unit test would pass or
+    fail depending on which profiles and commands that machine has. The
+    setup script is imported both as setup_environment and as
+    scripts.setup_environment, which are distinct module objects, so both
+    are patched. E2E tests run the real check inside their isolated home.
+
+    Tests that exercise the real implementation bypass this mock by capturing
+    a module-level reference to the function at test-module import time.
+    """
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, 'command_name_conflicts', lambda *_a, **_kw: [])
 
 
 @pytest.fixture(autouse=True)
