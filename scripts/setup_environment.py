@@ -17090,6 +17090,9 @@ def main() -> None:
                 info(f'  Removed: {path}')
             print()
 
+    # Set once a step below has already held the UAC window for its outcome
+    elevated_window_held = False
+
     try:
         # Load configuration from source (URL, local file, or repository)
         config, config_source = load_config_from_source(config_name, args.auth)
@@ -18173,6 +18176,7 @@ def main() -> None:
             # A UAC relaunch runs in a window that closes on exit: hold it so the user can see the error
             if was_elevated_via_uac:
                 _hold_elevated_window('Setup Completed with Errors', Colors.RED)
+                elevated_window_held = True
 
             sys.exit(1)
 
@@ -18347,6 +18351,13 @@ def main() -> None:
                     'You can now close this window and use the configured environment.',
                 ),
             )
+
+    except SystemExit as exit_request:
+        # A UAC relaunch runs in a window that closes on exit: a failed exit that no step held yet
+        # (a validation error, a refused guard) is held here so the user can read its error
+        if was_elevated_via_uac and not elevated_window_held and exit_request.code not in (None, 0):
+            _hold_elevated_window('Setup Failed', Colors.RED)
+        raise
 
     except Exception as e:
         print()
