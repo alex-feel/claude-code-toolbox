@@ -13,6 +13,8 @@ from typing import Any
 import pytest
 import yaml
 
+pytest_plugins = ['pytester']
+
 # Known test artifact names used by the post-test leak detector.
 # Maintain this set when adding new test command names to the test suite.
 _KNOWN_TEST_ARTIFACT_NAMES: frozenset[str] = frozenset({
