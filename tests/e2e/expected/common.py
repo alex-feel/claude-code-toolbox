@@ -59,7 +59,6 @@ EXPECTED_JSON_KEYS: Final[dict[str, list[str]]] = {
         'config_source_url',
         'config_source_type',
         'installed_at',
-        'last_checked_at',
         'command_names',
     ],
 }

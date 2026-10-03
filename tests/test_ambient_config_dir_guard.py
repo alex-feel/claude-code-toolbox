@@ -268,7 +268,10 @@ class TestMainAmbientConfigDirGuard:
 
         with (
             patch('setup_environment.prompt_component_selection') as mock_picker,
-            patch('setup_environment.check_admin_needed', return_value=True) as mock_admin,
+            patch(
+                'setup_environment.admin_elevation_reasons',
+                return_value=['Installing Claude Code (includes Node.js and Git)'],
+            ) as mock_admin,
             patch('sys.stdin.isatty', return_value=True),
             pytest.raises(SystemExit) as exc_info,
         ):

@@ -36,6 +36,7 @@ from tests.conftest import empty_mcp_stats
 _real_cleanup_stale_auto_update_controls = setup_environment.cleanup_stale_auto_update_controls
 _real_cleanup_stale_ide_extension_controls = setup_environment.cleanup_stale_ide_extension_controls
 _real_propagate_install_method = setup_environment._propagate_install_method
+_real_write_manifest = setup_environment.write_manifest
 
 
 class TestColors:
@@ -2117,6 +2118,54 @@ class TestInstallDependencies:
         assert result == []
         mock_run.assert_called_with(['uv', 'tool', 'install', '--force', 'ruff'], capture_output=False)
 
+    def test_install_dependencies_windows_never_requests_elevation(self) -> None:
+        """Machine-scope winget and global npm commands run in a non-elevated process."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        npm_dep = 'npm install -g typescript'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            failed = setup_environment.install_dependencies({'windows': [winget_dep], 'common': [npm_dep]})
+
+        assert failed == []
+        mock_request.assert_not_called()
+        assert [call.args[0] for call in mock_run.call_args_list] == [
+            ['winget', 'install', 'Some.Tool', '--scope', 'machine'],
+            ['npm', 'install', '-g', 'typescript'],
+        ]
+
+    def test_install_dependencies_windows_unelevated_winget_failure_is_reported(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A machine-scope winget command that fails unelevated is a recorded failure with guidance."""
+        winget_dep = 'winget install Some.Tool --scope machine'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(setup_environment, 'refresh_path_from_registry', return_value=True),
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 1, '', ''),
+            ),
+        ):
+            failed = setup_environment.install_dependencies(
+                {'windows': [winget_dep], 'common': ['pip install requests']},
+            )
+
+        assert failed == [winget_dep, 'pip install requests']
+        mock_request.assert_not_called()
+        captured = capsys.readouterr()
+        assert f'Failed to install dependency: {winget_dep}' in captured.err
+        assert 'This may have failed due to lack of admin rights' in captured.out + captured.err
+
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.run_command')
     @patch('setup_environment.expand_tildes_in_command')
@@ -2573,8 +2622,8 @@ class TestInstallNodejsDirectDarwinSudoRouting:
         assert 'sudo installer -pkg' in captured.out
 
 
-class TestCheckAdminNeeded:
-    """Tests for check_admin_needed()."""
+class TestAdminElevationReasons:
+    """Tests for admin_elevation_reasons()."""
 
     @staticmethod
     def _make_args(skip_install: bool = True) -> MagicMock:
@@ -2582,7 +2631,7 @@ class TestCheckAdminNeeded:
         args.skip_install = skip_install
         return args
 
-    def test_returns_false_on_non_windows(self) -> None:
+    def test_returns_nothing_on_non_windows(self) -> None:
         """Non-Windows platforms never need admin."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2590,14 +2639,15 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Linux'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+            assert setup_environment.admin_elevation_reasons(config, self._make_args(skip_install=False)) == []
 
-    def test_returns_true_when_skip_install_false_on_windows(self) -> None:
+    def test_lists_the_claude_code_install_when_not_skipped(self) -> None:
         """Windows needs admin when installation is not skipped."""
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed({}, self._make_args(skip_install=False)) is True
+            reasons = setup_environment.admin_elevation_reasons({}, self._make_args(skip_install=False))
+        assert reasons == ['Installing Claude Code (includes Node.js and Git)']
 
-    def test_detects_admin_needed_for_machine_scope_winget(self) -> None:
+    def test_lists_machine_scope_winget(self) -> None:
         """Windows admin needed for machine-scope winget commands."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2606,9 +2656,10 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args())
+        assert reasons == ['System-wide installation: winget install Something --scope machine']
 
-    def test_detects_admin_needed_for_global_npm(self) -> None:
+    def test_lists_global_npm(self) -> None:
         """Windows admin needed for global npm installs."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2616,9 +2667,26 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is True
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args())
+        assert reasons == ['Global npm package: npm install -g typescript']
 
-    def test_no_admin_needed_when_no_elevated_deps(self) -> None:
+    def test_lists_every_reason_in_installation_order(self) -> None:
+        """The Claude Code install comes first, then Windows dependencies, then common ones."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'common': ['npm install -g typescript'],
+                'windows': ['winget install Something --scope machine'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            reasons = setup_environment.admin_elevation_reasons(config, self._make_args(skip_install=False))
+        assert reasons == [
+            'Installing Claude Code (includes Node.js and Git)',
+            'System-wide installation: winget install Something --scope machine',
+            'Global npm package: npm install -g typescript',
+        ]
+
+    def test_returns_nothing_without_elevated_deps(self) -> None:
         """Windows does not need admin for non-elevated deps."""
         config: dict[str, Any] = {
             'dependencies': {
@@ -2627,7 +2695,140 @@ class TestCheckAdminNeeded:
             },
         }
         with patch.object(setup_environment.platform, 'system', return_value='Windows'):
-            assert setup_environment.check_admin_needed(config, self._make_args()) is False
+            assert setup_environment.admin_elevation_reasons(config, self._make_args()) == []
+
+    def test_ignores_dependencies_of_other_platforms(self) -> None:
+        """Only the Windows and common lists run on Windows, so only they can need admin."""
+        config: dict[str, Any] = {
+            'dependencies': {
+                'linux': ['npm install -g typescript'],
+                'macos': ['npm install -g typescript'],
+            },
+        }
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            assert setup_environment.admin_elevation_reasons(config, self._make_args()) == []
+
+
+class TestRequestAdminElevationIfNeeded:
+    """Tests for request_admin_elevation_if_needed()."""
+
+    INSTALL_REASON = 'Installing Claude Code (includes Node.js and Git)'
+    NPM_REASON = 'Global npm package: npm install -g typescript'
+
+    @staticmethod
+    def _make_args(*, dry_run: bool = False, no_admin: bool = False) -> argparse.Namespace:
+        return argparse.Namespace(dry_run=dry_run, no_admin=no_admin, skip_install=False)
+
+    def test_dry_run_reports_the_reasons_without_elevating(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dry run returns after listing what a real run would elevate for."""
+        with (
+            patch.object(
+                setup_environment, 'admin_elevation_reasons',
+                return_value=[self.INSTALL_REASON, self.NPM_REASON],
+            ),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=True))
+
+        mock_request.assert_not_called()
+        out = capsys.readouterr().out
+        assert 'Dry run: administrator elevation is not requested.' in out
+        assert 'A real run requests administrator privileges for:' in out
+        assert f'  - {self.INSTALL_REASON}' in out
+        assert f'  - {self.NPM_REASON}' in out
+        assert 'Administrator Privileges Required' not in out
+
+    def test_real_run_shows_the_banner_and_requests_elevation(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without --dry-run the banner lists the reasons and the UAC relaunch is requested."""
+        with (
+            patch.object(
+                setup_environment, 'admin_elevation_reasons',
+                return_value=[self.INSTALL_REASON, self.NPM_REASON],
+            ),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args())
+
+        # The mocked relaunch returns, which is the denied-elevation path
+        assert exc_info.value.code == 1
+        mock_request.assert_called_once_with()
+        captured = capsys.readouterr()
+        assert 'Administrator Privileges Required' in captured.out
+        assert f'  - {self.INSTALL_REASON}' in captured.out
+        assert f'  - {self.NPM_REASON}' in captured.out
+        assert 'Dry run' not in captured.out
+        assert 'Administrator elevation was denied' in captured.err
+
+    def test_granted_elevation_ends_this_process(self) -> None:
+        """A granted relaunch exits this process before the setup continues."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[self.INSTALL_REASON]),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(
+                setup_environment, 'request_admin_elevation', side_effect=SystemExit(0),
+            ) as mock_request,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args())
+
+        assert exc_info.value.code == 0
+        mock_request.assert_called_once_with()
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_no_admin_skips_the_check_entirely(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--no-admin neither elevates nor reports, real run or dry run."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons') as mock_reasons,
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed(
+                {}, self._make_args(dry_run=dry_run, no_admin=True),
+            )
+
+        mock_reasons.assert_not_called()
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_an_elevated_process_needs_nothing(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Running as administrator already, neither run elevates nor reports."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[self.INSTALL_REASON]),
+            patch.object(setup_environment, 'is_admin', return_value=True),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=dry_run))
+
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
+
+    @pytest.mark.parametrize('dry_run', [False, True])
+    def test_a_run_without_reasons_never_checks_privileges(
+        self, dry_run: bool, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Nothing needs admin, so the privilege probe and the relaunch never run."""
+        with (
+            patch.object(setup_environment, 'admin_elevation_reasons', return_value=[]),
+            patch.object(setup_environment, 'is_admin') as mock_is_admin,
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+        ):
+            setup_environment.request_admin_elevation_if_needed({}, self._make_args(dry_run=dry_run))
+
+        mock_is_admin.assert_not_called()
+        mock_request.assert_not_called()
+        assert capsys.readouterr().out == ''
 
 
 class TestInstallNodejsIfRequested:
@@ -5266,6 +5467,69 @@ class TestCreateLauncherScript:
             assert launcher.exists()
             assert os.access(launcher, os.X_OK)
 
+    @pytest.mark.parametrize(
+        ('system', 'expected_files'),
+        [
+            ('Windows', {'start.ps1', 'start.cmd', 'launch.sh'}),
+            ('Linux', {'launch.sh'}),
+            ('Darwin', {'launch.sh'}),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ('system_prompt_file', 'mode'),
+        [(None, 'replace'), ('prompt.md', 'replace'), ('prompt.md', 'append')],
+    )
+    def test_launchers_start_claude_without_update_check(
+        self,
+        tmp_path: Path,
+        system: str,
+        expected_files: set[str],
+        system_prompt_file: str | None,
+        mode: str,
+    ) -> None:
+        """No launcher variant references an update marker or prints a notice."""
+        with patch('platform.system', return_value=system):
+            result = setup_environment.create_launcher_script(
+                tmp_path, 'test-env', system_prompt_file, mode,
+            )
+        assert result is not None
+
+        generated = {path.name: path for path in tmp_path.iterdir() if path.is_file()}
+        assert set(generated) == expected_files
+        for path in generated.values():
+            content = path.read_text(encoding='utf-8')
+            for fragment in (
+                'update-available', 'UPDATE_MARKER', '[UPDATE]',
+                'configuration is available', 'Re-run the installer',
+            ):
+                assert fragment not in content, f'{path.name} contains {fragment!r}'
+
+
+class TestWriteManifest:
+    """Tests for write_manifest(), the per-profile installation record."""
+
+    @pytest.mark.parametrize(
+        ('command_name', 'command_names'),
+        [('test-env', ['test-env', 'te']), (None, [])],
+    )
+    def test_manifest_records_exactly_the_profile_fields(
+        self, tmp_path: Path, command_name: str | None, command_names: list[str],
+    ) -> None:
+        """The manifest holds the configuration metadata and nothing else."""
+        assert _real_write_manifest(
+            tmp_path, command_name, '1.2.0', 'test.yaml', 'repo', None, command_names, '2.1.85',
+        )
+
+        data = json.loads((tmp_path / 'manifest.json').read_text(encoding='utf-8'))
+        assert set(data) == {
+            'name', 'version', 'claude_code_version', 'config_source',
+            'config_source_url', 'config_source_type', 'installed_at', 'command_names',
+        }
+        assert data['name'] == command_name
+        assert data['version'] == '1.2.0'
+        assert data['claude_code_version'] == '2.1.85'
+        assert data['command_names'] == command_names
+
 
 class TestRegisterGlobalCommand:
     """Test global command registration."""
@@ -5322,13 +5586,11 @@ class TestInstallClaude:
     @patch('platform.system', return_value='Windows')
     @patch('setup_environment.urlopen')
     @patch('setup_environment.run_command')
-    @patch('setup_environment.is_admin', return_value=True)
-    def test_install_claude_windows(self, mock_is_admin, mock_run, mock_urlopen, mock_system, mock_is_file):
+    def test_install_claude_windows(self, mock_run, mock_urlopen, mock_system, mock_is_file):
         """Test installing Claude on Windows via bootstrap download."""
         # Verify mock configuration
         assert mock_system.return_value == 'Windows'
         assert mock_is_file.return_value is False  # No sibling installer: bootstrap path
-        assert mock_is_admin.return_value is True  # Verify admin check is mocked
         mock_response = MagicMock()
         mock_response.read.return_value = b'# PowerShell installer'
         mock_urlopen.return_value = mock_response
@@ -5339,7 +5601,24 @@ class TestInstallClaude:
         assert result is True
         mock_run.assert_called_once()
         assert 'powershell' in mock_run.call_args[0][0]
-        mock_is_admin.assert_called()  # Verify is_admin was called
+
+    def test_install_claude_windows_never_requests_elevation(self) -> None:
+        """A non-elevated Windows process runs the installer; elevation is decided before Step 1."""
+        installer = Path(setup_environment.__file__).resolve().parent / 'install_claude.py'
+        with (
+            patch('platform.system', return_value='Windows'),
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'request_admin_elevation') as mock_request,
+            patch.object(
+                setup_environment, 'run_command',
+                return_value=subprocess.CompletedProcess([], 0, '', ''),
+            ) as mock_run,
+        ):
+            result = setup_environment.install_claude()
+
+        assert result is True
+        mock_request.assert_not_called()
+        mock_run.assert_called_once_with([sys.executable, str(installer)], capture_output=False)
 
     @patch('platform.system', return_value='Darwin')
     @patch('pathlib.Path.is_file', return_value=False)
@@ -5487,12 +5766,10 @@ class TestMainFunction:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_success(
         self,
         mock_mkdir,
-        mock_cleanup_stale_marker,
         mock_write_manifest,
         mock_is_admin,
         mock_register,
@@ -5507,7 +5784,7 @@ class TestMainFunction:
     ):
         """Test successful main flow."""
         # Verify mock configuration is available
-        del mock_cleanup_stale_marker, mock_write_manifest  # Required for isolation
+        del mock_write_manifest  # Required for isolation
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         mock_load.return_value = (
@@ -5565,13 +5842,11 @@ class TestMainFunction:
     @patch('setup_environment.find_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
-    def test_main_skip_install(self, mock_mkdir, mock_cleanup_stale, mock_write_manifest, mock_is_admin, mock_find, mock_load):
+    def test_main_skip_install(self, mock_mkdir, mock_write_manifest, mock_is_admin, mock_find, mock_load):
         """Test main with --skip-install flag."""
         assert mock_is_admin.return_value is True  # Verify admin check is mocked
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
@@ -5826,12 +6101,10 @@ class TestDownloadFailureTracking:
     @patch('setup_environment.register_global_command')
     @patch('setup_environment.is_admin', return_value=True)
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('pathlib.Path.mkdir')
     def test_main_reports_failed_dependencies_and_exits_nonzero(
         self,
         mock_mkdir: MagicMock,
-        mock_cleanup_stale_marker: MagicMock,
         mock_write_manifest: MagicMock,
         mock_is_admin: MagicMock,
         mock_register: MagicMock,
@@ -5845,7 +6118,7 @@ class TestDownloadFailureTracking:
         mock_load: MagicMock,
     ) -> None:
         """Test that main() lists failed dependencies and exits with code 1."""
-        del mock_mkdir, mock_cleanup_stale_marker, mock_write_manifest, mock_is_admin
+        del mock_mkdir, mock_write_manifest, mock_is_admin
         mock_load.return_value = (
             {
                 'name': 'Test Environment',
@@ -6551,6 +6824,38 @@ class TestMergeKeys:
         result = setup_environment._merge_config_key('user-settings', parent, child)
         assert set(result['permissions']['allow']) == {'Read', 'Write'}
 
+    def test_merge_config_key_global_config_child_array_replaces_parent_array(self) -> None:
+        """Dispatch: a global-config child array replaces the parent's at every depth."""
+        parent = {
+            'enabledMcpjsonServers': ['parent-server'],
+            'customApiKeyResponses': {'approved': ['parent-key'], 'rejected': ['old']},
+        }
+        child = {
+            'enabledMcpjsonServers': ['child-server'],
+            'customApiKeyResponses': {'approved': ['child-key']},
+        }
+        result = setup_environment._merge_config_key('global-config', parent, child)
+        assert result == {
+            'enabledMcpjsonServers': ['child-server'],
+            'customApiKeyResponses': {'approved': ['child-key'], 'rejected': ['old']},
+        }
+
+    def test_merge_config_key_user_settings_replaces_non_permission_arrays(self) -> None:
+        """Dispatch: user-settings unions only permissions.allow/deny/ask and replaces other arrays."""
+        parent = {
+            'permissions': {'deny': ['Bash(rm *)'], 'additionalDirectories': ['/parent']},
+            'companyAnnouncements': ['parent'],
+        }
+        child = {
+            'permissions': {'deny': ['WebFetch'], 'additionalDirectories': ['/child']},
+            'companyAnnouncements': ['child'],
+        }
+        result = setup_environment._merge_config_key('user-settings', parent, child)
+        assert result == {
+            'permissions': {'deny': ['Bash(rm *)', 'WebFetch'], 'additionalDirectories': ['/child']},
+            'companyAnnouncements': ['child'],
+        }
+
     def test_merge_config_key_os_env_variables(self):
         """Dispatch: os-env-variables composes shallowly; a child null is carried forward."""
         parent = {'X': 'val1'}
@@ -6898,9 +7203,9 @@ class TestDeepMergeSettings:
     def test_default_array_union_keys_constant(self):
         """DEFAULT_ARRAY_UNION_KEYS contains permission keys for inheritance layer.
 
-        The constant is preserved only for the YAML inheritance layer
-        (_resolve_single_key for user-settings). On-disk writers use
-        universal union-all-arrays via array_union_keys=None default.
+        Only the YAML inheritance layer uses the constant (_merge_config_key
+        for user-settings). The on-disk writers go through _write_merged_json,
+        which unions every array at every depth.
         """
         expected = {'permissions.allow', 'permissions.deny', 'permissions.ask'}
         assert expected == setup_environment.DEFAULT_ARRAY_UNION_KEYS
@@ -8915,29 +9220,20 @@ class TestWriteMergedJson:
         assert ok is True
         assert merged == {'key': 'value'}
 
-    def test_set_whitelist_via_writer(self, tmp_path: Path) -> None:
-        """Explicit set[str] whitelist routes through the writer correctly."""
+    def test_unions_every_array_with_the_file(self, tmp_path: Path) -> None:
+        """Arrays at every depth keep the file's elements first and append only new ones."""
         target = tmp_path / 'output.json'
-        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
+        target.write_text(
+            json.dumps({'list': [1, 2], 'nested': {'list': ['a']}}), encoding='utf-8',
+        )
 
         ok, merged = setup_environment._write_merged_json(
-            target, {'list': [2, 3]}, array_union_keys={'list'},
+            target, {'list': [3, 2], 'nested': {'list': ['b', 'a']}},
         )
 
         assert ok is True
-        assert set(merged['list']) == {1, 2, 3}
-
-    def test_empty_set_replaces_all_arrays_via_writer(self, tmp_path: Path) -> None:
-        """Explicit empty set() disables array union via the writer."""
-        target = tmp_path / 'output.json'
-        target.write_text(json.dumps({'list': [1, 2]}), encoding='utf-8')
-
-        ok, merged = setup_environment._write_merged_json(
-            target, {'list': [3, 4]}, array_union_keys=set(),
-        )
-
-        assert ok is True
-        assert merged['list'] == [3, 4]
+        assert merged == {'list': [1, 2, 3], 'nested': {'list': ['a', 'b']}}
+        assert json.loads(target.read_text(encoding='utf-8')) == merged
 
     def test_creates_parent_directories(self, tmp_path: Path) -> None:
         """Creates parent directories when ensure_parent=True."""
@@ -9253,6 +9549,48 @@ class TestWriteGlobalConfig:
         data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
         assert 'srv1' in data['mcpServers']
         assert 'srv2' in data['mcpServers']
+
+    def test_global_config_nested_arrays_unioned_with_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A nested YAML array is appended to the file's array, existing elements first."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+        (tmp_path / '.claude.json').write_text(
+            json.dumps({'customApiKeyResponses': {'approved': ['cli-key'], 'rejected': ['old']}}),
+            encoding='utf-8',
+        )
+        setup_environment.write_global_config(
+            {'customApiKeyResponses': {'approved': ['yaml-key', 'cli-key']}},
+        )
+        data = json.loads((tmp_path / '.claude.json').read_text(encoding='utf-8'))
+        assert data['customApiKeyResponses'] == {
+            'approved': ['cli-key', 'yaml-key'],
+            'rejected': ['old'],
+        }
+
+    def test_isolated_claude_json_arrays_unioned_with_its_own_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each target file unions the YAML array with the array that file holds."""
+        home = tmp_path / 'home'
+        profile_dir = home / '.claude' / 'profile'
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: home)
+        (home / '.claude.json').write_text(
+            json.dumps({'enabledMcpjsonServers': ['base-server']}), encoding='utf-8',
+        )
+        (profile_dir / '.claude.json').write_text(
+            json.dumps({'enabledMcpjsonServers': ['profile-server']}), encoding='utf-8',
+        )
+
+        assert setup_environment.write_global_config(
+            {'enabledMcpjsonServers': ['yaml-server']}, artifact_base_dir=profile_dir,
+        )
+
+        base = json.loads((home / '.claude.json').read_text(encoding='utf-8'))
+        isolated = json.loads((profile_dir / '.claude.json').read_text(encoding='utf-8'))
+        assert base['enabledMcpjsonServers'] == ['base-server', 'yaml-server']
+        assert isolated['enabledMcpjsonServers'] == ['profile-server', 'yaml-server']
 
 
 class TestResolveInheritPath:
@@ -10192,7 +10530,6 @@ class TestCommandNames:
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.write_user_settings')
     @patch('setup_environment.write_global_config')
     @patch('setup_environment.generate_env_loader_files')
@@ -10203,7 +10540,6 @@ class TestCommandNames:
         mock_gen_env_loader,
         mock_write_global,
         mock_write_user,
-        mock_cleanup_stale,
         mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
@@ -10222,7 +10558,6 @@ class TestCommandNames:
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         assert mock_write_user is not None
         assert mock_write_global is not None
         assert mock_gen_env_loader is not None
@@ -10269,7 +10604,6 @@ class TestCommandNames:
     @patch('setup_environment.is_admin', return_value=True)
     @patch('pathlib.Path.mkdir')
     @patch('setup_environment.write_manifest')
-    @patch('setup_environment.cleanup_stale_marker')
     @patch('setup_environment.write_user_settings')
     @patch('setup_environment.write_global_config')
     @patch('setup_environment.generate_env_loader_files')
@@ -10280,7 +10614,6 @@ class TestCommandNames:
         mock_gen_env_loader,
         mock_write_global,
         mock_write_user,
-        mock_cleanup_stale,
         mock_write_manifest,
         mock_mkdir,
         mock_is_admin,
@@ -10299,7 +10632,6 @@ class TestCommandNames:
         assert mock_mkdir is not None
         assert mock_is_admin.return_value is True
         assert mock_write_manifest is not None
-        assert mock_cleanup_stale is not None
         assert mock_write_user is not None
         assert mock_write_global is not None
         assert mock_gen_env_loader is not None

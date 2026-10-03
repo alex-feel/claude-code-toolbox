@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from typing import cast
 
+from tests.e2e.expected import EXPECTED_JSON_KEYS
+
 
 def validate_json_file(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
     """Load and validate JSON file.
@@ -859,8 +861,45 @@ def validate_launcher_script(
         return [f'Failed to read launcher script {path}: {e}']
 
     if current_platform == 'win32':
-        return _validate_windows_launcher(path, content, command_name)
-    return _validate_unix_launcher(path, content, command_name)
+        errors = _validate_windows_launcher(path, content, command_name)
+    else:
+        errors = _validate_unix_launcher(path, content, command_name)
+    errors.extend(validate_launcher_has_no_update_check(path))
+    return errors
+
+
+# Text a configuration-update check would put into a generated launcher: the
+# marker file name, its shell variable, and the notice it prints.
+UPDATE_CHECK_FRAGMENTS: tuple[str, ...] = (
+    'update-available',
+    'UPDATE_MARKER',
+    '[UPDATE]',
+    'configuration is available',
+    'Re-run the installer',
+)
+
+
+def validate_launcher_has_no_update_check(path: Path) -> list[str]:
+    """Validate that a generated launcher or wrapper carries no update check.
+
+    Profile launchers start Claude Code directly; no file in the profile
+    directory changes what they print.
+
+    Args:
+        path: Path to a generated launcher, shell wrapper, or command wrapper
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = path.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher script {path}: {e}']
+    return [
+        f'Launcher {path} contains update-check text {fragment!r}'
+        for fragment in UPDATE_CHECK_FRAGMENTS
+        if fragment in content
+    ]
 
 
 def _validate_windows_launcher(path: Path, content: str, command_name: str) -> list[str]:
@@ -1141,9 +1180,9 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
 
     Validates:
     - File exists and is valid JSON
-    - Required fields are present: name, version, claude_code_version,
-      config_source, config_source_url, config_source_type, installed_at,
-      last_checked_at, command_names
+    - The field set is exactly EXPECTED_JSON_KEYS['manifest']: name, version,
+      claude_code_version, config_source, config_source_url,
+      config_source_type, installed_at, command_names
     - version matches config['version'] if present
     - claude_code_version matches the normalized config pin ('latest' and an
       absent key both normalize to None)
@@ -1152,7 +1191,6 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
       name and a non-empty list for an isolated profile, None and an empty
       list for the base profile
     - installed_at is a valid ISO timestamp string
-    - last_checked_at is None (freshly created)
 
     Args:
         path: Path to the manifest JSON file
@@ -1167,20 +1205,20 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
 
     assert data is not None
 
-    # Required fields check
-    required_fields = [
-        'name', 'version', 'claude_code_version', 'config_source',
-        'config_source_url', 'config_source_type', 'installed_at',
-        'last_checked_at', 'command_names',
-    ]
+    expected_fields = EXPECTED_JSON_KEYS['manifest']
     errors = [
         f"Manifest missing required field: '{field}'"
-        for field in required_fields
+        for field in expected_fields
         if field not in data
     ]
+    errors.extend(
+        f"Manifest has unexpected field: '{field}'"
+        for field in data
+        if field not in expected_fields
+    )
 
     if errors:
-        return errors  # Cannot validate content without required fields
+        return errors  # Cannot validate content without the expected field set
 
     # Version check
     expected_version = config.get('version')
@@ -1233,13 +1271,6 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         errors.append(
             f"Manifest installed_at: expected ISO timestamp string, "
             f"got {type(data['installed_at']).__name__}",
-        )
-
-    # last_checked_at must be None for fresh manifest
-    if data['last_checked_at'] is not None:
-        errors.append(
-            f"Manifest last_checked_at: expected None for fresh manifest, "
-            f"got {data['last_checked_at']!r}",
         )
 
     # name should match the primary command name, or be None for the base profile
@@ -1506,6 +1537,56 @@ def validate_global_config_dual_write(
                         )
         else:
             errors.append(f'Isolated .claude.json does not exist at {isolated_path}')
+
+    return errors
+
+
+def validate_json_arrays(
+    path: Path,
+    expected: dict[tuple[str, ...], list[object] | None],
+) -> list[str]:
+    """Validate the arrays a JSON file holds at the given key paths.
+
+    Each expected array is compared exactly, element order included: a
+    writer that unions arrays keeps the elements the file already held
+    first and appends only the elements it did not hold, so the order
+    tells a union apart from a replacement. A ``None`` expectation
+    requires the final key to be absent (deleted by a YAML null).
+
+    Args:
+        path: Path to the JSON file to inspect.
+        expected: Mapping from a key path (one tuple element per nesting
+            level, so keys containing dots stay unambiguous) to the exact
+            expected array, or ``None`` when the key must be absent.
+
+    Returns:
+        List of error strings (empty if every key path matches).
+    """
+    data, errors = validate_json_file(path)
+    if data is None:
+        return errors
+
+    for key_path, expected_value in expected.items():
+        label = f'{path.name}:{".".join(key_path)}'
+        node: object = data
+        for key in key_path[:-1]:
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = cast(dict[str, object], node)[key]
+        if not isinstance(node, dict):
+            errors.append(f'{label}: parent object missing')
+            continue
+        parent = cast(dict[str, object], node)
+        final_key = key_path[-1]
+        if expected_value is None:
+            if final_key in parent:
+                errors.append(f'{label}: expected ABSENT, got {parent[final_key]!r}')
+            continue
+        if final_key not in parent:
+            errors.append(f'{label}: missing, expected {expected_value!r}')
+        elif parent[final_key] != expected_value:
+            errors.append(f'{label}: expected {expected_value!r}, got {parent[final_key]!r}')
 
     return errors
 

@@ -1,5 +1,6 @@
 """Pytest configuration and shared fixtures for all tests."""
 
+import importlib
 import json
 import shutil
 import sys
@@ -485,13 +486,13 @@ def _mock_install_method_propagation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _mock_manifest_and_stale_marker(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent write_manifest and cleanup_stale_marker from writing to real ~/.claude/.
+def _mock_manifest_write(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent write_manifest from writing to real ~/.claude/.
 
-    These functions write manifest.json and stale.marker under the profile
-    directory -- ~/.claude/{cmd}/ for an isolated profile, ~/.claude/ for the
-    base profile -- which is caught by _guard_real_home_writes. Tests that need
-    to exercise these functions directly should provide their own mocks.
+    write_manifest writes manifest.json under the profile directory --
+    ~/.claude/{cmd}/ for an isolated profile, ~/.claude/ for the base
+    profile -- which is caught by _guard_real_home_writes. Tests that need to
+    exercise it directly capture the real function at import time.
     """
     if request.node.get_closest_marker('allow_real_home'):
         return
@@ -500,9 +501,36 @@ def _mock_manifest_and_stale_marker(request: pytest.FixtureRequest, monkeypatch:
     try:
         import setup_environment
         monkeypatch.setattr(setup_environment, 'write_manifest', lambda *_a, **_kw: True)
-        monkeypatch.setattr(setup_environment, 'cleanup_stale_marker', lambda *_a, **_kw: None)
     except (ImportError, AttributeError):
         pass
+
+
+@pytest.fixture(autouse=True)
+def _mock_old_binary_cleanup(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace install_claude._cleanup_old_claude_files with a no-op in unit tests.
+
+    install_claude_native_windows() calls the cleanup first, and on Windows it
+    deletes claude.exe.old and claude.exe.old.* from the real
+    get_real_user_home()/.local/bin, where replacing a running binary leaves
+    the previous one behind. Without this mock every unit test that reaches the
+    native Windows installer would depend on that machine state and trip
+    _guard_real_home_writes whenever such a file exists. The installer is
+    imported both as install_claude and as scripts.install_claude, which are
+    distinct module objects, so both are patched.
+
+    Tests that exercise the real implementation bypass this mock by capturing
+    a module-level reference to the function at test-module import time.
+    """
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('install_claude', 'scripts.install_claude'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, '_cleanup_old_claude_files', lambda: None)
 
 
 @pytest.fixture(autouse=True)

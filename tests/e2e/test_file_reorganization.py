@@ -165,7 +165,6 @@ class TestFileReorganization:
             f'{cmd}-settings.json',
             f'{cmd}-mcp.json',
             f'{cmd}-manifest.json',
-            f'{cmd}-update-available.json',
             f'launch-{cmd}.sh',
             f'start-{cmd}.ps1',
             f'start-{cmd}.cmd',

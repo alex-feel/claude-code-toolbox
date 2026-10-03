@@ -169,7 +169,7 @@ def golden_config() -> dict[str, Any]:
     ALL supported configuration keys for complete E2E test coverage.
 
     The golden config includes:
-    - version: Configuration version for update checking
+    - version: Configuration version recorded in the profile manifest
     - merge-keys: Selective merge keys (exercises warning path without inherit)
     - command-names: Array of command names/aliases
     - base-url: Resource URL (uses local mock_repo)

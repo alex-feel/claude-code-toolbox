@@ -256,7 +256,7 @@ class TestManifestFile:
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
     ) -> None:
-        """Verify manifest contains all required fields."""
+        """Verify manifest contains exactly the expected field set."""
         from scripts.setup_environment import write_manifest
 
         paths = e2e_isolated_home
@@ -277,13 +277,10 @@ class TestManifestFile:
         manifest_path = claude_dir / 'manifest.json'
         data = json.loads(manifest_path.read_text(encoding='utf-8'))
 
-        required_fields = [
-            'name', 'version', 'claude_code_version', 'config_source',
-            'config_source_url', 'config_source_type', 'installed_at',
-            'last_checked_at', 'command_names',
-        ]
-        missing = [f for f in required_fields if f not in data]
-        assert not missing, f'Missing fields in manifest: {missing}'
+        assert sorted(data) == sorted(EXPECTED_JSON_KEYS['manifest']), (
+            f'Manifest fields {sorted(data)} differ from '
+            f"{sorted(EXPECTED_JSON_KEYS['manifest'])}"
+        )
 
     def test_manifest_source_classification(
         self,
@@ -397,6 +394,36 @@ class TestGlobalConfigOutput:
         assert data['installMethod'] == 'native', 'installMethod was lost during merge'
         for key, expected in global_config.items():
             assert data.get(key) == expected, f'Key {key!r}: expected {expected!r}, got {data.get(key)!r}'
+
+    def test_global_config_arrays_unioned_with_existing_arrays(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+    ) -> None:
+        """Verify golden global-config arrays are appended to the arrays ~/.claude.json holds."""
+        from scripts.setup_environment import write_global_config
+        from tests.e2e.validators import validate_json_arrays
+
+        home = e2e_isolated_home['home']
+        claude_json = home / '.claude.json'
+        claude_json.write_text(
+            json.dumps({
+                'customApiKeyResponses': {
+                    'approved': ['cli-approved-key'],
+                    'rejected': ['cli-rejected-key'],
+                },
+            }),
+            encoding='utf-8',
+        )
+
+        golden_approved = golden_config['global-config']['customApiKeyResponses']['approved']
+        assert write_global_config(golden_config['global-config'])
+
+        errors = validate_json_arrays(claude_json, {
+            ('customApiKeyResponses', 'approved'): ['cli-approved-key', *golden_approved],
+            ('customApiKeyResponses', 'rejected'): ['cli-rejected-key'],
+        })
+        assert not errors, 'global-config array union failed:\n' + '\n'.join(errors)
 
     def test_install_method_propagated_to_both_claude_json(
         self,

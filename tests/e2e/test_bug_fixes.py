@@ -3,16 +3,14 @@
 Bug 1: Prompt paths in launchers reference isolated directory.
 Bug 4+5: CLAUDE_CONFIG_DIR removed from config.json, added to launcher export.
 Bug 4+5 (user-explicit): User-specified CLAUDE_CONFIG_DIR popped from env.
-Update marker: Uses path inside isolated directory.
 
-Covers: Scenarios 14-17.
+Covers: Scenarios 14-16.
 """
 
 import json
 from pathlib import Path
 from typing import Any
 
-from scripts.setup_environment import _get_update_check_snippet
 from scripts.setup_environment import create_launcher_script
 from scripts.setup_environment import create_profile_config
 
@@ -162,42 +160,3 @@ class TestBugFixVerification:
         launch_sh = isolated_config_dir / 'launch.sh'
         launch_content = launch_sh.read_text()
         assert 'export CLAUDE_CONFIG_DIR=' in launch_content
-
-    def test_update_check_snippet_path(
-        self,
-        e2e_isolated_home: dict[str, Path],
-        golden_config: dict[str, Any],
-    ) -> None:
-        """Scenario 17: Update marker path uses new path inside isolated directory."""
-        command_names: list[str] = golden_config['command-names']
-        cmd = command_names[0]
-
-        # Test the snippet function directly
-        marker_path = f'$HOME/.claude/{cmd}/update-available.json'
-        snippet = _get_update_check_snippet(
-            update_marker_path=marker_path,
-            command_name=cmd,
-        )
-
-        assert f'$HOME/.claude/{cmd}/update-available.json' in snippet
-        # Must NOT contain old hyphenated format
-        assert f'{cmd}-update-available.json' not in snippet
-
-        # Also verify via launcher generation
-        claude_dir = e2e_isolated_home['claude_dir']
-        artifact_base_dir = claude_dir / cmd
-        artifact_base_dir.mkdir(parents=True, exist_ok=True)
-
-        launcher_result = create_launcher_script(artifact_base_dir, cmd)
-        assert launcher_result is not None
-
-        launch_sh = artifact_base_dir / 'launch.sh'
-        launch_content = launch_sh.read_text()
-
-        # The update check path should be inside the isolated directory
-        assert f'$HOME/.claude/{cmd}/update-available.json' in launch_content, (
-            'Update marker path must be inside isolated directory'
-        )
-        assert f'{cmd}-update-available.json' not in launch_content, (
-            'Old hyphenated update marker format must not be present'
-        )
