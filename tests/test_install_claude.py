@@ -4,6 +4,7 @@ Comprehensive tests for install_claude.py - the main Claude Code installer.
 
 import contextlib
 import errno
+import importlib
 import json
 import os
 import subprocess
@@ -23,6 +24,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'scripts'))
 import install_claude
 
 INSTALL_CLAUDE_SCRIPT = Path(__file__).parent.parent / 'scripts' / 'install_claude.py'
+
+# Real reference captured at import time so the .old cleanup tests can run the
+# actual implementation: the conftest autouse fixture replaces the module
+# attribute with a no-op before each test runs.
+_real_cleanup_old_claude_files = install_claude._cleanup_old_claude_files
 
 
 class TestInstallerRunsUnderCurrentInterpreter:
@@ -2533,7 +2539,7 @@ class TestWindowsFileLockHandling:
         old_file.write_text('old content')
 
         with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
-            install_claude._cleanup_old_claude_files()
+            _real_cleanup_old_claude_files()
 
         assert not old_file.exists()
 
@@ -2547,7 +2553,7 @@ class TestWindowsFileLockHandling:
         old_2.write_text('old 2')
 
         with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
-            install_claude._cleanup_old_claude_files()
+            _real_cleanup_old_claude_files()
 
         assert not old_1.exists()
         assert not old_2.exists()
@@ -2573,7 +2579,7 @@ class TestWindowsFileLockHandling:
             patch.object(Path, 'unlink', mock_unlink),
         ):
             # Should not raise
-            install_claude._cleanup_old_claude_files()
+            _real_cleanup_old_claude_files()
 
         # File should still exist
         assert old_file.exists()
@@ -2586,7 +2592,7 @@ class TestWindowsFileLockHandling:
         old_file.write_text('content')
 
         with patch('sys.platform', 'linux'), patch('pathlib.Path.home', return_value=tmp_path):
-            install_claude._cleanup_old_claude_files()
+            _real_cleanup_old_claude_files()
 
         # File should still exist (no cleanup on non-Windows)
         assert old_file.exists()
@@ -2597,7 +2603,7 @@ class TestWindowsFileLockHandling:
 
         with patch('sys.platform', 'win32'), patch('pathlib.Path.home', return_value=tmp_path):
             # Should not raise
-            install_claude._cleanup_old_claude_files()
+            _real_cleanup_old_claude_files()
 
     @patch('sys.platform', 'win32')
     @patch('install_claude._handle_windows_file_lock')
@@ -2678,6 +2684,40 @@ class TestWindowsFileLockHandling:
             mock_cleanup.assert_called_once()
             # Verify installer was called after cleanup
             mock_installer.assert_called_once_with(version='latest')
+
+
+class TestOldBinaryCleanupIsolation:
+    """Unit tests of the native Windows installer never run the real .old cleanup.
+
+    install_claude_native_windows() starts by deleting claude.exe.old and
+    claude.exe.old.* from get_real_user_home()/.local/bin, where replacing a
+    running binary leaves the previous one behind. The conftest autouse
+    fixture replaces the cleanup in both module objects the installer is
+    imported as, so the previous binaries in that directory survive the
+    installer call.
+    """
+
+    @pytest.mark.parametrize('module_name', ['install_claude', 'scripts.install_claude'])
+    def test_native_windows_install_leaves_old_binaries_in_place(
+        self, module_name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The previous binaries are still present after the installer ran."""
+        module = importlib.import_module(module_name)
+        local_bin = tmp_path / '.local' / 'bin'
+        local_bin.mkdir(parents=True)
+        backups = [local_bin / 'claude.exe.old', local_bin / 'claude.exe.old.1790993176923.31072']
+        for backup in backups:
+            backup.write_bytes(b'previous binary')
+        monkeypatch.setattr(module.platform, 'system', lambda: 'Windows')
+        monkeypatch.setattr(module.sys, 'platform', 'win32')
+        monkeypatch.setattr(module, 'get_real_user_home', lambda: tmp_path)
+        installer = MagicMock(return_value=True)
+        monkeypatch.setattr(module, '_install_claude_native_windows_installer', installer)
+
+        assert module.install_claude_native_windows() is True
+
+        installer.assert_called_once_with(version='latest')
+        assert [backup.name for backup in backups if backup.exists()] == [backup.name for backup in backups]
 
 
 class TestRemoveNpmClaude:
@@ -5093,13 +5133,11 @@ class TestInstallClaudeNativeWindowsGcsFallback:
     @patch('install_claude._download_claude_direct_from_gcs', return_value=True)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.98')
     @patch('install_claude._install_claude_native_windows_installer', return_value=False)
-    @patch('install_claude._cleanup_old_claude_files')
     def test_latest_gcs_fallback_success(
-        self, mock_cleanup, mock_native, mock_get_latest,
+        self, mock_native, mock_get_latest,
         mock_gcs, mock_sleep, mock_path, mock_verify, mock_finalize,
     ):
         """Native installer fails for latest, GCS direct download succeeds."""
-        assert mock_cleanup is not None
         assert mock_sleep is not None
         result = install_claude.install_claude_native_windows()
         assert result is True
@@ -5114,10 +5152,8 @@ class TestInstallClaudeNativeWindowsGcsFallback:
     @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
     @patch('install_claude.get_latest_claude_version', return_value='2.1.98')
     @patch('install_claude._install_claude_native_windows_installer', return_value=False)
-    @patch('install_claude._cleanup_old_claude_files')
-    def test_latest_gcs_fallback_fail(self, mock_cleanup, mock_native, mock_get_latest, mock_gcs):
+    def test_latest_gcs_fallback_fail(self, mock_native, mock_get_latest, mock_gcs):
         """Native installer and GCS both fail, returns False."""
-        assert mock_cleanup is not None
         result = install_claude.install_claude_native_windows()
         assert result is False
         mock_native.assert_called_once_with(version='latest')
@@ -5127,10 +5163,8 @@ class TestInstallClaudeNativeWindowsGcsFallback:
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
     @patch('install_claude.get_latest_claude_version', return_value=None)
     @patch('install_claude._install_claude_native_windows_installer', return_value=False)
-    @patch('install_claude._cleanup_old_claude_files')
-    def test_latest_gcs_version_unavailable(self, mock_cleanup, mock_native, mock_get_latest):
+    def test_latest_gcs_version_unavailable(self, mock_native, mock_get_latest):
         """Native installer fails and latest version cannot be resolved."""
-        assert mock_cleanup is not None
         result = install_claude.install_claude_native_windows()
         assert result is False
         mock_native.assert_called_once_with(version='latest')
@@ -5140,10 +5174,8 @@ class TestInstallClaudeNativeWindowsGcsFallback:
     @patch('install_claude._install_claude_native_windows_installer', return_value=False)
     @patch('install_claude._install_claude_winget', return_value=True)
     @patch('install_claude._download_claude_direct_from_gcs', return_value=False)
-    @patch('install_claude._cleanup_old_claude_files')
-    def test_specific_gcs_fail_winget_success(self, mock_cleanup, mock_gcs, mock_winget, mock_native):
+    def test_specific_gcs_fail_winget_success(self, mock_gcs, mock_winget, mock_native):
         """GCS fails for specific version, winget succeeds."""
-        assert mock_cleanup is not None
         result = install_claude.install_claude_native_windows(version='2.0.76')
         assert result is True
         mock_gcs.assert_called_once()

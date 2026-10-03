@@ -1920,7 +1920,6 @@ def official_installer_mocks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
         'get_latest_claude_version': MagicMock(return_value='2.1.280'),
         '_download_claude_direct_from_gcs': MagicMock(return_value=True),
         '_install_claude_winget': MagicMock(return_value=False),
-        '_cleanup_old_claude_files': MagicMock(),
         'get_real_user_home': MagicMock(return_value=tmp_path),
     }
     for name, mock in mocks.items():
@@ -2437,7 +2436,6 @@ class TestExactVersionOnlyInstall:
 
     def test_windows_exact_version_does_not_fall_back_to_latest(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(install_claude.platform, 'system', lambda: 'Windows')
-        monkeypatch.setattr(install_claude, '_cleanup_old_claude_files', lambda: None)
         monkeypatch.setattr(install_claude, '_download_claude_direct_from_gcs', MagicMock(return_value=False))
         winget = MagicMock(return_value=False)
         monkeypatch.setattr(install_claude, '_install_claude_winget', winget)
