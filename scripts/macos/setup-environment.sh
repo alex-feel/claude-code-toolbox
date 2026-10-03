@@ -8,6 +8,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/macos/setup-environment.sh | bash
 # To install it as the isolated profile ~/.claude/<name> (same as --command-names):
 #   export CLAUDE_CODE_TOOLBOX_COMMAND_NAMES=<name>[,<alias>...]
+# To re-run an installed profile from its manifest, no configuration needed (same as --profile):
+#   export CLAUDE_CODE_TOOLBOX_PROFILE=<name>
 
 set -euo pipefail
 
@@ -87,10 +89,23 @@ else
     CONFIG="${CLAUDE_CODE_TOOLBOX_ENV_CONFIG:-}"
 fi
 
-if [ -z "$CONFIG" ]; then
+# A --profile re-run needs no configuration: the Python script reads it
+# from the profile's manifest
+PROFILE_REQUESTED=0
+if [ -n "${CLAUDE_CODE_TOOLBOX_PROFILE:-}" ]; then
+    PROFILE_REQUESTED=1
+fi
+for arg in "$@"; do
+    case "$arg" in
+        --profile|--profile=*) PROFILE_REQUESTED=1 ;;
+    esac
+done
+
+if [ -z "$CONFIG" ] && [ "$PROFILE_REQUESTED" -eq 0 ]; then
     echo -e "${RED}[ERROR]${NC} No configuration specified!"
     echo -e "${YELLOW}Usage: setup-environment.sh <config_name>${NC}"
     echo -e "${YELLOW}   or: CLAUDE_CODE_TOOLBOX_ENV_CONFIG=python ./setup-environment.sh${NC}"
+    echo -e "${YELLOW}   or: setup-environment.sh --profile <name>   (re-run an installed profile)${NC}"
     exit 1
 fi
 
@@ -109,7 +124,11 @@ if curl -fsSL "$SETUP_SCRIPT_URL" -o "$TEMP_DIR/setup_environment.py" && \
    curl -fsSL "$INSTALL_SCRIPT_URL" -o "$TEMP_DIR/install_claude.py"; then
     # Change to temp directory so Python can resolve imports
     cd "$TEMP_DIR"
-    uv run --no-project --python 3.12 setup_environment.py "$CONFIG" "$@"
+    if [ -n "$CONFIG" ]; then
+        uv run --no-project --python 3.12 setup_environment.py "$CONFIG" "$@"
+    else
+        uv run --no-project --python 3.12 setup_environment.py "$@"
+    fi
     EXIT_CODE=$?
 else
     echo -e "${RED}[FAIL]${NC} Failed to download setup scripts"

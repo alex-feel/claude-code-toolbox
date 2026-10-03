@@ -568,6 +568,33 @@ def _mock_command_name_conflicts(request: pytest.FixtureRequest, monkeypatch: py
 
 
 @pytest.fixture(autouse=True)
+def _mock_profile_registry_reads(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make unit tests see no installed profile.
+
+    main() reads the manifest of the profile it installs into (for the
+    names and component delta it remembers, and for the configuration-switch
+    guard) and lists every installed profile (for the pin effect, the
+    destination warnings and the unrefreshed-profile lines). Both reads
+    reach the real ~/.claude of the machine running the suite, so a
+    main()-flow unit test would pass or fail depending on what that machine
+    has installed. E2E tests run the real readers inside their isolated
+    home, and tests of the readers themselves call them with their own
+    paths.
+    """
+    if request.node.get_closest_marker('allow_real_home'):
+        return
+    if 'e2e' in request.path.parts:
+        return
+    for module_name in ('setup_environment', 'scripts.setup_environment'):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(module, '_read_target_manifest', lambda *_a, **_kw: None)
+        monkeypatch.setattr(module, 'installed_profiles', lambda *_a, **_kw: [])
+
+
+@pytest.fixture(autouse=True)
 def _mock_old_binary_cleanup(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace install_claude._cleanup_old_claude_files with a no-op in unit tests.
 

@@ -1180,16 +1180,19 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
 
     Validates:
     - File exists and is valid JSON
-    - The field set is exactly EXPECTED_JSON_KEYS['manifest']: name, version,
-      claude_code_version, config_source, config_source_url,
-      config_source_type, installed_at, command_names
+    - The field set is exactly EXPECTED_JSON_KEYS['manifest']
     - version matches config['version'] if present
     - claude_code_version matches the normalized config pin ('latest' and an
       absent key both normalize to None)
     - config_source_type is one of: url, local, repo
+    - config_identity is the identity of config_source, and config_digest
+      is the sha256 of the resolved-config.yaml beside the manifest (or
+      None when that file was not written)
     - command_names and name match the profile shape: the primary command
       name and a non-empty list for an isolated profile, None and an empty
       list for the base profile
+    - origins maps command_names and components to an origin, yaml_values
+      and the written records have their declared shapes, and link is None
     - installed_at is a valid ISO timestamp string
 
     Args:
@@ -1251,6 +1254,62 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
             f"Manifest config_source_type: expected one of {valid_types}, "
             f"got {data['config_source_type']!r}",
         )
+
+    # Identity and digest: the identity derives from the recorded source, the
+    # digest from the resolved-config.yaml written beside the manifest
+    from scripts.setup_environment import RESOLVED_CONFIG_FILENAME
+    from scripts.setup_environment import config_digest_of
+    from scripts.setup_environment import config_identity_of
+
+    expected_identity = config_identity_of(str(data['config_source']))
+    if data['config_identity'] != expected_identity:
+        errors.append(
+            f"Manifest config_identity: expected {expected_identity!r}, got {data['config_identity']!r}",
+        )
+    resolved_path = path.parent / RESOLVED_CONFIG_FILENAME
+    if resolved_path.is_file():
+        expected_digest = config_digest_of(resolved_path.read_text(encoding='utf-8'))
+        if data['config_digest'] != expected_digest:
+            errors.append(f'Manifest config_digest does not match {RESOLVED_CONFIG_FILENAME}')
+    elif data['config_digest'] is not None:
+        errors.append(f'Manifest config_digest is set but {RESOLVED_CONFIG_FILENAME} is absent')
+
+    # Remembered values and their origins
+    origins = data['origins']
+    if not isinstance(origins, dict) or set(origins) != {'command_names', 'components'}:
+        errors.append(f'Manifest origins: expected command_names and components, got {origins!r}')
+    else:
+        if origins['command_names'] not in ('cli', 'env', 'yaml', 'default', None):
+            errors.append(f"Manifest origins.command_names: unexpected value {origins['command_names']!r}")
+        if origins['components'] not in ('cli', 'env', 'yaml'):
+            errors.append(f"Manifest origins.components: unexpected value {origins['components']!r}")
+    components = data['components']
+    if components is not None and (
+        not isinstance(components, dict) or set(components) != {'select', 'with', 'without'}
+    ):
+        errors.append(f'Manifest components: expected None or the three selector values, got {components!r}')
+    if not isinstance(data['yaml_values'], dict):
+        errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
+    if data['link'] is not None:
+        errors.append(f"Manifest link: expected None, got {data['link']!r}")
+    record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
+    errors.extend(
+        f'Manifest {record_key}: expected a list, got {data[record_key]!r}'
+        for record_key in record_keys
+        if not isinstance(data[record_key], list)
+    )
+    destinations = data['machine_wide_destinations'] if isinstance(data['machine_wide_destinations'], list) else []
+    errors.extend(
+        f'Manifest machine_wide_destinations entry: expected dest, source and sha256, got {record!r}'
+        for record in destinations
+        if not isinstance(record, dict) or set(record) != {'dest', 'source', 'sha256'}
+    )
+    servers = data['mcp_servers'] if isinstance(data['mcp_servers'], list) else []
+    errors.extend(
+        f'Manifest mcp_servers entry: expected name and scopes, got {record!r}'
+        for record in servers
+        if not isinstance(record, dict) or set(record) != {'name', 'scopes'}
+    )
 
     # command_names validation: an isolated profile lists its command names,
     # the base profile lists none.

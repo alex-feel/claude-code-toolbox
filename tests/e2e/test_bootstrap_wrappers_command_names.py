@@ -1,8 +1,10 @@
-"""E2E tests for --command-names through the platform bootstrap wrappers.
+"""E2E tests for --command-names and --profile through the platform bootstrap wrappers.
 
 The wrappers download setup_environment.py and run it with uv, forwarding
-every user argument verbatim, and leave CLAUDE_CODE_TOOLBOX_COMMAND_NAMES in
-the environment the script reads. On Linux and macOS the wrapper runs with
+every user argument verbatim, and leave CLAUDE_CODE_TOOLBOX_COMMAND_NAMES and
+CLAUDE_CODE_TOOLBOX_PROFILE in the environment the script reads. A --profile
+re-run needs no configuration, so the wrappers run without one when the
+flag or its variable is present. On Linux and macOS the wrapper runs with
 stand-ins for curl (which copies the repository's scripts) and uv (which runs
 them with the test interpreter), so the real setup script previews the
 profile the arguments select. On Windows the stand-ins for Invoke-WebRequest
@@ -20,6 +22,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from scripts import setup_environment
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
@@ -80,7 +84,7 @@ def _run_unix_wrapper(
         stand_in.write_text(body, encoding='utf-8', newline='\n')
         stand_in.chmod(0o755)
     home = tmp_path / 'home'
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     env = {
         'PATH': f'{fake_bin}{os.pathsep}{os.environ["PATH"]}',
         'HOME': str(home),
@@ -167,6 +171,63 @@ class TestUnixWrapper:
         assert 'Command names: second [cli]' in output
 
 
+def _install_profile_manifest(tmp_path: Path, name: str) -> None:
+    """Record an installed profile in the wrapper's home, with a configuration beside it."""
+    config = tmp_path / 'profile.yaml'
+    config.write_text(PROFILE_YAML, encoding='utf-8')
+    profile_dir = tmp_path / 'home' / '.claude' / name
+    assert setup_environment.write_manifest(
+        config_base_dir=profile_dir,
+        command_name=name,
+        config_version=None,
+        config_source=str(config.resolve()),
+        config_source_type='local',
+        config_source_url=None,
+        command_names=[name, f'{name}-alias'],
+        claude_code_version=None,
+        origins={'command_names': 'cli', 'components': 'yaml'},
+    )
+
+
+@pytest.mark.parametrize('platform_dir', UNIX_WRAPPERS)
+class TestUnixWrapperProfileRerun:
+    """The bash wrappers run a --profile re-run without a configuration."""
+
+    def test_profile_flag_needs_no_configuration(self, platform_dir: str, tmp_path: Path) -> None:
+        """--profile NAME as the first argument reaches the setup script, which re-runs the profile."""
+        _install_profile_manifest(tmp_path, 'wrapped')
+
+        result = _run_unix_wrapper(
+            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'wrapped', '--skip-install', '--dry-run'], {},
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert 'Command names: wrapped, wrapped-alias [remembered]' in output
+
+    def test_profile_variable_needs_no_configuration(self, platform_dir: str, tmp_path: Path) -> None:
+        """CLAUDE_CODE_TOOLBOX_PROFILE alone selects the profile the script re-runs."""
+        _install_profile_manifest(tmp_path, 'wrapped')
+
+        result = _run_unix_wrapper(
+            tmp_path, _unix_wrapper(platform_dir), ['--skip-install', '--dry-run'],
+            {'CLAUDE_CODE_TOOLBOX_PROFILE': 'wrapped'},
+        )
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 0, output
+        assert 'Command names: wrapped, wrapped-alias [remembered]' in output
+
+    def test_no_configuration_and_no_profile_is_refused_by_the_wrapper(self, platform_dir: str, tmp_path: Path) -> None:
+        """Without a configuration or a profile the wrapper stops before downloading anything."""
+        result = _run_unix_wrapper(tmp_path, _unix_wrapper(platform_dir), ['--skip-install', '--dry-run'], {})
+
+        output = result.stdout + result.stderr
+        assert result.returncode == 1, output
+        assert 'No configuration specified!' in output
+        assert '--profile <name>' in output
+
+
 WINDOWS_STAND_INS = '''\
 function Invoke-WebRequest {
     param($Uri, $OutFile, [switch]$UseBasicParsing)
@@ -174,31 +235,56 @@ function Invoke-WebRequest {
 }
 function uv {
     # Arguments arrive as PowerShell values (3.12 is a number); record the text uv receives
-    $record = @{ args = @($args | ForEach-Object { [string]$_ }); command_names = $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES }
+    $record = @{
+        args = @($args | ForEach-Object { [string]$_ })
+        command_names = $env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES
+        profile = $env:CLAUDE_CODE_TOOLBOX_PROFILE
+    }
     $record | ConvertTo-Json | Set-Content -LiteralPath $env:E2E_RECORD -Encoding utf8
     $global:LASTEXITCODE = 0
 }
 '''
 
 
-def _run_windows_wrapper(tmp_path: Path, args: list[str], extra_env: dict[str, str]) -> dict[str, object]:
-    """Run the PowerShell wrapper with recording stand-ins and return what uv received."""
+def _run_windows_wrapper(
+    tmp_path: Path, args: list[str], extra_env: dict[str, str], *, expect_exit: int = 0,
+) -> dict[str, object]:
+    """Run the PowerShell wrapper with recording stand-ins.
+
+    Args:
+        tmp_path: The test's temporary directory, holding the wrapper's home.
+        args: The arguments the wrapper receives.
+        extra_env: Environment variables set for the wrapper.
+        expect_exit: The exit code the wrapper is expected to return.
+
+    Returns:
+        What uv received (``args``, ``command_names``, ``profile``), or the
+        wrapper's output under ``output`` when it stopped before running uv.
+    """
     home = tmp_path / 'home'
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     record = tmp_path / 'record.json'
     wrapper = SCRIPTS_DIR / 'windows' / 'setup-environment.ps1'
     quoted_args = ' '.join("'" + arg.replace("'", "''") + "'" for arg in args)
     command = f"{WINDOWS_STAND_INS}\n& '{wrapper}' {quoted_args}\nexit $LASTEXITCODE"
     env = {**os.environ, 'USERPROFILE': str(home), 'E2E_RECORD': str(record), **extra_env}
+    env.pop('CLAUDE_CODE_TOOLBOX_PROFILE', None)
+    env.update(extra_env)
+    # PowerShell writes its module analysis cache relative to the working
+    # directory when the profile directories it expects are absent, so the
+    # process runs inside the test's temporary directory
     result = subprocess.run(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
         env=env,
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         timeout=180,
         check=False,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == expect_exit, result.stdout + result.stderr
+    if not record.exists():
+        return {'output': result.stdout + result.stderr}
     recorded: dict[str, object] = json.loads(record.read_text(encoding='utf-8-sig'))
     return recorded
 
@@ -242,3 +328,32 @@ class TestWindowsWrapper:
             'run', '--no-project', '--python', '3.12', 'setup_environment.py',
             'profile.yaml', '--command-names', 'second', '--dry-run',
         ]
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')
+class TestWindowsWrapperProfileRerun:
+    """The PowerShell wrapper runs a --profile re-run without a configuration."""
+
+    def test_profile_flag_without_configuration_is_forwarded(self, tmp_path: Path) -> None:
+        """--profile NAME as the first argument is forwarded with no configuration in front of it."""
+        recorded = _run_windows_wrapper(tmp_path, ['--profile', 'aegis-1', '--dry-run'], {})
+
+        assert recorded['args'] == [
+            'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--profile', 'aegis-1', '--dry-run',
+        ]
+        assert recorded['profile'] is None
+
+    def test_one_liner_with_the_profile_variable_runs_without_arguments(self, tmp_path: Path) -> None:
+        """The iex (irm ...) form with CLAUDE_CODE_TOOLBOX_PROFILE set runs the script with no arguments."""
+        recorded = _run_windows_wrapper(tmp_path, [], {'CLAUDE_CODE_TOOLBOX_PROFILE': 'aegis-1'})
+
+        assert recorded['args'] == ['run', '--no-project', '--python', '3.12', 'setup_environment.py']
+        assert recorded['profile'] == 'aegis-1'
+
+    def test_no_configuration_and_no_profile_is_refused_by_the_wrapper(self, tmp_path: Path) -> None:
+        """Without a configuration or a profile the wrapper stops before running uv."""
+        recorded = _run_windows_wrapper(tmp_path, ['--dry-run'], {}, expect_exit=1)
+
+        assert 'args' not in recorded
+        assert 'No configuration specified!' in str(recorded['output'])
+        assert '--profile <name>' in str(recorded['output'])

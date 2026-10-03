@@ -21,7 +21,7 @@ from scripts.setup_environment import resolve_command_names
 
 def _runtime_errors(name: str) -> list[str]:
     """Return the runtime validation errors for a configuration naming one command."""
-    args = argparse.Namespace(command_names=None, origins={})
+    args = argparse.Namespace(command_names=None, profile=None, origins={})
     _resolved, errors = resolve_command_names(args, {'command-names': [name]})
     return errors
 

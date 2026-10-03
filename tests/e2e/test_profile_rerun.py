@@ -1,0 +1,1096 @@
+"""E2E tests for re-running installed profiles.
+
+An update is the install command run again: by configuration plus the
+primary name, or by --profile NAME (environment twin
+CLAUDE_CODE_TOOLBOX_PROFILE) with no configuration at all. A profile's
+manifest remembers the command names and component delta a run typed or
+took from the environment, so a re-run keeps its aliases and components;
+configuration values are re-read every time. Guards hold a run back before
+any write when the environment would rename a profile or a different
+configuration would re-provision it. The tests install real local YAML
+files into an isolated home with the real launcher, wrapper, profile-config
+and manifest writers; only network access, the Claude Code binary, MCP
+registration, OS-level variables and the Windows PATH registry are replaced.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+import yaml
+
+from scripts import setup_environment
+from tests.e2e.profile_support import home_state
+from tests.e2e.profile_support import read_manifest
+from tests.e2e.profile_support import run_main
+from tests.e2e.profile_support import wrapper_targets_profile
+from tests.e2e.profile_support import wrappers_absent
+from tests.e2e.profile_support import wrappers_exist
+from tests.e2e.profile_support import write_config
+from tests.e2e.profile_support import write_legacy_manifest
+from tests.e2e.validators import validate_manifest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+SKIP = ['--skip-install', '--no-admin']
+
+
+@pytest.fixture
+def configs(tmp_path: Path) -> Path:
+    """A directory of configurations with the resources they install beside them."""
+    directory = tmp_path / 'configs'
+    for relative, content in (
+        ('agents/core.md', '# core agent\n'),
+        ('agents/extra.md', '# extra agent\n'),
+        ('agents/other.md', '# other agent\n'),
+        ('rules/rule.md', '# rule\n'),
+        ('files/same-a.txt', 'identical content\n'),
+        ('files/same-b.txt', 'identical content\n'),
+        ('files/different.txt', 'different content\n'),
+    ):
+        path = directory / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding='utf-8')
+    return directory
+
+
+def _plain(name: str = 'Plain Env') -> dict[str, Any]:
+    """A configuration without command-names, like a shared base configuration."""
+    return {'name': name, 'user-settings': {'theme': 'dark'}}
+
+
+def _components() -> dict[str, Any]:
+    """A configuration whose author lets the user pick an optional component."""
+    return {
+        'name': 'Components Env',
+        'agents': ['agents/core.md', 'agents/extra.md'],
+        'components': [
+            {'name': 'core', 'includes': {'agents': ['agents/core.md']}},
+            {'name': 'extra', 'default': False, 'includes': {'agents': ['agents/extra.md']}},
+        ],
+    }
+
+
+def _output(capsys: pytest.CaptureFixture[str]) -> str:
+    """Everything the run printed, with Windows line endings normalized."""
+    captured = capsys.readouterr()
+    return (captured.out + captured.err).replace('\r\n', '\n')
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestRerunKeepsTypedChoices:
+    """A re-run keeps the aliases and the components the install typed."""
+
+    def test_profile_rerun_keeps_aliases_and_components(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile NAME alone restores every alias and the added component."""
+        cfg = write_config(configs, 'env.yaml', _components())
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1,a2', '--with', 'extra']) == 0
+        profile_dir = claude_dir / 'aegis-1'
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes']) == 0
+
+        manifest = read_manifest(profile_dir)
+        assert manifest['command_names'] == ['aegis-1', 'a1', 'a2']
+        assert manifest['origins'] == {'command_names': 'cli', 'components': 'cli'}
+        assert manifest['components'] == {'select': None, 'with': 'extra', 'without': None}
+        assert (profile_dir / 'agents' / 'extra.md').is_file(), 'the added component was deselected'
+        for name in ('aegis-1', 'a1', 'a2'):
+            assert wrappers_exist(local_bin, name)
+            assert wrapper_targets_profile(local_bin, name, profile_dir)
+        output = _output(capsys)
+        assert 'Command names: aegis-1, a1, a2 [remembered]' in output
+        assert '[remembered]' in output.split('Components:')[1].split('\n')[0]
+        assert '* Global commands: aegis-1, a1, a2 registered [remembered]' in output
+
+    def test_configuration_with_primary_name_keeps_aliases_and_components(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The configuration plus the primary name selects the profile and keeps its choices."""
+        cfg = write_config(configs, 'env.yaml', _components())
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1', '--with', 'extra']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1']) == 0
+
+        manifest = read_manifest(claude_dir / 'aegis-1')
+        assert manifest['command_names'] == ['aegis-1', 'a1']
+        assert manifest['components'] == {'select': None, 'with': 'extra', 'without': None}
+        assert (claude_dir / 'aegis-1' / 'agents' / 'extra.md').is_file()
+        assert wrappers_exist(local_bin, 'a1')
+        assert 'Command names: aegis-1, a1 [remembered]' in _output(capsys)
+
+    def test_name_none_drops_every_alias_and_its_wrappers(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """NAME,none installs the profile under one command and removes the alias wrappers."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1,a2']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,none']) == 0
+
+        assert read_manifest(claude_dir / 'aegis-1')['command_names'] == ['aegis-1']
+        assert wrappers_exist(local_bin, 'aegis-1')
+        assert wrappers_absent(local_bin, 'a1')
+        assert wrappers_absent(local_bin, 'a2')
+        assert 'Removed the wrapper(s) of dropped alias(es): a1, a2' in _output(capsys)
+
+    def test_shorter_typed_list_removes_the_dropped_wrapper(
+        self, e2e_isolated_home: dict[str, Path], configs: Path,
+    ) -> None:
+        """A typed list that leaves an alias out removes that alias's wrappers and keeps the rest."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        local_bin = e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1,a2']) == 0
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1']) == 0
+
+        assert wrappers_exist(local_bin, 'a1')
+        assert wrappers_absent(local_bin, 'a2')
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'aegis-1')['command_names'] == ['aegis-1', 'a1']
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestPrecedenceAndMarkers:
+    """Each value is ranked typed, environment, remembered, configuration, default, and marked so."""
+
+    def test_remembered_marker_and_yaml_changed_warning(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A remembered list overrides a configuration list that changed, with a warning that says so."""
+        config = {**_plain(), 'command-names': ['p1', 'y1']}
+        cfg = write_config(configs, 'env.yaml', config)
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1,t1']) == 0
+        write_config(configs, 'env.yaml', {**config, 'command-names': ['p1', 'y2']})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'p1', *SKIP, '--dry-run']) == 0
+
+        output = _output(capsys)
+        assert 'Command names: p1, t1 [remembered]' in output
+        assert (
+            "command-names: using the remembered value p1, t1 [remembered]; the configuration's command-names "
+            'changed from p1, y1 to p1, y2 since the profile was installed.'
+        ) in output
+
+    def test_yaml_names_are_re_read_and_dropped_aliases_removed(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile installed from its configuration's names follows the configuration on a re-run."""
+        config = {**_plain(), 'command-names': ['p1', 'y1']}
+        cfg = write_config(configs, 'env.yaml', config)
+        local_bin = e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'env.yaml', {**config, 'command-names': ['p1', 'y2']})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'p1', *SKIP, '--yes']) == 0
+
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'p1')['command_names'] == ['p1', 'y2']
+        assert wrappers_exist(local_bin, 'y2')
+        assert wrappers_absent(local_bin, 'y1')
+        assert 'Command names: p1, y2 [yaml]' in _output(capsys)
+
+    def test_default_marker_when_no_source_lists_aliases(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile selected by name whose configuration lost its names runs under that name alone."""
+        config = {**_plain(), 'command-names': ['p1', 'y1']}
+        cfg = write_config(configs, 'env.yaml', config)
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'env.yaml', _plain())
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'p1', *SKIP, '--dry-run']) == 0
+
+        assert 'Command names: p1 [default]' in _output(capsys)
+
+    def test_typed_list_beats_the_remembered_one(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A list typed for this run wins over the remembered one and is marked as typed."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1,t1']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', 'p1,c1']) == 0
+
+        assert 'Command names: p1, c1 [cli]' in _output(capsys)
+
+    def test_components_remembered_and_warned_when_defaults_change(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A remembered component delta is marked and warns when the author defaults changed."""
+        config = _components()
+        cfg = write_config(configs, 'env.yaml', config)
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--without', 'core', '--with', 'extra']) == 0
+        config['components'][1]['default'] = True
+        write_config(configs, 'env.yaml', config)
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--dry-run']) == 0
+
+        output = _output(capsys)
+        assert '[remembered]' in output.split('Components:')[1].split('\n')[0]
+        assert 'components: using the remembered selection extra [remembered]' in output
+        assert 'changed from core to core, extra' in output
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestEnvironmentChangeGuard:
+    """A leftover variable may not rename an installed profile without consent."""
+
+    def _install(self, configs: Path) -> Path:
+        cfg = write_config(configs, 'env.yaml', _plain())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,a1']) == 0
+        return cfg
+
+    def test_variable_change_is_refused_under_yes(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without a terminal the run stops before any write."""
+        cfg = self._install(configs)
+        home = e2e_isolated_home['home']
+        before = home_state(home)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'aegis-1,b1')
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes']) == 1
+
+        output = _output(capsys)
+        assert (
+            'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES changes the command names of profile "aegis-1" '
+            'from aegis-1, a1 to aegis-1, b1.'
+        ) in output
+        assert 'Pass --command-names aegis-1,b1 to change them.' in output
+        assert home_state(home) == before
+
+    def test_variable_change_is_refused_under_dry_run(
+        self, configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A preview reports the refusal instead of a plan the real run would not execute."""
+        cfg = self._install(configs)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'aegis-1,b1')
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--dry-run']) == 1
+
+        output = _output(capsys)
+        assert 'Dry run: a real run stops here.' in output
+        assert 'Installation Summary' not in output
+
+    @pytest.mark.parametrize(('answer', 'renamed'), [('n', False), ('y', True)])
+    def test_variable_change_prompts_interactively(
+        self,
+        answer: str,
+        renamed: bool,
+        e2e_isolated_home: dict[str, Path],
+        configs: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An interactive run asks; no cancels, yes renames the profile with the environment's list."""
+        cfg = self._install(configs)
+        local_bin = e2e_isolated_home['local_bin']
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'aegis-1,b1')
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP], interactive=True, answers=[answer, 'y']) == 0
+
+        manifest = read_manifest(e2e_isolated_home['claude_dir'] / 'aegis-1')
+        if renamed:
+            assert manifest['command_names'] == ['aegis-1', 'b1']
+            assert manifest['origins']['command_names'] == 'env'
+            assert wrappers_exist(local_bin, 'b1')
+            assert wrappers_absent(local_bin, 'a1')
+            assert 'Command names: aegis-1, b1 [env]' in _output(capsys)
+        else:
+            assert manifest['command_names'] == ['aegis-1', 'a1']
+            assert wrappers_absent(local_bin, 'b1')
+
+    def test_typed_change_proceeds(self, e2e_isolated_home: dict[str, Path], configs: Path) -> None:
+        """A typed list is a deliberate choice and needs no further consent."""
+        cfg = self._install(configs)
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1,b1']) == 0
+
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'aegis-1')['command_names'] == ['aegis-1', 'b1']
+
+    def test_variable_naming_the_profile_alone_selects_it(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A variable holding only the primary name selects the profile and keeps its aliases."""
+        cfg = self._install(configs)
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_COMMAND_NAMES', 'aegis-1')
+
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'aegis-1')['command_names'] == ['aegis-1', 'a1']
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestConfigurationSwitchGuard:
+    """A different configuration for an installed profile needs consent and sheds the residue."""
+
+    def _install_a(self, configs: Path, *, names: list[str] | None = None) -> tuple[Path, Path]:
+        cfg_a = write_config(configs, 'a.yaml', {'name': 'A', 'agents': ['agents/core.md']})
+        cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'agents': ['agents/other.md']})
+        argv = [str(cfg_a), *SKIP, '--yes']
+        if names:
+            argv += ['--command-names', ','.join(names)]
+        assert run_main(argv) == 0
+        return cfg_a, cfg_b
+
+    def test_refused_under_yes_listing_the_residue(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The refusal names both configurations and what the previous one leaves behind."""
+        cfg_a, cfg_b = self._install_a(configs, names=['aegis-1'])
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--yes', '--command-names', 'aegis-1']) == 1
+
+        output = _output(capsys)
+        assert (
+            f'Profile "aegis-1" was installed from {cfg_a.resolve()}; the configuration argument names a '
+            f'different configuration, {cfg_b.resolve()}.'
+        ) in output
+        assert f'file: {profile_dir / "agents" / "core.md"}' in output
+        assert 'Pass --switch-config (or set CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1)' in output
+        assert home_state(e2e_isolated_home['home']) == before
+
+    def test_variable_configuration_is_named_in_the_refusal(
+        self, configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A configuration from CLAUDE_CODE_TOOLBOX_ENV_CONFIG is named as such."""
+        _cfg_a, cfg_b = self._install_a(configs, names=['aegis-1'])
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', str(cfg_b))
+        capsys.readouterr()
+
+        assert run_main([*SKIP, '--yes', '--command-names', 'aegis-1']) == 1
+
+        assert 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG names a different configuration' in _output(capsys)
+
+    def test_dry_run_stops_with_exit_1(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A preview of a switch the real run refuses exits 1."""
+        _cfg_a, cfg_b = self._install_a(configs, names=['aegis-1'])
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--dry-run', '--command-names', 'aegis-1']) == 1
+
+        assert 'Dry run: a real run stops here.' in _output(capsys)
+
+    @pytest.mark.parametrize(('answer', 'switched'), [('n', False), ('y', True)])
+    def test_interactive_prompt_lists_the_residue(
+        self, answer: str, switched: bool, e2e_isolated_home: dict[str, Path], configs: Path,
+    ) -> None:
+        """No keeps the profile as it is; yes switches it and removes the residue."""
+        cfg_a, cfg_b = self._install_a(configs, names=['aegis-1'])
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+
+        assert run_main([str(cfg_b), *SKIP, '--command-names', 'aegis-1'], interactive=True, answers=[answer, 'y']) == 0
+
+        manifest = read_manifest(profile_dir)
+        if switched:
+            assert manifest['config_identity'] == setup_environment.config_identity_of(str(cfg_b.resolve()))
+            assert not (profile_dir / 'agents' / 'core.md').exists()
+            assert (profile_dir / 'agents' / 'other.md').is_file()
+        else:
+            assert manifest['config_identity'] == setup_environment.config_identity_of(str(cfg_a.resolve()))
+            assert (profile_dir / 'agents' / 'core.md').is_file()
+
+    @pytest.mark.parametrize('how', ['flag', 'variable'])
+    def test_switch_config_accepts_and_removes_the_residue(
+        self, how: str, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--switch-config (or its variable) switches the profile without a prompt."""
+        _cfg_a, cfg_b = self._install_a(configs, names=['aegis-1'])
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+        argv = [str(cfg_b), *SKIP, '--yes', '--command-names', 'aegis-1']
+        if how == 'flag':
+            argv.append('--switch-config')
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG', '1')
+        capsys.readouterr()
+
+        assert run_main(argv) == 0
+
+        output = _output(capsys)
+        assert 'Accepted via --switch-config or CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1.' in output
+        assert f'Removed {profile_dir / "agents" / "core.md"}' in output
+        assert not (profile_dir / 'agents' / 'core.md').exists()
+        assert (profile_dir / 'agents' / 'other.md').is_file()
+        assert read_manifest(profile_dir)['config_identity'] == setup_environment.config_identity_of(str(cfg_b.resolve()))
+
+    def test_base_profile_switch_is_guarded(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A different configuration for the base profile is refused the same way."""
+        _cfg_a, cfg_b = self._install_a(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert (claude_dir / 'agents' / 'core.md').is_file()
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--yes']) == 1
+
+        assert 'Profile "base" was installed from' in _output(capsys)
+        assert (claude_dir / 'agents' / 'core.md').is_file()
+        assert run_main([str(cfg_b), *SKIP, '--yes', '--switch-config']) == 0
+        assert not (claude_dir / 'agents' / 'core.md').exists()
+        assert (claude_dir / 'agents' / 'other.md').is_file()
+
+    def test_same_configuration_spelled_differently_is_no_switch(
+        self, configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The identity is the resolved path, so a relative spelling of the same file proceeds."""
+        self._install_a(configs, names=['aegis-1'])
+        monkeypatch.chdir(configs)
+        capsys.readouterr()
+
+        assert run_main(['./a.yaml', *SKIP, '--yes', '--command-names', 'aegis-1']) == 0
+
+        assert 'names a different configuration' not in _output(capsys)
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestProfileWithConfiguration:
+    """A configuration given beside --profile is checked against the manifest's identity."""
+
+    def _install(self, configs: Path) -> tuple[Path, Path]:
+        cfg_a = write_config(configs, 'a.yaml', {'name': 'A', 'agents': ['agents/core.md']})
+        cfg_b = write_config(configs, 'b.yaml', {'name': 'B', 'agents': ['agents/other.md']})
+        assert run_main([str(cfg_a), *SKIP, '--yes', '--command-names', 'aegis-1,a1']) == 0
+        return cfg_a, cfg_b
+
+    @pytest.mark.parametrize('how', ['positional', 'variable'])
+    def test_equal_identity_proceeds(
+        self, how: str, configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The profile's own configuration beside --profile is accepted without a guard."""
+        cfg_a, _cfg_b = self._install(configs)
+        argv = ['--profile', 'aegis-1', *SKIP, '--yes']
+        if how == 'positional':
+            argv.insert(0, str(cfg_a))
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', str(cfg_a))
+        capsys.readouterr()
+
+        assert run_main(argv) == 0
+
+        output = _output(capsys)
+        assert 'names a different configuration' not in output
+        assert 'Command names: aegis-1, a1 [remembered]' in output
+
+    @pytest.mark.parametrize(
+        ('how', 'expected'),
+        [('positional', 'the configuration argument'), ('variable', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG')],
+    )
+    def test_different_identity_goes_through_the_switch_guard(
+        self, how: str, expected: str, e2e_isolated_home: dict[str, Path], configs: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Another configuration beside --profile is the switch guard, naming the argument or variable."""
+        _cfg_a, cfg_b = self._install(configs)
+        argv = ['--profile', 'aegis-1', *SKIP, '--yes']
+        if how == 'positional':
+            argv.insert(0, str(cfg_b))
+        else:
+            monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_ENV_CONFIG', str(cfg_b))
+        capsys.readouterr()
+
+        assert run_main(argv) == 1
+
+        assert f'{expected} names a different configuration, {cfg_b.resolve()}.' in _output(capsys)
+        assert run_main([*argv, '--switch-config']) == 0
+        assert (e2e_isolated_home['claude_dir'] / 'aegis-1' / 'agents' / 'other.md').is_file()
+
+    @pytest.mark.parametrize(
+        ('argv', 'env', 'expected'),
+        [
+            (
+                ['--command-names', 'other'], {},
+                '--command-names names the profile "other", but --profile selects "aegis-1"; clear --command-names',
+            ),
+            (
+                [], {'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'other,x'},
+                (
+                    'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES names the profile "other", but --profile selects "aegis-1"; '
+                    'clear CLAUDE_CODE_TOOLBOX_COMMAND_NAMES'
+                ),
+            ),
+        ],
+    )
+    def test_other_primary_beside_profile_is_an_error(
+        self,
+        argv: list[str],
+        env: dict[str, str],
+        expected: str,
+        e2e_isolated_home: dict[str, Path],
+        configs: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A command-names primary other than the profile names the flag or variable to clear."""
+        self._install(configs)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes', *argv]) == 1
+
+        assert expected in _output(capsys)
+        assert home_state(e2e_isolated_home['home']) == before
+
+    def test_typed_aliases_beside_profile_change_them(self, e2e_isolated_home: dict[str, Path], configs: Path) -> None:
+        """--profile NAME --command-names NAME,ALIAS changes the profile's aliases."""
+        self._install(configs)
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes', '--command-names', 'aegis-1,z1']) == 0
+
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'aegis-1')['command_names'] == ['aegis-1', 'z1']
+        assert wrappers_absent(e2e_isolated_home['local_bin'], 'a1')
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestProfileBase:
+    """--profile base re-runs the base install from its manifest."""
+
+    def test_base_rerun_needs_no_configuration(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The base profile is re-run from the configuration its manifest records."""
+        cfg = write_config(
+            configs, 'base.yaml', {'name': 'Base', 'agents': ['agents/core.md'], 'user-settings': {'theme': 'dark'}},
+        )
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        first = read_manifest(claude_dir)
+        (claude_dir / 'agents' / 'core.md').unlink()
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 0
+
+        second = read_manifest(claude_dir)
+        assert first['config_identity'] == setup_environment.config_identity_of(str(cfg.resolve()))
+        assert second['config_identity'] == first['config_identity']
+        assert second['installed_at'] != first['installed_at']
+        assert (claude_dir / 'agents' / 'core.md').is_file()
+        assert 'Custom command: Not created (no command-names specified)' in _output(capsys)
+        assert not any(path.is_dir() and (path / 'manifest.json').exists() for path in claude_dir.iterdir())
+
+    def test_base_rerun_refuses_a_configuration_that_now_declares_command_names(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A base re-run of a configuration that turned into an isolated profile is an error."""
+        cfg = write_config(configs, 'base.yaml', _plain())
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        write_config(configs, 'base.yaml', {**_plain(), 'command-names': ['iso']})
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 1
+
+        assert 'declares command-names iso, but --profile base re-runs the base profile' in _output(capsys)
+
+    def test_base_with_command_names_is_an_error(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile base cannot carry command names."""
+        cfg = write_config(configs, 'base.yaml', _plain())
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'base', *SKIP, '--yes', '--command-names', 'x']) == 1
+
+        assert 'selects the base profile, which has no command names; clear --command-names' in _output(capsys)
+
+    def test_missing_profile_is_an_error(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A profile that was never installed cannot be re-run."""
+        assert run_main(['--profile', 'ghost', *SKIP, '--yes']) == 1
+        output = _output(capsys)
+        assert 'No installed profile named "ghost"' in output
+        assert run_main(['--profile', 'base', *SKIP, '--yes']) == 1
+        assert 'No installed profile named "base"' in _output(capsys)
+
+
+RUNNER = '''\
+"""Child runner: setup_environment.main() with the machine-wide writers replaced."""
+from unittest.mock import patch
+
+from scripts import setup_environment
+from tests.e2e.fixtures import setup_child
+
+_real_find = setup_environment.find_command
+
+
+def _find(name: str) -> str | None:
+    return '/usr/bin/claude' if name == 'claude' else _real_find(name)
+
+
+with (
+    patch.object(setup_environment, 'find_command', _find),
+    patch.object(setup_environment, 'ensure_local_bin_in_path', lambda: None),
+    patch.object(setup_environment, 'refresh_path_from_registry', lambda: None),
+):
+    setup_child.main()
+'''
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestProfileAll:
+    """--profile all refreshes every installed profile, each in its own child run."""
+
+    def _install_three(self, configs: Path) -> tuple[Path, Path, Path]:
+        base = write_config(configs, 'base.yaml', {'name': 'Base', 'agents': ['agents/core.md']})
+        one = write_config(configs, 'one.yaml', {'name': 'One', 'agents': ['agents/extra.md']})
+        two = write_config(configs, 'two.yaml', {'name': 'Two', 'agents': ['agents/other.md']})
+        assert run_main([str(base), *SKIP, '--yes']) == 0
+        assert run_main([str(one), *SKIP, '--yes', '--command-names', 'aegis-1,a1']) == 0
+        assert run_main([str(two), *SKIP, '--yes', '--command-names', 'aegis-2']) == 0
+        return base, one, two
+
+    def _runner(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        runner = tmp_path / 'runner.py'
+        runner.write_text(RUNNER, encoding='utf-8')
+        monkeypatch.setenv('PYTHONPATH', str(REPO_ROOT))
+        return runner
+
+    def test_refreshes_every_profile_and_reports_a_failed_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """The base first, then the isolated profiles in order; a failed child is named with its retry command."""
+        _base, _one, two = self._install_three(configs)
+        claude_dir = e2e_isolated_home['claude_dir']
+        before = {name: read_manifest(claude_dir / name if name != 'base' else claude_dir)['installed_at']
+                  for name in ('base', 'aegis-1', 'aegis-2')}
+        (claude_dir / 'aegis-1' / 'agents' / 'extra.md').unlink()
+        two.unlink()
+        # A directory no child may resolve its profile through: the base child
+        # would refuse it as an ambient CLAUDE_CONFIG_DIR, so a green run proves
+        # the children start with it stripped
+        monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'leaked'))
+        runner = self._runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        assert code == 1, output
+        positions = [output.index(f'=== Profile {name} ===') for name in ('base', 'aegis-1', 'aegis-2')]
+        assert positions == sorted(positions), 'the base runs first, then the isolated profiles in order'
+        assert '* base: ok' in output
+        assert '* aegis-1: ok' in output
+        assert '* aegis-2: failed (exit code 1); retry with --profile aegis-2' in output
+        assert read_manifest(claude_dir)['installed_at'] != before['base']
+        assert read_manifest(claude_dir / 'aegis-1')['installed_at'] != before['aegis-1']
+        assert read_manifest(claude_dir / 'aegis-2')['installed_at'] == before['aegis-2']
+        assert (claude_dir / 'aegis-1' / 'agents' / 'extra.md').is_file(), 'the child did not re-install the profile'
+        assert wrappers_exist(e2e_isolated_home['local_bin'], 'a1')
+
+    def test_dry_run_previews_every_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """Every child runs with --dry-run and changes nothing."""
+        self._install_three(configs)
+        home = e2e_isolated_home['home']
+        before = home_state(home)
+        runner = self._runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--dry-run'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        output = captured.out + captured.err
+        assert code == 0, output
+        assert output.count('Dry run complete. No changes were made.') == 3
+        assert home_state(home) == before
+
+    def test_conflicting_arguments_and_missing_profiles_are_refused(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile all takes no configuration, and needs at least one installed profile."""
+        cfg = write_config(configs, 'base.yaml', _plain())
+        assert run_main(['--profile', 'all', *SKIP, '--yes']) == 1
+        assert 'No installed profile has a manifest' in _output(capsys)
+
+        assert run_main([str(cfg), '--profile', 'all', *SKIP, '--yes']) == 1
+
+        assert 'cannot be combined with a configuration' in _output(capsys)
+
+    def test_interactive_decline_starts_no_child(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The parent asks once; a declined question starts nothing."""
+        self._install_three(configs)
+        home = e2e_isolated_home['home']
+        before = home_state(home)
+        runner = self._runner(tmp_path, monkeypatch)
+
+        assert run_main(['--profile', 'all', *SKIP], argv0=str(runner), interactive=True, answers=['n']) == 0
+
+        assert home_state(home) == before
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestLegacyManifests:
+    """Manifests written before identities were recorded are matched and upgraded."""
+
+    def test_absolute_local_source_reruns_and_upgrades_the_manifest(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A manifest naming its configuration by absolute path is enough for --profile."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'legacy-1'
+        write_legacy_manifest(
+            profile_dir, 'legacy-1', ['legacy-1', 'old-alias'],
+            config_source=str(cfg.resolve()), config_source_type='local', config_source_url=None,
+        )
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'legacy-1', *SKIP, '--yes']) == 0
+
+        manifest = read_manifest(profile_dir)
+        assert manifest['config_identity'] == setup_environment.config_identity_of(str(cfg.resolve()))
+        assert manifest['command_names'] == ['legacy-1']
+        assert manifest['origins']['command_names'] == 'default'
+        assert manifest['link'] is None
+        assert (profile_dir / 'resolved-config.yaml').is_file()
+        assert not validate_manifest(profile_dir / 'manifest.json', {**_plain(), 'command-names': ['legacy-1']})
+        assert 'Command names: legacy-1 [default]' in _output(capsys)
+
+    def test_url_source_is_matched_by_the_recorded_url(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A manifest with a config_source_url is identified by that URL, so a local file is a switch."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        write_legacy_manifest(
+            e2e_isolated_home['claude_dir'] / 'legacy-1', 'legacy-1', ['legacy-1'],
+            config_source='shared-env', config_source_type='repo',
+            config_source_url='https://example.com/shared-env.yaml',
+        )
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'legacy-1']) == 1
+
+        assert (
+            'Profile "legacy-1" was installed from shared-env; the configuration argument names a different'
+        ) in _output(capsys)
+
+    def test_relative_source_needs_the_configuration_once(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A relative source that no longer resolves is replaced by the configuration the re-run is given."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'legacy-1'
+        write_legacy_manifest(
+            profile_dir, 'legacy-1', ['legacy-1'],
+            config_source='./env.yaml', config_source_type='local', config_source_url=None,
+        )
+        capsys.readouterr()
+        assert run_main(['--profile', 'legacy-1', *SKIP, '--yes']) == 1
+        output = _output(capsys)
+        assert "records the configuration './env.yaml', which cannot be resolved from this directory" in output
+        assert '--profile legacy-1 <configuration>' in output
+
+        assert run_main(['--profile', 'legacy-1', str(cfg), *SKIP, '--yes']) == 0
+
+        output = _output(capsys)
+        assert f'Recording {cfg.resolve()} as the configuration of profile "legacy-1"' in output
+        assert read_manifest(profile_dir)['config_identity'] == setup_environment.config_identity_of(str(cfg.resolve()))
+        assert run_main(['--profile', 'legacy-1', *SKIP, '--yes']) == 0, 'the second re-run needs no configuration'
+
+    def test_rerun_from_todays_manifest_and_projects_link_layout(
+        self, e2e_isolated_home: dict[str, Path], configs: Path,
+    ) -> None:
+        """A profile installed with link-projects-dir and the previous manifest shape re-runs intact."""
+        config = {**_plain(), 'command-names': ['linked-1', 'l1'], 'link-projects-dir': True}
+        cfg = write_config(configs, 'env.yaml', config)
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        profile_dir = claude_dir / 'linked-1'
+        projects = profile_dir / 'projects'
+        assert setup_environment._is_windows_reparse_point(projects) or projects.is_symlink()
+        write_legacy_manifest(
+            profile_dir, 'linked-1', ['linked-1', 'l1'],
+            config_source=str(cfg.resolve()), config_source_type='local', config_source_url=None,
+        )
+
+        assert run_main(['--profile', 'linked-1', *SKIP, '--yes']) == 0
+
+        assert setup_environment._is_windows_reparse_point(projects) or projects.is_symlink()
+        (claude_dir / 'projects' / 'marker.txt').write_text('shared session\n', encoding='utf-8')
+        assert (projects / 'marker.txt').is_file(), 'the link no longer reaches the base projects directory'
+        manifest = read_manifest(profile_dir)
+        assert manifest['command_names'] == ['linked-1', 'l1']
+        assert manifest['origins']['command_names'] == 'yaml'
+        assert wrappers_exist(e2e_isolated_home['local_bin'], 'l1')
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestClaudePersonalLikeProfile:
+    """A profile that carries its names in the configuration re-runs from the configuration."""
+
+    def test_rerun_follows_the_configuration_aliases(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--profile claude-personal re-reads the aliases and drops the ones the configuration dropped."""
+        config = {
+            'name': 'Personal Profile',
+            'command-names': ['claude-personal', 'claude-p', 'claude-sub'],
+            'user-settings': {'theme': 'dark'},
+            'global-config': None,
+        }
+        cfg = write_config(configs, 'claude-personal.yaml', config)
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'claude-personal', *SKIP, '--yes']) == 0
+
+        manifest = read_manifest(claude_dir / 'claude-personal')
+        assert manifest['command_names'] == ['claude-personal', 'claude-p', 'claude-sub']
+        assert manifest['origins']['command_names'] == 'yaml'
+        for name in manifest['command_names']:
+            assert wrappers_exist(local_bin, name)
+        assert 'Command names: claude-personal, claude-p, claude-sub [yaml]' in _output(capsys)
+        assert json.loads((claude_dir / 'claude-personal' / 'config.json').read_text(encoding='utf-8'))['theme'] == 'dark'
+
+        write_config(configs, 'claude-personal.yaml', {**config, 'command-names': ['claude-personal', 'claude-p']})
+        assert run_main(['--profile', 'claude-personal', *SKIP, '--yes']) == 0
+        assert read_manifest(claude_dir / 'claude-personal')['command_names'] == ['claude-personal', 'claude-p']
+        assert wrappers_absent(local_bin, 'claude-sub')
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestSharedDestinations:
+    """Destinations outside ~/.claude shared by profiles of different configurations are named."""
+
+    def _configs(self, configs: Path, tmp_path: Path, *, b_source: str) -> tuple[Path, Path, Path]:
+        shared = tmp_path / 'shared' / 'tool.txt'
+        cfg_a = write_config(configs, 'a.yaml', {
+            'name': 'A', 'files-to-download': [{'source': 'files/same-a.txt', 'dest': str(shared)}],
+        })
+        cfg_b = write_config(configs, 'b.yaml', {
+            'name': 'B', 'files-to-download': [{'source': b_source, 'dest': str(shared)}],
+        })
+        return cfg_a, cfg_b, shared
+
+    def test_different_source_warns_before_consent(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The second profile's summary names the first profile, its configuration and its source."""
+        cfg_a, cfg_b, shared = self._configs(configs, tmp_path, b_source='files/different.txt')
+        assert run_main([str(cfg_a), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        record = read_manifest(e2e_isolated_home['claude_dir'] / 'prof-a')['machine_wide_destinations']
+        assert record == [{
+            'dest': str(shared), 'source': str((configs / 'files' / 'same-a.txt').resolve()),
+            'sha256': setup_environment._sha256_of_file(shared),
+        }]
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--dry-run', '--command-names', 'prof-b']) == 0
+
+        output = _output(capsys)
+        assert '[!] ATTENTION:' in output
+        assert (
+            f'[!] {shared} is also installed by profile "prof-a" ({cfg_a.resolve()}) from '
+            f'{(configs / "files" / "same-a.txt").resolve()}; this run writes it from '
+            f'{(configs / "files" / "different.txt").resolve()} and leaves it untouched only when the content is identical'
+        ) in output
+
+    def test_identical_file_is_left_untouched(
+        self, configs: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Identical content from another configuration leaves the file on disk as it is."""
+        cfg_a, cfg_b, shared = self._configs(configs, tmp_path, b_source='files/same-b.txt')
+        assert run_main([str(cfg_a), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        old_time = 1_000_000_000
+        os.utime(shared, (old_time, old_time))
+        if sys.platform != 'win32':
+            shared.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        capsys.readouterr()
+
+        assert run_main([str(cfg_b), *SKIP, '--yes', '--command-names', 'prof-b']) == 0
+
+        assert 'Unchanged: tool.txt' in _output(capsys)
+        assert int(shared.stat().st_mtime) == old_time
+        assert shared.read_text(encoding='utf-8') == 'identical content\n'
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestPinEffectAndUnrefreshedProfiles:
+    """A pin names the profiles it affects, and a run lists the profiles it did not refresh."""
+
+    @pytest.mark.parametrize(
+        ('installed', 'expected'),
+        [
+            (
+                '2.1.100',
+                (
+                    'Claude Code version pin 2.1.280: moves the binary from 2.1.100 to 2.1.280 '
+                    'for the other installed profile(s) prof-a'
+                ),
+            ),
+            (
+                '2.1.280',
+                'Claude Code version pin 2.1.280: holds the binary at 2.1.280 for the other installed profile(s) prof-a',
+            ),
+        ],
+    )
+    def test_pin_effect_line_in_the_summary(
+        self, installed: str, expected: str, configs: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A base run that pins a version names the other installed profile the pin affects."""
+        cfg_a = write_config(configs, 'a.yaml', _plain())
+        assert run_main([str(cfg_a), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        cfg_base = write_config(configs, 'base.yaml', {**_plain('Base'), 'claude-code-version': '2.1.280'})
+        capsys.readouterr()
+
+        with patch.object(setup_environment, '_installed_claude_version', return_value=installed):
+            assert run_main([str(cfg_base), '--no-admin', '--dry-run']) == 0
+
+        assert f'* {expected}' in _output(capsys)
+
+    def test_isolated_pin_effect_among_machine_wide_writes(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An isolated run lists the pin effect among its machine-wide writes."""
+        cfg_base = write_config(configs, 'base.yaml', _plain('Base'))
+        assert run_main([str(cfg_base), *SKIP, '--yes']) == 0
+        cfg_b = write_config(configs, 'b.yaml', {**_plain('B'), 'claude-code-version': '2.1.280'})
+        capsys.readouterr()
+
+        with patch.object(setup_environment, '_installed_claude_version', return_value='2.1.280'):
+            assert run_main([str(cfg_b), '--no-admin', '--dry-run', '--command-names', 'prof-b']) == 0
+
+        expected = 'Claude Code version pin 2.1.280: holds the binary at 2.1.280 for the other installed profile(s) base'
+        lines = [line for line in _output(capsys).splitlines() if expected in line]
+        assert len(lines) == 1, lines
+        assert '[machine-wide]' in lines[0]
+
+    def test_unrefreshed_profiles_are_listed_after_the_run(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The closing summary names every other installed profile with its --profile command."""
+        cfg = write_config(configs, 'env.yaml', _plain())
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-b']) == 0
+
+        output = _output(capsys)
+        assert '* Installed profiles this run did not refresh:' in output
+        assert '- base (--profile base)' in output
+        assert '- prof-a (--profile prof-a)' in output
+        assert '- prof-b' not in output
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestManifestRecords:
+    """The manifest records the configuration, the choices and what the run wrote."""
+
+    def test_isolated_install_records_everything(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path,
+    ) -> None:
+        """Every record of an isolated install is present and validates."""
+        outside = tmp_path / 'shared' / 'tool.txt'
+        config = {
+            'name': 'Recorded',
+            'agents': ['agents/core.md'],
+            'rules': ['rules/rule.md'],
+            'files-to-download': [
+                {'source': 'files/same-a.txt', 'dest': str(outside)},
+                {'source': 'files/different.txt', 'dest': '~/.claude/prof-a/extra/inside.txt'},
+            ],
+            'mcp-servers': [{'name': 'srv', 'scope': 'profile', 'command': 'echo'}],
+            'os-env-variables': {'PROFILE_VAR': 'x'},
+            'user-settings': {'theme': 'dark', 'model': 'sonnet'},
+            'command-defaults': {'system-prompt': 'rules/rule.md'},
+        }
+        cfg = write_config(configs, 'env.yaml', config)
+        claude_dir = e2e_isolated_home['claude_dir']
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'prof-a,alias']) == 0
+
+        profile_dir = claude_dir / 'prof-a'
+        manifest = read_manifest(profile_dir)
+        assert not validate_manifest(profile_dir / 'manifest.json', {**config, 'command-names': ['prof-a', 'alias']})
+        assert manifest['config_source'] == str(cfg.resolve())
+        assert manifest['config_identity'] == setup_environment.config_identity_of(str(cfg.resolve()))
+        resolved = yaml.safe_load((profile_dir / 'resolved-config.yaml').read_text(encoding='utf-8'))
+        assert 'command-names' not in resolved
+        assert resolved['agents'] == ['agents/core.md']
+        assert manifest['config_digest'] == setup_environment.config_digest_of(
+            (profile_dir / 'resolved-config.yaml').read_text(encoding='utf-8'),
+        )
+        assert manifest['command_names'] == ['prof-a', 'alias']
+        assert manifest['origins'] == {'command_names': 'cli', 'components': 'yaml'}
+        assert manifest['components'] is None
+        assert manifest['yaml_values'] == {'command_names': [], 'components': []}
+        assert manifest['files_written'] == ['agents/core.md', 'extra/inside.txt', 'prompts/rule.md', 'rules/rule.md']
+        assert manifest['machine_wide_destinations'] == [{
+            'dest': str(outside), 'source': str((configs / 'files' / 'same-a.txt').resolve()),
+            'sha256': setup_environment._sha256_of_file(outside),
+        }]
+        assert manifest['os_env_written'] == [], 'an isolated run routes its variables to the env loaders'
+        assert manifest['settings_keys_written'] == ['model', 'theme']
+        assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile']}]
+        for relative in manifest['files_written']:
+            assert (profile_dir / relative).is_file(), relative
+
+    def test_base_install_records_os_variables_and_settings(
+        self, e2e_isolated_home: dict[str, Path], configs: Path,
+    ) -> None:
+        """A base install records the OS variables it set and the settings keys it wrote."""
+        config = {
+            'name': 'Base',
+            'os-env-variables': {'MY_VAR': 'x', 'GONE_VAR': None},
+            'user-settings': {'theme': 'dark'},
+            'hooks': {'files': ['rules/rule.md'], 'events': [
+                {'event': 'PostToolUse', 'matcher': 'Edit', 'type': 'command', 'command': 'rule.md'},
+            ]},
+        }
+        cfg = write_config(configs, 'base.yaml', config)
+        claude_dir = e2e_isolated_home['claude_dir']
+
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+
+        manifest = read_manifest(claude_dir)
+        assert not validate_manifest(claude_dir / 'manifest.json', config)
+        assert manifest['name'] is None
+        assert manifest['command_names'] == []
+        assert manifest['origins'] == {'command_names': None, 'components': 'yaml'}
+        assert manifest['os_env_written'] == ['MY_VAR']
+        assert manifest['settings_keys_written'] == ['hooks', 'theme']
+        assert manifest['files_written'] == ['hooks/rule.md']

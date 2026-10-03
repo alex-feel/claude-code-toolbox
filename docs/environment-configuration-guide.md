@@ -274,7 +274,7 @@ Creates global shell commands that launch Claude Code with this environment conf
   - Cannot be a reserved name, compared without regard to case: `none`, `base`, `all`, `skills`, `agents`, `commands`, `rules`, `hooks`, `output-styles`, `prompts`, `projects`
 - **Co-dependency:** If specified, `command-defaults` must also be specified (and vice versa)
 - **Inheritance:** Standard override (child replaces parent)
-- **Note:** If no command names are given (neither here nor through `--command-names`), hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, recording `name` as `null`, an empty `command_names` list, the configuration `version`, and the `claude-code-version` pin as `claude_code_version`; setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
+- **Note:** If no command names are given (neither here nor through `--command-names`), hooks are written to `~/.claude/settings.json` (global scope) instead of a per-environment `config.json`. Step 19 still writes the base profile's manifest, `~/.claude/manifest.json`, with `name` as `null` and an empty `command_names` list (see [Profile manifests](#profile-manifests)); setup skips only launcher creation and command registration (Steps 20-21). The setup still processes other resources (agents, MCP servers, dependencies, and so on) but does not create a launchable command.
 - **Example:**
 
 ```yaml
@@ -285,7 +285,7 @@ command-names:
 
 ##### Choosing the command names at install time
 
-`--command-names NAME[,ALIAS...]` (environment variable `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`) sets the command names of one run, and it works with every configuration. A configuration without `command-names` becomes the isolated profile `~/.claude/NAME` instead of a base install. A configuration with `command-names` installs under the names you give in place of its own. The value replaces the configuration's list whole and never merges with it: a single `NAME` is the complete list, with none of the configuration's aliases. The flag wins over the variable, and the variable wins over the configuration. Every source goes through the same validation and reserved names, and setup stops before writing anything when a name fails.
+`--command-names NAME[,ALIAS...]` (environment variable `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`) sets the command names of one run, and it works with every configuration. A configuration without `command-names` becomes the isolated profile `~/.claude/NAME` instead of a base install. A configuration with `command-names` installs under the names you give in place of its own. The value replaces the configuration's list whole and never merges with it: `NAME,ALIAS...` sets the aliases, `NAME,none` drops every alias, and a single `NAME` on a new profile is the complete list, with none of the configuration's aliases. A single `NAME` on a profile that is already installed selects that profile and leaves its aliases to the ranking in [Re-running a profile](#re-running-a-profile). The flag wins over the variable, and the variable wins over the configuration. Every source goes through the same validation and reserved names, and setup stops before writing anything when a name fails.
 
 ```bash
 # One configuration, several isolated profiles
@@ -309,10 +309,43 @@ The installation summary and the completion summary both mark where the names ca
 
 Setup registers each command name as a wrapper in `~/.local/bin`, so before it writes anything (and in `--dry-run` too) it refuses a name that is already taken, whatever source the name came from:
 
-- **Another profile's name.** Every isolated profile lists its names in `~/.claude/<primary>/manifest.json`. A name another profile lists is refused with the owning profile and its manifest in the message. To move an alias to a new profile, install the owning profile again with a `command-names` list that leaves the alias out, then install the new profile. A re-run of the profile that owns the names keeps working, and so does a re-run that drops some of its aliases.
+- **Another profile's name.** Every isolated profile lists its names in `~/.claude/<primary>/manifest.json`. A name another profile lists is refused with the owning profile and its manifest in the message. To move an alias to a new profile, re-run the owning profile with a `--command-names` list that leaves the alias out (or `NAME,none` to drop every alias), then install the new profile. A re-run of the profile that owns the names keeps working, and a re-run that drops some of its aliases removes their wrappers from `~/.local/bin`, so the names are free again.
 - **A program in `~/.local/bin`.** A file there under the name that setup did not create, such as the native Claude Code link `claude`, is refused with its path. On Windows, `name.exe`, `name.bat` and `name.com` count too, because the shells run them for the bare name. Choose another name, or move the file away if you no longer need it.
 
-A wrapper that setup created and no profile lists any more, for instance one an alias left behind, is free to reuse. Setup compares a name with other profiles' names without regard to case, because Windows and macOS map both spellings onto the same wrapper files.
+Setup compares a name with other profiles' names without regard to case, because Windows and macOS map both spellings onto the same wrapper files.
+
+##### Re-running a profile
+
+An update is the install command run again, and the primary name alone is enough. Three forms re-run an installed profile, and all three perform the whole install: the Claude Code binary (upgraded unless an installed profile pins a version), the dependency commands, the profile's content, its MCP registrations and settings:
+
+```bash
+uvx cc-toolbox setup my-env.yaml --command-names my-env-1   # by configuration plus the primary name
+uvx cc-toolbox setup --profile my-env-1                      # by name alone: the configuration comes from the manifest
+uvx cc-toolbox setup --profile base                          # the base profile
+uvx cc-toolbox setup --profile all                           # every installed profile, the base first, each in its own run
+```
+
+```powershell
+# Windows one-liner: iex (irm ...) takes no arguments, so use the variable; no configuration is needed
+$env:CLAUDE_CODE_TOOLBOX_PROFILE='my-env-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')
+```
+
+Each profile's manifest remembers the command names and the component choice (`--select`, `--with`, `--without`, or a picker choice) the install typed or took from the environment, and the configuration it was installed from. Per key, a re-run ranks its sources: a value typed for this run, an environment value for this run, the remembered value when its recorded origin is the flag or the variable, the configuration's own value, then the default. Values the configuration declares are therefore re-read on every run, and values you typed survive until you type them again. The installation summary and the completion summary mark each value `[cli]`, `[env]`, `[remembered]` or `[yaml]` (`[default]` for a profile selected by name whose configuration lists no names), and a remembered value that overrides a configuration value which changed since the install produces a warning naming both. A remembered component choice counts as supplied selectors, so the picker does not run; pass a selector to change it.
+
+`--profile NAME` takes no configuration, but accepts one: a configuration whose identity equals the manifest's (the same URL, or the same local file by resolved path) proceeds, any other goes through the switch guard below, whose message names the argument or `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`. A `--command-names` value beside `--profile NAME` must start with `NAME`; it then sets the aliases. `--profile base` re-runs the base install and refuses a configuration that now declares `command-names`. `--profile all` lists every installed profile, asks once (or takes `--yes`), then runs each as its own child process with `--yes` plus this run's `--dry-run`, `--skip-install` and `--no-admin`, with every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and `CLAUDE_CONFIG_DIR` removed from the child's environment, and ends with a report naming each profile, its result and the `--profile` command that retries a failed one; it cannot be combined with a configuration or a selector flag.
+
+##### Guards before any write
+
+Two guards hold a re-run back before anything is written, and `--dry-run` reports them with exit code 1 instead of a plan the real run would not execute:
+
+- **An environment value that would rename a profile.** A `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES` value that differs from the names an installed profile records needs consent: the run stops under `--yes` or without a terminal, and asks when a terminal is available. A typed `--command-names` value proceeds. A variable holding only the primary name selects the profile and changes nothing.
+- **A different configuration for an existing profile.** The run lists what the previous configuration leaves behind -- profile files it installed that the new one does not, MCP servers, OS environment variables and `settings.json` keys of a base profile, and destinations outside `~/.claude` whose content is still what that run wrote -- and stops under `--yes` or without a terminal, or asks when a terminal is available. `--switch-config` (`CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1`) accepts the switch; the run then removes the residue before installing the new configuration. A relative local path and its absolute spelling are the same configuration.
+
+After a run, the completion summary lists every other installed profile with its `--profile` command, because one run refreshes one profile. A version pin names the other installed profiles whose binary it holds or moves, and a `files-to-download` destination outside `~/.claude` that a profile of another configuration recorded from a different source is named before consent; an identical file on disk is left untouched.
+
+##### Profile manifests
+
+Every toolbox-managed profile records its install in `manifest.json` (`~/.claude/manifest.json` for the base profile, `~/.claude/<primary>/manifest.json` for an isolated one) and the configuration it installed in `resolved-config.yaml` beside it: the resolved, component-selected configuration without `command-names`, so the same configuration renders the same bytes whichever profile installed it. The manifest fields: `name` (the primary command name, `null` for the base profile), `version`, `claude_code_version` (the pin), `config_source` (the resolved absolute path or URL), `config_source_url`, `config_source_type`, `config_identity` (the source as compared across runs), `config_digest` (the sha256 of `resolved-config.yaml`), `installed_at`, `command_names`, `components` (the `select`, `with` and `without` values as typed, or `null`), `link` (`null`), `origins` (per key: `cli`, `env`, `yaml` or `default`), `yaml_values` (the configuration's own `command_names` and default `components` at install time), `machine_wide_destinations` (`files-to-download` destinations outside `~/.claude`, each with its source and sha256), `os_env_written`, `settings_keys_written`, `mcp_servers` (name and scopes), and `files_written` (profile-relative paths). A manifest written without `config_identity` is matched by its `config_source_url` when present and otherwise by its resolved `config_source`; when a relative local source cannot be resolved from another directory, the first re-run records the identity of the configuration it is given, with an info line, instead of refusing.
 
 #### `base-url`
 
@@ -2385,15 +2418,25 @@ hooks:
 | `--with`                          | `CLAUDE_CODE_TOOLBOX_WITH`            | Add components to the default selection                                                       |
 | `--without`                       | `CLAUDE_CODE_TOOLBOX_WITHOUT`         | Remove components from the selection (hard `requires` still win)                              |
 | `--list-components`               | --                                    | List the configuration's components and exit                                                  |
-| `--command-names NAME[,ALIAS...]` | `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`   | Install as the isolated profile `~/.claude/NAME` under these names (replaces `command-names`) |
+| `--command-names NAME[,ALIAS...]` | `CLAUDE_CODE_TOOLBOX_COMMAND_NAMES`   | Install as the isolated profile `~/.claude/NAME` under these names; `NAME,none`: no aliases   |
+| `--profile NAME`                  | `CLAUDE_CODE_TOOLBOX_PROFILE`         | Re-run the installed profile `NAME` from its manifest with no configuration (`base`, `all`)   |
+| `--switch-config`                 | `CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG`   | Accept another configuration for an existing profile and remove what the previous one left    |
 
-CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`. In PowerShell, quote a comma-separated flag value (`--command-names 'main,alias'`), because PowerShell reads an unquoted `main,alias` as an array.
+CLI flags take precedence over environment variables. For piped invocations, environment variables are the reliable channel: `iex (irm ...)` accepts no arguments, and `curl ... | bash` passes them only with `bash -s -- <config> <flags>`. In PowerShell, quote a comma-separated flag value (`--command-names 'main,alias'`), because PowerShell reads an unquoted `main,alias` as an array. The bootstrap wrappers require a configuration unless `--profile` or `CLAUDE_CODE_TOOLBOX_PROFILE` is given, in which case they run the setup script without one.
 
 ## Troubleshooting
 
 ### No configuration specified
 
-If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` variable inline with the bootstrap command. See [Quick Start](#quick-start) for examples.
+If you see an error about no configuration, ensure you set the `CLAUDE_CODE_TOOLBOX_ENV_CONFIG` variable inline with the bootstrap command, or re-run an installed profile with `--profile NAME` (or `CLAUDE_CODE_TOOLBOX_PROFILE`), which needs no configuration. See [Quick Start](#quick-start) and [Re-running a profile](#re-running-a-profile) for examples.
+
+### Profile "NAME" was installed from another configuration
+
+A profile keeps the configuration it was installed from. Giving it another configuration, positionally or through `CLAUDE_CODE_TOOLBOX_ENV_CONFIG`, is a switch: the setup lists what the previous configuration leaves behind and stops under `--yes`, `--dry-run` or without a terminal, or asks when a terminal is available. Pass `--switch-config` (or set `CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1`) to accept the switch and remove the residue, or re-run the profile with its own configuration: `--profile NAME`. See [Guards before any write](#guards-before-any-write).
+
+### CLAUDE_CODE_TOOLBOX_COMMAND_NAMES changes the command names of profile "NAME"
+
+A variable left over from an earlier install would rename the profile. The setup stops under `--yes`, `--dry-run` or without a terminal, and asks when a terminal is available. Pass `--command-names` with the new list to change the names deliberately, or clear the variable to keep the recorded ones.
 
 ### Configuration not found in repository
 

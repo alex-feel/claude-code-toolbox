@@ -60,6 +60,8 @@ def _empty_namespace() -> argparse.Namespace:
         without=None,
         list_components=False,
         command_names=None,
+        profile=None,
+        switch_config=False,
     )
 
 
@@ -135,6 +137,8 @@ class TestRegistryShape:
             'CLAUDE_CODE_TOOLBOX_WITH': 'with_',
             'CLAUDE_CODE_TOOLBOX_WITHOUT': 'without',
             'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'command_names',
+            'CLAUDE_CODE_TOOLBOX_PROFILE': 'profile',
+            'CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG': 'switch_config',
         }
 
 
