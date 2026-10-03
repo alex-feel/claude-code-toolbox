@@ -15,8 +15,9 @@ hooks is proven with what an installed hooks/ holds beside the script: the
 helper module the script imports from its own directory, the
 project-overrides/ file it reads next to itself, and the uv script lockfile
 uv reads beside it under UV_LOCKED=1 (a lockfile made stale after locking
-blocks the turn through every link kind, which a lockfile uv could not find
-would not do). prompts is proven through the toolbox launcher
+stops the hook with uv's stale-lockfile error through every link kind, while
+a lockfile uv could not find would only draw a warning and let the script
+run). prompts is proven through the toolbox launcher
 create_launcher_script() writes, which passes the file with
 --system-prompt-file (replace mode) or --append-system-prompt-file (append
 mode); projects is proven by a session written through the link landing at
@@ -217,14 +218,22 @@ def test_hooks_run_through_link(workspace: Workspace, kind: str) -> None:
 
 
 @pytest.mark.parametrize('kind', support.link_kinds())
-def test_hooks_stale_lock_blocks_the_prompt(workspace: Workspace, kind: str) -> None:
+def test_hooks_stale_lock_stops_the_hook(workspace: Workspace, kind: str) -> None:
     """A lockfile that no longer matches the script stops the hook through every link kind.
 
-    uv reads the lockfile beside the script it is given; under UV_LOCKED=1
-    a stale one exits 2 before the script runs, and exit code 2 on
-    UserPromptSubmit blocks the turn. A lockfile uv could not find beside
-    the linked script would only produce a warning and let the hook run, so
-    the blocked turn proves the lockfile is read through the link.
+    uv reads the lockfile beside the script it is given; under UV_LOCKED=1 a
+    stale one makes uv refuse to run the script with its "needs to be
+    updated" error, while a lockfile uv cannot find only draws a "No
+    lockfile found" warning and lets the script run. The script not running
+    and the hook failing with that error therefore prove the lockfile is
+    read through the link.
+
+    What the failure does to the turn follows uv's exit code, which the
+    SessionStart response reports for the command UserPromptSubmit runs as
+    well: uv exits 2 on a stale lockfile before 0.12.14 and 1 from 0.12.14
+    on, and Claude Code blocks a UserPromptSubmit only when its hook exits
+    2, so the turn is blocked exactly when the hook exited 2 and otherwise
+    completes without the hook.
     """
     support.make_hook_lock_stale(workspace.source)
     profile = workspace.make_profile(_PROFILE_NAME, kind)
@@ -232,13 +241,20 @@ def test_hooks_stale_lock_blocks_the_prompt(workspace: Workspace, kind: str) -> 
     run = profile.run(_PROMPT)
 
     assert not workspace.hook_records(), run.describe()
-    assert len(run.bodies) == 0, run.describe()
     errors = [response for response in run.hook_responses if response.get('outcome') == 'error']
     assert errors, run.describe()
-    assert all(response.get('exit_code') == 2 for response in errors), run.describe()
-    assert all('needs to be updated' in str(response.get('stderr', '')) for response in errors), run.describe()
+    for response in errors:
+        stderr = str(response.get('stderr', ''))
+        assert 'needs to be updated' in stderr, run.describe()
+        assert 'No lockfile found' not in stderr, run.describe()
+    exit_codes = {response.get('exit_code') for response in errors}
+    assert len(exit_codes) == 1, run.describe()
+    exit_code = exit_codes.pop()
+    assert exit_code not in (0, None), run.describe()
+    blocked = exit_code == 2
+    assert len(run.bodies) == (0 if blocked else 1), run.describe()
     assert run.result is not None, run.describe()
-    assert 'blocked by hook' in str(run.result.get('result', '')), run.describe()
+    assert ('blocked by hook' in str(run.result.get('result', ''))) is blocked, run.describe()
 
 
 def test_hooks_absent_block_the_prompt(workspace: Workspace) -> None:

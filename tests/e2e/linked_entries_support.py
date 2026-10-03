@@ -249,10 +249,11 @@ def lock_hook_script(source: Path, env: dict[str, str]) -> Path:
 def make_hook_lock_stale(source: Path) -> None:
     """Change the script's requires-python so the lockfile beside it no longer matches.
 
-    A locked run (UV_LOCKED=1) then exits 2 instead of running the hook, and
-    exit code 2 on UserPromptSubmit blocks the turn; a lockfile uv cannot
-    find at all only produces a warning, so a blocked turn proves the
-    lockfile was read beside the script.
+    A locked run (UV_LOCKED=1) then fails with uv's "needs to be updated"
+    error instead of running the hook (exit code 2 before uv 0.12.14, 1 from
+    0.12.14 on); a lockfile uv cannot find at all only produces a warning
+    and the script runs, so that error proves the lockfile was read beside
+    the script.
 
     Args:
         source: The profile directory that holds hooks/ for real.
