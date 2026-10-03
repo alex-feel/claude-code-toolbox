@@ -16,7 +16,13 @@ leaves every other profile alone:
   of the .claude.json this run writes is named in the summary and in
   --dry-run; nothing blocks it.
 - Every machine-wide write of an isolated run is named in the summary
-  before consent.
+  before consent: the binary and its installMethod record, a version pin
+  and the IDE extension installed at that pin, each OS-level control, the
+  command wrappers, project-scope MCP servers, files-to-download
+  destinations outside the profile, and the dependency commands.
+- The final summary names the files the run wrote: the profile's
+  config.json and .claude.json for an isolated run, ~/.claude/settings.json
+  and ~/.claude.json for a base run.
 
 A base run keeps writing ~/.claude.json and the OS environment as before.
 
@@ -26,7 +32,8 @@ these files (Claude Code installation, dependencies, downloads, MCP
 registration, OS environment writes, launcher and command registration) are
 stubbed. The Claude Code installation stub records installMethod in the base
 ~/.claude.json the way the installer does, so the base file's one allowed
-change is exercised rather than assumed.
+change is exercised rather than assumed. IDE detection is pinned to one
+VS Code family CLI so the extension row does not depend on the host.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from tests.e2e.validators import validate_env_loader_files
 
 PROFILE_NAME = 'e2e-corp'
 PINNED_VERSION = '2.1.85'
+DETECTED_IDE_CLI = 'code'
 _ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 MACHINE_WIDE_CONTROLS = ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL')
 BASE_ACCOUNT = {'emailAddress': 'base@example.com', 'accountUuid': 'base-account-uuid'}
@@ -147,6 +155,8 @@ def _run_setup(
     with (
         patch('scripts.setup_environment.find_command', side_effect=find_with_claude),
         patch('scripts.setup_environment.install_claude', side_effect=install_claude or (lambda *_a, **_k: True)),
+        patch('scripts.setup_environment._detect_vscode_family_ides',
+              return_value=[(DETECTED_IDE_CLI, f'/usr/bin/{DETECTED_IDE_CLI}')]),
         patch('scripts.setup_environment.install_ide_extensions', return_value=True),
         patch('scripts.setup_environment.install_dependencies', return_value=[]),
         patch('scripts.setup_environment.process_resources', return_value=True),
@@ -171,6 +181,11 @@ def _output(capsys: pytest.CaptureFixture[str]) -> str:
     """Return everything the run printed, color codes stripped; the summary goes to stderr under capture."""
     captured = capsys.readouterr()
     return _ANSI_SEQUENCE.sub('', captured.out + captured.err)
+
+
+def _machine_wide_rows(output: str) -> list[str]:
+    """Return the text of every [machine-wide] row of the installation summary."""
+    return [line.split('[machine-wide] ', 1)[1] for line in output.splitlines() if '[machine-wide] ' in line]
 
 
 class TestIsolatedInstallLeavesTheBaseAlone:
@@ -562,6 +577,12 @@ class TestMachineWideWritesNamedBeforeConsent:
             'when it installs, upgrades or migrates the binary'
         ) in output
         assert f'[machine-wide] Claude Code version pin {PINNED_VERSION}: holds the binary every profile uses' in output
+        rows = _machine_wide_rows(output)
+        pin_index = rows.index(f'Claude Code version pin {PINNED_VERSION}: holds the binary every profile uses')
+        assert rows[pin_index + 1] == (
+            f'IDE extension {setup_environment.IDE_EXTENSION_ID} {PINNED_VERSION}: '
+            f'installed into {DETECTED_IDE_CLI} (used by every profile)'
+        ), 'Step 2 installs the pinned extension into every detected IDE, right after the pin row'
         for control in MACHINE_WIDE_CONTROLS:
             assert f'[machine-wide] OS environment: {control}="1"' in output
         assert f'[machine-wide] {home / ".local" / "bin"}: command wrapper(s) {PROFILE_NAME}' in output
@@ -586,8 +607,26 @@ class TestMachineWideWritesNamedBeforeConsent:
         assert 'recorded by the Claude Code installer' not in output, \
             'Under --skip-install no installer runs, so no installMethod write is named'
         assert 'Claude Code binary:' not in output
+        assert '[machine-wide] IDE extension' not in output, 'An unpinned run installs no extension'
         for control in MACHINE_WIDE_CONTROLS:
             assert f'[machine-wide] OS environment: delete {control}' in output
+
+    def test_pinned_isolated_dry_run_under_skip_install_names_no_ide_extension(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--skip-install skips Step 2 with Step 1, so the pin row stands alone."""
+        home = e2e_isolated_home['home']
+        config_path = _write_yaml(tmp_path / 'corp.yaml', _corp_like_config(isolated=True))
+
+        _, exit_code = _run_setup(config_path, home, '--dry-run', '--skip-install')
+
+        assert exit_code == 0
+        output = _output(capsys)
+        assert f'[machine-wide] Claude Code version pin {PINNED_VERSION}: holds the binary every profile uses' in output
+        assert '[machine-wide] IDE extension' not in output
 
     def test_base_dry_run_has_no_machine_wide_block(
         self,
@@ -608,3 +647,65 @@ class TestMachineWideWritesNamedBeforeConsent:
         output = _output(capsys)
         assert 'Machine-wide writes' not in output
         assert 'OS environment variables: 4 (machine-wide)' in output
+
+
+class TestFinalSummaryNamesTheFilesWritten:
+    """The completion summary names the files this run wrote, per profile."""
+
+    def test_isolated_run_names_the_profile_files_and_loader_counts(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unpinned isolated run: one declared control stays OS-level, the rest go to the loaders."""
+        home = e2e_isolated_home['home']
+        profile_dir = home / '.claude' / PROFILE_NAME
+        config_path = _write_yaml(
+            tmp_path / 'personal.yaml',
+            _corp_like_config(
+                isolated=True, pinned=False,
+                os_env_variables={'DISABLE_UPDATES': '1', 'FOO': 'x', 'BAR': None},
+            ),
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        output = _output(capsys)
+        assert 'OS environment variables: 1 configured (machine-wide)' in output
+        assert 'OS environment variables: 2 deleted (machine-wide)' in output, \
+            'The two controls the YAML does not declare are deleted from the OS environment'
+        assert 'Profile environment variables: 1 exported by the env loaders' in output
+        assert 'Profile environment variables: 1 unset by the env loaders' in output
+        assert f'User settings: built into {profile_dir / "config.json"}' in output
+        assert 'User settings: configured in ~/.claude/settings.json' not in output
+        assert f'Global config: configured in {profile_dir / ".claude.json"}' in output
+        assert f'Global config: configured in {home / ".claude.json"}' not in output
+
+    def test_base_run_names_the_base_files_without_the_machine_wide_label(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        config_path = _write_yaml(
+            tmp_path / 'base.yaml',
+            _corp_like_config(
+                isolated=False, pinned=False,
+                os_env_variables={'DISABLE_UPDATES': '1', 'FOO': 'x', 'BAR': None},
+            ),
+        )
+
+        _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
+
+        assert exit_code is None
+        output = _output(capsys)
+        assert re.search(r'^\s*\* OS environment variables: 2 configured$', output, re.MULTILINE), output
+        assert re.search(r'^\s*\* OS environment variables: 3 deleted$', output, re.MULTILINE), output
+        assert 'configured (machine-wide)' not in output
+        assert 'Profile environment variables' not in output, 'A base run has no env loaders'
+        assert 'User settings: configured in ~/.claude/settings.json' in output
+        assert 'User settings: built into' not in output
+        assert f'Global config: configured in {home / ".claude.json"}' in output

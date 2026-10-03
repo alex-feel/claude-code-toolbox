@@ -16894,6 +16894,7 @@ class TestCollectMachineWideWrites:
             'install_version': '2.1.280',
             'keep_installed': False,
             'pinned_version': None,
+            'ide_clis': [],
             'os_level_env': {},
             'mcp_servers': [],
             'files_to_download': [],
@@ -16938,6 +16939,50 @@ class TestCollectMachineWideWrites:
         assert 'OS environment: DISABLE_UPDATES="1"' in writes
         assert 'OS environment: delete CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL' in writes
         assert writes[-1] == 'Dependency commands: run machine-wide (listed above)'
+
+    def test_pinned_run_names_the_ide_extension_install_after_the_pin(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Step 2 writes the pinned extension into every detected IDE, so the row names them."""
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        writes = self._collect(
+            tmp_path, install_version='2.1.85', pinned_version='2.1.85', ide_clis=['code', 'cursor'],
+        )
+
+        pin_index = writes.index('Claude Code version pin 2.1.85: holds the binary every profile uses')
+        assert writes[pin_index + 1] == (
+            'IDE extension anthropic.claude-code 2.1.85: installed into code, cursor (used by every profile)'
+        )
+
+    @pytest.mark.parametrize(
+        ('overrides', 'reason'),
+        [
+            pytest.param(
+                {'skip_install': True, 'pinned_version': '2.1.85', 'ide_clis': ['code']},
+                'Step 2 is skipped together with Step 1',
+                id='skip-install',
+            ),
+            pytest.param(
+                {'pinned_version': None, 'ide_clis': ['code']},
+                'an unpinned run installs no extension',
+                id='unpinned',
+            ),
+            pytest.param(
+                {'pinned_version': '2.1.85', 'ide_clis': []},
+                'Step 2 writes nothing when no IDE is detected',
+                id='no-ide-detected',
+            ),
+        ],
+    )
+    def test_no_ide_extension_row_when_step_2_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any], reason: str,
+    ) -> None:
+        monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
+
+        writes = self._collect(tmp_path, **overrides)
+
+        assert not any(line.startswith('IDE extension ') for line in writes), reason
 
     def test_skip_install_omits_the_binary_lines(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)

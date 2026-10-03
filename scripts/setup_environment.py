@@ -8508,6 +8508,7 @@ def collect_machine_wide_writes(
     install_version: str | None,
     keep_installed: bool,
     pinned_version: str | None,
+    ide_clis: list[str],
     os_level_env: dict[str, str | None],
     mcp_servers: list[dict[str, Any]],
     files_to_download: list[dict[str, Any]],
@@ -8518,9 +8519,10 @@ def collect_machine_wide_writes(
     An isolated run keeps its files inside its profile directory, so the
     writes that leave it are the ones every profile on the machine shares:
     the one Claude Code binary and the installMethod the installer records
-    in the base ~/.claude.json, a version pin holding that binary, the
-    machine-wide environment controls, the command wrappers in
-    ~/.local/bin, project-scope MCP registrations in the working
+    in the base ~/.claude.json, a version pin holding that binary, the IDE
+    extension Step 2 installs at that pin into every detected VS Code
+    family IDE, the machine-wide environment controls, the command wrappers
+    in ~/.local/bin, project-scope MCP registrations in the working
     directory, files-to-download destinations outside the profile, and the
     side effects of dependency commands. The summary lists them before
     consent.
@@ -8528,10 +8530,14 @@ def collect_machine_wide_writes(
     Args:
         profile_dir: The isolated profile directory.
         command_names: Every command name the run registers.
-        skip_install: Whether Step 1 is skipped.
+        skip_install: Whether Step 1 (and with it Step 2) is skipped.
         install_version: The Claude Code version Step 1 installs or keeps.
         keep_installed: Whether Step 1 keeps the installed version.
         pinned_version: The version this run pins, or None.
+        ide_clis: CLI names of the VS Code family IDEs Step 2 installs
+            the extension into (see _detect_vscode_family_ides()); Step 2
+            runs only for a pinned run without --skip-install, and writes
+            nothing when no IDE is detected.
         os_level_env: The os-env-variables entries written to the OS
             environment (see partition_os_env_variables()).
         mcp_servers: The resolved mcp-servers list.
@@ -8555,6 +8561,11 @@ def collect_machine_wide_writes(
         )
     if pinned_version is not None:
         writes.append(f'Claude Code version pin {pinned_version}: holds the binary every profile uses')
+        if not skip_install and ide_clis:
+            writes.append(
+                f'IDE extension {IDE_EXTENSION_ID} {pinned_version}: installed into '
+                f'{", ".join(ide_clis)} (used by every profile)',
+            )
     for key, value in os_level_env.items():
         if value is None:
             writes.append(f'OS environment: delete {key}')
@@ -15226,6 +15237,10 @@ def main() -> None:
         pre_consent_profile_dir = target_config_dir if primary_command_name else None
         os_level_env, _ = partition_os_env_variables(os_env_variables or {}, isolated=bool(primary_command_name))
         if primary_command_name:
+            # Step 2 installs the extension only for a pinned run without
+            # --skip-install; detection is read-only, so the summary can name
+            # the IDEs Step 2 will write into
+            step_2_runs = claude_code_version_normalized is not None and not args.skip_install
             plan.machine_wide_writes = collect_machine_wide_writes(
                 profile_dir=target_config_dir,
                 command_names=command_names or [],
@@ -15233,6 +15248,7 @@ def main() -> None:
                 install_version=claude_install_decision.version,
                 keep_installed=claude_install_decision.kept,
                 pinned_version=claude_code_version_normalized,
+                ide_clis=[name for name, _ in _detect_vscode_family_ides()] if step_2_runs else [],
                 os_level_env=os_level_env,
                 mcp_servers=plan.mcp_servers,
                 files_to_download=plan.files_to_download,
@@ -15888,7 +15904,10 @@ def main() -> None:
             if del_vars > 0:
                 print(f'   * Profile environment variables: {del_vars} unset by the env loaders')
         if user_settings:
-            print('   * User settings: configured in ~/.claude/settings.json')
+            if isolated_config_dir is not None:
+                print(f'   * User settings: built into {isolated_config_dir / "config.json"}')
+            else:
+                print('   * User settings: configured in ~/.claude/settings.json')
         if global_config:
             print(f'   * Global config: configured in {global_config_target_file(isolated_config_dir)}')
         if stale_controls_elsewhere:
