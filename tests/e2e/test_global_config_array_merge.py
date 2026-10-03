@@ -7,14 +7,19 @@ Two layers touch a global-config array on its way into a .claude.json:
   the parent's at every depth; without merge-keys the child's section
   replaces the parent's whole.
 - The Step 15 writer merges the resolved section into each target
-  .claude.json and unions every array at every depth with the array the
-  file already holds (existing elements first, duplicates dropped),
-  because Claude Code keeps arrays of its own there. A YAML array
-  therefore only adds elements; a YAML null deletes the whole key.
+  .claude.json separately (the base file and, in an isolated run, the
+  profile's own file) and unions every array at every depth with the
+  array that file already holds (existing elements first, duplicates
+  dropped), because Claude Code keeps arrays of its own there. A YAML
+  array therefore only adds elements; a YAML null deletes the whole key.
 
 The inherit layer composes user-settings differently: its
 permissions.allow/deny/ask arrays are unioned and every other array is
-replaced by the child's.
+replaced by the child's. On disk the two modes differ as well: a base run
+unions user-settings arrays with ~/.claude/settings.json the same way the
+global-config writer does, while an isolated run rebuilds the profile's
+config.json from the resolved configuration on every run, so the arrays
+there are exactly the resolved ones.
 
 Every test runs main() against YAML files on disk, so loading, inheritance
 resolution, validation and the writers run for real; only the steps that
@@ -162,14 +167,23 @@ class TestWriterUnionsArraysWithClaudeJson:
         assert not errors, '\n'.join(errors)
         assert _read_json(claude_json)['editorMode'] == 'vim'
 
-    def test_isolated_run_unions_into_the_profile_claude_json(
+    def test_isolated_run_merges_base_and_profile_claude_json_separately(
         self,
         e2e_isolated_home: dict[str, Path],
         tmp_path: Path,
     ) -> None:
-        """The profile's own .claude.json gets the same union with its own arrays."""
+        """Each .claude.json the run writes is unioned with its own arrays, never copied from the other.
+
+        The base file and the profile file start with different arrays. After
+        the run each one holds its own elements first and the YAML elements
+        after them, so the element order differs between the two files: one
+        merge per file, not one merged result written twice.
+        """
+        home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
+        base_claude_json = home / '.claude.json'
         profile_claude_json = claude_dir / PROFILE_NAME / '.claude.json'
+        _write_json(base_claude_json, {'enabledMcpjsonServers': ['base-cli-server']})
         _write_json(profile_claude_json, {
             'customApiKeyResponses': {'approved': ['profile-cli-key']},
         })
@@ -177,13 +191,19 @@ class TestWriterUnionsArraysWithClaudeJson:
             'name': 'Isolated Arrays',
             'command-names': [PROFILE_NAME],
             'global-config': {
+                'enabledMcpjsonServers': ['yaml-server'],
                 'customApiKeyResponses': {'approved': ['yaml-key', 'profile-cli-key']},
             },
         })
 
         _run_setup(config_path)
 
-        errors = validate_json_arrays(profile_claude_json, {
+        errors = validate_json_arrays(base_claude_json, {
+            ('enabledMcpjsonServers',): ['base-cli-server', 'yaml-server'],
+            ('customApiKeyResponses', 'approved'): ['yaml-key', 'profile-cli-key'],
+        })
+        errors += validate_json_arrays(profile_claude_json, {
+            ('enabledMcpjsonServers',): ['yaml-server'],
             ('customApiKeyResponses', 'approved'): ['profile-cli-key', 'yaml-key'],
         })
         assert not errors, '\n'.join(errors)
@@ -318,3 +338,47 @@ class TestInheritLayerReplacesArrays:
             ('companyAnnouncements',): ['child announcement'],
         })
         assert not errors, '\n'.join(errors)
+
+
+class TestIsolatedConfigJsonHoldsResolvedArrays:
+    """An isolated run rebuilds config.json, so its user-settings arrays are the resolved ones."""
+
+    def test_rebuild_drops_stale_arrays_and_follows_a_shorter_yaml_list(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+    ) -> None:
+        """Arrays already in config.json never survive a run; a re-run with a shorter list shrinks it."""
+        profile_dir = e2e_isolated_home['claude_dir'] / PROFILE_NAME
+        config_json = profile_dir / 'config.json'
+        _write_json(config_json, {
+            'permissions': {'allow': ['Stale']},
+            'companyAnnouncements': ['stale announcement'],
+        })
+        config_path = tmp_path / 'isolated-settings.yaml'
+
+        def write_config(allow: list[str]) -> None:
+            _write_yaml(config_path, {
+                'name': 'Isolated Settings Arrays',
+                'command-names': [PROFILE_NAME],
+                'user-settings': {'permissions': {'allow': allow}},
+            })
+
+        write_config(['Read', 'Write'])
+        _run_setup(config_path)
+
+        errors = validate_json_arrays(config_json, {
+            ('permissions', 'allow'): ['Read', 'Write'],
+            ('companyAnnouncements',): None,
+        })
+        assert not errors, 'first run:\n' + '\n'.join(errors)
+
+        write_config(['Read'])
+        _run_setup(config_path)
+
+        errors = validate_json_arrays(config_json, {
+            ('permissions', 'allow'): ['Read'],
+        })
+        assert not errors, 're-run:\n' + '\n'.join(errors)
+        assert not (profile_dir / 'settings.json').exists(), \
+            'an isolated run must not write user-settings to the profile settings.json'
