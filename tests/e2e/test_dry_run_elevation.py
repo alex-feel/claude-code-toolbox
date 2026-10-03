@@ -1,21 +1,24 @@
-"""E2E tests for Windows administrator elevation: the main() gate, --dry-run and --no-admin.
+"""E2E tests for administrator elevation: the main() gate, --dry-run and --no-admin.
 
-A real run on Windows that needs administrator rights relaunches itself
+On Windows, a real run that needs administrator rights relaunches itself
 through a UAC prompt before anything is installed, and that gate in main() is
 the only place a run requests elevation. A dry run only previews the plan, so
 it never requests elevation: it reports what the real run would elevate for
 and continues to the installation summary. --no-admin turns the gate off, and
-every installation step then runs in the non-elevated process. The tests drive
-main() against the golden configuration with the privilege probe and the UAC
-relaunch replaced, so no prompt opens and the outcome does not depend on
-whether the test process itself runs elevated.
+every installation step then runs in the non-elevated process. The Windows
+tests drive main() against the golden configuration with the privilege probe
+and the UAC relaunch replaced, so no prompt opens and the outcome does not
+depend on whether the test process itself runs elevated.
 
-UAC elevation exists only on Windows, where main() takes this path from the
-real platform, so the module runs on Windows only.
+UAC does not exist off Windows, yet main() runs the same gate on every
+platform. The POSIX tests use the real platform and the real privilege probe
+to show that a configuration that needs administrator rights on Windows never
+reaches the relaunch there.
 """
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
 import shutil
@@ -33,15 +36,14 @@ import yaml
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != 'win32', reason='UAC elevation exists only on Windows',
-)
-
 INSTALL_REASON = 'Installing Claude Code (includes Node.js and Git)'
 WINGET_DEPENDENCY = 'winget install E2E.MachineTool --scope machine'
 NPM_DEPENDENCY = 'npm install -g e2e-global-cli'
 DRY_RUN_HEADLINE = 'Dry run: administrator elevation is not requested.'
 BANNER_TITLE = 'Administrator Privileges Required'
+CONSENT_REFUSAL = 'Cannot proceed: no interactive terminal available'
+
+windows_only = pytest.mark.skipif(sys.platform != 'win32', reason='UAC elevation exists only on Windows')
 
 
 def _load_golden() -> dict[str, Any]:
@@ -69,19 +71,29 @@ def mock_request_elevation() -> Iterator[MagicMock]:
 
 
 def _run_main(
-    config: dict[str, Any], extra_argv: list[str], *, admin: bool = False,
+    config: dict[str, Any], extra_argv: list[str], *, admin: bool | None = False,
 ) -> int:
     """Drive main() with network validation stubbed and a non-interactive terminal.
+
+    Args:
+        config: The configuration main() loads.
+        extra_argv: Arguments after the configuration name.
+        admin: What the privilege probe reports; None leaves the real probe in place.
 
     Returns:
         The exit code main() ended with.
     """
+    admin_probe = (
+        patch('scripts.setup_environment.is_admin', return_value=admin)
+        if admin is not None
+        else contextlib.nullcontext()
+    )
     with (
         patch('scripts.setup_environment.load_config_from_source',
               return_value=(config, 'golden.yaml')),
         patch('scripts.setup_environment.validate_all_config_files',
               return_value=(True, [])),
-        patch('scripts.setup_environment.is_admin', return_value=admin),
+        admin_probe,
         patch('scripts.setup_environment._dev_tty_available', return_value=False),
         patch('sys.stdin.isatty', return_value=False),
         patch('sys.argv', ['setup_environment.py', 'golden', *extra_argv]),
@@ -101,6 +113,7 @@ def _assert_nothing_installed(paths: dict[str, Path]) -> None:
     assert list(claude_dir.iterdir()) == [], 'the run created files under ~/.claude'
 
 
+@windows_only
 class TestDryRunNeverElevates:
     """A dry run that a real run would elevate for previews the plan instead."""
 
@@ -155,6 +168,24 @@ class TestDryRunNeverElevates:
         assert out.index(WINGET_DEPENDENCY) < out.index(NPM_DEPENDENCY)
         _assert_nothing_installed(e2e_isolated_home)
 
+    def test_dry_run_of_a_configuration_needing_no_admin_reports_nothing(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        mock_request_elevation: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-elevated dry run with nothing that needs admin prints no elevation block."""
+        exit_code = _run_main(_load_golden(), ['--dry-run', '--skip-install'])
+
+        assert exit_code == 0
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert DRY_RUN_HEADLINE not in captured.out
+        assert BANNER_TITLE not in captured.out
+        assert 'Installation Summary' in captured.out + captured.err
+        assert 'Dry run complete. No changes were made.' in captured.out
+        _assert_nothing_installed(e2e_isolated_home)
+
     def test_dry_run_in_an_elevated_terminal_reports_nothing(
         self,
         e2e_isolated_home: dict[str, Path],
@@ -188,6 +219,7 @@ class TestDryRunNeverElevates:
         _assert_nothing_installed(e2e_isolated_home)
 
 
+@windows_only
 class TestRealRunElevation:
     """A real run keeps requesting elevation unless --no-admin is given."""
 
@@ -230,6 +262,23 @@ class TestRealRunElevation:
         assert 'Alternatively, use --no-admin flag to skip elevation' in captured.err
         _assert_nothing_installed(e2e_isolated_home)
 
+    def test_real_run_of_a_configuration_needing_no_admin_never_elevates(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        mock_request_elevation: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-elevated real run with nothing that needs admin goes straight to consent."""
+        exit_code = _run_main(_load_golden(), ['--skip-install'])
+
+        assert exit_code == 1
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert BANNER_TITLE not in captured.out
+        assert 'Installation Summary' in captured.out + captured.err
+        assert CONSENT_REFUSAL in captured.err
+        _assert_nothing_installed(e2e_isolated_home)
+
     @pytest.mark.parametrize('via', ['flag', 'environment variable'])
     def test_no_admin_skips_elevation_on_a_real_run(
         self,
@@ -254,10 +303,11 @@ class TestRealRunElevation:
         assert BANNER_TITLE not in captured.out
         assert DRY_RUN_HEADLINE not in captured.out
         assert 'Installation Summary' in captured.out + captured.err
-        assert 'Cannot proceed: no interactive terminal available' in captured.err
+        assert CONSENT_REFUSAL in captured.err
         _assert_nothing_installed(e2e_isolated_home)
 
 
+@windows_only
 class TestNoAdminRunsEveryStepUnelevated:
     """Under --no-admin no installation step requests elevation on its own."""
 
@@ -332,3 +382,43 @@ class TestNoAdminRunsEveryStepUnelevated:
         profile_dir = e2e_isolated_home['claude_dir'] / 'e2e-test-cmd'
         assert (profile_dir / 'config.json').is_file()
         assert (profile_dir / 'agents' / 'e2e-test-agent.md').is_file()
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='checks the gate on platforms without UAC')
+class TestNoElevationOffWindows:
+    """The gate runs on every platform and never relaunches where UAC does not exist."""
+
+    def test_dry_run_of_a_windows_admin_configuration_reports_nothing(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        mock_request_elevation: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without --skip-install or --no-admin the dry run still shows only the plan."""
+        exit_code = _run_main(_golden_with_elevated_dependencies(), ['--dry-run'], admin=None)
+
+        assert exit_code == 0
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert DRY_RUN_HEADLINE not in captured.out
+        assert BANNER_TITLE not in captured.out
+        assert 'Installation Summary' in captured.out + captured.err
+        assert 'Dry run complete. No changes were made.' in captured.out
+        _assert_nothing_installed(e2e_isolated_home)
+
+    def test_real_run_of_a_windows_admin_configuration_reaches_consent(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        mock_request_elevation: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A real run goes straight to its summary; the missing terminal then refuses consent."""
+        exit_code = _run_main(_golden_with_elevated_dependencies(), [], admin=None)
+
+        assert exit_code == 1
+        mock_request_elevation.assert_not_called()
+        captured = capsys.readouterr()
+        assert BANNER_TITLE not in captured.out
+        assert 'Installation Summary' in captured.out + captured.err
+        assert CONSENT_REFUSAL in captured.err
+        _assert_nothing_installed(e2e_isolated_home)
