@@ -193,6 +193,42 @@ class TestLinkCreation:
         assert '[yaml]' in output.split('Links (from profile "base"):')[1].split('\n')[0]
         assert 'Configuration: applied from profile' not in output, 'a projects-only link keeps its own configuration'
 
+    def test_configuration_link_keys_install_a_dependent_marked_yaml(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """link-dirs: [all] with link-from: aegis-1 in the YAML links every entry, each value marked [yaml]."""
+        cfg = _install_source(configs)
+        write_config(configs, 'aegis.yaml', {**_aegis(), 'link-dirs': ['all'], 'link-from': 'aegis-1'})
+        claude_dir = e2e_isolated_home['claude_dir']
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-2']) == 0
+
+        output = _output(capsys)
+        for entry in LINKABLE_PROFILE_DIRS:
+            assert _links_to(claude_dir / 'aegis-2' / entry, claude_dir / 'aegis-1' / entry), entry
+        assert '[yaml]' in output.split('Links (from profile "aegis-1"):')[1].split('\n')[0]
+        assert f'* Links: {", ".join(LINKABLE_PROFILE_DIRS)} from profile "aegis-1" [yaml]' in output
+        manifest = read_manifest(claude_dir / 'aegis-2')
+        assert manifest['link'] == {
+            'dirs': list(LINKABLE_PROFILE_DIRS), 'source': 'aegis-1', 'origins': {'dirs': 'yaml', 'source': 'yaml'},
+        }
+        assert manifest['yaml_values']['link_dirs'] == list(LINKABLE_PROFILE_DIRS)
+        assert manifest['yaml_values']['link_from'] == 'aegis-1'
+        assert manifest['config_digest'] == read_manifest(claude_dir / 'aegis-1')['config_digest']
+
+    def test_non_string_configuration_link_from_is_refused(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A link-from that is not a profile name stops the run before any write."""
+        cfg = write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['projects'], 'link-from': 5})
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1']) == 1
+
+        assert 'Invalid link-from value: expected a profile name, got int' in _output(capsys)
+        assert not (e2e_isolated_home['claude_dir'] / 'p1').exists()
+
     @pytest.mark.skipif(sys.platform != 'win32', reason='Windows junction behavior')
     def test_windows_falls_back_to_mklink_when_createjunction_fails(
         self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
@@ -297,6 +333,30 @@ class TestRerunsAndRepairs:
         assert f'{agents} is a real directory with 1 item(s), and only a typed value converts it' in output
         assert f'pass --link-dirs {",".join(LINKABLE_PROFILE_DIRS)}' in output
         assert (agents / 'local.md').is_file(), 'nothing was moved or removed'
+
+    def test_configuration_value_never_converts_a_real_projects_directory(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A YAML that gains link-dirs: [projects] stops the re-run of a profile whose projects/ holds sessions."""
+        cfg = write_config(configs, 'personal.yaml', _plain())
+        claude_dir = e2e_isolated_home['claude_dir']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 0
+        projects = claude_dir / 'claude-personal' / 'projects'
+        projects.mkdir()
+        (projects / 'session.jsonl').write_text('{}\n', encoding='utf-8')
+        write_config(configs, 'personal.yaml', {**_plain(), 'link-dirs': ['projects']})
+        before = home_state(e2e_isolated_home['home'])
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 1
+
+        output = _output(capsys)
+        assert f'{projects} is a real directory with 1 item(s), and only a typed value converts it' in output
+        assert 'pass --link-dirs projects' in output
+        assert (projects / 'session.jsonl').is_file()
+        assert not _is_link(projects)
+        assert not list((claude_dir / 'claude-personal').glob('projects.unlinked-*'))
+        assert home_state(e2e_isolated_home['home']) == before, 'the refused run changed nothing'
 
     def test_empty_real_directory_is_replaced_under_any_value(
         self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
