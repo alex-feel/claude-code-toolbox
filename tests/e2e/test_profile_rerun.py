@@ -1228,6 +1228,114 @@ def _components_line(output: str) -> str:
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
+class TestComponentDeltaPrecedence:
+    """The component delta ranks typed, environment, remembered, then the author defaults, and is marked so."""
+
+    def test_typed_with_is_marked_cli_and_recorded(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = write_config(configs, 'env.yaml', _three_components())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--with', 'extra']) == 0
+
+        assert '[cli]' in _components_line(_output(capsys))
+        manifest = read_manifest(profile_dir)
+        assert manifest['origins']['components'] == 'cli'
+        assert manifest['components'] == {'select': None, 'with': 'extra', 'without': None}
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        assert not (profile_dir / 'agents' / 'other.md').exists()
+
+    def test_environment_with_is_marked_env_and_kept_by_a_yes_rerun(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A delta from the environment is remembered like a typed one, so a bare --yes re-run keeps the component."""
+        cfg = write_config(configs, 'env.yaml', _three_components())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_WITH', 'extra')
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1']) == 0
+        assert '[env]' in _components_line(_output(capsys))
+        assert read_manifest(profile_dir)['origins']['components'] == 'env'
+        monkeypatch.delenv('CLAUDE_CODE_TOOLBOX_WITH')
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes']) == 0
+
+        assert '[remembered]' in _components_line(_output(capsys))
+        manifest = read_manifest(profile_dir)
+        assert manifest['components'] == {'select': None, 'with': 'extra', 'without': None}
+        assert manifest['origins']['components'] == 'env'
+        assert (profile_dir / 'agents' / 'extra.md').is_file(), 'the added component was deselected'
+
+    def test_typed_with_replaces_the_whole_remembered_delta(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A selector typed for the re-run replaces the remembered delta key by key, so the old addition is removed."""
+        cfg = write_config(configs, 'env.yaml', _three_components())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--with', 'extra']) == 0
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--with', 'other']) == 0
+
+        assert '[cli]' in _components_line(_output(capsys))
+        manifest = read_manifest(profile_dir)
+        assert manifest['components'] == {'select': None, 'with': 'other', 'without': None}
+        assert manifest['origins']['components'] == 'cli'
+        assert (profile_dir / 'agents' / 'other.md').is_file()
+        assert not (profile_dir / 'agents' / 'extra.md').exists(), 'the previously added component stayed installed'
+
+    def test_environment_select_beats_the_remembered_delta(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        cfg = write_config(configs, 'env.yaml', _three_components())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'aegis-1', '--with', 'extra']) == 0
+        monkeypatch.setenv('CLAUDE_CODE_TOOLBOX_SELECT', 'core,other')
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes']) == 0
+
+        assert '[env]' in _components_line(_output(capsys))
+        manifest = read_manifest(profile_dir)
+        assert manifest['components'] == {'select': 'core,other', 'with': None, 'without': None}
+        assert manifest['origins']['components'] == 'env'
+        assert (profile_dir / 'agents' / 'other.md').is_file()
+        assert not (profile_dir / 'agents' / 'extra.md').exists()
+
+    def test_picker_choice_is_recorded_as_typed_and_kept_by_a_yes_rerun(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Toggling a component in the numbered picker is remembered exactly, and --profile keeps that set."""
+        cfg = write_config(configs, 'env.yaml', _three_components())
+        profile_dir = e2e_isolated_home['claude_dir'] / 'aegis-1'
+
+        # The picker lists core, extra, other with core checked: '2' adds extra, Enter confirms, 'y' installs
+        assert run_main([str(cfg), *SKIP, '--command-names', 'aegis-1'], interactive=True, answers=['2', '', 'y']) == 0
+
+        manifest = read_manifest(profile_dir)
+        assert manifest['components'] == {'select': 'core,extra', 'with': None, 'without': 'other'}
+        assert manifest['origins']['components'] == 'cli'
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        assert not (profile_dir / 'agents' / 'other.md').exists()
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-1', *SKIP, '--yes']) == 0
+
+        output = _output(capsys)
+        assert '[remembered]' in _components_line(output)
+        assert not [line for line in output.splitlines() if 'Removed' in line and 'agents' in line], (
+            'the remembered picker choice must delete nothing on a re-run'
+        )
+        assert read_manifest(profile_dir)['components'] == {'select': 'core,extra', 'with': None, 'without': 'other'}
+        assert (profile_dir / 'agents' / 'core.md').is_file()
+        assert (profile_dir / 'agents' / 'extra.md').is_file()
+        assert not (profile_dir / 'agents' / 'other.md').exists()
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
 class TestRememberedSelectorsAgainstTheRegistry:
     """A remembered selector is checked against the components the configuration declares today."""
 
@@ -1280,6 +1388,93 @@ class TestRememberedSelectorsAgainstTheRegistry:
         ) in output
         assert '--with: unknown component' not in output, 'the error names the manifest, not a flag nobody typed'
         assert home_state(e2e_isolated_home['home']) == before
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestCommandNamesPrecedence:
+    """Each command-names rule, through real installs: typed single name, typed aliases, configuration re-read."""
+
+    PERSONAL_NAMES = ['claude-personal', 'claude-p', 'claude-sub']
+
+    def _personal(self, configs: Path, names: list[str] | None = None) -> Path:
+        return write_config(configs, 'claude-personal.yaml', {
+            'name': 'Personal Profile',
+            'command-names': names if names is not None else list(self.PERSONAL_NAMES),
+            'user-settings': {'theme': 'dark'},
+        })
+
+    def test_single_typed_name_on_a_fresh_profile_is_the_whole_list(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--command-names claude-personal installs one wrapper although the configuration lists aliases."""
+        cfg = self._personal(configs)
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 0
+
+        manifest = read_manifest(claude_dir / 'claude-personal')
+        assert manifest['command_names'] == ['claude-personal']
+        assert manifest['origins']['command_names'] == 'cli'
+        assert wrappers_exist(local_bin, 'claude-personal')
+        assert wrappers_absent(local_bin, 'claude-p')
+        assert wrappers_absent(local_bin, 'claude-sub')
+        assert 'Command names: claude-personal [cli]' in _output(capsys)
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'claude-personal', *SKIP, '--yes']) == 0
+
+        assert read_manifest(claude_dir / 'claude-personal')['command_names'] == ['claude-personal']
+        assert wrappers_absent(local_bin, 'claude-p')
+        assert wrappers_absent(local_bin, 'claude-sub')
+        assert 'Command names: claude-personal [remembered]' in _output(capsys)
+
+    def test_configuration_only_rerun_keeps_the_typed_aliases(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without --command-names or --profile, a configuration whose primary matches keeps the typed aliases."""
+        cfg = write_config(configs, 'env.yaml', {**_plain(), 'command-names': ['p1', 'y1']})
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'p1,t1']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+
+        assert read_manifest(claude_dir / 'p1')['command_names'] == ['p1', 't1']
+        assert wrappers_exist(local_bin, 't1')
+        assert wrappers_absent(local_bin, 'y1')
+        assert 'Command names: p1, t1 [remembered]' in _output(capsys)
+
+    def test_single_typed_name_on_a_yaml_profile_re_reads_the_aliases_until_the_primary_changes(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """CONFIG --command-names claude-personal re-reads the aliases; once the YAML primary differs, the name is alone."""
+        cfg = self._personal(configs)
+        claude_dir, local_bin = e2e_isolated_home['claude_dir'], e2e_isolated_home['local_bin']
+        assert run_main([str(cfg), *SKIP, '--yes']) == 0
+        assert read_manifest(claude_dir / 'claude-personal')['origins']['command_names'] == 'yaml'
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 0
+
+        manifest = read_manifest(claude_dir / 'claude-personal')
+        assert manifest['command_names'] == self.PERSONAL_NAMES
+        assert manifest['origins']['command_names'] == 'yaml'
+        for name in self.PERSONAL_NAMES:
+            assert wrappers_exist(local_bin, name)
+        assert 'Command names: claude-personal, claude-p, claude-sub [yaml]' in _output(capsys)
+
+        self._personal(configs, ['other-name', 'claude-p'])
+        capsys.readouterr()
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'claude-personal']) == 0
+
+        manifest = read_manifest(claude_dir / 'claude-personal')
+        assert manifest['command_names'] == ['claude-personal']
+        assert manifest['origins']['command_names'] == 'cli'
+        assert wrappers_exist(local_bin, 'claude-personal')
+        assert wrappers_absent(local_bin, 'claude-p')
+        assert wrappers_absent(local_bin, 'claude-sub')
+        assert 'Command names: claude-personal [cli]' in _output(capsys)
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
