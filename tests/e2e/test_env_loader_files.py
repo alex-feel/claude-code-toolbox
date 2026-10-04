@@ -1,8 +1,10 @@
 """E2E tests for env loader file generation and launcher env sourcing.
 
 These tests validate that generate_env_loader_files() creates correct
-shell-specific loader files and that create_launcher_script() injects
-guarded source lines for loading OS-level environment variables.
+shell-specific loader files, that create_launcher_script() makes launch.sh
+source env.sh with a file-existence guard, and that start.ps1 and start.cmd
+apply no loader of their own: they run in the calling shell, so a loader
+sourced there would outlive the session.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from scripts import setup_environment
 from scripts.setup_environment import create_launcher_script
 from scripts.setup_environment import generate_env_loader_files
 from tests.e2e.validators import validate_env_loader_files
@@ -179,90 +182,70 @@ class TestLauncherEnvSourcing:
         errors = validate_launcher_env_sourcing(launcher_path)
         assert not errors, 'Unix launcher env sourcing validation failed:\n' + '\n'.join(errors)
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
-    def test_windows_ps1_launcher_contains_env_source_guard(
-        self,
+    @staticmethod
+    def _windows_launchers(
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
-    ) -> None:
-        """Verify Windows start.ps1 contains guarded dot-source for env.ps1.
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> Path:
+        """Render the Windows launcher set into the isolated home and return its directory.
 
-        Checks:
-        - Test-Path guard is present
-        - Reference to env.ps1 is present
+        platform.system() is the only platform detection create_launcher_script()
+        uses, so the Windows files render on every CI runner.
+
+        Returns:
+            The directory holding start.ps1, start.cmd and launch.sh.
         """
-        paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
-        claude_dir = paths['claude_dir']
+        monkeypatch.setattr(setup_environment.platform, 'system', lambda: 'Windows')
+        claude_dir = e2e_isolated_home['claude_dir']
 
-        create_launcher_script(
+        result = create_launcher_script(
             config_base_dir=claude_dir,
-            command_name=cmd,
+            command_name=golden_config['command-names'][0],
             system_prompt_file=None,
             mode='replace',
             has_profile_mcp_servers=False,
         )
 
-        # Find the PS1 wrapper
-        ps1_path = claude_dir / 'start.ps1'
-        if not ps1_path.exists():
-            # Try alternate location
-            ps1_path = paths['local_bin'] / f'{cmd}.ps1'
+        assert result == (claude_dir / 'start.ps1', claude_dir / 'launch.sh')
+        assert (claude_dir / 'start.cmd').is_file()
+        return claude_dir
 
-        if ps1_path.exists():
-            errors = validate_launcher_env_sourcing(ps1_path)
-            assert not errors, 'Windows PS1 launcher env sourcing failed:\n' + '\n'.join(errors)
+    def test_windows_ps1_launcher_applies_no_loader(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        golden_config: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """start.ps1 references no env.ps1: a dot-source there would change the calling PowerShell."""
+        claude_dir = self._windows_launchers(e2e_isolated_home, golden_config, monkeypatch)
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
+        errors = validate_launcher_env_sourcing(claude_dir / 'start.ps1')
+
+        assert not errors, 'Windows PS1 launcher applies a loader:\n' + '\n'.join(errors)
+
     def test_windows_bash_launcher_contains_env_source_guard(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Verify Windows launch.sh (shared POSIX) contains env.sh source guard."""
-        paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
-        claude_dir = paths['claude_dir']
+        """The Windows launch.sh (shared POSIX) sources env.sh behind a file-existence guard."""
+        claude_dir = self._windows_launchers(e2e_isolated_home, golden_config, monkeypatch)
 
-        launcher_result = create_launcher_script(
-            config_base_dir=claude_dir,
-            command_name=cmd,
-            system_prompt_file=None,
-            mode='replace',
-            has_profile_mcp_servers=False,
-        )
-        launcher_path = launcher_result[0] if launcher_result else None
-        assert launcher_path is not None, 'create_launcher_script returned None'
+        errors = validate_launcher_env_sourcing(claude_dir / 'launch.sh')
 
-        errors = validate_launcher_env_sourcing(launcher_path)
         assert not errors, 'Windows bash launcher env sourcing failed:\n' + '\n'.join(errors)
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-only test')
-    def test_windows_cmd_launcher_contains_env_source_guard(
+    def test_windows_cmd_launcher_applies_no_loader(
         self,
         e2e_isolated_home: dict[str, Path],
         golden_config: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Verify Windows start.cmd contains guarded call for env.cmd.
+        """start.cmd references no env.cmd and runs under setlocal: a batch file runs in the calling cmd.exe."""
+        claude_dir = self._windows_launchers(e2e_isolated_home, golden_config, monkeypatch)
 
-        Checks:
-        - if exist guard is present
-        - Reference to env.cmd is present
-        - call command is present
-        """
-        paths = e2e_isolated_home
-        cmd = golden_config['command-names'][0]
-        claude_dir = paths['claude_dir']
+        errors = validate_launcher_env_sourcing(claude_dir / 'start.cmd')
 
-        create_launcher_script(
-            config_base_dir=claude_dir,
-            command_name=cmd,
-            system_prompt_file=None,
-            mode='replace',
-            has_profile_mcp_servers=False,
-        )
-
-        cmd_path = claude_dir / 'start.cmd'
-        if cmd_path.exists():
-            errors = validate_launcher_env_sourcing(cmd_path)
-            assert not errors, 'Windows CMD launcher env sourcing failed:\n' + '\n'.join(errors)
+        assert not errors, 'Windows CMD launcher applies a loader:\n' + '\n'.join(errors)

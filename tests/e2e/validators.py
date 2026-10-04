@@ -1907,15 +1907,19 @@ def _validate_cmd_loader_content(
 def validate_launcher_env_sourcing(
     launcher_path: Path,
 ) -> list[str]:
-    """Validate that a launcher script contains env loader source guard.
+    """Validate where a generated script applies the profile's env loader.
 
-    Checks that create_launcher_script() injected the guarded source line
-    for loading OS-level environment variables from the per-command env file.
+    Only launch.sh sources a loader, inside the bash process that runs
+    Claude Code. A PowerShell or CMD launcher runs in the calling shell
+    ($env: is process-wide; a batch file executes in the cmd.exe that runs
+    it), so a loader sourced there would stay in that shell after the
+    session ends.
 
     Validates:
     - Bash/POSIX launchers contain file-existence guard and source command
-    - PowerShell launchers contain Test-Path guard and dot-source command
-    - CMD batch launchers contain if exist guard and call to env.cmd
+    - PowerShell launchers reference no env.ps1 and no $envFile
+    - CMD batch launchers reference no env.cmd and no ENV_FILE, and open
+      with setlocal so their own variables stay out of the calling shell
 
     Args:
         launcher_path: Path to the launcher script
@@ -1936,29 +1940,21 @@ def validate_launcher_env_sourcing(
     suffix = launcher_path.suffix.lower()
 
     if suffix == '.ps1':
-        # PowerShell: expect Test-Path guard and dot-source
-        if 'env.ps1' not in content:
-            errors.append(
-                f'{launcher_path.name}: missing env.ps1 reference in PowerShell launcher',
-            )
-        if 'Test-Path' not in content:
-            errors.append(
-                f'{launcher_path.name}: missing Test-Path guard for env.ps1',
-            )
+        # PowerShell: a dot-sourced loader would change the calling shell
+        errors.extend(
+            f'{launcher_path.name}: references {fragment}; a PowerShell launcher applies no loader'
+            for fragment in ('env.ps1', '$envFile')
+            if fragment in content
+        )
     elif suffix == '.cmd':
-        # CMD batch: expect if exist guard and call to env.cmd
-        if 'env.cmd' not in content:
-            errors.append(
-                f'{launcher_path.name}: missing env.cmd reference in CMD launcher',
-            )
-        if 'if exist' not in content:
-            errors.append(
-                f'{launcher_path.name}: missing if exist guard for env.cmd',
-            )
-        if 'call' not in content:
-            errors.append(
-                f'{launcher_path.name}: missing call command for env.cmd',
-            )
+        # CMD batch: a called loader would change the calling shell
+        errors.extend(
+            f'{launcher_path.name}: references {fragment}; a CMD launcher applies no loader'
+            for fragment in ('env.cmd', 'ENV_FILE')
+            if fragment in content
+        )
+        if not content.startswith('@echo off\nsetlocal\n'):
+            errors.append(f'{launcher_path.name}: does not open with setlocal, so its variables reach the calling shell')
     elif suffix in ('.sh', ''):
         # Bash/POSIX: expect file-existence guard and source/dot-source
         if 'env.sh' not in content:
@@ -2129,10 +2125,11 @@ def validate_launcher_profile_spelling(
     """Validate that launchers and wrappers name the profile directory.
 
     Every path a generated script reads -- the exported CLAUDE_CONFIG_DIR,
-    config.json, mcp.json, the system prompt, the env loaders and launch.sh --
-    must be spelled from profile_dir: home-relative ($HOME, %USERPROFILE%,
+    config.json, mcp.json, the system prompt, the env.sh loader and launch.sh
+    -- must be spelled from profile_dir: home-relative ($HOME, %USERPROFILE%,
     $env:USERPROFILE) when profile_dir lies below the home directory, absolute
-    otherwise. No other home-relative path may appear.
+    otherwise. No other home-relative path may appear, and no CMD or
+    PowerShell script names a loader, because those run in the calling shell.
 
     Args:
         profile_dir: The profile directory the scripts must name.
@@ -2177,14 +2174,16 @@ def validate_launcher_profile_spelling(
             expect(content, launch_sh, [f'PROMPT_PATH="{posix_dir}/prompts/'])
         expect_only_profile(content, launch_sh, '$HOME', posix_dir)
 
+    def expect_no_loader(content: str, path: Path, loader: str) -> None:
+        if loader in content:
+            errors.append(f'{path.name} names {loader}, which would apply the loader to the calling shell')
+
     if windows_launchers:
         start_cmd = profile_dir / 'start.cmd'
         content = read(start_cmd)
         if content is not None:
-            expect(content, start_cmd, [
-                f'set "ENV_FILE={cmd_dir}\\env.cmd"',
-                f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"',
-            ])
+            expect(content, start_cmd, [f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"'])
+            expect_no_loader(content, start_cmd, 'env.cmd')
             expect_only_profile(content, start_cmd, '%USERPROFILE%', cmd_dir)
         start_ps1 = profile_dir / 'start.ps1'
         content = read(start_ps1)
@@ -2192,19 +2191,17 @@ def validate_launcher_profile_spelling(
             leaf = f'(Join-Path $claudeUserDir "{profile_dir.name}")'
             expect(content, start_ps1, [
                 f'$claudeUserDir = {powershell_parent}\n',
-                f'{leaf} "env.ps1"',
                 f'{leaf} "launch.sh"',
             ])
+            expect_no_loader(content, start_ps1, 'env.ps1')
 
     if local_bin is not None:
         for name in wrapper_names:
             cmd_wrapper = local_bin / f'{name}.cmd'
             content = read(cmd_wrapper)
             if content is not None:
-                expect(content, cmd_wrapper, [
-                    f'set "ENV_FILE={cmd_dir}\\env.cmd"',
-                    f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"',
-                ])
+                expect(content, cmd_wrapper, [f'set "SCRIPT_WIN={cmd_dir}\\launch.sh"'])
+                expect_no_loader(content, cmd_wrapper, 'env.cmd')
                 expect_only_profile(content, cmd_wrapper, '%USERPROFILE%', cmd_dir)
             ps1_wrapper = local_bin / f'{name}.ps1'
             content = read(ps1_wrapper)

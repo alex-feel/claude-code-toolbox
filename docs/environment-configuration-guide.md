@@ -728,7 +728,7 @@ MCP servers are registered with Claude Code via `claude mcp add` (with scope-bas
 
 #### `os-env-variables`
 
-Persistent environment variables for the sessions the configuration installs. A base run (no `command-names`) writes them to the shell profile (Linux/macOS) or Windows registry, where every process sees them. An isolated run (`command-names` present) writes them to the profile's own env loader files, which the profile's launchers source, so the variables reach that profile's sessions and nothing else on the machine; the three machine-wide binary controls (`DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`, `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`) are the exception and go to the OS environment from any run, because they hold the one Claude Code binary every profile uses. See [Environment Variable Loading](#environment-variable-loading).
+Persistent environment variables for the sessions the configuration installs. A base run (no `command-names`) writes them to the shell profile (Linux/macOS) or Windows registry, where every process sees them. An isolated run (`command-names` present) writes them to the profile's own env loader files, and `launch.sh` sources `env.sh` for every session the profile's commands start, so the variables reach that profile's sessions and nothing else on the machine; the three machine-wide binary controls (`DISABLE_AUTOUPDATER`, `DISABLE_UPDATES`, `CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL`) are the exception and go to the OS environment from any run, because they hold the one Claude Code binary every profile uses. See [Environment Variable Loading](#environment-variable-loading).
 
 - **Type:** `dict[str, str | None] | None`
 - **Default:** `None`
@@ -756,7 +756,7 @@ The setup script supports two distinct kinds of environment variables, each serv
 |-----------------------------------|----------------------|----------------------------------------------------------------------|-----------------------------------------------------|
 | `user-settings.env`               | Claude Code internal | `settings.json` `env` key (or profile `config.json`)                 | Claude Code sessions only                           |
 | `os-env-variables` (base run)     | OS-level persistent  | Shell profiles + Windows registry                                    | All processes (terminals, programs)                 |
-| `os-env-variables` (isolated run) | Profile sessions     | `~/.claude/{cmd}/env.*` loaders sourced by the launchers             | Sessions started through the profile's commands     |
+| `os-env-variables` (isolated run) | Profile sessions     | `~/.claude/{cmd}/env.*` loaders; `launch.sh` sources `env.sh`        | Sessions started through the profile's commands     |
 | machine-wide binary controls      | OS-level persistent  | Shell profiles + Windows registry, from base and isolated runs alike | All processes; they hold the one Claude Code binary |
 
 Claude-session variables are declared under [`user-settings.env`](#user-settings) (raw `settings.json` content). See the [`user-settings`](#user-settings) section for the `env` value rules (string-only values, `null` as delete).
@@ -774,13 +774,15 @@ When `os-env-variables` are configured, the setup generates Rustup-style env loa
 | `env.ps1`  | PowerShell | Windows only   |
 | `env.cmd`  | CMD batch  | Windows only   |
 
-Loader files are toolbox-owned and rebuilt on every run. A variable set to `null` (a deletion) becomes an unset line in each shell's syntax -- `unset NAME` (Bash/Zsh), `set -q NAME; and set -e NAME` (Fish), `Remove-Item -Path Env:NAME -ErrorAction SilentlyContinue` (PowerShell), `SET "NAME="` (CMD) -- so a value the profile's sessions inherit from the OS environment is removed when the launcher sources the file. When the configuration declares no profile variable, the files are rewritten header-only so stale lines from a prior run stop being applied at session start. The machine-wide binary controls never appear in a loader file: an unset line there would strip a control from the profile's sessions after another profile pinned a version.
+Loader files are toolbox-owned and rebuilt on every run. A variable set to `null` (a deletion) becomes an unset line in each shell's syntax -- `unset NAME` (Bash/Zsh), `set -q NAME; and set -e NAME` (Fish), `Remove-Item -Path Env:NAME -ErrorAction SilentlyContinue` (PowerShell), `SET "NAME="` (CMD) -- so a value the profile's sessions inherit from the OS environment is removed when `launch.sh` sources `env.sh` at session start. When the configuration declares no profile variable, the files are rewritten header-only so stale lines from a prior run stop being applied at session start. The machine-wide binary controls never appear in a loader file: an unset line there would strip a control from the profile's sessions after another profile pinned a version.
 
 ##### Automatic Loading via Launchers
 
-When `command-names` is specified, the generated launcher scripts automatically source the per-command env loader file before starting Claude Code. No manual action is required -- running the command (for example, `claude-python`) loads the profile's environment variables.
+When `command-names` is specified, `launch.sh` sources the profile's `env.sh` before starting Claude Code, inside the bash process that becomes the session. No manual action is required: running the command (for example, `claude-python`) loads the profile's environment variables. The source line is guarded by a file-existence check, so launchers work normally even when no `os-env-variables` are configured.
 
-The source line is guarded by a file-existence check, so launchers work normally even when no `os-env-variables` are configured.
+On Windows, every entry point (`start.cmd`, `start.ps1`, and the `.cmd` and `.ps1` commands in `~/.local/bin`) hands over to `launch.sh` through Git Bash and applies no loader itself. A batch file executes in the cmd.exe that calls it, and `$env:` is process-wide in PowerShell, so a loader applied at that level would stay in your window after the session ends and reach a plain `claude` started next. The `.cmd` files also run under `setlocal`, so the shell you ran the command from keeps its environment exactly as it was.
+
+`env.cmd`, `env.ps1` and `env.fish` are generated for your own shell: source one by hand when you want the profile's variables there, with `call "%USERPROFILE%\.claude\{cmd}\env.cmd"` in cmd.exe, `. "$env:USERPROFILE\.claude\{cmd}\env.ps1"` in PowerShell, or `source ~/.claude/{cmd}/env.fish` in Fish.
 
 ##### Applying OS Environment Variables
 
@@ -909,7 +911,7 @@ The toolbox validates `user-settings` against Claude Code's `settings.json` sche
 
 To override the auto-computed isolation directory, set `CLAUDE_CONFIG_DIR` under `user-settings.env` (only meaningful when `command-names` is present). The setup reads and then removes it before writing config.json -- the launcher's `export CLAUDE_CONFIG_DIR` remains the sole authoritative runtime source, so the value is not left in the profile's `env` block.
 
-The setup writes the whole profile into that directory, and the generated launchers and global commands start Claude Code with it: they export it as `CLAUDE_CONFIG_DIR` and read `config.json`, `mcp.json`, the system prompt and the env loaders from it. A directory below your home directory appears in the launchers (`launch.sh`, `start.ps1`, `start.cmd`) and in the CMD and Git Bash global commands relative to your home (`$HOME/...` in bash, `%USERPROFILE%\...` in CMD, `$env:USERPROFILE` in PowerShell), so they follow the home directory each shell resolves when you run them. A directory anywhere else appears as its absolute path. The PowerShell global commands (`~/.local/bin/my-env.ps1` and one per alias) name `start.ps1` by its absolute path, and on Linux and macOS every global command is a symlink to the absolute path of `launch.sh`. Spaces and parentheses in the path work in every shell.
+The setup writes the whole profile into that directory, and the generated launchers and global commands start Claude Code with it: they export it as `CLAUDE_CONFIG_DIR` and read `config.json`, `mcp.json`, the system prompt and `env.sh` from it. A directory below your home directory appears in the launchers (`launch.sh`, `start.ps1`, `start.cmd`) and in the CMD and Git Bash global commands relative to your home (`$HOME/...` in bash, `%USERPROFILE%\...` in CMD, `$env:USERPROFILE` in PowerShell), so they follow the home directory each shell resolves when you run them. A directory anywhere else appears as its absolute path. The PowerShell global commands (`~/.local/bin/my-env.ps1` and one per alias) name `start.ps1` by its absolute path, and on Linux and macOS every global command is a symlink to the absolute path of `launch.sh`. Spaces and parentheses in the path work in every shell.
 
 ```yaml
 command-names:
@@ -2036,7 +2038,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 4. **Download custom files** -- Processes `files-to-download` entries.
 5. **Install Node.js** -- If `install-nodejs: true` is set in the config.
 6. **Install dependencies** -- Runs platform-specific dependency commands. Failed global npm installs are retried with sudo on Linux/macOS/WSL when the npm global prefix is not user-writable; every failed dependency is listed in the end-of-run error block and causes exit code 1.
-7. **Set OS environment variables** -- A base run writes every `os-env-variables` entry to the OS environment (a `null` value deletes the variable). An isolated run writes only the three machine-wide binary controls there and rebuilds its env loader files (`env.sh`, `env.fish`, `env.ps1`, `env.cmd`) from every other entry for launcher auto-sourcing, `null` entries as unset lines -- header-only when the configuration declares no profile variable, so stale lines are cleared.
+7. **Set OS environment variables** -- A base run writes every `os-env-variables` entry to the OS environment (a `null` value deletes the variable). An isolated run writes only the three machine-wide binary controls there and rebuilds its env loader files from every other entry (`env.sh`, which `launch.sh` sources at session start, plus `env.fish`, `env.ps1` and `env.cmd` for sourcing by hand), `null` entries as unset lines -- header-only when the configuration declares no profile variable, so stale lines are cleared.
 8. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
 9. **Process slash commands** -- Downloads command files to `~/.claude/commands/`.
 10. **Process rules** -- Downloads rule Markdown files to `~/.claude/rules/`.

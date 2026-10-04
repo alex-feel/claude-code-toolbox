@@ -291,10 +291,8 @@ fi
 exec "$HOME/.claude/golden-cmd/launch.sh" "$@"
 ''',
     'windows-wrappers/golden-alias.cmd': r'''@echo off
+setlocal
 REM Global golden-alias command for CMD (alias for golden-cmd)
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\.claude\golden-cmd\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\Program Files\Git\bin\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\Program Files (x86)\Git\bin\bash.exe"
 set "SCRIPT_WIN=%USERPROFILE%\.claude\golden-cmd\launch.sh"
@@ -314,10 +312,8 @@ if "%~1"=="" (
 exec "$HOME/.claude/golden-cmd/launch.sh" "$@"
 ''',
     'windows-wrappers/golden-cmd.cmd': r'''@echo off
+setlocal
 REM Global golden-cmd command for CMD
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\.claude\golden-cmd\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\Program Files\Git\bin\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\Program Files (x86)\Git\bin\bash.exe"
 set "SCRIPT_WIN=%USERPROFILE%\.claude\golden-cmd\launch.sh"
@@ -594,12 +590,9 @@ else
 fi
 ''',
     'windows/start.cmd': r'''@echo off
+setlocal
 REM Claude Code Environment Launcher for CMD
 REM This script starts Claude Code with the configured environment
-
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE=%USERPROFILE%\.claude\golden-cmd\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 
 echo Starting Claude Code with golden-cmd configuration...
 
@@ -620,10 +613,6 @@ if "%~1"=="" (
 # This script starts Claude Code with the configured environment
 
 $claudeUserDir = Join-Path $env:USERPROFILE ".claude"
-
-# Source OS-level environment variables (if configured)
-$envFile = Join-Path (Join-Path $claudeUserDir "golden-cmd") "env.ps1"
-if (Test-Path $envFile) { . $envFile }
 
 Write-Host "Starting Claude Code with golden-cmd configuration..." -ForegroundColor Green
 

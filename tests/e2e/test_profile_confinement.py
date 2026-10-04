@@ -26,14 +26,19 @@ leaves every other profile alone:
 - The loaders work when sourced: a null entry removes a variable the
   session inherited, in bash on every platform and in CMD and PowerShell
   on Windows; env.fish is generated when fish is installed.
+- Only launch.sh applies a loader, inside the bash process that runs Claude
+  Code: the cmd.exe and PowerShell entry points (the ~/.local/bin wrappers,
+  start.cmd and start.ps1) leave the calling shell's environment exactly as
+  it was while the session they start still receives every set and unset.
 
 A base run keeps writing ~/.claude.json and the OS environment as before.
 
 Every test runs main() against YAML files on disk, so loading, validation,
 the writers and the summary run for real; only the steps that never touch
 these files (Claude Code installation, dependencies, downloads, MCP
-registration, OS environment writes, launcher and command registration) are
-stubbed. The Claude Code installation stub records installMethod in the base
+registration, OS environment writes, and, except where a test runs the
+generated scripts, launcher and command registration) are stubbed. The
+Claude Code installation stub records installMethod in the base
 ~/.claude.json the way the installer does, so the base file's one allowed
 change is exercised rather than assumed. IDE detection is pinned to one
 VS Code family CLI so the extension row does not depend on the host.
@@ -42,12 +47,14 @@ VS Code family CLI so the extension row does not depend on the host.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from collections.abc import Mapping
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -57,17 +64,21 @@ import yaml
 
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
+from tests.e2e.launcher_support import WINDOWS_GIT_BASH
 from tests.e2e.shells import find_bash
 from tests.e2e.shells import find_powershell
 from tests.e2e.validators import validate_env_loader_files
 
 PROFILE_NAME = 'e2e-corp'
+PROFILE_ALIAS = 'e2e-corp-alias'
 PINNED_VERSION = '2.1.85'
 DETECTED_IDE_CLI = 'code'
 _ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 MACHINE_WIDE_CONTROLS = ('DISABLE_AUTOUPDATER', 'DISABLE_UPDATES', 'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL')
 BASE_ACCOUNT = {'emailAddress': 'base@example.com', 'accountUuid': 'base-account-uuid'}
 LOADER_VARS: dict[str, str | None] = {'E2E_KEPT': 'kept-value', 'E2E_GONE': None}
+# Marker a probe prints for a variable its shell does not define.
+UNSET_MARKER = '<unset>'
 
 
 def _write_yaml(path: Path, data: dict[str, Any]) -> Path:
@@ -142,8 +153,19 @@ def _run_setup(
     home: Path,
     *args: str,
     install_claude: Callable[..., bool] | None = None,
+    real_launchers: bool = False,
 ) -> tuple[dict[str, str | None] | None, int | None]:
     """Run main() for one YAML file with the unrelated steps stubbed.
+
+    Args:
+        config_path: The YAML file main() loads.
+        home: The isolated home directory.
+        *args: Command-line arguments after the configuration.
+        install_claude: Stand-in for the Claude Code installer; always
+            succeeds when omitted.
+        real_launchers: Whether create_launcher_script() and
+            register_global_command() run for real, so the profile's launchers
+            and the ~/.local/bin wrappers exist on disk afterwards.
 
     Returns:
         The dict handed to the OS environment writer (None when Step 7 never
@@ -161,24 +183,31 @@ def _run_setup(
         return True
 
     exit_code: int | None = None
-    with (
-        patch('scripts.setup_environment.find_command', side_effect=find_with_claude),
-        patch('scripts.setup_environment.install_claude', side_effect=install_claude or (lambda *_a, **_k: True)),
-        patch('scripts.setup_environment._detect_vscode_family_ides',
-              return_value=[(DETECTED_IDE_CLI, f'/usr/bin/{DETECTED_IDE_CLI}')]),
-        patch('scripts.setup_environment.install_ide_extensions', return_value=True),
-        patch('scripts.setup_environment.install_dependencies', return_value=[]),
-        patch('scripts.setup_environment.process_resources', return_value=True),
-        patch('scripts.setup_environment.process_skills', return_value=True),
-        patch('scripts.setup_environment.configure_all_mcp_servers',
-              return_value=(True, [], empty_mcp_stats())),
-        patch('scripts.setup_environment.set_all_os_env_variables', side_effect=record_os_env),
-        patch('scripts.setup_environment.create_launcher_script',
-              return_value=(profile_dir / 'launch.sh', profile_dir / 'launch.sh')),
-        patch('scripts.setup_environment.register_global_command', return_value=True),
-        patch('scripts.setup_environment.is_admin', return_value=True),
-        patch('sys.argv', ['setup_environment.py', str(config_path), *args]),
-    ):
+    with ExitStack() as stack:
+        stack.enter_context(patch('scripts.setup_environment.find_command', side_effect=find_with_claude))
+        stack.enter_context(patch(
+            'scripts.setup_environment.install_claude', side_effect=install_claude or (lambda *_a, **_k: True),
+        ))
+        stack.enter_context(patch(
+            'scripts.setup_environment._detect_vscode_family_ides',
+            return_value=[(DETECTED_IDE_CLI, f'/usr/bin/{DETECTED_IDE_CLI}')],
+        ))
+        stack.enter_context(patch('scripts.setup_environment.install_ide_extensions', return_value=True))
+        stack.enter_context(patch('scripts.setup_environment.install_dependencies', return_value=[]))
+        stack.enter_context(patch('scripts.setup_environment.process_resources', return_value=True))
+        stack.enter_context(patch('scripts.setup_environment.process_skills', return_value=True))
+        stack.enter_context(patch(
+            'scripts.setup_environment.configure_all_mcp_servers', return_value=(True, [], empty_mcp_stats()),
+        ))
+        stack.enter_context(patch('scripts.setup_environment.set_all_os_env_variables', side_effect=record_os_env))
+        if not real_launchers:
+            stack.enter_context(patch(
+                'scripts.setup_environment.create_launcher_script',
+                return_value=(profile_dir / 'launch.sh', profile_dir / 'launch.sh'),
+            ))
+            stack.enter_context(patch('scripts.setup_environment.register_global_command', return_value=True))
+        stack.enter_context(patch('scripts.setup_environment.is_admin', return_value=True))
+        stack.enter_context(patch('sys.argv', ['setup_environment.py', str(config_path), *args]))
         try:
             setup_environment.main()
         except SystemExit as exc:
@@ -935,3 +964,222 @@ class TestLoaderFilesWorkWhenSourced:
         )
 
         assert completed.returncode == 0, f'env.ps1 left E2E_GONE set or E2E_KEPT stale:\n{completed.stderr}'
+
+
+def _run_isolated_with_real_launchers(config_path: Path, home: Path) -> Path:
+    """Install an isolated profile with its launchers and wrappers written for real.
+
+    Returns:
+        The profile directory.
+    """
+    _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install', real_launchers=True)
+    assert exit_code is None
+    return home / '.claude' / PROFILE_NAME
+
+
+def _write_recording_claude(stub_dir: Path, record: Path) -> None:
+    """Write a stub claude that records the loader variables it inherits.
+
+    The record names CLAUDE_CONFIG_DIR as a host path and each loader
+    variable as its value or UNSET_MARKER, so a test can tell an unset
+    variable from an empty one.
+
+    Args:
+        stub_dir: Directory that receives the stub; put first on PATH.
+        record: File the stub writes.
+    """
+    stub_dir.mkdir(parents=True, exist_ok=True)
+    stub = stub_dir / 'claude'
+    stub.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi\n'
+        '{\n'
+        '  printf \'CLAUDE_CONFIG_DIR=%s\\n\' "$(cygpath -m "${CLAUDE_CONFIG_DIR:-}")"\n'
+        f'  printf \'E2E_KEPT=%s\\n\' "${{E2E_KEPT-{UNSET_MARKER}}}"\n'
+        f'  printf \'E2E_GONE=%s\\n\' "${{E2E_GONE-{UNSET_MARKER}}}"\n'
+        '} > "' + record.as_posix() + '"\n',
+        encoding='utf-8',
+        newline='\n',
+    )
+    stub.chmod(0o755)
+
+
+def _probe_environment(home: Path, stub_dir: Path) -> dict[str, str]:
+    """Build the environment a probe shell starts with.
+
+    The stub claude leads PATH, the home directories name the isolated
+    home, and no loader variable or CLAUDE_CONFIG_DIR is inherited.
+
+    Returns:
+        The environment for subprocess.run.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {'CLAUDE_CONFIG_DIR', 'E2E_KEPT', 'E2E_GONE'}
+    }
+    env['HOME'] = str(home)
+    env['USERPROFILE'] = str(home)
+    env['PATH'] = f'{stub_dir}{os.pathsep}' + env.get('PATH', '')
+    return env
+
+
+def _parse_record(path: Path) -> dict[str, str]:
+    """Read a KEY=VALUE record file into a dict."""
+    assert path.exists(), f'{path.name} was never written: the stub claude did not run'
+    return dict(line.split('=', 1) for line in path.read_text(encoding='utf-8').splitlines() if '=' in line)
+
+
+def _caller_values(output: str) -> dict[str, str]:
+    """Return the CALLER_* lines a probe printed, keyed by variable."""
+    return dict(
+        line.removeprefix('CALLER_').split('=', 1)
+        for line in output.splitlines()
+        if line.startswith('CALLER_') and '=' in line
+    )
+
+
+def _assert_caller_unchanged(label: str, caller: dict[str, str], before: Path, after: Path) -> None:
+    """Assert that the shell that ran an entry point kept its environment.
+
+    Args:
+        label: The entry point, for the failure message.
+        caller: The CALLER_* values the probe printed after the call.
+        before: The shell's environment listing taken before the call.
+        after: The same listing taken after the call.
+    """
+    assert caller.get('GONE') == 'preset', (
+        f'{label} removed E2E_GONE from the calling shell: the loader was applied to the caller'
+    )
+    assert caller.get('KEPT') == UNSET_MARKER, (
+        f'{label} left E2E_KEPT={caller.get("KEPT")!r} in the calling shell: the loader was applied to the caller'
+    )
+    assert after.read_text(encoding='utf-8') == before.read_text(encoding='utf-8'), (
+        f'{label} changed the calling shell environment:\n--- before ---\n'
+        f'{before.read_text(encoding="utf-8")}\n--- after ---\n{after.read_text(encoding="utf-8")}'
+    )
+
+
+def _assert_session_received_loader(label: str, record: dict[str, str], profile_dir: Path) -> None:
+    """Assert that the session an entry point started received the loader through launch.sh.
+
+    Args:
+        label: The entry point, for the failure message.
+        record: What the stub claude recorded.
+        profile_dir: The profile directory the session must use.
+    """
+    assert Path(record['CLAUDE_CONFIG_DIR']).resolve() == profile_dir.resolve(), f'{label}: {record}'
+    assert record['E2E_KEPT'] == 'kept-value', f'{label}: the session did not receive the exported variable'
+    assert record['E2E_GONE'] == UNSET_MARKER, f'{label}: the session kept the variable the loader unsets'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='runs the generated entry points under cmd.exe and PowerShell')
+class TestWindowsEntryPointsLeaveTheCallingShellAlone:
+    """The cmd.exe and PowerShell entry points change nothing in the shell that runs them.
+
+    A batch file run from a cmd.exe prompt executes in that shell, and $env:
+    is process-wide in PowerShell, so a loader applied by a wrapper would stay
+    in the window after the session ends and reach a plain ``claude`` started
+    next. The session itself still receives every loader variable: launch.sh
+    sources env.sh in the bash process that execs Claude Code. Each probe
+    presets the variable the loader unsets, leaves the one it exports
+    undefined, lists its environment, runs the entry point, and lists it
+    again.
+    """
+
+    @staticmethod
+    def _config(tmp_path: Path) -> Path:
+        config = _corp_like_config(isolated=True, pinned=False, os_env_variables=LOADER_VARS)
+        config['command-names'] = [PROFILE_NAME, PROFILE_ALIAS]
+        return _write_yaml(tmp_path / 'personal.yaml', config)
+
+    def _install(self, e2e_isolated_home: dict[str, Path], tmp_path: Path) -> tuple[Path, Path, Path]:
+        """Install the profile and the stub claude.
+
+        Returns:
+            The profile directory, the stub directory and the stub's record file.
+        """
+        if not WINDOWS_GIT_BASH.exists():
+            pytest.skip('the generated entry points run Git Bash from its standard location')
+        profile_dir = _run_isolated_with_real_launchers(self._config(tmp_path), e2e_isolated_home['home'])
+        for loader in ('env.sh', 'env.cmd', 'env.ps1'):
+            assert (profile_dir / loader).is_file(), f'{loader} was not generated'
+        stub_dir = tmp_path / 'stub-bin'
+        record = stub_dir / 'record.txt'
+        _write_recording_claude(stub_dir, record)
+        return profile_dir, stub_dir, record
+
+    @pytest.mark.parametrize('entry_point', [f'{PROFILE_NAME}.cmd', f'{PROFILE_ALIAS}.cmd', 'start.cmd'])
+    def test_cmd_entry_point_keeps_the_caller_and_loads_the_session(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        entry_point: str,
+    ) -> None:
+        """A .cmd wrapper or start.cmd leaves cmd.exe as it was; the session gets the set and the unset."""
+        profile_dir, stub_dir, record = self._install(e2e_isolated_home, tmp_path)
+        script = (profile_dir if entry_point == 'start.cmd' else e2e_isolated_home['local_bin']) / entry_point
+        assert script.is_file(), f'{script} was not written'
+        before, after = tmp_path / 'before.txt', tmp_path / 'after.txt'
+        # cmd.exe reads < and > as redirections unless escaped with ^.
+        unset = UNSET_MARKER.replace('<', '^<').replace('>', '^>')
+        probe = tmp_path / 'probe.cmd'
+        probe.write_text(
+            '@echo off\r\n'
+            'set "E2E_GONE=preset"\r\n'
+            'set "E2E_KEPT="\r\n'
+            f'set > "{before}"\r\n'
+            f'call "{script}" --probe-arg\r\n'
+            f'set > "{after}"\r\n'
+            f'if defined E2E_GONE (echo CALLER_GONE=%E2E_GONE%) else (echo CALLER_GONE={unset})\r\n'
+            f'if defined E2E_KEPT (echo CALLER_KEPT=%E2E_KEPT%) else (echo CALLER_KEPT={unset})\r\n',
+            encoding='utf-8',
+        )
+
+        completed = subprocess.run(
+            ['cmd.exe', '/d', '/c', str(probe)],
+            capture_output=True, text=True, check=False, timeout=120,
+            env=_probe_environment(e2e_isolated_home['home'], stub_dir),
+        )
+
+        assert completed.returncode == 0, f'{entry_point} failed:\n{completed.stdout}\n{completed.stderr}'
+        _assert_session_received_loader(entry_point, _parse_record(record), profile_dir)
+        _assert_caller_unchanged(entry_point, _caller_values(completed.stdout), before, after)
+
+    @pytest.mark.parametrize('entry_point', [f'{PROFILE_NAME}.ps1', f'{PROFILE_ALIAS}.ps1', 'start.ps1'])
+    def test_powershell_entry_point_keeps_the_caller_and_loads_the_session(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        tmp_path: Path,
+        entry_point: str,
+    ) -> None:
+        """A .ps1 wrapper or start.ps1 leaves PowerShell as it was; the session gets the set and the unset."""
+        powershell = find_powershell()
+        if powershell is None:
+            pytest.skip('PowerShell unavailable')
+        profile_dir, stub_dir, record = self._install(e2e_isolated_home, tmp_path)
+        script = (profile_dir if entry_point == 'start.ps1' else e2e_isolated_home['local_bin']) / entry_point
+        assert script.is_file(), f'{script} was not written'
+        before, after = tmp_path / 'before.txt', tmp_path / 'after.txt'
+        listing = 'Get-ChildItem Env: | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }'
+        probe = tmp_path / 'probe.ps1'
+        probe.write_text(
+            "$env:E2E_GONE = 'preset'\n"
+            'Remove-Item -Path Env:E2E_KEPT -ErrorAction SilentlyContinue\n'
+            f"{listing} | Set-Content -LiteralPath '{before}'\n"
+            f"& '{script}' --probe-arg | Out-Null\n"
+            f"{listing} | Set-Content -LiteralPath '{after}'\n"
+            f"\"CALLER_GONE=$(if (Test-Path Env:E2E_GONE) {{ $env:E2E_GONE }} else {{ '{UNSET_MARKER}' }})\"\n"
+            f"\"CALLER_KEPT=$(if (Test-Path Env:E2E_KEPT) {{ $env:E2E_KEPT }} else {{ '{UNSET_MARKER}' }})\"\n",
+            encoding='utf-8',
+        )
+
+        completed = subprocess.run(
+            [powershell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', str(probe)],
+            capture_output=True, text=True, check=False, timeout=120,
+            env=_probe_environment(e2e_isolated_home['home'], stub_dir),
+        )
+
+        assert completed.returncode == 0, f'{entry_point} failed:\n{completed.stdout}\n{completed.stderr}'
+        _assert_session_received_loader(entry_point, _parse_record(record), profile_dir)
+        _assert_caller_unchanged(entry_point, _caller_values(completed.stdout), before, after)
