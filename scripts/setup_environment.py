@@ -5915,7 +5915,9 @@ def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) 
     too, whether the components below the home are spelled long or short. A
     working directory that mixes the two spellings of the components above
     the home (``C:\\DOCUME~1\\Me\\...``, with the home itself spelled long)
-    matches neither set.
+    matches neither set; the Windows launch.sh starts the session in the long
+    spelling (``WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD``), so only claude
+    started without the launcher under such a path loads the base memory.
 
     Args:
         home_dir: The user's home directory.
