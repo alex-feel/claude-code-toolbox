@@ -1,5 +1,31 @@
 # Changelog
 
+## [8.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.2...v8.0.0) (2026-10-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace link-projects-dir with link-dirs and link-from ([#467](https://github.com/alex-feel/claude-code-toolbox/issues/467))
+
+### Features
+
+* install any configuration as a named profile with --command-names ([#463](https://github.com/alex-feel/claude-code-toolbox/issues/463)) ([833076d](https://github.com/alex-feel/claude-code-toolbox/commit/833076d68ac8f414a0e55a98f0ed80101e251b6c))
+* re-root base config-home paths into the profile directory in isolated installs ([#472](https://github.com/alex-feel/claude-code-toolbox/issues/472)) ([a24a71b](https://github.com/alex-feel/claude-code-toolbox/commit/a24a71b8d89daf8754c9395a71c5398667ed5947))
+* remember profile installs and re-run them with --profile ([#466](https://github.com/alex-feel/claude-code-toolbox/issues/466)) ([926cab1](https://github.com/alex-feel/claude-code-toolbox/commit/926cab1f155f4277b4e70acf1cc8dd9ae0684f23))
+* replace link-projects-dir with link-dirs and link-from ([#467](https://github.com/alex-feel/claude-code-toolbox/issues/467)) ([907b504](https://github.com/alex-feel/claude-code-toolbox/commit/907b504ef4cc6d3bc0f79deb0b2b87b5c7e2dc34))
+
+
+### Bug Fixes
+
+* build launcher and wrapper paths from the profile directory ([#461](https://github.com/alex-feel/claude-code-toolbox/issues/461)) ([b987bdc](https://github.com/alex-feel/claude-code-toolbox/commit/b987bdc68e0f470c94d838b8b12140c1c2d9f858))
+* keep an isolated install inside its own profile ([#462](https://github.com/alex-feel/claude-code-toolbox/issues/462)) ([78a4505](https://github.com/alex-feel/claude-code-toolbox/commit/78a45054dbfd7f8a244c242c9db34f6c8a53517f))
+* keep dependent child runs from listing unrefreshed profiles ([#468](https://github.com/alex-feel/claude-code-toolbox/issues/468)) ([262f09e](https://github.com/alex-feel/claude-code-toolbox/commit/262f09e69c2ad0288bc617b1674375ba67dbeebd))
+* keep profile env loaders out of the calling Windows shell ([#469](https://github.com/alex-feel/claude-code-toolbox/issues/469)) ([c7af3d3](https://github.com/alex-feel/claude-code-toolbox/commit/c7af3d3feb0e84032aa6dd9ae5121ece869c1d8e))
+* make command-defaults and version independent of command-names ([#465](https://github.com/alex-feel/claude-code-toolbox/issues/465)) ([9ed7a89](https://github.com/alex-feel/claude-code-toolbox/commit/9ed7a89ed19676b188491f0dfa9df6f187307119))
+* never request Windows elevation during a dry run ([#457](https://github.com/alex-feel/claude-code-toolbox/issues/457)) ([a2adfa0](https://github.com/alex-feel/claude-code-toolbox/commit/a2adfa0ef8d6d510146b98d7dd77ac0a4d4833a9))
+* pass slash commands from Windows profile commands to Claude Code unchanged ([#471](https://github.com/alex-feel/claude-code-toolbox/issues/471)) ([342fcaa](https://github.com/alex-feel/claude-code-toolbox/commit/342fcaaafc1ab2b6c466c7011131e26c7a71a0ca))
+* remove the launcher update notice that nothing triggers ([#458](https://github.com/alex-feel/claude-code-toolbox/issues/458)) ([dcf22c1](https://github.com/alex-feel/claude-code-toolbox/commit/dcf22c1f2d59dfff243b8b59d50152389c247822))
+
 ## [7.4.2](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.1...v7.4.2) (2026-09-27)
 
 
