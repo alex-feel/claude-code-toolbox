@@ -1281,6 +1281,24 @@ class TestSourceRunRefreshesDependents:
             assert _theme(claude_dir / name) == 'light', 'the dependent applied the refreshed snapshot'
             assert _links_to(claude_dir / name / 'agents', claude_dir / 'agents')
         assert _installed_at(claude_dir / 'sessions-only') == before['sessions-only']
+        assert output.count('* Installed profiles this run did not refresh:') == 1, (
+            'only the base run lists the profiles it did not refresh; its children list none'
+        )
+        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2, (
+            'each dependent child leaves Step 23 to the base run that started it'
+        )
+        assert 'the --profile all run' not in output, 'a child of a base run is not a child of --profile all'
+        assert 'base (--profile base)' not in output, 'no child names the base: the base run is refreshing it right now'
+        for name in ('aegis-1', 'aegis-2'):
+            assert f'{name} (--profile {name})' not in output, (
+                f'no child lists {name}: the base run refreshes it in the same run'
+            )
+        source_summary = output[output.rindex('=== Dependent profile aegis-2 ==='):]
+        source_summary = source_summary[source_summary.index('* Dependent profiles refreshed from this run:'):]
+        assert '* Installed profiles this run did not refresh:' in source_summary
+        assert '- sessions-only (--profile sessions-only)' in source_summary, (
+            'the projects-only profile is the one profile the base run did not refresh'
+        )
 
     def test_isolated_source_refreshes_its_dependents_and_a_dependent_rerun_applies_the_snapshot(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1458,7 +1476,7 @@ class TestSourceRunRefreshesDependents:
         assert code == 0, output
         assert len(argvs) == 1
         assert argvs[0][0] == sys.executable
-        assert argvs[0][1:] == [str(runner), '--profile', 'aegis-2', '--yes', '--skip-install', '--no-admin']
+        assert argvs[0][1:] == [str(runner), '--profile', 'aegis-2', '--yes', '--child-run', '--skip-install', '--no-admin']
         for variable in ('CLAUDE_CODE_TOOLBOX_SELECT', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'CLAUDE_CONFIG_DIR'):
             assert variable not in envs[0], variable
         assert '- aegis-2: ok' in output
@@ -1480,8 +1498,62 @@ class TestSourceRunRefreshesDependents:
         assert code == 0, output
         assert output.index('=== Profile zeta-source ===') < output.index('=== Profile alpha-dep ===')
         assert output.count('=== Profile alpha-dep ===') == 1
-        assert 'Step 23: Dependent profiles are refreshed by the --profile all run' in output
+        assert 'Step 23: Dependent profiles are refreshed by the run that started this one' in output
         assert '=== Dependent profile alpha-dep ===' not in output
+
+    def test_children_of_a_source_run_leave_the_unrefreshed_list_to_the_source(
+        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent child names no profile as unrefreshed; the source's own summary names the base once."""
+        corp = write_config(configs, 'aegis-corp.yaml', {**_aegis(), 'name': 'Corp', 'user-settings': {'theme': 'corp'}})
+        assert run_main([str(corp), *SKIP, '--yes']) == 0, 'the corporate base installs first'
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'aegis-2')
+        _install_dependent(cfg, 'aegis-3')
+        runner = write_child_runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'aegis-1', *SKIP, '--yes'], argv0=str(runner))
+
+        output = _run_output(capfd)
+        assert code == 0, output
+        assert output.count('=== Dependent profile ') == 2
+        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2, (
+            'each dependent child leaves Step 23 to the source run that started it'
+        )
+        assert 'the --profile all run' not in output, 'a child of a source run is not a child of --profile all'
+        assert output.count('* Installed profiles this run did not refresh:') == 1, (
+            'only the source run lists the profiles it did not refresh; its children list none'
+        )
+        source_summary = output[output.rindex('=== Dependent profile aegis-3 ==='):]
+        source_summary = source_summary[source_summary.index('* Dependent profiles refreshed from this run:'):]
+        assert '- aegis-2: ok' in source_summary
+        assert '- aegis-3: ok' in source_summary
+        assert '* Installed profiles this run did not refresh:' in source_summary
+        assert '- base (--profile base)' in source_summary, 'the base is the one profile the source run did not refresh'
+        for name in ('aegis-1', 'aegis-2', 'aegis-3'):
+            assert f'{name} (--profile {name})' not in output, (
+                f'no child lists {name}: the source is refreshing it right now, or refreshes it in the same run'
+            )
+
+    def test_dependent_rerun_by_name_lists_the_profiles_it_did_not_refresh(
+        self, configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A dependent re-run on its own, not as a child, reports like any other single run."""
+        cfg = _install_source(configs)
+        _install_dependent(cfg, 'aegis-2')
+        _install_dependent(cfg, 'aegis-3')
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'aegis-2', *SKIP, '--yes']) == 0
+
+        output = _output(capsys)
+        assert 'Step 23: No installed profile links content from "aegis-2"' in output
+        assert 'refreshed by the run that started this one' not in output
+        assert '* Installed profiles this run did not refresh:' in output
+        assert '- aegis-1 (--profile aegis-1)' in output
+        assert '- aegis-3 (--profile aegis-3)' in output
+        assert '- aegis-2 (--profile aegis-2)' not in output
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')

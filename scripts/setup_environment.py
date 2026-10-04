@@ -13357,9 +13357,11 @@ PROFILE_SOURCES: dict[str, str] = {
 # The --profile value that refreshes every installed profile
 ALL_PROFILES = 'all'
 
-# The hidden argument --profile all passes to each child run: the parent's
-# report covers every installed profile, so a child lists none as unrefreshed
-REFRESH_ALL_CHILD_FLAG = '--refresh-all-child'
+# The hidden argument a parent run passes to every child it starts -- the
+# children of --profile all, and the dependents a source's Step 23 refreshes:
+# the parent's report covers every installed profile, so a child lists none
+# as unrefreshed and leaves the dependent refresh to the parent
+CHILD_RUN_FLAG = '--child-run'
 
 # The second --command-names entry that drops every alias of a profile:
 # NAME,none installs the profile NAME under that one command
@@ -15395,14 +15397,16 @@ class DependentResult(NamedTuple):
 def refresh_dependents(dependents: list[InstalledProfile]) -> list[DependentResult]:
     """Re-run every profile that links content from this one, each in its own child run.
 
-    A child runs ``--profile <dependent> --yes --skip-install --no-admin``
-    through the same program this run started from (the script, or the
-    packaged entry point), with every argument twin except the repository
-    credential and CLAUDE_CONFIG_DIR removed from its environment, so a
-    variable set for the source cannot change what a dependent installs.
-    ``--skip-install`` because the source just installed the one binary,
-    ``--no-admin`` so no child relaunches through UAC and exits 0
-    unobserved. Every dependent runs whatever the others returned.
+    A child runs ``--profile <dependent> --yes --child-run --skip-install
+    --no-admin`` through the same program this run started from (the script,
+    or the packaged entry point), with every argument twin except the
+    repository credential and CLAUDE_CONFIG_DIR removed from its environment,
+    so a variable set for the source cannot change what a dependent installs.
+    ``--child-run`` because this run's summary reports on every installed
+    profile, so the child lists none as unrefreshed; ``--skip-install``
+    because the source just installed the one binary; ``--no-admin`` so no
+    child relaunches through UAC and exits 0 unobserved. Every dependent runs
+    whatever the others returned.
 
     Args:
         dependents: The profiles to refresh, from content_dependents().
@@ -15418,7 +15422,8 @@ def refresh_dependents(dependents: list[InstalledProfile]) -> list[DependentResu
         print(f'{Colors.CYAN}=== Dependent profile {profile.name} ==={Colors.NC}')
         try:
             code = subprocess.run(
-                [*launch, '--profile', profile.name, '--yes', '--skip-install', '--no-admin'], env=env, check=False,
+                [*launch, '--profile', profile.name, '--yes', CHILD_RUN_FLAG, '--skip-install', '--no-admin'],
+                env=env, check=False,
             ).returncode
         except OSError as e:
             error(f'Cannot start the run of profile "{profile.name}": {e}')
@@ -18088,22 +18093,23 @@ def _exit_on_broken_links(broken: list[str], profile_name: str) -> None:
 
 
 def run_dependent_refresh_step(
-    dependents: list[InstalledProfile], *, source_name: str, refresh_all_child: bool,
+    dependents: list[InstalledProfile], *, source_name: str, child_run: bool,
 ) -> list[DependentResult]:
     """Run Step 23: refresh every profile that links content from this one.
 
     Args:
         dependents: The dependents content_dependents() found before the run.
         source_name: This run's profile display name.
-        refresh_all_child: Whether this run is a child of --profile all, whose
-            parent runs every installed profile itself.
+        child_run: Whether another run started this one -- --profile all,
+            which runs every installed profile itself, or a source's Step 23,
+            which refreshes every dependent itself.
 
     Returns:
         One result per dependent refreshed; empty when none ran.
     """
     print()
-    if refresh_all_child:
-        print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the --profile all run{Colors.NC}')
+    if child_run:
+        print(f'{Colors.CYAN}Step 23: Dependent profiles are refreshed by the run that started this one{Colors.NC}')
         return []
     if not dependents:
         print(f'{Colors.CYAN}Step 23: No installed profile links content from "{source_name}"{Colors.NC}')
@@ -18114,7 +18120,7 @@ def run_dependent_refresh_step(
 
 
 def child_run_environment() -> dict[str, str]:
-    """Build the environment of a child run started by --profile all.
+    """Build the environment of a child run (of --profile all, or of a source's Step 23).
 
     Every argument twin except the repository credential is dropped, so a
     variable set for the parent cannot change what a child installs, and
@@ -18308,8 +18314,8 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
     administrator rights the parent lacks, it relaunches itself through UAC
     before asking for consent, so every child inherits the rights and none
     opens a window of its own. The parent then asks for consent once (or
-    takes --yes); every child runs with --yes, --refresh-all-child, the
-    parent's --dry-run and --skip-install, and --no-admin (a dry run
+    takes --yes); every child runs with --yes, --child-run, the parent's
+    --dry-run and --skip-install, and --no-admin (a dry run
     forwards the parent's --no-admin instead, so each child still prints
     what a real run would elevate for). The report at the end names each
     profile with its result and the --profile command that retries a
@@ -18398,7 +18404,7 @@ def refresh_all_profiles(args: argparse.Namespace, *, elevated_via_uac: bool = F
             return 0
     # A child never decides elevation for itself: the parent did, so a
     # child that relaunched through UAC could only exit 0 unobserved
-    child_flags = ['--yes', REFRESH_ALL_CHILD_FLAG]
+    child_flags = ['--yes', CHILD_RUN_FLAG]
     for flag, present in (
         ('--dry-run', args.dry_run),
         ('--skip-install', args.skip_install),
@@ -18552,7 +18558,7 @@ def main() -> None:
         help='The profile the linked entries come from: base for ~/.claude (the default), or the '
         'primary command name of an installed isolated profile',
     )
-    parser.add_argument(REFRESH_ALL_CHILD_FLAG, dest='refresh_all_child', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument(CHILD_RUN_FLAG, dest='child_run', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     resolve_args(args)
 
@@ -19708,7 +19714,7 @@ def main() -> None:
 
             # Step 23: Refresh the profiles that link content from this one
             dependent_results = run_dependent_refresh_step(
-                dependents, source_name=profile_name, refresh_all_child=args.refresh_all_child,
+                dependents, source_name=profile_name, child_run=args.child_run,
             )
         else:
             # No command-names: route the profile-owned YAML keys
@@ -19815,7 +19821,7 @@ def main() -> None:
 
             # Step 23: Refresh the profiles that link content from the base profile
             dependent_results = run_dependent_refresh_step(
-                dependents, source_name=profile_name, refresh_all_child=args.refresh_all_child,
+                dependents, source_name=profile_name, child_run=args.child_run,
             )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')
@@ -19951,9 +19957,10 @@ def main() -> None:
             print('   * Dependent profiles refreshed from this run:')
             for result in dependent_results:
                 print(f'       - {result.line()}')
-        # A child of --profile all lists nothing here: the parent's report
-        # covers every installed profile
-        unrefreshed = [] if args.refresh_all_child else unrefreshed_profile_lines(
+        # A child run lists nothing here: the report of the run that started
+        # it (--profile all, or the source whose Step 23 refreshes this
+        # dependent) covers every installed profile
+        unrefreshed = [] if args.child_run else unrefreshed_profile_lines(
             get_real_user_home(), profile_name, frozenset(result.name for result in dependent_results),
         )
         if unrefreshed:
