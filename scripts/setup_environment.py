@@ -5822,13 +5822,35 @@ def apply_skills_sync_settings(
     ], []
 
 
+def _letter_case_classes(pattern: str) -> str:
+    """Spell every ASCII letter of a glob pattern as a class matching either case.
+
+    Claude Code matches ``claudeMdExcludes`` case-sensitively against paths
+    it builds from the working directory as the shell spelled it, so a
+    pattern spelled ``C:/Users/Me/.claude/CLAUDE.md`` misses a session
+    started in ``c:\\users\\me\\work``; ``[cC]:/[uU][sS][eE][rR][sS]/...``
+    matches every letter case the working directory can carry.
+
+    Args:
+        pattern: A glob pattern holding no bracket class of its own.
+
+    Returns:
+        The pattern with each ASCII letter replaced by ``[xX]``.
+    """
+    return re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', pattern)
+
+
 def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) -> list[str]:
     """Name the base profile's memory files an isolated profile excludes from its sessions.
 
     The patterns are absolute paths below ``<home>/.claude`` with forward
-    slashes on every platform, spelled from the home as given: Claude Code
-    builds the paths it matches them against from the same home directory,
-    and matches them case-sensitively.
+    slashes on every platform and every ASCII letter spelled as a case class
+    (see ``_letter_case_classes()``): Claude Code matches them
+    case-sensitively against paths it builds from the working directory as
+    spelled, which on Windows differs from the home as given whenever the
+    shell lowercased the drive letter or the user typed the path in another
+    case. An 8.3 short name in the working directory path (``PROJEC~1``) is
+    a different spelling the classes do not cover.
 
     Args:
         home_dir: The user's home directory.
@@ -5844,7 +5866,7 @@ def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) 
     patterns = [f'{base}/{name}' for name in BASE_CONFIG_HOME_MEMORY_FILES]
     if not links_rules_from_base:
         patterns.append(f'{base}/{RULES_PROFILE_DIR}/**')
-    return patterns
+    return [_letter_case_classes(pattern) for pattern in patterns]
 
 
 def apply_base_config_home_exclusions(

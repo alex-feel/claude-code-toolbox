@@ -18,6 +18,7 @@ and the Windows PATH registry are replaced.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -57,9 +58,12 @@ def _team(user_settings: dict[str, Any] | None = None, **extra: Any) -> dict[str
 
 
 def _patterns(home: Path) -> list[str]:
-    """The exclusions an isolated profile of ``home`` carries, memory files first."""
+    """The exclusions an isolated profile of ``home`` carries, memory files first, every letter a case class."""
     base = (home / '.claude').as_posix()
-    return [f'{base}/CLAUDE.md', f'{base}/CLAUDE.local.md', f'{base}/rules/**']
+    return [
+        re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', f'{base}/{name}')
+        for name in ('CLAUDE.md', 'CLAUDE.local.md', 'rules/**')
+    ]
 
 
 def _config_json(profile_dir: Path) -> dict[str, Any]:

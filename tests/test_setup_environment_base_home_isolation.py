@@ -11,7 +11,9 @@ profile's own settings sources.
 from __future__ import annotations
 
 import ctypes
+import fnmatch
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,14 +36,19 @@ LAUNCHER_VARIANTS = [
 SOURCES_FLAGS = '"${SOURCES[@]}"'
 
 
+def _case_classes(text: str) -> str:
+    """Spell every ASCII letter of ``text`` as a glob class matching either case."""
+    return re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', text)
+
+
 def _patterns(home: Path) -> list[str]:
     """The three patterns an isolated profile excludes for the base config home below ``home``."""
     base = (home / '.claude').as_posix()
-    return [f'{base}/CLAUDE.md', f'{base}/CLAUDE.local.md', f'{base}/rules/**']
+    return [_case_classes(f'{base}/{name}') for name in ('CLAUDE.md', 'CLAUDE.local.md', 'rules/**')]
 
 
 class TestBaseConfigHomeExclusions:
-    """base_config_home_exclusions() names the base profile's memory files in forward-slash form."""
+    """base_config_home_exclusions() names the base profile's memory files in forward-slash, case-class form."""
 
     def test_names_the_memory_files_and_the_rules_of_the_base_profile(self, tmp_path: Path) -> None:
         """CLAUDE.md, CLAUDE.local.md and every rule of ~/.claude are excluded, spelled with forward slashes."""
@@ -56,13 +63,31 @@ class TestBaseConfigHomeExclusions:
 
         assert patterns == _patterns(tmp_path)[:2]
 
-    def test_patterns_keep_the_home_as_spelled(self, tmp_path: Path) -> None:
-        """The home directory is spelled as given, so it matches the path Claude Code builds from the same home."""
-        home = tmp_path / 'Mixed Case Home'
+    def test_letters_are_case_classes_that_match_the_home_in_every_spelling(self) -> None:
+        """Claude Code matches the patterns case-sensitively against paths built from the working directory as spelled.
 
-        patterns = base_config_home_exclusions(home, links_rules_from_base=False)
+        A shell that lowercases the drive letter, or a user who types the
+        path in another case, therefore hands Claude Code a path the home as
+        given does not spell; every ASCII letter is a class matching both
+        cases, so the base files stay excluded in each spelling while the
+        profile's own directory below ~/.claude still matches nothing.
+        """
+        patterns = base_config_home_exclusions(Path('C:/Users/Me'), links_rules_from_base=False)
 
-        assert patterns[0] == f'{home.as_posix()}/.claude/CLAUDE.md'
+        assert patterns == [
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[cC][lL][aA][uU][dD][eE].[mM][dD]',
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[cC][lL][aA][uU][dD][eE].[lL][oO][cC][aA][lL].[mM][dD]',
+            '[cC]:/[uU][sS][eE][rR][sS]/[mM][eE]/.[cC][lL][aA][uU][dD][eE]/[rR][uU][lL][eE][sS]/**',
+        ]
+        for spelled in (
+            'C:/Users/Me/.claude/CLAUDE.md', 'c:/Users/Me/.claude/CLAUDE.md', 'c:/users/me/.claude/CLAUDE.md',
+            'C:/USERS/ME/.CLAUDE/CLAUDE.MD',
+        ):
+            assert fnmatch.fnmatchcase(spelled, patterns[0]), spelled
+        assert fnmatch.fnmatchcase('c:/users/me/.claude/CLAUDE.local.md', patterns[1])
+        assert fnmatch.fnmatchcase('c:/users/me/.claude/rules/team/style.md', patterns[2])
+        assert not fnmatch.fnmatchcase('c:/users/me/.claude/work-1/CLAUDE.md', patterns[0])
+        assert not fnmatch.fnmatchcase('c:/users/me/.claude/work-1/rules/own.md', patterns[2])
 
 
 class TestApplyBaseConfigHomeExclusions:
