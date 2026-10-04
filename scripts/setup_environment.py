@@ -10320,9 +10320,13 @@ def generate_env_loader_files(
 ) -> dict[str, Path]:
     """Generate shell-specific env loader files for OS environment variables.
 
-    Creates Rustup-pattern env files that can be sourced by launchers
-    and users. Contains ONLY os-env-variables (NOT user-settings.env,
-    which is handled by Claude Code's settings-file env key).
+    Creates Rustup-pattern env files holding ONLY os-env-variables (NOT
+    user-settings.env, which is handled by Claude Code's settings-file env
+    key). env.sh is sourced by launch.sh in the bash process that execs
+    Claude Code, so every session receives the sets and unsets. env.fish,
+    env.ps1 and env.cmd are generated for sourcing by hand, and no launcher
+    or wrapper applies them: start.cmd, start.ps1 and the ~/.local/bin
+    wrappers reference no loader, so the calling shell keeps its environment.
 
     Per-command files (when command_names provided):
         ~/.claude/{cmd}/env.sh      (Bash/Zsh)
@@ -10332,11 +10336,12 @@ def generate_env_loader_files(
 
     A None value is a deletion request and is rendered as an unset line in
     each shell's syntax, so a variable the profile's sessions inherit from
-    the OS environment is removed when the launcher sources the file.
-    Loader files are toolbox-owned artifacts rebuilt on every run: when the
-    dict is empty, the files are still rewritten header-only so that stale
-    lines from a prior run stop being applied by the launcher at session
-    start.
+    the OS environment is removed when launch.sh sources env.sh at session
+    start; a hand-sourced env.cmd, env.ps1 or env.fish applies the same
+    unset to that shell. Loader files are toolbox-owned artifacts rebuilt on
+    every run: when the dict is empty, the files are still rewritten
+    header-only so that stale lines from a prior run stop reaching the
+    sessions launch.sh starts.
 
     Args:
         os_env_vars: Dict of env var names to values. None values = deletions
@@ -19394,7 +19399,7 @@ def main() -> None:
         # Rebuild env loader files for the profile's OS environment variables.
         # Loader files are toolbox-owned and rebuilt even when every entry is
         # a deletion, so stale exports from a prior run are cleared instead
-        # of being re-applied by the launcher at session start.
+        # of reaching the sessions launch.sh starts.
         generated_env_files: dict[str, Path] = generate_env_loader_files(
             loader_env_variables, command_names, artifact_base_dir if command_names else None,
         )
