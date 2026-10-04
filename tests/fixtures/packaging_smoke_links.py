@@ -18,7 +18,9 @@ The writers that reach outside the home -- the Windows registry (OS
 environment variables, the WM_SETTINGCHANGE broadcast, the user PATH
 cleanup and extension) and Fish universal variables -- are replaced with
 no-ops in this process and, through a sitecustomize module on PYTHONPATH,
-in the child, so the probe never changes the machine it runs on.
+in the child, so the probe never changes the machine it runs on. Every run
+passes --skip-install, which requires a claude command on PATH, so the probe
+puts a stub one first on PATH: the runner has no Claude Code installed.
 """
 
 from __future__ import annotations
@@ -81,6 +83,23 @@ def _neutralize_in_process(module_path: Path) -> None:
     spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
+def _put_stub_claude_on_path(home: Path) -> None:
+    """Put a stub claude command first on PATH for this process and the child.
+
+    Args:
+        home: The probe's temporary home, which holds the stub's directory.
+    """
+    bin_dir = home / 'bin'
+    bin_dir.mkdir()
+    if sys.platform == 'win32':
+        (bin_dir / 'claude.cmd').write_text('@echo 2.1.0 (Claude Code)\n', encoding='utf-8')
+    else:
+        stub = bin_dir / 'claude'
+        stub.write_text('#!/bin/sh\necho "2.1.0 (Claude Code)"\n', encoding='utf-8')
+        stub.chmod(0o755)
+    os.environ['PATH'] = os.pathsep.join([str(bin_dir), os.environ.get('PATH', '')])
+
+
 def _fail(message: str) -> int:
     print(f'FAIL: {message}')
     return 1
@@ -95,6 +114,7 @@ def main() -> int:
     config = home / 'smoke.yaml'
     config.write_text(CONFIG, encoding='utf-8')
     os.environ.update({'HOME': str(home), 'USERPROFILE': str(home), 'PYTHONPATH': str(site_dir)})
+    _put_stub_claude_on_path(home)
     _neutralize_in_process(site_dir / 'sitecustomize.py')
 
     if _run_setup([str(config), '--command-names', 'smoke-1', *RUN_FLAGS]) != 0:
