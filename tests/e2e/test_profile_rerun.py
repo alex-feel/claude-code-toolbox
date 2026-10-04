@@ -35,6 +35,7 @@ from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import wrapper_targets_profile
 from tests.e2e.profile_support import wrappers_absent
 from tests.e2e.profile_support import wrappers_exist
+from tests.e2e.profile_support import write_child_runner
 from tests.e2e.profile_support import write_config
 from tests.e2e.profile_support import write_legacy_manifest
 from tests.e2e.validators import validate_manifest
@@ -654,29 +655,6 @@ class TestProfileBase:
         assert 'No installed profile named "base"' in _output(capsys)
 
 
-RUNNER = '''\
-"""Child runner: setup_environment.main() with the machine-wide writers replaced."""
-from unittest.mock import patch
-
-from scripts import setup_environment
-from tests.e2e.fixtures import setup_child
-
-_real_find = setup_environment.find_command
-
-
-def _find(name: str) -> str | None:
-    return '/usr/bin/claude' if name == 'claude' else _real_find(name)
-
-
-with (
-    patch.object(setup_environment, 'find_command', _find),
-    patch.object(setup_environment, 'ensure_local_bin_in_path', lambda: None),
-    patch.object(setup_environment, 'refresh_path_from_registry', lambda: None),
-):
-    setup_child.main()
-'''
-
-
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestProfileAll:
     """--profile all refreshes every installed profile, each in its own child run."""
@@ -691,10 +669,7 @@ class TestProfileAll:
         return base, one, two
 
     def _runner(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        runner = tmp_path / 'runner.py'
-        runner.write_text(RUNNER, encoding='utf-8')
-        monkeypatch.setenv('PYTHONPATH', str(REPO_ROOT))
-        return runner
+        return write_child_runner(tmp_path, monkeypatch)
 
     def test_refreshes_every_profile_and_reports_a_failed_child(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -976,29 +951,35 @@ class TestLegacyManifests:
         assert run_main(['--profile', 'legacy-1', *SKIP, '--yes']) == 0, 'the second re-run needs no configuration'
 
     def test_rerun_from_todays_manifest_and_projects_link_layout(
-        self, e2e_isolated_home: dict[str, Path], configs: Path,
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A profile installed with link-projects-dir and the previous manifest shape re-runs intact."""
-        config = {**_plain(), 'command-names': ['linked-1', 'l1'], 'link-projects-dir': True}
+        """A projects junction or symlink an earlier install created counts as the projects link."""
+        config = {**_plain(), 'command-names': ['linked-1', 'l1'], 'link-dirs': ['projects']}
         cfg = write_config(configs, 'env.yaml', config)
         claude_dir = e2e_isolated_home['claude_dir']
-        assert run_main([str(cfg), *SKIP, '--yes']) == 0
         profile_dir = claude_dir / 'linked-1'
+        profile_dir.mkdir()
         projects = profile_dir / 'projects'
-        assert setup_environment._is_windows_reparse_point(projects) or projects.is_symlink()
+        setup_environment.link_profile_directory(projects, claude_dir / 'projects')
         write_legacy_manifest(
             profile_dir, 'linked-1', ['linked-1', 'l1'],
             config_source=str(cfg.resolve()), config_source_type='local', config_source_url=None,
         )
+        capsys.readouterr()
 
         assert run_main(['--profile', 'linked-1', *SKIP, '--yes']) == 0
 
+        output = _output(capsys)
+        assert f'* projects -> {claude_dir / "projects"} [kept]' in output
         assert setup_environment._is_windows_reparse_point(projects) or projects.is_symlink()
         (claude_dir / 'projects' / 'marker.txt').write_text('shared session\n', encoding='utf-8')
         assert (projects / 'marker.txt').is_file(), 'the link no longer reaches the base projects directory'
         manifest = read_manifest(profile_dir)
         assert manifest['command_names'] == ['linked-1', 'l1']
         assert manifest['origins']['command_names'] == 'yaml'
+        assert manifest['link'] == {
+            'dirs': ['projects'], 'source': 'base', 'origins': {'dirs': 'yaml', 'source': 'default'},
+        }
         assert wrappers_exist(e2e_isolated_home['local_bin'], 'l1')
 
 
@@ -1204,7 +1185,7 @@ class TestManifestRecords:
         assert manifest['command_names'] == ['prof-a', 'alias']
         assert manifest['origins'] == {'command_names': 'cli', 'components': 'yaml'}
         assert manifest['components'] is None
-        assert manifest['yaml_values'] == {'command_names': [], 'components': []}
+        assert manifest['yaml_values'] == {'command_names': [], 'components': [], 'link_dirs': None, 'link_from': None}
         assert manifest['files_written'] == ['agents/core.md', 'extra/inside.txt', 'prompts/rule.md', 'rules/rule.md']
         assert manifest['machine_wide_destinations'] == [{
             'dest': str(outside), 'source': str((configs / 'files' / 'same-a.txt').resolve()),

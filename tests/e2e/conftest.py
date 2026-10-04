@@ -175,7 +175,8 @@ def golden_config() -> dict[str, Any]:
     - base-url: Resource URL (uses local mock_repo)
     - claude-code-version: Version specification
     - install-nodejs: Node.js installation flag
-    - link-projects-dir: Link isolated profile's projects/ dir to base ~/.claude/projects/
+    - link-dirs: Entries the isolated profile links from another profile (projects)
+    - link-from: The profile the linked entries come from (base)
     - dependencies: Platform-specific dependencies
     - agents: Agent markdown files
     - slash-commands: Slash command files

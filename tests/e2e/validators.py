@@ -1225,6 +1225,61 @@ def validate_resolved_config(profile_dir: Path, expected_snapshot: dict[str, Any
     return errors
 
 
+def _link_record_errors(link: object, yaml_values: object, config: dict[str, Any]) -> list[str]:
+    """Validate the manifest's link record and recorded link values against the configuration's link keys.
+
+    A configuration that declares link-dirs expects a record naming those
+    entries (all expands to every linkable entry) with the yaml origin, and
+    the link-from source with the yaml origin when the key is declared (base
+    with the default origin otherwise); a configuration without link-dirs
+    expects None. yaml_values must carry the configuration's own link-dirs
+    entries and link-from value, None for an absent key.
+
+    Args:
+        link: The manifest's link field.
+        yaml_values: The manifest's yaml_values field.
+        config: The configuration the profile was installed from.
+
+    Returns:
+        List of error strings (empty if the record matches).
+    """
+    from scripts.setup_environment import LINKABLE_PROFILE_DIRS
+    from scripts.setup_environment import parse_link_dirs
+
+    raw_dirs = config.get('link-dirs')
+    expected_dirs, parse_errors = parse_link_dirs(raw_dirs, 'link-dirs') if raw_dirs is not None else ([], [])
+    if parse_errors:
+        return [f'Golden link-dirs is invalid: {parse_errors}']
+    raw_source = config.get('link-from')
+    errors: list[str] = []
+    if isinstance(yaml_values, dict):
+        expected_values = {
+            'link_dirs': expected_dirs if raw_dirs is not None else None,
+            'link_from': str(raw_source) if raw_source is not None else None,
+        }
+        recorded_values = {key: yaml_values.get(key) for key in expected_values}
+        if recorded_values != expected_values:
+            errors.append(f'Manifest yaml_values link keys: expected {expected_values!r}, got {recorded_values!r}')
+    if not expected_dirs:
+        return errors if link is None else [*errors, f'Manifest link: expected None, got {link!r}']
+    if not isinstance(link, dict):
+        return [*errors, f'Manifest link: expected a record for {expected_dirs}, got {link!r}']
+    if set(link) != {'dirs', 'source', 'origins'}:
+        errors.append(f'Manifest link: expected dirs, source and origins, got {sorted(link)}')
+        return errors
+    if link['dirs'] != expected_dirs:
+        errors.append(f"Manifest link.dirs: expected {expected_dirs}, got {link['dirs']!r}")
+    if any(entry not in LINKABLE_PROFILE_DIRS for entry in link['dirs']):
+        errors.append(f"Manifest link.dirs names an unknown entry: {link['dirs']!r}")
+    expected_source = str(raw_source or 'base')
+    if link['source'] != expected_source:
+        errors.append(f"Manifest link.source: expected {expected_source!r}, got {link['source']!r}")
+    expected_origins = {'dirs': 'yaml', 'source': 'yaml' if raw_source is not None else 'default'}
+    if link['origins'] != expected_origins:
+        errors.append(f"Manifest link.origins: expected {expected_origins!r}, got {link['origins']!r}")
+    return errors
+
+
 def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
     """Validate manifest.json structure and content.
 
@@ -1246,7 +1301,10 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
       name and a non-empty list for an isolated profile, None and an empty
       list for the base profile
     - origins maps command_names and components to an origin, yaml_values
-      and the written records have their declared shapes, and link is None
+      and the written records have their declared shapes, yaml_values
+      carries the configuration's own link-dirs and link-from, and link
+      matches the configuration's link keys with the yaml origins (None
+      without link-dirs)
     - installed_at is a valid ISO timestamp string
 
     Args:
@@ -1344,8 +1402,7 @@ def validate_manifest(path: Path, config: dict[str, Any]) -> list[str]:
         errors.append(f'Manifest components: expected None or the three selector values, got {components!r}')
     if not isinstance(data['yaml_values'], dict):
         errors.append(f"Manifest yaml_values: expected an object, got {data['yaml_values']!r}")
-    if data['link'] is not None:
-        errors.append(f"Manifest link: expected None, got {data['link']!r}")
+    errors.extend(_link_record_errors(data['link'], data['yaml_values'], config))
     record_keys = ('machine_wide_destinations', 'os_env_written', 'settings_keys_written', 'mcp_servers', 'files_written')
     errors.extend(
         f'Manifest {record_key}: expected a list, got {data[record_key]!r}'

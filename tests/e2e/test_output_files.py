@@ -244,6 +244,11 @@ class TestManifestFile:
             command_names=golden_config['command-names'],
             claude_code_version=None,
             resolved_config=golden_resolved_config,
+            yaml_values={
+                'command_names': golden_config['command-names'], 'components': [],
+                'link_dirs': ['projects'], 'link_from': 'base',
+            },
+            link={'dirs': ['projects'], 'source': 'base', 'origins': {'dirs': 'yaml', 'source': 'yaml'}},
         )
 
         manifest_path = claude_dir / 'manifest.json'

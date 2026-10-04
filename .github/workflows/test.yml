@@ -247,6 +247,9 @@ jobs:
           # Step 1 dispatch inside the real uvx environment: the bundled
           # installer must launch under the environment's own interpreter.
           uvx --from "${{ steps.wheel.outputs.path }}" python tests/fixtures/packaging_smoke_step1.py
+          # Step 23 inside the real uvx environment: a source run refreshes a
+          # dependent profile through python -m cc_toolbox.cli setup.
+          uvx --from "${{ steps.wheel.outputs.path }}" python tests/fixtures/packaging_smoke_links.py
 
   # Summary job
   summary:

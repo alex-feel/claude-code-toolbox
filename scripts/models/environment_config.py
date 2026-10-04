@@ -200,6 +200,29 @@ RESERVED_COMMAND_NAMES: frozenset[str] = frozenset({
     'projects',
 })
 
+# The entries of a Claude Code configuration home an isolated profile can take
+# through a directory link from another profile, in display order. Inline copy
+# of LINKABLE_PROFILE_DIRS in scripts/setup_environment.py (standalone script
+# policy prevents cross-import); parity enforced by
+# tests/scripts/models/test_linkable_profile_dirs_parity.py.
+LINKABLE_PROFILE_DIRS: tuple[str, ...] = (
+    'skills',
+    'agents',
+    'commands',
+    'rules',
+    'hooks',
+    'output-styles',
+    'prompts',
+    'projects',
+)
+
+# The link-dirs values that stand for every linkable entry and for none; each
+# is valid only on its own
+LINK_DIRS_SENTINELS: frozenset[str] = frozenset({'all', 'none'})
+
+# The link-from value that names the base profile
+LINK_SOURCE_BASE = 'base'
+
 
 def _extract_basename(path_or_url: str) -> str:
     """Extract the basename from a URL or file path.
@@ -1441,12 +1464,22 @@ class EnvironmentConfig(BaseModel):
         alias='install-nodejs',
         description='Whether to install Node.js LTS before processing dependencies (default: False)',
     )
-    link_projects_dir: bool | None = Field(
+    link_dirs: list[str] | None = Field(
         None,
-        alias='link-projects-dir',
-        description="When true (isolated profiles only), link the isolated profile's "
-        'projects/ directory to the base ~/.claude/projects/ so the isolated and base '
-        'Claude share session history. Default False keeps them separate. Requires command-names.',
+        alias='link-dirs',
+        description='Entries of the profile directory the isolated profile takes through a '
+        'directory link from the profile link-from names: any of skills, agents, commands, '
+        'rules, hooks, output-styles, prompts and projects, or all for every entry, or none. '
+        'Every entry but projects links only between installs of the same configuration, '
+        'and a profile that links one takes its configuration and component selection from '
+        'the source. Links need an isolated profile, which --command-names supplies when the '
+        'configuration declares no command-names.',
+    )
+    link_from: str | None = Field(
+        None,
+        alias='link-from',
+        description='The profile the linked entries come from: base for ~/.claude (the '
+        'default), or the primary command name of an installed isolated profile.',
     )
     claude_code_version: str | None = Field(
         None,
@@ -1515,6 +1548,51 @@ class EnvironmentConfig(BaseModel):
                 raise ValueError(
                     f'command_names[{i}] "{name}" is reserved; choose a name other than: {reserved}',
                 )
+        return v
+
+    @field_validator('link_dirs')
+    @classmethod
+    def validate_link_dirs(cls, v: list[str] | None) -> list[str] | None:
+        """Validate the linked entries: known names, no duplicates, a sentinel only alone."""
+        if v is None:
+            return v
+        lowered = [str(entry).strip().casefold() for entry in v]
+        if any(not entry for entry in lowered):
+            raise ValueError('link-dirs entries cannot be empty')
+        sentinels = [entry for entry in lowered if entry in LINK_DIRS_SENTINELS]
+        if sentinels and len(lowered) > 1:
+            raise ValueError(
+                f'link-dirs "{sentinels[0]}" stands alone: it cannot be combined with other entries',
+            )
+        unknown = [entry for entry in lowered if entry not in LINKABLE_PROFILE_DIRS and entry not in LINK_DIRS_SENTINELS]
+        if unknown:
+            raise ValueError(
+                f'link-dirs names unknown entries: {", ".join(unknown)}; '
+                f'use all, none, or any of: {", ".join(LINKABLE_PROFILE_DIRS)}',
+            )
+        if len(set(lowered)) != len(lowered):
+            raise ValueError('link-dirs lists an entry twice')
+        return v
+
+    @field_validator('link_from')
+    @classmethod
+    def validate_link_from(cls, v: str | None) -> str | None:
+        """Validate the link source: base, or a valid command name of an installed profile."""
+        if v is None:
+            return v
+        name = v.strip()
+        if name.casefold() == LINK_SOURCE_BASE:
+            return v
+        if not name:
+            raise ValueError('link-from cannot be empty')
+        if ' ' in name:
+            raise ValueError(f'link-from cannot contain spaces: "{name}"')
+        if not name.replace('-', '').replace('_', '').isalnum():
+            raise ValueError(
+                f'link-from must be base or a command name of letters, digits, hyphens and underscores: "{name}"',
+            )
+        if name.casefold() in RESERVED_COMMAND_NAMES:
+            raise ValueError(f'link-from "{name}" is reserved; use base or the name of an installed profile')
         return v
 
     @field_validator('dependencies')
@@ -1758,30 +1836,6 @@ class EnvironmentConfig(BaseModel):
                 raise ValueError(f'Environment variable {name} value cannot contain null bytes')
 
         return v
-
-    @model_validator(mode='after')
-    def validate_link_projects_dir_requires_command_names(self) -> 'EnvironmentConfig':
-        """Validate that link-projects-dir requires command-names to be present.
-
-        The base ~/.claude/projects/ is already what the non-isolated Claude uses,
-        so linking only makes sense for an isolated profile (created only when
-        command-names is specified).
-
-        Returns:
-            The validated EnvironmentConfig instance.
-
-        Raises:
-            ValueError: If link-projects-dir is truthy without command-names.
-        """
-        if self.link_projects_dir and not self.command_names:
-            raise ValueError(
-                'link-projects-dir requires command-names to be specified. '
-                'The projects/ link binds an isolated profile to the base '
-                '~/.claude/projects/, and isolated profiles exist only when '
-                'command-names is present. Either add command-names or remove '
-                'link-projects-dir.',
-            )
-        return self
 
     @model_validator(mode='after')
     def validate_merge_keys_requires_inherit(self) -> 'EnvironmentConfig':

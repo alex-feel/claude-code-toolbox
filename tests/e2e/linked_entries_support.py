@@ -271,7 +271,7 @@ def place_entry(source: Path, profile: Path, entry: str, kind: str) -> None:
     """Put one entry into a profile as a copy, a link, or nothing.
 
     'symlink' uses os.symlink(target_is_directory=True) and 'junction' uses
-    _winapi.CreateJunction, the two primitives link_projects_directory()
+    _winapi.CreateJunction, the two primitives link_profile_directory()
     creates links with. A Windows symlink the OS refuses (no privilege, no
     Developer Mode) skips the calling test with the reason.
 

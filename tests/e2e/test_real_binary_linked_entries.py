@@ -5,7 +5,7 @@ agents, commands, rules, hooks, output-styles, prompts and projects -- the
 real binary runs one non-interactive turn against an offline fake API with
 CLAUDE_CONFIG_DIR pointing at a profile whose entry is a real directory, a
 directory symlink, or (Windows) a junction created with the primitive
-link_projects_directory() uses. Each entry carries a sentinel that is only
+link_profile_directory() uses. Each entry carries a sentinel that is only
 observable when the entry loaded: in the recorded request body, in the
 stream-json init message, in the hook's marker file, or as a session file at
 the link target. A negative control per entry (the entry absent) shows the
@@ -394,14 +394,11 @@ def test_session_is_not_resumable_from_a_profile_without_the_link(workspace: Wor
     assert 'No conversation found' in resumed.stdout + resumed.stderr, resumed.describe()
 
 
-def test_link_projects_directory_carries_sessions_to_the_base(
-    workspace: Workspace, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_link_profile_directory_carries_sessions_to_the_base(workspace: Workspace) -> None:
     """The projects link the toolbox creates stores the profile's sessions under the base ~/.claude/projects."""
-    monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: workspace.home)
     profile = workspace.make_profile(_PROFILE_NAME, 'real', absent=frozenset({'projects'}))
-    assert setup_environment.link_projects_directory(profile.config_dir) is True
     base_projects = workspace.home / '.claude' / 'projects'
+    setup_environment.link_profile_directory(profile.config_dir / 'projects', base_projects)
     assert support.entry_is_link_to(profile.config_dir / 'projects', base_projects)
     session_id = str(uuid.uuid4())
 
