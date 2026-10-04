@@ -56,7 +56,7 @@ def test_both_layers_refuse_every_reserved_name(name: str) -> None:
     assert _runtime_errors(name)
 
 
-@pytest.mark.parametrize('name', ['claude-personal', 'all-in-one', 'my-projects', 'baseline'])
+@pytest.mark.parametrize('name', ['claude-alt', 'all-in-one', 'my-projects', 'baseline'])
 def test_both_layers_accept_ordinary_names(name: str) -> None:
     """Names that only contain a reserved word pass both layers."""
     assert _model_accepts(name)

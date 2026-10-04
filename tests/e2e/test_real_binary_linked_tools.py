@@ -3,7 +3,7 @@
 Two questions are answered here with the tools themselves, not with mocks:
 
 - The skills CLI (`npx skills add ... -g -a claude-code --copy`, the form
-  the AEGIS configuration uses) installing into a profile whose skills/ is a
+  an environment configuration uses) installing into a profile whose skills/ is a
   symlink or a junction raises four questions a linked skills/ directory
   must answer: whether the link survives, where the files land, which
   config home the CLI honors (CLAUDE_CONFIG_DIR, or ~/.claude when it is
@@ -84,7 +84,7 @@ def _write_local_skill(root: Path, sentinel: str = _CLI_SKILL_SENTINEL) -> Path:
 
 
 def _skills_add(skill_dir: Path, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run the skills CLI the way the AEGIS configuration does, non-interactively."""
+    """Run the skills CLI the way an environment configuration does, non-interactively."""
     assert _NPX is not None
     argv = [str(_NPX), '-y', 'skills@latest', 'add', str(skill_dir), '-g', '-a', 'claude-code', '--copy', '-y']
     return subprocess.run(

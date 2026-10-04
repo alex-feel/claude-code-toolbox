@@ -108,11 +108,11 @@ class TestPinnedBaseWithPinnedIsolatedProfile:
         _write_profile_manifest(claude_dir, None, PINNED_VERSION)
         _seed_base_profile_controls(claude_dir, home)
 
-        profile_dir = claude_dir / 'claude-personal'
+        profile_dir = claude_dir / 'claude-alt'
         mock_launcher.return_value = (profile_dir / 'launch.sh', profile_dir / 'launch.sh')
         config: dict[str, Any] = {
             'name': 'Personal Profile',
-            'command-names': ['claude-personal'],
+            'command-names': ['claude-alt'],
             'command-defaults': {},
             'claude-code-version': PINNED_VERSION,
             'user-settings': {'theme': 'dark'},
@@ -142,7 +142,7 @@ class TestPinnedBaseWithPinnedIsolatedProfile:
         assert os_env_written['CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL'] == '1'
 
         manifest = json.loads((profile_dir / 'manifest.json').read_text(encoding='utf-8'))
-        assert manifest['name'] == 'claude-personal'
+        assert manifest['name'] == 'claude-alt'
         assert manifest['claude_code_version'] == PINNED_VERSION
 
 
@@ -158,7 +158,7 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
         _write_profile_manifest(claude_dir, None, PINNED_VERSION)
         _seed_base_profile_controls(claude_dir, home)
 
-        scan = setup_environment._other_profile_pins(home, 'claude-personal')
+        scan = setup_environment._other_profile_pins(home, 'claude-alt')
         assert scan.pinned_profiles == ['base']
         other_profile_pinned = scan.other_profile_pinned
         machine_pinned = other_profile_pinned  # this run does not pin
@@ -175,7 +175,7 @@ class TestPinnedBaseWithUnpinnedIsolatedProfile:
 
         report = setup_environment._run_stale_controls_cleanup(
             machine_pinned=machine_pinned, user_declared_keys=frozenset(),
-            profile_dir=claude_dir / 'claude-personal',
+            profile_dir=claude_dir / 'claude-alt',
         )
 
         claude_json = json.loads((home / '.claude.json').read_text())
@@ -235,12 +235,12 @@ class TestUnpinnedIsolatedRunKeepsPinnedBinary:
         _write_profile_manifest(claude_dir, None, PINNED_VERSION)
         _seed_base_profile_controls(claude_dir, home)
 
-        profile_dir = claude_dir / 'claude-personal'
+        profile_dir = claude_dir / 'claude-alt'
         mock_launcher.return_value = (profile_dir / 'launch.sh', profile_dir / 'launch.sh')
         mock_installed_version.return_value = installed_version
         config: dict[str, Any] = {
             'name': 'Personal Profile',
-            'command-names': ['claude-personal'],
+            'command-names': ['claude-alt'],
             'command-defaults': {},
             'user-settings': {'theme': 'dark'},
         }
@@ -266,8 +266,8 @@ class TestSingleUnpinnedProfile:
         """Seed an unpinned base profile and an unpinned isolated profile, both holding every control."""
         _write_profile_manifest(claude_dir, None, None)
         _seed_base_profile_controls(claude_dir, home)
-        isolated_dir = claude_dir / 'claude-personal'
-        _write_profile_manifest(isolated_dir, 'claude-personal', None)
+        isolated_dir = claude_dir / 'claude-alt'
+        _write_profile_manifest(isolated_dir, 'claude-alt', None)
         (isolated_dir / 'settings.json').write_text(
             json.dumps({'env': dict(CONTROLLED_SETTINGS_ENV)}), encoding='utf-8',
         )
@@ -310,10 +310,10 @@ class TestSingleUnpinnedProfile:
         assert json.loads((isolated_dir / '.claude.json').read_text()) == CONTROLLED_CLAUDE_JSON
         assert report == [
             setup_environment.StaleControlCopy(
-                'claude-personal', isolated_dir / 'settings.json', tuple(CONTROLLED_SETTINGS_ENV),
+                'claude-alt', isolated_dir / 'settings.json', tuple(CONTROLLED_SETTINGS_ENV),
             ),
             setup_environment.StaleControlCopy(
-                'claude-personal', isolated_dir / '.claude.json', tuple(CONTROLLED_CLAUDE_JSON),
+                'claude-alt', isolated_dir / '.claude.json', tuple(CONTROLLED_CLAUDE_JSON),
             ),
         ]
 
@@ -444,8 +444,8 @@ class TestBaseProfileManifest:
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
 
-        isolated_dir = claude_dir / 'claude-personal'
-        _write_profile_manifest(isolated_dir, 'claude-personal', PINNED_VERSION)
+        isolated_dir = claude_dir / 'claude-alt'
+        _write_profile_manifest(isolated_dir, 'claude-alt', PINNED_VERSION)
         (isolated_dir / 'settings.json').write_text(
             json.dumps({'env': dict(CONTROLLED_SETTINGS_ENV)}), encoding='utf-8',
         )
@@ -467,7 +467,7 @@ class TestBaseProfileManifest:
             mock_exit.assert_not_called()
 
         captured = capsys.readouterr()
-        assert "Another installed profile pins a Claude Code version ('claude-personal')" in captured.out
+        assert "Another installed profile pins a Claude Code version ('claude-alt')" in captured.out
 
         env_section = json.loads((isolated_dir / 'settings.json').read_text()).get('env', {})
         assert env_section == CONTROLLED_SETTINGS_ENV, \

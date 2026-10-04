@@ -539,7 +539,7 @@ class TestCrossLocationStaleCleanup:
         claude_dir = home / '.claude'
 
         # Create both stale controls in multiple locations
-        for subdir_name in ['', 'aegis', 'myenv']:
+        for subdir_name in ['', 'team', 'myenv']:
             target_dir = claude_dir / subdir_name if subdir_name else claude_dir
             target_dir.mkdir(parents=True, exist_ok=True)
             settings_path = target_dir / 'settings.json'
@@ -558,7 +558,7 @@ class TestCrossLocationStaleCleanup:
                     setup_environment._cleanup_settings_json_env_controls(s, ENV_CONTROL_KEYS)
 
         # Verify all locations cleaned of both controls
-        for subdir_name in ['', 'aegis', 'myenv']:
+        for subdir_name in ['', 'team', 'myenv']:
             target_dir = claude_dir / subdir_name if subdir_name else claude_dir
             settings_path = target_dir / 'settings.json'
             if settings_path.exists():
@@ -775,18 +775,18 @@ class TestStaleAutoUpdatesFalseCleanup:
     ) -> None:
         """Called for a profile's own .claude.json, the helper removes the stale false there."""
         home = e2e_isolated_home['home']
-        for name in ['aegis', 'myenv']:
+        for name in ['team', 'myenv']:
             isolated_dir = home / '.claude' / name
             isolated_dir.mkdir(parents=True, exist_ok=True)
             (isolated_dir / '.claude.json').write_text(json.dumps({
                 'autoUpdates': False, 'userID': f'{name}-user',
             }))
 
-        for name in ['aegis', 'myenv']:
+        for name in ['team', 'myenv']:
             path = home / '.claude' / name / '.claude.json'
             setup_environment._cleanup_claude_json_auto_updates(path)
 
-        for name in ['aegis', 'myenv']:
+        for name in ['team', 'myenv']:
             data = json.loads(
                 (home / '.claude' / name / '.claude.json').read_text(),
             )

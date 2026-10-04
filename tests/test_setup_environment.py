@@ -4613,7 +4613,7 @@ class TestValidateCommandNameForPath:
 
     def test_valid_names(self):
         """Test that valid command names are accepted."""
-        valid_names = ['aegis', 'my-env', 'env_1', 'A123', 'a', 'Z']
+        valid_names = ['team', 'my-env', 'env_1', 'A123', 'a', 'Z']
         for name in valid_names:
             assert setup_environment.validate_command_name_for_path(name) is True, (
                 f'Expected valid: {name!r}'
@@ -13698,7 +13698,7 @@ class TestDisplayInstallationSummary:
         """Every machine-wide write of an isolated run is listed under its own heading."""
         import io
         plan = self._make_plan(
-            command_names=['aegis-1'],
+            command_names=['team-1'],
             machine_wide_writes=[
                 'Claude Code binary: install or upgrade to 2.1.280 (used by every profile)',
                 'OS environment: DISABLE_UPDATES="1"',
@@ -13721,7 +13721,7 @@ class TestDisplayInstallationSummary:
 
         isolated_buf = io.StringIO()
         setup_environment.display_installation_summary(
-            self._make_plan(os_env_variables=variables, command_names=['aegis-1']), output=isolated_buf,
+            self._make_plan(os_env_variables=variables, command_names=['team-1']), output=isolated_buf,
         )
         assert (
             'OS environment variables: 2 in the profile env loaders, 1 machine-wide (listed below)'
@@ -13734,7 +13734,7 @@ class TestDisplayInstallationSummary:
         plan = self._make_plan(
             stale_controls_elsewhere=[
                 setup_environment.StaleControlCopy('base', tmp_path / 'settings.json', ('DISABLE_UPDATES',)),
-                setup_environment.StaleControlCopy('aegis-2', tmp_path / '.claude.json', ('autoUpdates',)),
+                setup_environment.StaleControlCopy('team-2', tmp_path / '.claude.json', ('autoUpdates',)),
             ],
         )
         buf = io.StringIO()
@@ -13742,7 +13742,7 @@ class TestDisplayInstallationSummary:
         output = buf.getvalue()
         assert 'Stale update controls in other profiles (not edited by this run):' in output
         assert f'* base: {tmp_path / "settings.json"} (DISABLE_UPDATES)' in output
-        assert f'* aegis-2: {tmp_path / ".claude.json"} (autoUpdates)' in output
+        assert f'* team-2: {tmp_path / ".claude.json"} (autoUpdates)' in output
         assert setup_environment.STALE_CONTROLS_RERUN_NOTE in output
 
     def test_display_account_key_warnings_under_attention(self) -> None:
@@ -15258,17 +15258,17 @@ class TestOtherProfilePins:
 
     def test_base_manifest_pin_seen_by_isolated_run(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
-        scan = setup_environment._other_profile_pins(tmp_path, 'claude-personal')
+        scan = setup_environment._other_profile_pins(tmp_path, 'claude-alt')
         assert scan == (['base'], False, ['2.1.85'])
         assert scan.other_profile_pinned is True
 
     def test_isolated_manifest_pin_seen_by_base_run(self, tmp_path: Path) -> None:
-        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-personal'], False, ['2.1.85'])
+        self._write_manifest(tmp_path / '.claude' / 'claude-alt', 'claude-alt', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, None) == (['claude-alt'], False, ['2.1.85'])
 
     def test_own_isolated_manifest_is_excluded(self, tmp_path: Path) -> None:
-        self._write_manifest(tmp_path / '.claude' / 'claude-personal', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
+        self._write_manifest(tmp_path / '.claude' / 'claude-alt', 'claude-alt', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-alt') == ([], False, [])
 
     def test_own_base_manifest_is_excluded(self, tmp_path: Path) -> None:
         self._write_manifest(tmp_path / '.claude', None, '2.1.85')
@@ -15276,8 +15276,8 @@ class TestOtherProfilePins:
 
     def test_own_manifest_excluded_by_name_not_by_location(self, tmp_path: Path) -> None:
         """A profile relocated by CLAUDE_CONFIG_DIR is matched by its recorded name."""
-        self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-personal', '2.1.85')
-        assert setup_environment._other_profile_pins(tmp_path, 'claude-personal') == ([], False, [])
+        self._write_manifest(tmp_path / '.claude' / 'relocated-dir', 'claude-alt', '2.1.85')
+        assert setup_environment._other_profile_pins(tmp_path, 'claude-alt') == ([], False, [])
 
     def test_unpinned_manifests_do_not_count(self, tmp_path: Path) -> None:
         claude_dir = tmp_path / '.claude'
@@ -15319,9 +15319,9 @@ class TestPinnedElsewhereMessage:
 
     def test_names_the_pinned_profiles(self) -> None:
         message = setup_environment._pinned_elsewhere_message(
-            setup_environment._ProfilePinScan(['base', 'claude-personal'], False, ['2.1.85']),
+            setup_environment._ProfilePinScan(['base', 'claude-alt'], False, ['2.1.85']),
         )
-        assert "('base', 'claude-personal')" in message
+        assert "('base', 'claude-alt')" in message
         assert 'left in place' in message
 
     def test_explains_an_unreadable_registry(self) -> None:
@@ -16904,7 +16904,7 @@ class TestAccountKeyDeletionWarnings:
         target.write_text(json.dumps({'oauthAccount': None, 'editorMode': 'vim'}))
 
         assert setup_environment.account_key_deletion_warnings(
-            {'oauthAccount': None, 'userID': None}, target, 'aegis-1',
+            {'oauthAccount': None, 'userID': None}, target, 'team-1',
         ) == []
 
     def test_silent_when_nothing_is_deleted(self, tmp_path: Path) -> None:
@@ -16929,8 +16929,8 @@ class TestCollectMachineWideWrites:
     @staticmethod
     def _collect(home: Path, **overrides: Any) -> list[str]:
         kwargs: dict[str, Any] = {
-            'profile_dir': home / '.claude' / 'aegis-1',
-            'command_names': ['aegis-1', 'a1'],
+            'profile_dir': home / '.claude' / 'team-1',
+            'command_names': ['team-1', 'a1'],
             'skip_install': False,
             'install_version': '2.1.280',
             'keep_installed': False,
@@ -16957,7 +16957,7 @@ class TestCollectMachineWideWrites:
                 f'{tmp_path / ".claude.json"}: installMethod, recorded by the Claude Code installer '
                 'when it installs, upgrades or migrates the binary'
             ),
-            f'{tmp_path / ".local" / "bin"}: command wrapper(s) aegis-1, a1',
+            f'{tmp_path / ".local" / "bin"}: command wrapper(s) team-1, a1',
         ]
 
     def test_kept_binary_pin_controls_and_dependencies(
@@ -17037,7 +17037,7 @@ class TestCollectMachineWideWrites:
     ) -> None:
         monkeypatch.setattr(setup_environment, 'get_real_user_home', lambda: tmp_path)
         monkeypatch.setattr(Path, 'home', lambda: tmp_path)
-        profile_dir = tmp_path / '.claude' / 'aegis-1'
+        profile_dir = tmp_path / '.claude' / 'team-1'
 
         writes = self._collect(
             tmp_path,
