@@ -128,12 +128,41 @@ class TestLauncherRendering:
         assert 'export CLAUDE_CONFIG_DIR="$HOME/profiles/work"' in launch_sh
         assert 'PROMPT_PATH="$HOME/profiles/work/prompts/prompt.md"' in launch_sh
         assert '.claude' not in launch_sh
+        assert 'ENV_FILE="$HOME/profiles/work/env.sh"' in launch_sh
         start_cmd = (profile_dir / 'start.cmd').read_text(encoding='utf-8')
-        assert 'set "ENV_FILE=%USERPROFILE%\\profiles\\work\\env.cmd"' in start_cmd
         assert 'set "SCRIPT_WIN=%USERPROFILE%\\profiles\\work\\launch.sh"' in start_cmd
         start_ps1 = (profile_dir / 'start.ps1').read_text(encoding='utf-8')
         assert '$claudeUserDir = Join-Path $env:USERPROFILE "profiles"\n' in start_ps1
         assert '(Join-Path $claudeUserDir "work") "launch.sh"' in start_ps1
+
+    def test_windows_entry_points_apply_no_loader_and_scope_their_variables(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """start.cmd, start.ps1 and the .cmd wrappers reference no loader; launch.sh alone sources env.sh.
+
+        A batch file run from a cmd.exe prompt executes in that shell and
+        $env: is process-wide in PowerShell, so a loader applied there would
+        outlive the session in the calling shell; the .cmd files also keep
+        their own variables behind setlocal.
+        """
+        monkeypatch.setattr(setup_environment.platform, 'system', lambda: 'Windows')
+        monkeypatch.setattr(setup_environment, 'add_directory_to_windows_path', lambda directory: (True, str(directory)))
+        profile_dir = home / 'profiles' / 'work'
+        result = create_launcher_script(profile_dir, 'my-cmd', None, 'replace', has_profile_mcp_servers=False)
+        assert result is not None
+        assert register_global_command(result[0], 'my-cmd', ['my-alias'], launch_script_path=result[1])
+        local_bin = home / '.local' / 'bin'
+
+        launch_sh = (profile_dir / 'launch.sh').read_text(encoding='utf-8')
+        assert 'ENV_FILE="$HOME/profiles/work/env.sh"\n[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in launch_sh
+        for batch in (profile_dir / 'start.cmd', local_bin / 'my-cmd.cmd', local_bin / 'my-alias.cmd'):
+            content = batch.read_text(encoding='utf-8')
+            assert content.startswith('@echo off\nsetlocal\n'), f'{batch.name} does not scope its variables'
+            assert 'env.cmd' not in content, f'{batch.name} applies the loader to the calling shell'
+            assert 'ENV_FILE' not in content, batch.name
+        start_ps1 = (profile_dir / 'start.ps1').read_text(encoding='utf-8')
+        assert 'env.ps1' not in start_ps1, 'start.ps1 applies the loader to the calling shell'
+        assert '$envFile' not in start_ps1
 
     def test_unix_launcher_names_directory_outside_home(self, home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The Unix launch.sh exports an absolute directory outside home."""
@@ -161,7 +190,6 @@ class TestLauncherRendering:
 
         local_bin = home / '.local' / 'bin'
         cmd_wrapper = (local_bin / 'my-cmd.cmd').read_text(encoding='utf-8')
-        assert 'set "ENV_FILE=%USERPROFILE%\\profiles\\work\\env.cmd"' in cmd_wrapper
         assert 'set "SCRIPT_WIN=%USERPROFILE%\\profiles\\work\\launch.sh"' in cmd_wrapper
         bash_wrapper = (local_bin / 'my-cmd').read_text(encoding='utf-8')
         assert 'exec "$HOME/profiles/work/launch.sh" "$@"' in bash_wrapper

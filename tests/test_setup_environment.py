@@ -17109,9 +17109,17 @@ class TestLauncherEnvSourcing:
         assert 'ENV_FILE="$HOME/.claude/test-cmd/env.sh"' in content
         assert '[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in content
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
-    def test_windows_ps1_contains_env_source(self, tmp_path: Path) -> None:
-        """Windows start.ps1 contains PowerShell dot-source guard."""
+    @staticmethod
+    def _windows_launchers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Render the Windows launcher set and return the profile directory.
+
+        platform.system() is the only platform detection create_launcher_script()
+        uses, so the Windows files render on every host.
+
+        Returns:
+            The profile directory holding start.ps1, start.cmd and launch.sh.
+        """
+        monkeypatch.setattr(setup_environment.platform, 'system', lambda: 'Windows')
         config_dir = tmp_path / '.claude' / 'test-cmd'
         config_dir.mkdir(parents=True)
 
@@ -17122,51 +17130,38 @@ class TestLauncherEnvSourcing:
             mode='replace',
             has_profile_mcp_servers=False,
         )
-        assert result is not None
-        ps1_path = result[0]  # start.ps1
-        content = ps1_path.read_text()
-        assert 'env.ps1' in content
-        assert 'Test-Path' in content
+        assert result == (config_dir / 'start.ps1', config_dir / 'launch.sh')
+        return config_dir
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
-    def test_windows_shared_sh_contains_env_source(self, tmp_path: Path) -> None:
-        """Windows shared launch.sh contains env.sh source guard."""
-        config_dir = tmp_path / '.claude' / 'test-cmd'
-        config_dir.mkdir(parents=True)
+    def test_windows_ps1_applies_no_loader(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """start.ps1 references no env.ps1: $env: is process-wide, so a dot-source there would outlive the session."""
+        config_dir = self._windows_launchers(tmp_path, monkeypatch)
 
-        result = setup_environment.create_launcher_script(
-            config_base_dir=config_dir,
-            command_name='test-cmd',
-            system_prompt_file=None,
-            mode='replace',
-            has_profile_mcp_servers=False,
-        )
-        assert result is not None
-        launch_sh = result[1]  # launch.sh
-        content = launch_sh.read_text()
+        content = (config_dir / 'start.ps1').read_text()
+
+        assert 'env.ps1' not in content
+        assert '$envFile' not in content
+        assert '"launch.sh"' in content, 'start.ps1 still hands over to launch.sh'
+
+    def test_windows_shared_sh_contains_env_source(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The Windows launch.sh sources env.sh in the bash process that runs Claude Code."""
+        config_dir = self._windows_launchers(tmp_path, monkeypatch)
+
+        content = (config_dir / 'launch.sh').read_text()
+
         assert 'ENV_FILE="$HOME/.claude/test-cmd/env.sh"' in content
         assert '[ -f "$ENV_FILE" ] && . "$ENV_FILE"' in content
 
-    @pytest.mark.skipif(sys.platform != 'win32', reason='Windows-specific test')
-    def test_windows_cmd_contains_env_source(self, tmp_path: Path) -> None:
-        """Windows start.cmd contains guarded call to env.cmd."""
-        config_dir = tmp_path / '.claude' / 'test-cmd'
-        config_dir.mkdir(parents=True)
+    def test_windows_cmd_applies_no_loader_under_setlocal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """start.cmd references no env.cmd and scopes its own variables: a batch file runs in the calling cmd.exe."""
+        config_dir = self._windows_launchers(tmp_path, monkeypatch)
 
-        result = setup_environment.create_launcher_script(
-            config_base_dir=config_dir,
-            command_name='test-cmd',
-            system_prompt_file=None,
-            mode='replace',
-            has_profile_mcp_servers=False,
-        )
-        assert result is not None
-        cmd_path = config_dir / 'start.cmd'
-        assert cmd_path.exists()
-        content = cmd_path.read_text()
-        assert 'env.cmd' in content
-        assert 'if exist' in content
-        assert 'call' in content
+        content = (config_dir / 'start.cmd').read_text()
+
+        assert content.startswith('@echo off\nsetlocal\n')
+        assert 'env.cmd' not in content
+        assert 'ENV_FILE' not in content
+        assert 'launch.sh' in content, 'start.cmd still hands over to launch.sh'
 
 
 class TestFishSetUx:

@@ -265,8 +265,9 @@ class TestRelocatedProfileWindowsEntryPoints:
     """Every Windows entry point of a relocated profile starts claude with that profile.
 
     Each entry point is run the way a user runs it: the CMD and PowerShell
-    launchers and wrappers source their own env loader and hand over to
-    launch.sh through Git Bash, which sources env.sh.
+    launchers and wrappers hand over to launch.sh through Git Bash, and
+    launch.sh alone sources env.sh. The marking env.cmd and env.ps1 beside it
+    stay unsourced, so the session carries the ``sh;`` mark and no other.
     """
 
     @pytest.mark.parametrize(('anchor', 'parts'), RELOCATED_LAYOUTS)
@@ -292,21 +293,21 @@ class TestRelocatedProfileWindowsEntryPoints:
         assert register_global_command(start_ps1, 'relo-cmd', ['relo-alias'], launch_script_path=result[1])
         stub_dir = home.parent / 'stub-bin'
 
-        entry_points: list[tuple[str, list[str] | str, str]] = [
-            ('start.cmd', cmd_command(profile_dir / 'start.cmd', '--probe-arg'), 'cmd;sh;'),
-            ('start.ps1', powershell_command(powershell, start_ps1, '--probe-arg'), 'ps1;sh;'),
+        entry_points: list[tuple[str, list[str] | str]] = [
+            ('start.cmd', cmd_command(profile_dir / 'start.cmd', '--probe-arg')),
+            ('start.ps1', powershell_command(powershell, start_ps1, '--probe-arg')),
         ]
         for name in ('relo-cmd', 'relo-alias'):
             entry_points.extend([
-                (f'{name}.cmd', f'cmd.exe /d /c {name} --probe-arg', 'cmd;sh;'),
-                (f'{name}.ps1', powershell_command(powershell, local_bin / f'{name}.ps1', '--probe-arg'), 'ps1;sh;'),
-                (name, [bash, str(local_bin / name), '--probe-arg'], 'sh;'),
+                (f'{name}.cmd', f'cmd.exe /d /c {name} --probe-arg'),
+                (f'{name}.ps1', powershell_command(powershell, local_bin / f'{name}.ps1', '--probe-arg')),
+                (name, [bash, str(local_bin / name), '--probe-arg']),
             ])
 
-        for label, command, marks in entry_points:
+        for label, command in entry_points:
             record = launch(command, home=home, stub_dir=stub_dir, extra_path=local_bin)
             assert_reaches_profile(record, profile_dir, GOLDEN_PROMPT)
-            assert record.loader_marks == marks, f'{label}: loader marks {record.loader_marks!r}'
+            assert record.loader_marks == 'sh;', f'{label}: loader marks {record.loader_marks!r}'
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='Unix registers wrappers as symlinks to launch.sh')

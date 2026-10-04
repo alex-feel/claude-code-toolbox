@@ -10320,9 +10320,13 @@ def generate_env_loader_files(
 ) -> dict[str, Path]:
     """Generate shell-specific env loader files for OS environment variables.
 
-    Creates Rustup-pattern env files that can be sourced by launchers
-    and users. Contains ONLY os-env-variables (NOT user-settings.env,
-    which is handled by Claude Code's settings-file env key).
+    Creates Rustup-pattern env files holding ONLY os-env-variables (NOT
+    user-settings.env, which is handled by Claude Code's settings-file env
+    key). env.sh is sourced by launch.sh in the bash process that execs
+    Claude Code, so every session receives the sets and unsets. env.fish,
+    env.ps1 and env.cmd are generated for sourcing by hand, and no launcher
+    or wrapper applies them: start.cmd, start.ps1 and the ~/.local/bin
+    wrappers reference no loader, so the calling shell keeps its environment.
 
     Per-command files (when command_names provided):
         ~/.claude/{cmd}/env.sh      (Bash/Zsh)
@@ -10332,11 +10336,12 @@ def generate_env_loader_files(
 
     A None value is a deletion request and is rendered as an unset line in
     each shell's syntax, so a variable the profile's sessions inherit from
-    the OS environment is removed when the launcher sources the file.
-    Loader files are toolbox-owned artifacts rebuilt on every run: when the
-    dict is empty, the files are still rewritten header-only so that stale
-    lines from a prior run stop being applied by the launcher at session
-    start.
+    the OS environment is removed when launch.sh sources env.sh at session
+    start; a hand-sourced env.cmd, env.ps1 or env.fish applies the same
+    unset to that shell. Loader files are toolbox-owned artifacts rebuilt on
+    every run: when the dict is empty, the files are still rewritten
+    header-only so that stale lines from a prior run stop reaching the
+    sessions launch.sh starts.
 
     Args:
         os_env_vars: Dict of env var names to values. None values = deletions
@@ -16332,9 +16337,16 @@ def create_launcher_script(
       - launch.sh (the launcher, entry point for symlinks)
 
     Every path a launcher reads -- the exported CLAUDE_CONFIG_DIR, config.json,
-    mcp.json, the system prompt and the env loaders -- is spelled from
+    mcp.json, the system prompt and the env.sh loader -- is spelled from
     config_base_dir: relative to the home directory the shell resolves at run
     time when config_base_dir lies below the user's home, absolute otherwise.
+
+    Only launch.sh applies the profile's env loader: it sources env.sh in the
+    bash process that execs Claude Code, so every session receives the
+    loader's sets and unsets. start.ps1 and start.cmd run in the shell that
+    calls them ($env: is process-wide in PowerShell; a batch file executes in
+    the calling cmd.exe), so they reference no loader and leave that shell's
+    environment as it was; start.cmd keeps its own variables behind setlocal.
 
     Args:
         config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
@@ -16370,10 +16382,6 @@ def create_launcher_script(
 
 $claudeUserDir = {spelling.powershell_parent}
 
-# Source OS-level environment variables (if configured)
-$envFile = Join-Path (Join-Path $claudeUserDir "{spelling.powershell_leaf}") "env.ps1"
-if (Test-Path $envFile) {{ . $envFile }}
-
 Write-Host "Starting Claude Code with {command_name} configuration..." -ForegroundColor Green
 
 # Find Git Bash (required for Claude Code on Windows)
@@ -16402,12 +16410,9 @@ if ($args.Count -gt 0) {{
             # Also create a CMD batch file wrapper
             batch_path = config_base_dir / 'start.cmd'
             batch_content = f'''@echo off
+setlocal
 REM Claude Code Environment Launcher for CMD
 REM This script starts Claude Code with the configured environment
-
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE={spelling.cmd}\\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 
 echo Starting Claude Code with {command_name} configuration...
 
@@ -16842,9 +16847,12 @@ def register_global_command(
     On Windows, creates wrappers for PowerShell (.ps1), CMD (.cmd), and Git Bash
     in ~/.local/bin/. PowerShell wrappers name launcher_path (start.ps1) by its
     absolute path. CMD and Git Bash wrappers reference launch_script_path
-    (launch.sh), and the CMD wrappers source the env.cmd loader beside it; they
-    spell its directory relative to the home directory when it lies below the
-    user's home, absolute otherwise.
+    (launch.sh); they spell its directory relative to the home directory when
+    it lies below the user's home, absolute otherwise. No wrapper applies the
+    profile's env loader: a wrapper runs in the shell that calls it, and
+    launch.sh sources env.sh for the session itself. The CMD wrappers keep
+    their own variables behind setlocal, so the calling cmd.exe is left as it
+    was.
 
     On Unix, creates symlinks in ~/.local/bin/ pointing to launcher_path.
 
@@ -16870,7 +16878,7 @@ def register_global_command(
             local_bin = get_real_user_home() / '.local' / 'bin'
             local_bin.mkdir(parents=True, exist_ok=True)
 
-            # Spell the profile's launch.sh and env loader for each shell
+            # Spell the profile's launch.sh for each shell
             launch_script = launch_script_path if launch_script_path is not None else launcher_path.parent / 'launch.sh'
             spelling = _spell_profile_dir(launch_script.parent)
             cmd_script_path = f'{spelling.cmd}\\{launch_script.name}'
@@ -16881,10 +16889,8 @@ def register_global_command(
             # CMD wrapper
             batch_path = local_bin / f'{command_name}.cmd'
             batch_content = f'''@echo off
+setlocal
 REM Global {command_name} command for CMD
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE={spelling.cmd}\\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 set "SCRIPT_WIN={cmd_script_path}"
@@ -16923,10 +16929,8 @@ exec "{bash_script_path}" "$@"
                     # CMD wrapper for alias
                     alias_batch_path = local_bin / f'{alias_name}.cmd'
                     alias_batch_content = f'''@echo off
+setlocal
 REM Global {alias_name} command for CMD (alias for {command_name})
-REM Source OS-level environment variables (if configured)
-set "ENV_FILE={spelling.cmd}\\env.cmd"
-if exist "%ENV_FILE%" call "%ENV_FILE%"
 set "BASH_EXE=C:\\Program Files\\Git\\bin\\bash.exe"
 if not exist "%BASH_EXE%" set "BASH_EXE=C:\\Program Files (x86)\\Git\\bin\\bash.exe"
 set "SCRIPT_WIN={cmd_script_path}"
@@ -19401,7 +19405,7 @@ def main() -> None:
         # Rebuild env loader files for the profile's OS environment variables.
         # Loader files are toolbox-owned and rebuilt even when every entry is
         # a deletion, so stale exports from a prior run are cleared instead
-        # of being re-applied by the launcher at session start.
+        # of reaching the sessions launch.sh starts.
         generated_env_files: dict[str, Path] = generate_env_loader_files(
             loader_env_variables, command_names, artifact_base_dir if command_names else None,
         )
