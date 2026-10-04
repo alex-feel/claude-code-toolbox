@@ -707,7 +707,11 @@ class TestMachineWideWritesNamedBeforeConsent:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Content that lands outside the profile is named per destination, server and command group."""
+        """Content that lands outside the profile is named per destination, server and command group.
+
+        A destination spelled against the base config home is re-rooted into
+        the profile, so it is marked [re-rooted] instead of machine-wide.
+        """
         home = e2e_isolated_home['home']
         (tmp_path / 'payload.txt').write_text('payload\n', encoding='utf-8')
         config = _corp_like_config(isolated=True)
@@ -726,11 +730,12 @@ class TestMachineWideWritesNamedBeforeConsent:
         _, exit_code = _run_setup(config_path, home, '--dry-run')
 
         assert exit_code == 0
-        rows = _machine_wide_rows(_output(capsys))
+        output = _output(capsys)
+        rows = _machine_wide_rows(output)
         assert 'files-to-download outside the profile: ~/.serena/x.yml' in rows
-        assert 'files-to-download outside the profile: ~/.claude/x.txt' in rows
+        assert f'[re-rooted] files-to-download: ~/.claude/x.txt -> ~/.claude/{PROFILE_NAME}/x.txt' in output
         assert not any(
-            PROFILE_NAME in row for row in rows if row.startswith('files-to-download')
+            PROFILE_NAME in row or row.endswith('~/.claude/x.txt') for row in rows if row.startswith('files-to-download')
         ), 'A destination inside the profile is not a machine-wide write'
         assert '.mcp.json in the working directory: project-scope MCP server(s) shared-server' in rows
         assert not any('mine-server' in row for row in rows), 'A user-scope server lands in the profile'

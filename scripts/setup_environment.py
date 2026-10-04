@@ -36,6 +36,7 @@ import urllib.request
 import zipfile
 import zlib
 from collections.abc import Callable
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field
@@ -1053,6 +1054,23 @@ class StaleControlCopy(NamedTuple):
     keys: tuple[str, ...]
 
 
+class RerootedPath(NamedTuple):
+    """One configuration value ConfigHomeReroot rewrote into the profile directory.
+
+    Attributes:
+        section: 'files-to-download', 'dependencies' or 'user-settings'.
+        label: The dependency platform key or the settings key; empty for a
+            destination.
+        original: The value as the configuration spells it.
+        rewritten: The value the run uses.
+    """
+
+    section: str
+    label: str
+    original: str
+    rewritten: str
+
+
 @dataclass
 class InstallationPlan:
     """Structured representation of what the setup will install.
@@ -1143,6 +1161,9 @@ class InstallationPlan:
     linked_from: str | None = None
     # The profiles that link content from this one, refreshed after the run
     dependents: list[str] = field(default_factory=lambda: list[str]())
+    # files-to-download destinations inside a linked entry, each with the
+    # entry: the source's run wrote them, so this run leaves them to the link
+    linked_downloads: list[tuple[str, str]] = field(default_factory=lambda: list[tuple[str, str]]())
 
     # Writes of an isolated run that reach beyond its profile directory,
     # each named before consent
@@ -1160,6 +1181,10 @@ class InstallationPlan:
     # Destinations outside ~/.claude that a profile of another configuration
     # recorded from a different source
     destination_warnings: list[str] = field(default_factory=lambda: list[str]())
+
+    # Base config-home paths an isolated run rewrote into its profile
+    # directory, each marked [re-rooted] in the summary
+    rerooted_paths: list[RerootedPath] = field(default_factory=lambda: list[RerootedPath]())
 
     @property
     def total_resources(self) -> int:
@@ -1977,6 +2002,153 @@ def expand_tildes_in_command(command: str) -> str:
         return path
 
     return re.sub(tilde_pattern, expand_match, command)
+
+
+# A path naming the base config home or a ~/.claude.json sibling in any
+# spelling: the home token (~, $HOME, ${HOME}, "$HOME", $env:USERPROFILE,
+# %USERPROFILE%), a separator, .claude, then either a .json sibling suffix
+# or a boundary. A sibling suffix accepts the shell globs a cleanup line
+# spells (.claude.json.corrupted.*, .claude.json.backup.*), so the glob
+# moves into the profile with the path. The lookbehind keeps a token glued
+# to a preceding path or word (foo~/.claude, /x/$HOME) from matching; the
+# lookahead keeps ~/.claude-backup and ~/.claudex out.
+_CONFIG_HOME_PATTERN = re.compile(
+    r'(?<![\w/\\.\-])'
+    r'(?P<home>"\$HOME"|\$\{HOME\}|\$HOME|\$env:USERPROFILE|%USERPROFILE%|~)'
+    r'(?P<sep>[\\/])\.claude'
+    r'(?P<sibling>\.json(?:\.[\w*?-]+)*)?'
+    r'(?![\w.\-])',
+)
+_PATH_COMPONENT_PATTERN = re.compile(r'[\\/]([^\\/\s"\']+)')
+
+
+class ConfigHomeReroot:
+    """Rewrite paths that name the base config home into an isolated run's profile directory.
+
+    A configuration written for the base profile spells its files-to-download
+    destinations, its dependency commands and its apiKeyHelper against
+    ``~/.claude``. Installed as an isolated profile, every such path is
+    rewritten to the same path inside the profile directory, keeping the
+    author's home token and separator (``~/.claude/x`` becomes
+    ``~/.claude/NAME/x``, ``$env:USERPROFILE\\.claude\\x`` becomes
+    ``$env:USERPROFILE\\.claude\\NAME\\x``), so the shell and the tilde
+    expansion that follow still resolve it. A profile directory below the
+    home is spelled home-relative; one outside the home is spelled absolute.
+    The ``~/.claude.json`` siblings (``~/.claude.json``, ``.backup``,
+    ``.corrupted.*``) move into the profile directory too. A path that names
+    an installed profile's directory or this run's own profile stays as
+    written, which also makes the rewrite idempotent, and a path outside the
+    config home is never touched. A base run builds no rerooter.
+    """
+
+    def __init__(self, profile_dir: Path, home_dir: Path, profile_names: Iterable[str]) -> None:
+        """Bind the rewrite to a profile directory.
+
+        Args:
+            profile_dir: The directory the isolated run installs into.
+            home_dir: The user's home directory.
+            profile_names: This run's primary command name and the directory
+                names of the installed isolated profiles, whose directories
+                stay as written.
+        """
+        directory = Path(os.path.abspath(profile_dir))
+        self._relative = _relative_inside(directory, Path(os.path.abspath(home_dir)))
+        self._absolute_posix = directory.as_posix()
+        self._absolute_windows = str(directory).replace('/', '\\')
+        self._profile_names = {name.casefold() for name in profile_names}
+
+    def rewrite(self, value: str) -> str:
+        """Return the value with every config-home path moved into the profile directory.
+
+        Args:
+            value: A destination, a shell command or a settings value.
+
+        Returns:
+            The rewritten value, or the value itself when it names nothing
+            inside the base config home.
+        """
+        return _CONFIG_HOME_PATTERN.sub(lambda match: self._replacement(match, value), value)
+
+    def _replacement(self, match: re.Match[str], value: str) -> str:
+        sep = match.group('sep')
+        sibling = match.group('sibling')
+        if sibling is None:
+            component = _PATH_COMPONENT_PATTERN.match(value, match.end())
+            if component is not None and component.group(1).casefold() in self._profile_names:
+                return match.group(0)
+        if self._relative is not None:
+            profile = match.group('home') + sep + sep.join(self._relative.parts)
+        else:
+            profile = self._absolute_posix if sep == '/' else self._absolute_windows
+        if sibling is None:
+            return profile
+        return f'{profile}{sep}.claude{sibling}'
+
+    def apply(
+        self,
+        config: dict[str, Any],
+        deselected: dict[str, list[Any]] | None = None,
+    ) -> list[RerootedPath]:
+        """Rewrite the resolved configuration in place.
+
+        Rewrites every files-to-download destination, every dependency
+        command of every platform list and every TILDE_EXPANSION_KEYS value
+        of user-settings, and the destinations of the deselected
+        files-to-download entries, so the removal plan resolves the same
+        files the install wrote.
+
+        Args:
+            config: The resolved, component-selected configuration.
+            deselected: The removal plan of collect_deselected_items(), or
+                None.
+
+        Returns:
+            One record per rewritten configuration value, in configuration
+            order; the removal plan contributes no record.
+        """
+        records: list[RerootedPath] = []
+        self._rewrite_destinations(config.get('files-to-download'), records)
+        dependencies = config.get('dependencies')
+        if isinstance(dependencies, dict):
+            for platform_key, commands in cast(dict[str, Any], dependencies).items():
+                if not isinstance(commands, list):
+                    continue
+                command_list = cast(list[Any], commands)
+                for index, command in enumerate(command_list):
+                    if isinstance(command, str):
+                        rewritten = self.rewrite(command)
+                        if rewritten != command:
+                            command_list[index] = rewritten
+                            records.append(RerootedPath('dependencies', str(platform_key), command, rewritten))
+        user_settings = config.get('user-settings')
+        if isinstance(user_settings, dict):
+            settings_dict = cast(dict[str, Any], user_settings)
+            for key in sorted(TILDE_EXPANSION_KEYS):
+                setting = settings_dict.get(key)
+                if isinstance(setting, str):
+                    rewritten = self.rewrite(setting)
+                    if rewritten != setting:
+                        settings_dict[key] = rewritten
+                        records.append(RerootedPath('user-settings', key, setting, rewritten))
+        if deselected is not None:
+            self._rewrite_destinations(deselected.get('files-to-download'), None)
+        return records
+
+    def _rewrite_destinations(self, entries: object, records: list[RerootedPath] | None) -> None:
+        if not isinstance(entries, list):
+            return
+        for entry in cast(list[object], entries):
+            if not isinstance(entry, dict):
+                continue
+            entry_dict = cast(dict[str, Any], entry)
+            dest = entry_dict.get('dest')
+            if not isinstance(dest, str):
+                continue
+            rewritten = self.rewrite(dest)
+            if rewritten != dest:
+                entry_dict['dest'] = rewritten
+                if records is not None:
+                    records.append(RerootedPath('files-to-download', '', dest, rewritten))
 
 
 def _deep_copy_value(value: JsonValue) -> JsonValue:
@@ -3906,7 +4078,11 @@ def execute_deselection_cleanup(
     warnings.
 
     Args:
-        deselected: Removal plan from collect_deselected_items().
+        deselected: Removal plan from collect_deselected_items(). In an
+            isolated run its files-to-download destinations have been
+            through ConfigHomeReroot.apply() together with the installed
+            ones, so the download-target resolution below removes the file
+            the install wrote into the profile, never the base copy.
         surviving_config: The filtered configuration (after
             apply_component_selection), used to protect surviving targets.
         agents_dir: Directory agent files install into.
@@ -5214,6 +5390,42 @@ def _stale_control_copy_line(copy: StaleControlCopy) -> str:
         A one-line description naming the profile, the file, and the keys.
     """
     return f'{copy.profile}: {copy.file} ({", ".join(copy.keys)}) -- re-run with --profile {copy.profile}'
+
+
+def _rerooted_path_line(item: RerootedPath) -> str:
+    """Render one re-rooted path of the installation summary.
+
+    Args:
+        item: The rewritten configuration value.
+
+    Returns:
+        A one-line description naming the section, the dependency platform
+        or settings key, the original value and the rewritten one.
+    """
+    if item.section == 'dependencies':
+        where = f'{item.section} [{item.label}]'
+    elif item.label:
+        where = f'{item.section} {item.label}'
+    else:
+        where = item.section
+    return f'{where}: {item.original} -> {item.rewritten}'
+
+
+def _linked_download_line(dest: str, entry: str, source: str) -> str:
+    """Render one files-to-download destination a link provides.
+
+    Args:
+        dest: The destination as the run resolves it (re-rooted into the
+            profile when it named the base config home).
+        entry: The linked entry the destination lies inside.
+        source: The display name of the profile the entry is linked from.
+
+    Returns:
+        A one-line description naming the destination, the entry and the
+        source profile; Step 4 prints the same explanation when it skips
+        the download.
+    """
+    return f'{dest}: {entry}/ is linked from profile "{source}"'
 
 
 STALE_CONTROLS_RERUN_NOTE = (
@@ -9406,14 +9618,41 @@ def display_installation_summary(
         for name in plan.dependents:
             _print(f'  * {name} (--profile {name} --yes --skip-install --no-admin)')
 
-    # Dependency commands (highlighted in yellow -- most dangerous)
+    # Dependency commands (highlighted in yellow -- most dangerous); a
+    # command re-rooted into the profile is marked, and the block below
+    # shows what it was rewritten from
+    rerooted_commands = {
+        (item.label, item.rewritten) for item in plan.rerooted_paths if item.section == 'dependencies'
+    }
     if plan.dependency_commands:
         _print()
         _print(f'{Colors.YELLOW}{Colors.BOLD}Dependencies (shell commands):{Colors.NC}')
         for platform_key, cmds in plan.dependency_commands.items():
             _print(f'  {Colors.YELLOW}[{platform_key}]{Colors.NC}')
             for cmd in cmds:
-                _print(f'    $ {cmd}')
+                marker = f' {Colors.GREEN}[re-rooted]{Colors.NC}' if (platform_key, cmd) in rerooted_commands else ''
+                _print(f'    $ {cmd}{marker}')
+
+    # Base config-home paths an isolated run moved into its profile (green)
+    if plan.rerooted_paths:
+        _print()
+        heading = 'Re-rooted into the profile (base config-home paths of an isolated run):'
+        _print(f'{Colors.GREEN}{Colors.BOLD}{heading}{Colors.NC}')
+        for item in plan.rerooted_paths:
+            _print(f'  {Colors.GREEN}[re-rooted]{Colors.NC} {_rerooted_path_line(item)}')
+
+    # Destinations inside a linked entry: the source's run wrote them into
+    # the shared directory, so this run writes nothing there (a write would
+    # go through the link into the source)
+    if plan.linked_downloads:
+        provided_by = plan.link_plan.source if plan.link_plan is not None else LINK_SOURCE_BASE
+        _print()
+        _print(
+            f'{Colors.BOLD}Provided by links (files-to-download destinations inside linked entries, '
+            f'written by the source):{Colors.NC}',
+        )
+        for dest, linked_entry in plan.linked_downloads:
+            _print(f'  {Colors.CYAN}[linked]{Colors.NC} {_linked_download_line(dest, linked_entry, provided_by)}')
 
     # Auto-injected items section (green)
     if plan.auto_injected_items:
@@ -15655,6 +15894,7 @@ def planned_profile_files(
     config: dict[str, Any],
     profile_dir: Path,
     *,
+    reroot: ConfigHomeReroot | None = None,
     linked_entries: frozenset[str] = frozenset(),
 ) -> list[str]:
     """List the profile-relative paths of the files a configuration installs.
@@ -15673,6 +15913,10 @@ def planned_profile_files(
     Args:
         config: The resolved, component-selected configuration.
         profile_dir: The profile directory the run installs into.
+        reroot: The isolated run's rerooter, applied to each destination
+            when the configuration has not been rewritten yet (the switch
+            guard reads it before the rewrite); None for a base run or a
+            configuration already rewritten.
         linked_entries: The entries of the profile that are links.
 
     Returns:
@@ -15716,7 +15960,8 @@ def planned_profile_files(
         source, dest = entry_dict.get('source'), entry_dict.get('dest')
         if not source or not dest:
             continue
-        relative = _relative_inside(_download_destination(str(source), str(dest)), profile_dir)
+        dest_str = reroot.rewrite(str(dest)) if reroot is not None else str(dest)
+        relative = _relative_inside(_download_destination(str(source), dest_str), profile_dir)
         if relative is not None:
             files.add(relative.as_posix())
     return sorted(files)
@@ -15948,6 +16193,7 @@ def profile_residue(
     config_source: str,
     base_url: str | None,
     claude_dir: Path,
+    reroot: ConfigHomeReroot | None = None,
 ) -> ProfileResidue:
     """Compute what switching a profile to another configuration leaves behind.
 
@@ -15961,6 +16207,10 @@ def profile_residue(
         config_source: Where the new configuration was loaded from.
         base_url: The new configuration's base-url, or None.
         claude_dir: The base ~/.claude directory.
+        reroot: The isolated run's rerooter, so the files the new
+            configuration installs are compared at their re-rooted paths,
+            which is how the previous run recorded them; None for a base
+            run.
 
     Returns:
         The residue; empty when the new configuration covers everything the
@@ -15972,7 +16222,7 @@ def profile_residue(
         value = manifest.get(key)
         return [str(item) for item in cast(list[object], value)] if isinstance(value, list) else []
 
-    planned = set(planned_profile_files(config, profile_dir))
+    planned = set(planned_profile_files(config, profile_dir, reroot=reroot))
     files = [
         profile_dir / relative
         for relative in _strings('files_written')
@@ -18839,6 +19089,22 @@ def main() -> None:
             primary_command_name, config.get('user-settings'),
         )
 
+        # An isolated run keeps every path that names the base config home
+        # inside its own profile. The rerooter is built as soon as the
+        # target directory is known, because the switch guard below
+        # compares the previous run's records with the files this
+        # configuration installs at their re-rooted paths; the
+        # configuration itself is rewritten after the snapshot records it
+        # as authored
+        installed = installed_profiles(get_real_user_home())
+        reroot: ConfigHomeReroot | None = None
+        if primary_command_name:
+            reroot = ConfigHomeReroot(
+                target_config_dir,
+                get_real_user_home(),
+                [primary_command_name, *(profile.name for profile in installed if profile.name != 'base')],
+            )
+
         # Hold the run back, before any write, when the environment would
         # change the names an installed profile remembers, or when a
         # different configuration would re-provision it; the switch guard
@@ -18877,6 +19143,7 @@ def main() -> None:
                     config_source=config_source,
                     base_url=config.get('base-url'),
                     claude_dir=get_real_user_home() / '.claude',
+                    reroot=reroot,
                 )
                 if guard_configuration_switch(
                     args,
@@ -18957,6 +19224,22 @@ def main() -> None:
             effective_command_names, selection, configured_command_names, target_manifest,
         ):
             warning(warn_msg)
+
+        # The destinations, the dependency commands and the settings values
+        # of an isolated run are rewritten here, after the snapshot recorded
+        # the configuration as authored and before anything reads them (the
+        # elevation reasons, the summary, the installers, the manifest
+        # records and the removal plan)
+        rerooted_paths = reroot.apply(config, deselected) if reroot is not None else []
+
+        # A destination inside a linked entry belongs to the source's run,
+        # which wrote it into the shared directory; this run leaves it to the
+        # link. The split reads the rewritten destinations, so a base
+        # config-home path re-rooted into a linked hooks/ is among the ones
+        # left out, and the summary names each of them before consent
+        downloads_to_process, linked_downloads = split_downloads_by_linked_entries(
+            cast(list[Any], config.get('files-to-download') or []), target_config_dir, linked_entries,
+        )
 
         # Relaunch elevated on Windows when this configuration needs admin rights
         request_admin_elevation_if_needed(config, args)
@@ -19201,18 +19484,21 @@ def main() -> None:
         plan.configured_link_dirs = configured_link_values['link_dirs'] if primary_command_name else None
         plan.linked_from = dependent_of.name if dependent_of is not None else None
         plan.dependents = [profile.name for profile in dependents]
+        plan.linked_downloads = linked_downloads
+        plan.files_to_download = [
+            cast(dict[str, Any], entry) for entry in downloads_to_process if isinstance(entry, dict)
+        ]
         plan.claude_code_version = claude_install_decision.version
         plan.keep_installed_claude = claude_install_decision.kept
         plan.claude_install_reason = claude_install_decision.reason
         if claude_install_decision.note_is_warning:
             plan.claude_install_warning = claude_install_decision.note
+        plan.rerooted_paths = rerooted_paths
 
         # A pin holds or moves the one binary the other installed profiles
         # use, so the summary names them; the installed version is probed
         # only when the pin has other profiles to affect
-        other_profile_names = [
-            profile.name for profile in installed_profiles(get_real_user_home()) if profile.name != profile_name
-        ]
+        other_profile_names = [profile.name for profile in installed if profile.name != profile_name]
         if claude_code_version_normalized is not None:
             plan.pin_effect = pin_effect_line(
                 claude_code_version_normalized,
@@ -19391,13 +19677,9 @@ def main() -> None:
         # Step 4: Download/copy custom files
         print()
         print(f'{Colors.CYAN}Step 4: Processing file downloads...{Colors.NC}')
-        files_to_download = config.get('files-to-download', [])
-        if files_to_download and linked_entries:
-            files_to_download, inside_links = split_downloads_by_linked_entries(
-                files_to_download, artifact_base_dir, linked_entries,
-            )
-            for skipped_dest, entry in inside_links:
-                info(f'Skipping {skipped_dest}: {entry}/ is linked from profile "{link_spec.source}"')
+        files_to_download = downloads_to_process
+        for skipped_dest, entry in linked_downloads:
+            info(f'Skipping {_linked_download_line(skipped_dest, entry, link_spec.source)}')
         if files_to_download:
             if not process_file_downloads(files_to_download, config_source, base_url, args.auth, auth_cache):
                 download_failures.append('file downloads')

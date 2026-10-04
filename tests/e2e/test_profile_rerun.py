@@ -40,8 +40,6 @@ from tests.e2e.profile_support import write_config
 from tests.e2e.profile_support import write_legacy_manifest
 from tests.e2e.validators import validate_manifest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-
 SKIP = ['--skip-install', '--no-admin']
 
 
