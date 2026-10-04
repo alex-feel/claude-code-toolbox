@@ -460,7 +460,7 @@ Entries of the isolated profile's directory that the profile takes through a dir
 
 ```yaml
 command-names:
-  - "aegis-2"
+  - "team-2"
 
 # Share sessions and auto-memory with the default Claude
 link-dirs:
@@ -469,8 +469,8 @@ link-dirs:
 
 ```bash
 # The same for one run, then a second command on the content of an installed profile
-uvx cc-toolbox setup aegis.yaml --command-names aegis-2 --link-dirs projects
-uvx cc-toolbox setup aegis.yaml --command-names aegis-3 --link-dirs all --link-from aegis-2
+uvx cc-toolbox setup team.yaml --command-names team-2 --link-dirs projects
+uvx cc-toolbox setup team.yaml --command-names team-3 --link-dirs all --link-from team-2
 ```
 
 #### `link-from`
@@ -481,7 +481,7 @@ The profile the linked entries come from: `base` for `~/.claude`, or the primary
 - **Default:** `base`
 - **Rules:** a profile cannot link from itself, a content source must hold its entries for real, and the value is validated like a command name (see [`link-dirs`](#link-dirs)).
 - **Inheritance:** Standard override (child replaces parent)
-- **Example:** `link-from: aegis-1`
+- **Example:** `link-from: team-1`
 
 #### `dependencies`
 
@@ -1888,7 +1888,7 @@ A recorded pin is retired only by re-running that profile's setup with an unpinn
 
 ### Linked Profiles
 
-A profile whose `link-dirs` names a content entry follows the profile it links from. Its directory holds links in place of those entries; its `config.json`, launchers, wrappers, `.claude.json`, env loaders and manifest are its own; and its configuration is the source's `resolved-config.yaml`: a run of the dependent (`--profile aegis-2`, or the configuration with `--command-names aegis-2`) applies that snapshot as installed in the source, components included, and fetches nothing. The source does the installing. Each run of the source -- `--profile aegis-1`, or `--profile base` for the base profile -- ends with Step 23, which re-runs every profile whose manifest links content from it, by name, as a child run of `--profile NAME` with `--yes`, `--skip-install` and `--no-admin` (the command the Dependents block of the installation summary shows) and the parent's environment minus every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and minus `CLAUDE_CONFIG_DIR`, so the repository tokens and `--env` values of the source run reach the dependents and its selectors and configuration do not. The installation summary names the dependents before you confirm, `--dry-run` lists them and starts none, and the completion summary of the source run reports each one and lists the installed profiles the run did not refresh; each child's own completion summary leaves that list to the source run, which covers every installed profile. A dependent that fails is named with the `--profile` command that retries it (and, when its configuration installs a global npm package the child could not elevate for, the note to retry from an elevated terminal), the others still run, and the source run exits 1. `--profile all` runs every source before its dependents and refreshes each profile once.
+A profile whose `link-dirs` names a content entry follows the profile it links from. Its directory holds links in place of those entries; its `config.json`, launchers, wrappers, `.claude.json`, env loaders and manifest are its own; and its configuration is the source's `resolved-config.yaml`: a run of the dependent (`--profile team-2`, or the configuration with `--command-names team-2`) applies that snapshot as installed in the source, components included, and fetches nothing. The source does the installing. Each run of the source -- `--profile team-1`, or `--profile base` for the base profile -- ends with Step 23, which re-runs every profile whose manifest links content from it, by name, as a child run of `--profile NAME` with `--yes`, `--skip-install` and `--no-admin` (the command the Dependents block of the installation summary shows) and the parent's environment minus every `CLAUDE_CODE_TOOLBOX_*` argument twin except `CLAUDE_CODE_TOOLBOX_ENV_AUTH` and minus `CLAUDE_CONFIG_DIR`, so the repository tokens and `--env` values of the source run reach the dependents and its selectors and configuration do not. The installation summary names the dependents before you confirm, `--dry-run` lists them and starts none, and the completion summary of the source run reports each one and lists the installed profiles the run did not refresh; each child's own completion summary leaves that list to the source run, which covers every installed profile. A dependent that fails is named with the `--profile` command that retries it (and, when its configuration installs a global npm package the child could not elevate for, the note to retry from an elevated terminal), the others still run, and the source run exits 1. `--profile all` runs every source before its dependents and refreshes each profile once.
 
 A dependent is checked on every run: after the dependency commands and again at the end, each link must still be a link to its target, or the run stops with the `--profile NAME` command that repairs it; before `config.json` is written, every hook file the events wire must exist through the linked `hooks/`, or the run stops and names the source to re-run first. A deselection in the source is applied by the source; the dependent's own deselection step never touches a linked section. While a dependent points at it, the source refuses to change its own links or configuration (a different configuration, `--link-dirs`, `--link-from`) and names each dependent with the two ways out: re-point it (`--profile NAME --link-from <other profile>`) or unlink it (`--profile NAME --link-dirs none`).
 
@@ -1896,7 +1896,7 @@ Two profiles can link the same entry from one source. A `projects` link needs no
 
 ```powershell
 # Windows one-liner: iex (irm ...) takes no arguments, so the configuration, the names and the links come from the variables
-powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='aegis'; `$env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='aegis-2'; `$env:CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'; `$env:CLAUDE_CODE_TOOLBOX_LINK_FROM='aegis-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "`$env:CLAUDE_CODE_TOOLBOX_ENV_CONFIG='team'; `$env:CLAUDE_CODE_TOOLBOX_COMMAND_NAMES='team-2'; `$env:CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'; `$env:CLAUDE_CODE_TOOLBOX_LINK_FROM='team-1'; iex (irm 'https://raw.githubusercontent.com/alex-feel/claude-code-toolbox/main/scripts/windows/setup-environment.ps1')"
 ```
 
 ### Automatic IDE Extension Version Management
@@ -2491,11 +2491,11 @@ Links live inside an isolated profile's directory, so a configuration that decla
 
 ### Profile "NAME" cannot link from itself
 
-A profile is never its own link source. The usual cause is the one-liner's variables still set in the shell: after `CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'` and `CLAUDE_CODE_TOOLBOX_LINK_FROM='aegis-1'` installed a dependent, `--profile aegis-1` in the same shell reads them for the source itself. The message names the variable and how to clear both (`unset CLAUDE_CODE_TOOLBOX_LINK_DIRS CLAUDE_CODE_TOOLBOX_LINK_FROM`, or `Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, Env:CLAUDE_CODE_TOOLBOX_LINK_FROM` in PowerShell); a fresh shell works too. When the configuration's own `link-from` names the profile being installed, pass `--link-dirs none` for that run: the configuration's link keys are meant for the profiles that link from it, and the typed `none` is remembered, so every later `--profile NAME` run of the source (and `--profile all`) needs no flag.
+A profile is never its own link source. The usual cause is the one-liner's variables still set in the shell: after `CLAUDE_CODE_TOOLBOX_LINK_DIRS='all'` and `CLAUDE_CODE_TOOLBOX_LINK_FROM='team-1'` installed a dependent, `--profile team-1` in the same shell reads them for the source itself. The message names the variable and how to clear both (`unset CLAUDE_CODE_TOOLBOX_LINK_DIRS CLAUDE_CODE_TOOLBOX_LINK_FROM`, or `Remove-Item Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, Env:CLAUDE_CODE_TOOLBOX_LINK_FROM` in PowerShell); a fresh shell works too. When the configuration's own `link-from` names the profile being installed, pass `--link-dirs none` for that run: the configuration's link keys are meant for the profiles that link from it, and the typed `none` is remembered, so every later `--profile NAME` run of the source (and `--profile all`) needs no flag.
 
 ### Content entries link only between installs of one configuration
 
-Every entry but `projects` shows the source's installed content, so the profile that links it must be installed from the configuration the source was installed from (the same resolved path or URL). To run several profiles of one configuration beside a base of another (an `aegis-corp` base with `aegis` profiles), install one full profile of that configuration first (`--command-names aegis-1`, no link keys) and link the others from it (`--command-names aegis-2 --link-dirs all --link-from aegis-1`); or run the setup with the source's configuration; or link only `projects`. A profile that already follows a source stops following it with `--link-dirs none`, or with `--link-from` naming a profile of the new configuration, before it switches configuration.
+Every entry but `projects` shows the source's installed content, so the profile that links it must be installed from the configuration the source was installed from (the same resolved path or URL). To run several profiles of one configuration beside a base of another (an `team-corp` base with `team` profiles), install one full profile of that configuration first (`--command-names team-1`, no link keys) and link the others from it (`--command-names team-2 --link-dirs all --link-from team-1`); or run the setup with the source's configuration; or link only `projects`. A profile that already follows a source stops following it with `--link-dirs none`, or with `--link-from` naming a profile of the new configuration, before it switches configuration.
 
 ### Profile "NAME" is the link source of other profiles
 

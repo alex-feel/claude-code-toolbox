@@ -55,7 +55,7 @@ def _manifest(
     name: str | None,
     *,
     link: dict[str, Any] | None = None,
-    config_source: str = 'https://example.com/aegis.yaml',
+    config_source: str = 'https://example.com/team.yaml',
     yaml_values: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a manifest with a link record and return it."""
@@ -130,35 +130,35 @@ class TestResolveLinkSpec:
 
     def test_typed_values_win_and_are_recorded(self) -> None:
         spec, errors = resolve_link_spec(
-            _args(link_dirs='all', link_from='aegis-1', env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'projects'}),
+            _args(link_dirs='all', link_from='team-1', env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'projects'}),
             {'link-dirs': ['projects'], 'link-from': 'other'},
             None,
         )
         assert errors == []
         assert spec.dirs == list(LINKABLE_PROFILE_DIRS)
-        assert spec.source == 'aegis-1'
+        assert spec.source == 'team-1'
         assert (spec.dirs_origin, spec.source_origin) == ('cli', 'cli')
         assert spec.typed
-        assert spec.record() == _record(list(LINKABLE_PROFILE_DIRS), 'aegis-1')
+        assert spec.record() == _record(list(LINKABLE_PROFILE_DIRS), 'team-1')
 
     def test_environment_values_rank_second(self) -> None:
         spec, errors = resolve_link_spec(
-            _args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'projects', 'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'aegis-1'}),
+            _args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'projects', 'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'team-1'}),
             {'link-dirs': ['all']},
             None,
         )
         assert errors == []
         assert spec.dirs == ['projects']
-        assert spec.source == 'aegis-1'
+        assert spec.source == 'team-1'
         assert (spec.dirs_origin, spec.source_origin) == ('env', 'env')
         assert spec.typed
 
     def test_remembered_content_link_beats_the_configuration_whatever_its_origin(self, tmp_path: Path) -> None:
-        manifest = _manifest(tmp_path, 'dep', link=_record(['skills', 'projects'], 'aegis-1', 'yaml', 'yaml'))
+        manifest = _manifest(tmp_path, 'dep', link=_record(['skills', 'projects'], 'team-1', 'yaml', 'yaml'))
         spec, errors = resolve_link_spec(_args(), {'link-dirs': ['projects']}, manifest)
         assert errors == []
         assert spec.dirs == ['skills', 'projects']
-        assert spec.source == 'aegis-1'
+        assert spec.source == 'team-1'
         assert spec.dirs_remembered
         assert spec.source_remembered
         assert (spec.dirs_origin, spec.source_origin) == ('yaml', 'yaml')
@@ -181,25 +181,25 @@ class TestResolveLinkSpec:
         assert spec.dirs_origin == 'yaml'
 
     def test_configuration_values_rank_fourth(self) -> None:
-        spec, errors = resolve_link_spec(_args(), {'link-dirs': ['hooks', 'skills'], 'link-from': 'aegis-1'}, None)
+        spec, errors = resolve_link_spec(_args(), {'link-dirs': ['hooks', 'skills'], 'link-from': 'team-1'}, None)
         assert errors == []
         assert spec.dirs == ['skills', 'hooks']
-        assert spec.source == 'aegis-1'
+        assert spec.source == 'team-1'
         assert (spec.dirs_origin, spec.source_origin) == ('yaml', 'yaml')
         assert not spec.typed
 
     def test_typed_none_links_nothing_and_is_recorded_as_typed(self, tmp_path: Path) -> None:
-        manifest = _manifest(tmp_path, 'dep', link=_record(list(LINKABLE_PROFILE_DIRS), 'aegis-1'))
+        manifest = _manifest(tmp_path, 'dep', link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
         spec, errors = resolve_link_spec(_args(link_dirs='none'), {'link-dirs': ['projects']}, manifest)
         assert errors == []
         assert spec.dirs == []
         assert spec.typed
-        assert spec.record() == _record([], 'aegis-1', 'cli', 'cli'), 'the remembered source keeps its origin'
+        assert spec.record() == _record([], 'team-1', 'cli', 'cli'), 'the remembered source keeps its origin'
         from_environment, _ = resolve_link_spec(_args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'none'}), {}, None)
         assert from_environment.record() == _record([], 'base', 'env', 'default')
 
     def test_configuration_none_is_not_recorded(self) -> None:
-        spec, errors = resolve_link_spec(_args(), {'link-dirs': ['none'], 'link-from': 'aegis-1'}, None)
+        spec, errors = resolve_link_spec(_args(), {'link-dirs': ['none'], 'link-from': 'team-1'}, None)
         assert errors == []
         assert spec.dirs == []
         assert not spec.typed
@@ -209,15 +209,15 @@ class TestResolveLinkSpec:
         """A typed or environment none is remembered ahead of the YAML link-dirs, whatever the YAML declares."""
         for origin in ('cli', 'env'):
             manifest = _manifest(tmp_path / origin, 'dep', link=_record([], 'base', origin, 'default'))
-            spec, errors = resolve_link_spec(_args(), {'link-dirs': ['all'], 'link-from': 'aegis-1'}, manifest)
+            spec, errors = resolve_link_spec(_args(), {'link-dirs': ['all'], 'link-from': 'team-1'}, manifest)
             assert errors == [], origin
             assert spec.dirs == [], origin
             assert spec.dirs_remembered, origin
             assert spec.dirs_origin == origin
             assert not spec.typed, 'a remembered none never converts or unlinks anything'
-            assert spec.source == 'aegis-1', 'the source falls through to the configuration'
+            assert spec.source == 'team-1', 'the source falls through to the configuration'
             assert spec.source_origin == 'yaml'
-            assert spec.record() == _record([], 'aegis-1', origin, 'yaml'), 'the re-run records the none again'
+            assert spec.record() == _record([], 'team-1', origin, 'yaml'), 'the re-run records the none again'
         remembered = _manifest(tmp_path / 'again', 'dep', link=_record([], 'base'))
         typed_again, errors = resolve_link_spec(_args(link_dirs='projects'), {'link-dirs': ['all']}, remembered)
         assert errors == []
@@ -226,10 +226,10 @@ class TestResolveLinkSpec:
 
     def test_remembered_none_with_a_typed_source_still_needs_entries(self, tmp_path: Path) -> None:
         manifest = _manifest(tmp_path, 'dep', link=_record([], 'base'))
-        _spec, errors = resolve_link_spec(_args(link_from='aegis-1'), {}, manifest)
+        _spec, errors = resolve_link_spec(_args(link_from='team-1'), {}, manifest)
         assert errors == [
             (
-                '--link-from names the profile "aegis-1", but no entry is linked; pass --link-dirs ENTRIES '
+                '--link-from names the profile "team-1", but no entry is linked; pass --link-dirs ENTRIES '
                 '(or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to link from it, or clear --link-from.'
             ),
         ]
@@ -242,14 +242,14 @@ class TestResolveLinkSpec:
         assert not spec.dirs_remembered
 
     def test_source_without_entries_is_an_error_only_when_typed_or_from_the_environment(self) -> None:
-        _spec, errors = resolve_link_spec(_args(link_from='aegis-1'), {}, None)
+        _spec, errors = resolve_link_spec(_args(link_from='team-1'), {}, None)
         assert errors == [
             (
-                '--link-from names the profile "aegis-1", but no entry is linked; pass --link-dirs ENTRIES '
+                '--link-from names the profile "team-1", but no entry is linked; pass --link-dirs ENTRIES '
                 '(or set CLAUDE_CODE_TOOLBOX_LINK_DIRS) to link from it, or clear --link-from.'
             ),
         ]
-        _spec, errors = resolve_link_spec(_args(), {'link-from': 'aegis-1'}, None)
+        _spec, errors = resolve_link_spec(_args(), {'link-from': 'team-1'}, None)
         assert errors == []
 
     @pytest.mark.parametrize('value', ['two words', 'all', 'bad/name', ''])
@@ -274,17 +274,17 @@ class TestPlanProfileLinks:
 
     @pytest.fixture
     def layout(self, tmp_path: Path) -> tuple[Path, Path]:
-        source = tmp_path / '.claude' / 'aegis-1'
+        source = tmp_path / '.claude' / 'team-1'
         for entry in LINKABLE_PROFILE_DIRS:
             (source / entry).mkdir(parents=True)
-        profile = tmp_path / '.claude' / 'aegis-2'
+        profile = tmp_path / '.claude' / 'team-2'
         profile.mkdir()
         return profile, source
 
     def test_absent_entries_are_created_and_the_rest_reported(self, layout: tuple[Path, Path]) -> None:
         profile, source = layout
         plan = plan_profile_links(
-            profile, ['skills', 'projects'], source, source_name='aegis-1', typed=False, timestamp='T',
+            profile, ['skills', 'projects'], source, source_name='team-1', typed=False, timestamp='T',
         )
         assert plan.errors == []
         assert [(a.entry, a.kind) for a in plan.actions] == [('skills', 'create'), ('projects', 'create')]
@@ -302,7 +302,7 @@ class TestPlanProfileLinks:
         elsewhere.mkdir()
         setup_environment.link_profile_directory(profile / 'agents', elsewhere)
         plan = plan_profile_links(
-            profile, ['skills', 'agents'], source, source_name='aegis-1', typed=False, timestamp='T',
+            profile, ['skills', 'agents'], source, source_name='team-1', typed=False, timestamp='T',
         )
         assert [(a.entry, a.kind) for a in plan.actions] == [('skills', 'keep'), ('agents', 'repair')]
         assert plan.rows()[1] == f'agents -> {source / "agents"} [repair: the link points elsewhere]'
@@ -314,7 +314,7 @@ class TestPlanProfileLinks:
         (source / 'projects').rmdir()
         setup_environment.link_profile_directory(source / 'projects', real)
         plan = plan_profile_links(
-            profile, ['projects', 'skills'], source, source_name='aegis-1', typed=True, timestamp='T',
+            profile, ['projects', 'skills'], source, source_name='team-1', typed=True, timestamp='T',
         )
         by_entry = {a.entry: a for a in plan.actions}
         projects_target = by_entry['projects'].target
@@ -329,7 +329,7 @@ class TestPlanProfileLinks:
         (profile / 'projects' / 'b.jsonl').write_text('', encoding='utf-8')
         (profile / 'agents').mkdir()
         remembered = plan_profile_links(
-            profile, ['projects', 'agents'], source, source_name='aegis-1', typed=False, timestamp='T',
+            profile, ['projects', 'agents'], source, source_name='team-1', typed=False, timestamp='T',
         )
         assert len(remembered.errors) == 1
         assert (
@@ -338,7 +338,7 @@ class TestPlanProfileLinks:
         assert 'pass --link-dirs projects,agents' in remembered.errors[0]
         assert [(a.entry, a.kind) for a in remembered.actions] == [('agents', 'create')], 'an empty directory is replaced'
         typed = plan_profile_links(
-            profile, ['projects', 'agents'], source, source_name='aegis-1', typed=True, timestamp='T',
+            profile, ['projects', 'agents'], source, source_name='team-1', typed=True, timestamp='T',
         )
         assert typed.errors == []
         convert = next(a for a in typed.actions if a.entry == 'projects')
@@ -356,7 +356,7 @@ class TestPlanProfileLinks:
     def test_a_file_at_an_entry_path_is_an_error(self, layout: tuple[Path, Path]) -> None:
         profile, source = layout
         (profile / 'rules').write_text('', encoding='utf-8')
-        plan = plan_profile_links(profile, ['rules'], source, source_name='aegis-1', typed=True, timestamp='T')
+        plan = plan_profile_links(profile, ['rules'], source, source_name='team-1', typed=True, timestamp='T')
         assert plan.errors == [f'{profile / "rules"} is a file, so rules cannot be linked; move the file away first.']
 
     def test_undeclared_links_are_reported_and_unlinked_only_when_typed(self, layout: tuple[Path, Path]) -> None:
@@ -379,7 +379,7 @@ class TestPlanProfileLinks:
         elsewhere.mkdir()
         setup_environment.link_profile_directory(profile / 'rules', elsewhere)
         plan = plan_profile_links(
-            profile, ['agents', 'rules', 'skills'], source, source_name='aegis-1', typed=True, timestamp='T',
+            profile, ['agents', 'rules', 'skills'], source, source_name='team-1', typed=True, timestamp='T',
         )
 
         setup_environment.apply_link_plan(plan)
@@ -416,11 +416,11 @@ class TestLinkRules:
     """link_request_errors() checks every rule before any write."""
 
     def _source(self, tmp_path: Path, *, link: dict[str, Any] | None = None, manifest: bool = True) -> LinkSource:
-        directory = tmp_path / '.claude' / 'aegis-1'
-        record = _manifest(directory, 'aegis-1', link=link) if manifest else None
+        directory = tmp_path / '.claude' / 'team-1'
+        record = _manifest(directory, 'team-1', link=link) if manifest else None
         if not manifest:
             directory.mkdir(parents=True, exist_ok=True)
-        return LinkSource('aegis-1', directory, record)
+        return LinkSource('team-1', directory, record)
 
     def test_no_links_no_errors(self) -> None:
         assert link_request_errors(
@@ -455,7 +455,7 @@ class TestLinkRules:
             ),
         ]
         from_environment = link_request_errors(
-            LinkSpec(['skills', 'projects'], 'aegis-1', 'env', 'env'), None, primary_command_name=None,
+            LinkSpec(['skills', 'projects'], 'team-1', 'env', 'env'), None, primary_command_name=None,
             this_identity='x', typed_selectors=False,
         )
         assert from_environment == [
@@ -471,12 +471,12 @@ class TestLinkRules:
 
     def test_profile_cannot_link_from_itself(self, tmp_path: Path) -> None:
         errors = link_request_errors(
-            LinkSpec(['projects'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path), primary_command_name='Aegis-1',
+            LinkSpec(['projects'], 'team-1', 'cli', 'cli'), self._source(tmp_path), primary_command_name='Team-1',
             this_identity='x', typed_selectors=False,
         )
         assert errors == [
             (
-                'Profile "Aegis-1" cannot link from itself: --link-from aegis-1 names the profile this run installs; '
+                'Profile "Team-1" cannot link from itself: --link-from team-1 names the profile this run installs; '
                 'name another profile in --link-from.'
             ),
         ]
@@ -484,26 +484,26 @@ class TestLinkRules:
     def test_self_link_refusal_names_the_variable_or_the_configuration_key(self, tmp_path: Path) -> None:
         """A leftover variable gets the clear remedy; a configuration meant for the dependents gets --link-dirs none."""
         from_environment = link_request_errors(
-            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'aegis-1', 'env', 'env'), self._source(tmp_path),
-            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'team-1', 'env', 'env'), self._source(tmp_path),
+            primary_command_name='team-1', this_identity='x', typed_selectors=False,
         )
         assert from_environment == [
             (
-                'Profile "aegis-1" cannot link from itself: CLAUDE_CODE_TOOLBOX_LINK_FROM=aegis-1 names the profile '
+                'Profile "team-1" cannot link from itself: CLAUDE_CODE_TOOLBOX_LINK_FROM=team-1 names the profile '
                 'this run installs; clear CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM (unset '
                 'CLAUDE_CODE_TOOLBOX_LINK_DIRS CLAUDE_CODE_TOOLBOX_LINK_FROM, or Remove-Item '
                 'Env:CLAUDE_CODE_TOOLBOX_LINK_DIRS, Env:CLAUDE_CODE_TOOLBOX_LINK_FROM in PowerShell) to re-run '
-                '"aegis-1" as installed, or name another profile in --link-from.'
+                '"team-1" as installed, or name another profile in --link-from.'
             ),
         ]
         from_yaml = link_request_errors(
-            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'aegis-1', 'yaml', 'yaml'), self._source(tmp_path),
-            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+            LinkSpec(list(LINKABLE_PROFILE_DIRS), 'team-1', 'yaml', 'yaml'), self._source(tmp_path),
+            primary_command_name='team-1', this_identity='x', typed_selectors=False,
         )
         assert from_yaml == [
             (
-                'Profile "aegis-1" cannot link from itself: link-from aegis-1 names the profile this run installs; '
-                'pass --link-dirs none to install "aegis-1" without links, as the source the configuration\'s other '
+                'Profile "team-1" cannot link from itself: link-from team-1 names the profile this run installs; '
+                'pass --link-dirs none to install "team-1" without links, as the source the configuration\'s other '
                 'profiles link from, or name another profile in --link-from.'
             ),
         ]
@@ -511,7 +511,7 @@ class TestLinkRules:
     def test_content_rule_refusals_add_the_clear_remedy_for_environment_values(self, tmp_path: Path) -> None:
         """Every content-rule message ends with how to clear a variable the value came from."""
         errors = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'env'), self._source(tmp_path), primary_command_name='p1',
+            LinkSpec(['skills'], 'team-1', 'cli', 'env'), self._source(tmp_path), primary_command_name='p1',
             this_identity='other', typed_selectors=True,
         )
         assert len(errors) == 2
@@ -552,63 +552,63 @@ class TestLinkRules:
     def test_projects_needs_no_manifest_and_no_identity(self, tmp_path: Path) -> None:
         source = self._source(tmp_path, manifest=False)
         assert link_request_errors(
-            LinkSpec(['projects'], 'aegis-1', 'cli', 'cli'), source, primary_command_name='p1', this_identity=None,
+            LinkSpec(['projects'], 'team-1', 'cli', 'cli'), source, primary_command_name='p1', this_identity=None,
             typed_selectors=True,
         ) == []
 
     def test_content_needs_a_manifest_the_same_identity_and_a_real_holder(self, tmp_path: Path) -> None:
-        identity = setup_environment.config_identity_of('https://example.com/aegis.yaml')
+        identity = setup_environment.config_identity_of('https://example.com/team.yaml')
         no_manifest = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path / 'a', manifest=False),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli'), self._source(tmp_path / 'a', manifest=False),
             primary_command_name='p1', this_identity=identity, typed_selectors=False,
         )
         assert len(no_manifest) == 1
         assert 'has no manifest' in no_manifest[0]
         other_identity = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path / 'b'),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli'), self._source(tmp_path / 'b'),
             primary_command_name='p1', this_identity='other', typed_selectors=False,
         )
         assert other_identity == [
             (
-                'Content entries (skills) link only between installs of one configuration: profile "aegis-1" was '
-                'installed from https://example.com/aegis.yaml, and this run was given a different configuration. '
+                'Content entries (skills) link only between installs of one configuration: profile "team-1" was '
+                'installed from https://example.com/team.yaml, and this run was given a different configuration. '
                 'Install one full profile of the configuration this run was given first (--command-names SOURCE '
                 'with no link keys), then link the others from it with --link-from SOURCE; or run the setup with '
-                'the configuration profile "aegis-1" was installed from (the identity is its resolved path or URL); '
+                'the configuration profile "team-1" was installed from (the identity is its resolved path or URL); '
                 'or link only projects.'
             ),
         ]
         remembered = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli', dirs_remembered=True, source_remembered=True),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli', dirs_remembered=True, source_remembered=True),
             self._source(tmp_path / 'b'), primary_command_name='p1', this_identity='other', typed_selectors=False,
         )
         assert remembered == [
             (
-                'Content entries (skills) link only between installs of one configuration: profile "aegis-1" was '
-                'installed from https://example.com/aegis.yaml, and this run was given a different configuration. '
+                'Content entries (skills) link only between installs of one configuration: profile "team-1" was '
+                'installed from https://example.com/team.yaml, and this run was given a different configuration. '
                 'Pass --link-dirs none, or --link-from naming a profile installed from the configuration this run '
-                'was given, so profile "p1" stops following "aegis-1"; or link only projects.'
+                'was given, so profile "p1" stops following "team-1"; or link only projects.'
             ),
         ]
         chained = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path / 'c', link=_record(['hooks'], 'base')),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli'), self._source(tmp_path / 'c', link=_record(['hooks'], 'base')),
             primary_command_name='p1', this_identity=identity, typed_selectors=False,
         )
         assert chained == [
             (
-                'Profile "aegis-1" links content from profile "base" itself, and content links go only to a '
+                'Profile "team-1" links content from profile "base" itself, and content links go only to a '
                 'profile that holds its entries for real; use --link-from base.'
             ),
         ]
         projects_only_source = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli'),
             self._source(tmp_path / 'd', link=_record(['projects'], 'base')),
             primary_command_name='p1', this_identity=identity, typed_selectors=False,
         )
         assert projects_only_source == [], 'a projects-only link does not make a profile a dependent'
         unlinked_source = link_request_errors(
-            LinkSpec(['skills'], 'aegis-1', 'cli', 'cli'),
-            self._source(tmp_path / 'e', link=_record([], 'aegis-1', 'cli', 'yaml')),
+            LinkSpec(['skills'], 'team-1', 'cli', 'cli'),
+            self._source(tmp_path / 'e', link=_record([], 'team-1', 'cli', 'yaml')),
             primary_command_name='p1', this_identity=identity, typed_selectors=False,
         )
         assert unlinked_source == [], 'a source installed with --link-dirs none holds every entry for real'
@@ -616,19 +616,19 @@ class TestLinkRules:
     def test_remembered_none_links_nothing_and_breaks_no_rule(self, tmp_path: Path) -> None:
         """A source re-run under a remembered none never trips the self-link rule its YAML link-from would."""
         assert link_request_errors(
-            LinkSpec([], 'aegis-1', 'cli', 'yaml', dirs_remembered=True), self._source(tmp_path),
-            primary_command_name='aegis-1', this_identity='x', typed_selectors=False,
+            LinkSpec([], 'team-1', 'cli', 'yaml', dirs_remembered=True), self._source(tmp_path),
+            primary_command_name='team-1', this_identity='x', typed_selectors=False,
         ) == []
 
     def test_content_links_refuse_typed_selectors(self, tmp_path: Path) -> None:
-        identity = setup_environment.config_identity_of('https://example.com/aegis.yaml')
+        identity = setup_environment.config_identity_of('https://example.com/team.yaml')
         errors = link_request_errors(
-            LinkSpec(['skills', 'projects'], 'aegis-1', 'cli', 'cli'), self._source(tmp_path),
+            LinkSpec(['skills', 'projects'], 'team-1', 'cli', 'cli'), self._source(tmp_path),
             primary_command_name='p1', this_identity=identity, typed_selectors=True,
         )
         assert errors == [
             (
-                'A profile that links content (skills) takes the component selection of profile "aegis-1"; '
+                'A profile that links content (skills) takes the component selection of profile "team-1"; '
                 'drop --select, --with and --without (and their variables).'
             ),
         ]
@@ -640,14 +640,14 @@ class TestContentDependents:
     def test_sorted_dependents_with_content_links_only(self, tmp_path: Path) -> None:
         claude = tmp_path / '.claude'
         _manifest(claude, None)
-        _manifest(claude / 'zeta', 'zeta', link=_record(['skills'], 'aegis-1'))
-        _manifest(claude / 'alpha', 'alpha', link=_record(list(LINKABLE_PROFILE_DIRS), 'aegis-1'))
-        _manifest(claude / 'sessions', 'sessions', link=_record(['projects'], 'aegis-1'))
+        _manifest(claude / 'zeta', 'zeta', link=_record(['skills'], 'team-1'))
+        _manifest(claude / 'alpha', 'alpha', link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
+        _manifest(claude / 'sessions', 'sessions', link=_record(['projects'], 'team-1'))
         _manifest(claude / 'other', 'other', link=_record(['hooks'], 'base'))
-        _manifest(claude / 'unlinked', 'unlinked', link=_record([], 'aegis-1', 'cli', 'yaml'))
-        _manifest(claude / 'aegis-1', 'aegis-1', link=_record([], 'aegis-1', 'cli', 'yaml'))
+        _manifest(claude / 'unlinked', 'unlinked', link=_record([], 'team-1', 'cli', 'yaml'))
+        _manifest(claude / 'team-1', 'team-1', link=_record([], 'team-1', 'cli', 'yaml'))
         with patch.object(setup_environment, 'installed_profiles', _REAL_INSTALLED_PROFILES):
-            assert [p.name for p in content_dependents(tmp_path, 'aegis-1')] == ['alpha', 'zeta'], (
+            assert [p.name for p in content_dependents(tmp_path, 'team-1')] == ['alpha', 'zeta'], (
                 'a recorded none is not a dependency, whichever source it names'
             )
             assert [p.name for p in content_dependents(tmp_path, 'base')] == ['other']
@@ -657,7 +657,7 @@ class TestContentDependents:
             )) is None
             assert setup_environment.manifest_link_record(setup_environment.read_profile_manifest(
                 claude / 'unlinked' / 'manifest.json',
-            )) == _record([], 'aegis-1', 'cli', 'yaml')
+            )) == _record([], 'team-1', 'cli', 'yaml')
         alpha = setup_environment.InstalledProfile('alpha', claude / 'alpha', claude / 'alpha' / 'manifest.json', None)
         assert setup_environment.dependents_remedy([alpha]) == [
             '  --profile alpha --link-from <other profile>   (re-point), or --profile alpha --link-dirs none   (unlink)',
@@ -679,31 +679,31 @@ class TestDependentHelpers:
     def test_dependent_config_is_the_snapshot_without_components(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        source_dir = tmp_path / '.claude' / 'aegis-1'
-        manifest = _manifest(source_dir, 'aegis-1', config_source='https://example.com/aegis.yaml')
+        source_dir = tmp_path / '.claude' / 'team-1'
+        manifest = _manifest(source_dir, 'team-1', config_source='https://example.com/team.yaml')
         manifest['version'] = '2.0.0'
         (source_dir / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
         (source_dir / 'resolved-config.yaml').write_text(
-            'name: Aegis\nagents:\n- agents/core.md\ncomponents:\n- name: core\n', encoding='utf-8',
+            'name: Team\nagents:\n- agents/core.md\ncomponents:\n- name: core\n', encoding='utf-8',
         )
         config, source, version = setup_environment.load_dependent_config(
-            LinkSource('aegis-1', source_dir, manifest), 'aegis-2',
+            LinkSource('team-1', source_dir, manifest), 'team-2',
         )
-        assert config == {'name': 'Aegis', 'agents': ['agents/core.md']}
-        assert source == 'https://example.com/aegis.yaml'
+        assert config == {'name': 'Team', 'agents': ['agents/core.md']}
+        assert source == 'https://example.com/team.yaml'
         assert version == '2.0.0'
-        assert 'Applying the configuration profile "aegis-1" installed' in capsys.readouterr().out
+        assert 'Applying the configuration profile "team-1" installed' in capsys.readouterr().out
 
     def test_dependent_without_a_readable_snapshot_exits(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        source_dir = tmp_path / '.claude' / 'aegis-1'
-        manifest = _manifest(source_dir, 'aegis-1')
+        source_dir = tmp_path / '.claude' / 'team-1'
+        manifest = _manifest(source_dir, 'team-1')
         with pytest.raises(SystemExit) as exc_info:
-            setup_environment.load_dependent_config(LinkSource('aegis-1', source_dir, manifest), 'aegis-2')
+            setup_environment.load_dependent_config(LinkSource('team-1', source_dir, manifest), 'team-2')
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
-        assert 'resolved-config.yaml is missing or unreadable; re-run the source first: --profile aegis-1' in captured.err
+        assert 'resolved-config.yaml is missing or unreadable; re-run the source first: --profile team-1' in captured.err
 
     def test_config_without_linked_sections(self) -> None:
         config = {
@@ -749,7 +749,7 @@ class TestEnvironmentLinkGuard:
 
     def test_environment_change_refuses_under_yes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         manifest = _manifest(tmp_path, 'dep', link=_record(['projects'], 'base'))
-        args = _args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all', 'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'aegis-1'})
+        args = _args(env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all', 'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'team-1'})
         spec, _ = resolve_link_spec(args, {}, manifest)
         with pytest.raises(SystemExit) as exc_info:
             setup_environment.guard_environment_link_change(args, spec, manifest, 'dep')
@@ -757,10 +757,10 @@ class TestEnvironmentLinkGuard:
         captured = capsys.readouterr()
         output = captured.out + captured.err
         assert 'CLAUDE_CODE_TOOLBOX_LINK_DIRS changes the linked entries of profile "dep" from projects to' in output
-        assert 'CLAUDE_CODE_TOOLBOX_LINK_FROM changes the link source of profile "dep" from base to aegis-1' in output
+        assert 'CLAUDE_CODE_TOOLBOX_LINK_FROM changes the link source of profile "dep" from base to team-1' in output
         assert 'Refusing to continue without consent.' in output
         assert (
-            'Pass --link-dirs skills,agents,commands,rules,hooks,output-styles,prompts,projects --link-from aegis-1'
+            'Pass --link-dirs skills,agents,commands,rules,hooks,output-styles,prompts,projects --link-from team-1'
         ) in output
 
 
@@ -772,7 +772,7 @@ class TestRememberedLinkWarnings:
             tmp_path, 'dep', link=_record(['projects'], 'base', 'env', 'env'),
             yaml_values={'command_names': [], 'components': [], 'link_dirs': ['projects'], 'link_from': 'base'},
         )
-        changed = {'link-dirs': ['skills'], 'link-from': 'aegis-1'}
+        changed = {'link-dirs': ['skills'], 'link-from': 'team-1'}
         spec, _ = resolve_link_spec(_args(), changed, manifest)
         warnings = setup_environment.remembered_link_warnings(spec, changed, manifest)
         assert warnings == [
@@ -783,7 +783,7 @@ class TestRememberedLinkWarnings:
             ),
             (
                 "link-from: using the remembered value base [remembered]; the configuration's link-from changed from "
-                'base to aegis-1 since the profile was installed. Pass --link-from to replace the remembered value.'
+                'base to team-1 since the profile was installed. Pass --link-from to replace the remembered value.'
             ),
         ]
         unchanged = {'link-dirs': ['projects'], 'link-from': 'base'}
@@ -811,13 +811,13 @@ class TestRefreshAllConflicts:
     """--profile all refuses the link flags like every other per-run flag."""
 
     def test_link_flags_are_named(self, capsys: pytest.CaptureFixture[str]) -> None:
-        args = _args(link_dirs='all', link_from='aegis-1')
+        args = _args(link_dirs='all', link_from='team-1')
         args.profile = 'all'
         assert setup_environment.refresh_all_profiles(args) == 1
         assert 'cannot be combined with --link-dirs, --link-from; drop them from the command line.' in capsys.readouterr().err
 
     def test_link_variables_are_named_with_the_clear_remedy(self, capsys: pytest.CaptureFixture[str]) -> None:
-        args = _args(link_from='aegis-1', env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all'})
+        args = _args(link_from='team-1', env={'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all'})
         args.profile = 'all'
         assert setup_environment.refresh_all_profiles(args) == 1
         assert (
@@ -873,8 +873,8 @@ class TestRefreshDependents:
     def _dependents(self, tmp_path: Path) -> list[setup_environment.InstalledProfile]:
         claude = tmp_path / '.claude'
         profiles = []
-        for name in ('aegis-2', 'aegis-3'):
-            _manifest(claude / name, name, link=_record(list(LINKABLE_PROFILE_DIRS), 'aegis-1'))
+        for name in ('team-2', 'team-3'):
+            _manifest(claude / name, name, link=_record(list(LINKABLE_PROFILE_DIRS), 'team-1'))
             profiles.append(setup_environment.InstalledProfile(name, claude / name, claude / name / 'manifest.json', None))
         return profiles
 
@@ -883,7 +883,7 @@ class TestRefreshDependents:
 
         def _run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
             calls.append((argv, cast(dict[str, str], kwargs['env'])))
-            return subprocess.CompletedProcess(argv, 1 if 'aegis-3' in argv else 0)
+            return subprocess.CompletedProcess(argv, 1 if 'team-3' in argv else 0)
 
         with (
             patch.object(setup_environment.subprocess, 'run', side_effect=_run),
@@ -891,15 +891,15 @@ class TestRefreshDependents:
                 'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'leak', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'leak',
                 'CLAUDE_CONFIG_DIR': '/x', 'GITHUB_TOKEN': 't', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH': 'h:v',
             }),
-            patch('sys.argv', ['/repo/scripts/setup_environment.py', 'aegis.yaml', '--yes']),
+            patch('sys.argv', ['/repo/scripts/setup_environment.py', 'team.yaml', '--yes']),
             patch.object(setup_environment.platform, 'system', return_value='Linux'),
         ):
             results = setup_environment.refresh_dependents(self._dependents(tmp_path))
 
         script = '/repo/scripts/setup_environment.py'
         assert [argv for argv, _ in calls] == [
-            [sys.executable, script, '--profile', 'aegis-2', '--yes', '--child-run', '--skip-install', '--no-admin'],
-            [sys.executable, script, '--profile', 'aegis-3', '--yes', '--child-run', '--skip-install', '--no-admin'],
+            [sys.executable, script, '--profile', 'team-2', '--yes', '--child-run', '--skip-install', '--no-admin'],
+            [sys.executable, script, '--profile', 'team-3', '--yes', '--child-run', '--skip-install', '--no-admin'],
         ]
         for _, env in calls:
             assert 'CLAUDE_CODE_TOOLBOX_LINK_DIRS' not in env
@@ -908,15 +908,15 @@ class TestRefreshDependents:
             assert env['GITHUB_TOKEN'] == 't'
             assert env['CLAUDE_CODE_TOOLBOX_ENV_AUTH'] == 'h:v'
         assert results == [
-            setup_environment.DependentResult('aegis-2', 0, False),
-            setup_environment.DependentResult('aegis-3', 1, False),
+            setup_environment.DependentResult('team-2', 0, False),
+            setup_environment.DependentResult('team-3', 1, False),
         ]
         assert [result.line() for result in results] == [
-            'aegis-2: ok',
-            'aegis-3: failed (exit code 1); retry with --profile aegis-3',
+            'team-2: ok',
+            'team-3: failed (exit code 1); retry with --profile team-3',
         ]
         output = capsys.readouterr().out
-        assert '=== Dependent profile aegis-2 ===' in output
+        assert '=== Dependent profile team-2 ===' in output
 
     def test_packaged_entry_point_starts_dependents_through_the_cli_module(self, tmp_path: Path) -> None:
         calls: list[list[str]] = []
@@ -928,18 +928,18 @@ class TestRefreshDependents:
         with (
             patch.object(setup_environment.subprocess, 'run', side_effect=_run),
             patch.object(setup_environment, '__name__', 'cc_toolbox.setup_environment'),
-            patch('sys.argv', ['/venv/bin/cc-toolbox', 'setup', '--profile', 'aegis-1']),
+            patch('sys.argv', ['/venv/bin/cc-toolbox', 'setup', '--profile', 'team-1']),
         ):
             setup_environment.refresh_dependents(self._dependents(tmp_path)[:1])
         assert calls == [[
-            sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'aegis-2', '--yes', '--child-run',
+            sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'team-2', '--yes', '--child-run',
             '--skip-install', '--no-admin',
         ]]
 
     def test_unstartable_child_and_elevation_remedy(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         dependents = self._dependents(tmp_path)[:1]
         (dependents[0].directory / 'resolved-config.yaml').write_text(
-            'name: Aegis\ndependencies:\n  common:\n  - npm install -g some-cli\n', encoding='utf-8',
+            'name: Team\ndependencies:\n  common:\n  - npm install -g some-cli\n', encoding='utf-8',
         )
         with (
             patch.object(setup_environment.subprocess, 'run', side_effect=OSError('no interpreter')),
@@ -948,12 +948,12 @@ class TestRefreshDependents:
             patch('sys.argv', ['/repo/scripts/setup_environment.py']),
         ):
             results = setup_environment.refresh_dependents(dependents)
-        assert results == [setup_environment.DependentResult('aegis-2', 1, True)]
+        assert results == [setup_environment.DependentResult('team-2', 1, True)]
         assert results[0].line() == (
-            'aegis-2: failed (exit code 1); retry with --profile aegis-2 from an elevated terminal '
+            'team-2: failed (exit code 1); retry with --profile team-2 from an elevated terminal '
             '(a global npm install needs administrator rights the run could not request)'
         )
-        assert 'Cannot start the run of profile "aegis-2": no interpreter' in capsys.readouterr().err
+        assert 'Cannot start the run of profile "team-2": no interpreter' in capsys.readouterr().err
 
 
 class TestDependentRefreshStep:
@@ -962,16 +962,16 @@ class TestDependentRefreshStep:
     def test_no_dependents_and_child_run(self, capsys: pytest.CaptureFixture[str]) -> None:
         """A child run -- of --profile all, or a dependent a source refreshes -- leaves the step to its parent."""
         with patch.object(setup_environment, 'refresh_dependents') as refresh:
-            assert setup_environment.run_dependent_refresh_step([], source_name='aegis-1', child_run=False) == []
+            assert setup_environment.run_dependent_refresh_step([], source_name='team-1', child_run=False) == []
             dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)
-            assert setup_environment.run_dependent_refresh_step([dep], source_name='aegis-1', child_run=True) == []
-            assert setup_environment.run_dependent_refresh_step([], source_name='aegis-2', child_run=True) == []
+            assert setup_environment.run_dependent_refresh_step([dep], source_name='team-1', child_run=True) == []
+            assert setup_environment.run_dependent_refresh_step([], source_name='team-2', child_run=True) == []
         refresh.assert_not_called()
         output = capsys.readouterr().out
-        assert output.count('Step 23: No installed profile links content from "aegis-1"') == 1
+        assert output.count('Step 23: No installed profile links content from "team-1"') == 1
         assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2
         assert '--profile all' not in output
-        assert 'aegis-2' not in output
+        assert 'team-2' not in output
 
     def test_dependents_are_refreshed(self, capsys: pytest.CaptureFixture[str]) -> None:
         dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)

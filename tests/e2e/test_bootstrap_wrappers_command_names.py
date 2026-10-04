@@ -469,13 +469,13 @@ class TestWindowsWrapperLinks:
         """--link-dirs and --link-from typed after the configuration reach setup_environment.py unchanged."""
         recorded = _run_windows_wrapper(
             tmp_path,
-            ['aegis', '--command-names', 'aegis-2', '--link-dirs', 'all', '--link-from', 'aegis-1', '--dry-run'],
+            ['team', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1', '--dry-run'],
             {},
         )
 
         assert recorded['args'] == [
             'run', '--no-project', '--python', '3.12', 'setup_environment.py',
-            'aegis', '--command-names', 'aegis-2', '--link-dirs', 'all', '--link-from', 'aegis-1', '--dry-run',
+            'team', '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1', '--dry-run',
         ]
         assert recorded['link_dirs'] is None
         assert recorded['link_from'] is None
@@ -486,18 +486,18 @@ class TestWindowsWrapperLinks:
             tmp_path,
             [],
             {
-                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'aegis',
-                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'aegis-2',
+                'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': 'team',
+                'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES': 'team-2',
                 'CLAUDE_CODE_TOOLBOX_LINK_DIRS': 'all',
-                'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'aegis-1',
+                'CLAUDE_CODE_TOOLBOX_LINK_FROM': 'team-1',
             },
         )
 
         assert recorded['args'] == ['run', '--no-project', '--python', '3.12', 'setup_environment.py']
-        assert recorded['config'] == 'aegis'
-        assert recorded['command_names'] == 'aegis-2'
+        assert recorded['config'] == 'team'
+        assert recorded['command_names'] == 'team-2'
         assert recorded['link_dirs'] == 'all'
-        assert recorded['link_from'] == 'aegis-1'
+        assert recorded['link_from'] == 'team-1'
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')
@@ -506,19 +506,19 @@ class TestWindowsWrapperProfileRerun:
 
     def test_profile_flag_without_configuration_is_forwarded(self, tmp_path: Path) -> None:
         """--profile NAME as the first argument is forwarded with no configuration in front of it."""
-        recorded = _run_windows_wrapper(tmp_path, ['--profile', 'aegis-1', '--dry-run'], {})
+        recorded = _run_windows_wrapper(tmp_path, ['--profile', 'team-1', '--dry-run'], {})
 
         assert recorded['args'] == [
-            'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--profile', 'aegis-1', '--dry-run',
+            'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--profile', 'team-1', '--dry-run',
         ]
         assert recorded['profile'] is None
 
     def test_one_liner_with_the_profile_variable_runs_without_arguments(self, tmp_path: Path) -> None:
         """The iex (irm ...) form with CLAUDE_CODE_TOOLBOX_PROFILE set runs the script with no arguments."""
-        recorded = _run_windows_wrapper(tmp_path, [], {'CLAUDE_CODE_TOOLBOX_PROFILE': 'aegis-1'})
+        recorded = _run_windows_wrapper(tmp_path, [], {'CLAUDE_CODE_TOOLBOX_PROFILE': 'team-1'})
 
         assert recorded['args'] == ['run', '--no-project', '--python', '3.12', 'setup_environment.py']
-        assert recorded['profile'] == 'aegis-1'
+        assert recorded['profile'] == 'team-1'
 
     def test_no_configuration_and_no_profile_is_refused_by_the_wrapper(self, tmp_path: Path) -> None:
         """Without a configuration or a profile the wrapper stops before running uv."""
@@ -534,20 +534,20 @@ class TestWindowsWrapperProfileRerun:
     ) -> None:
         """Whether the variable names the profile's own configuration or another, the script decides from the variable."""
         recorded = _run_windows_wrapper(
-            tmp_path, ['--profile', 'aegis-1', '--dry-run'], {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': config},
+            tmp_path, ['--profile', 'team-1', '--dry-run'], {'CLAUDE_CODE_TOOLBOX_ENV_CONFIG': config},
         )
 
         assert recorded['args'] == [
-            'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--profile', 'aegis-1', '--dry-run',
+            'run', '--no-project', '--python', '3.12', 'setup_environment.py', '--profile', 'team-1', '--dry-run',
         ]
         assert recorded['config'] == config
 
     def test_profile_with_a_positional_configuration_forwards_it_as_typed(self, tmp_path: Path) -> None:
         """A configuration typed beside --profile reaches the script as the configuration argument."""
-        recorded = _run_windows_wrapper(tmp_path, ['other.yaml', '--profile', 'aegis-1', '--dry-run'], {})
+        recorded = _run_windows_wrapper(tmp_path, ['other.yaml', '--profile', 'team-1', '--dry-run'], {})
 
         assert recorded['args'] == [
             'run', '--no-project', '--python', '3.12', 'setup_environment.py',
-            'other.yaml', '--profile', 'aegis-1', '--dry-run',
+            'other.yaml', '--profile', 'team-1', '--dry-run',
         ]
         assert recorded['config'] is None

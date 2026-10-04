@@ -1814,9 +1814,9 @@ class TestInheritValidation:
         """List of strings is accepted."""
         config = EnvironmentConfig.model_validate({
             'name': 'Test',
-            'inherit': ['base.yaml', 'aegis.yaml'],
+            'inherit': ['base.yaml', 'team.yaml'],
         })
-        assert config.inherit == ['base.yaml', 'aegis.yaml']
+        assert config.inherit == ['base.yaml', 'team.yaml']
 
     def test_inherit_single_element_list_valid(self) -> None:
         """Single-element list is valid at model level."""
@@ -2022,9 +2022,9 @@ class TestLinkKeys:
 
     def test_link_dirs_needs_no_command_names(self) -> None:
         """--command-names supplies the isolated profile at install time, so the model does not require the key."""
-        config = EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['all'], 'link-from': 'aegis-1'})
+        config = EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['all'], 'link-from': 'team-1'})
         assert config.command_names == []
-        assert config.link_from == 'aegis-1'
+        assert config.link_from == 'team-1'
 
     def test_link_dirs_rejects_unknown_entries(self) -> None:
         """An entry outside the linkable set is refused with the valid names."""
@@ -2044,7 +2044,7 @@ class TestLinkKeys:
         with pytest.raises(ValidationError, match='cannot be empty'):
             EnvironmentConfig.model_validate({'name': 'Test', 'link-dirs': ['']})
 
-    @pytest.mark.parametrize('value', ['base', 'BASE', 'aegis-1', 'claude_personal'])
+    @pytest.mark.parametrize('value', ['base', 'BASE', 'team-1', 'claude_personal'])
     def test_link_from_accepts_base_and_command_names(self, value: str) -> None:
         """base and a valid command name are valid sources."""
         assert EnvironmentConfig.model_validate({'name': 'Test', 'link-from': value}).link_from == value

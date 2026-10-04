@@ -7223,7 +7223,7 @@ def convert_gitlab_url_to_api(url: str) -> str:
         if len(parts) != 2:
             return url  # Unexpected format
 
-        project_path = parts[0]  # e.g., "ai/claude-code-configs"
+        project_path = parts[0]  # e.g., "group/project"
         remainder = parts[1]  # e.g., "main/configs/my-config.yaml"
 
         # Split remainder into branch and file path

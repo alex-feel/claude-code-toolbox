@@ -33,7 +33,7 @@ from tests.e2e.expected import EXPECTED_FILES
 
 windows_only = pytest.mark.skipif(sys.platform != 'win32', reason='UAC elevation exists only on Windows')
 
-# A configuration shaped like claude-personal.yaml: one profile under three names
+# A configuration that installs one profile under three names
 PERSONAL_CONFIG: dict[str, Any] = {
     'name': 'Personal Profile',
     'command-names': ['claude-a', 'claude-b', 'claude-c'],
@@ -41,7 +41,7 @@ PERSONAL_CONFIG: dict[str, Any] = {
     'user-settings': {'theme': 'dark'},
 }
 
-# A configuration shaped like aegis.yaml: no command-names at all
+# A configuration with no command-names at all
 SHARED_CONFIG: dict[str, Any] = {
     'name': 'Shared Environment',
     'user-settings': {'theme': 'light'},
@@ -351,7 +351,7 @@ class TestTypedNameNeverMergesWithTheConfiguration:
     def test_second_profile_gets_one_wrapper_and_the_first_stays_untouched(
         self, e2e_isolated_home: dict[str, Path],
     ) -> None:
-        """claude-personal installed, then the same YAML with --command-names p2."""
+        """claude-alt installed, then the same YAML with --command-names p2."""
         claude_dir = e2e_isolated_home['claude_dir']
         local_bin = e2e_isolated_home['local_bin']
         assert _install(['--yes']) == 0

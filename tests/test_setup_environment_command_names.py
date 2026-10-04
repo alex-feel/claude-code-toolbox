@@ -115,7 +115,7 @@ class TestReplacementNeverMerges:
 
     def test_single_typed_name_drops_the_configured_aliases(self) -> None:
         """One typed name is the whole list: no alias of the configuration survives."""
-        config = {'command-names': ['claude-personal', 'claude-p', 'claude-sub']}
+        config = {'command-names': ['claude-alt', 'claude-p', 'claude-sub']}
         resolved, errors = resolve_command_names(_args('claude-p2'), config)
         assert errors == []
         assert resolved.names == ['claude-p2']

@@ -442,19 +442,19 @@ class TestStep16StaysInsideTheProfile:
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
         base_settings = claude_dir / 'settings.json'
-        other_settings = claude_dir / 'aegis-1' / 'settings.json'
+        other_settings = claude_dir / 'team-1' / 'settings.json'
         _write_json(base_settings, {'env': {'DISABLE_UPDATES': '1'}})
         _write_json(other_settings, {'env': {'DISABLE_UPDATES': '1'}})
         config_path = _write_yaml(
-            tmp_path / 'aegis-2.yaml',
-            {'name': 'Aegis 2', 'command-names': ['aegis-2'], 'user-settings': {'theme': 'dark'}},
+            tmp_path / 'team-2.yaml',
+            {'name': 'Team 2', 'command-names': ['team-2'], 'user-settings': {'theme': 'dark'}},
         )
 
         _, exit_code = _run_setup(config_path, home, '--yes', '--skip-install')
 
         assert exit_code is None
         output = _output(capsys)
-        assert f'aegis-1: {other_settings} (DISABLE_UPDATES) -- re-run with --profile aegis-1' in output
+        assert f'team-1: {other_settings} (DISABLE_UPDATES) -- re-run with --profile team-1' in output
         assert f'base: {base_settings} (DISABLE_UPDATES) -- re-run with --profile base' in output
         assert 're-run each listed profile with --profile <name> to remove them' in output
         assert _read_json(base_settings) == {'env': {'DISABLE_UPDATES': '1'}}
@@ -468,7 +468,7 @@ class TestStep16StaysInsideTheProfile:
     ) -> None:
         home = e2e_isolated_home['home']
         claude_dir = e2e_isolated_home['claude_dir']
-        other_dir = claude_dir / 'aegis-1'
+        other_dir = claude_dir / 'team-1'
         self._seed_stale_controls(claude_dir / 'settings.json', home / '.claude.json')
         self._seed_stale_controls(other_dir / 'settings.json', other_dir / '.claude.json')
         other_settings_bytes = (other_dir / 'settings.json').read_bytes()
@@ -485,8 +485,8 @@ class TestStep16StaysInsideTheProfile:
         assert (other_dir / 'settings.json').read_bytes() == other_settings_bytes
         assert (other_dir / '.claude.json').read_bytes() == other_json_bytes
         output = _output(capsys)
-        assert f'aegis-1: {other_dir / "settings.json"} (DISABLE_AUTOUPDATER, DISABLE_UPDATES)' in output
-        assert f'aegis-1: {other_dir / ".claude.json"} (autoUpdates, autoInstallIdeExtension)' in output
+        assert f'team-1: {other_dir / "settings.json"} (DISABLE_AUTOUPDATER, DISABLE_UPDATES)' in output
+        assert f'team-1: {other_dir / ".claude.json"} (autoUpdates, autoInstallIdeExtension)' in output
 
     def test_pinned_base_keeps_its_controls_through_an_unpinned_isolated_run(
         self,

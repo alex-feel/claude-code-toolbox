@@ -127,39 +127,39 @@ class TestOwnershipByManifest:
 
     def test_alias_of_another_profile_is_refused(self, home: Path) -> None:
         """The message names the owning profile, its manifest, and the remedy."""
-        manifest = _write_manifest(home, 'claude-personal', 'claude-personal', ['claude-personal', 'claude-p'])
+        manifest = _write_manifest(home, 'claude-alt', 'claude-alt', ['claude-alt', 'claude-p'])
 
         errors = command_name_conflicts(['claude-p'], home)
 
         assert len(errors) == 1
-        assert 'Command name "claude-p" belongs to the profile "claude-personal"' in errors[0]
+        assert 'Command name "claude-p" belongs to the profile "claude-alt"' in errors[0]
         assert str(manifest) in errors[0]
         assert 'leaves it out' in errors[0]
 
     def test_primary_name_of_another_profile_is_refused_as_an_alias(self, home: Path) -> None:
         """Another profile's primary name cannot become an alias of this run."""
-        _write_manifest(home, 'claude-personal', 'claude-personal', ['claude-personal'])
+        _write_manifest(home, 'claude-alt', 'claude-alt', ['claude-alt'])
 
-        errors = command_name_conflicts(['p2', 'claude-personal'], home)
+        errors = command_name_conflicts(['p2', 'claude-alt'], home)
 
         assert len(errors) == 1
-        assert 'is the primary name of the profile "claude-personal"' in errors[0]
+        assert 'is the primary name of the profile "claude-alt"' in errors[0]
 
     def test_names_of_the_same_profile_are_accepted(self, home: Path) -> None:
         """A re-run of a profile may keep or drop its own names."""
-        _write_manifest(home, 'claude-personal', 'claude-personal', ['claude-personal', 'claude-p', 'claude-sub'])
+        _write_manifest(home, 'claude-alt', 'claude-alt', ['claude-alt', 'claude-p', 'claude-sub'])
 
-        assert command_name_conflicts(['claude-personal', 'claude-p'], home) == []
-        assert command_name_conflicts(['claude-personal', 'claude-sub', 'claude-new'], home) == []
+        assert command_name_conflicts(['claude-alt', 'claude-p'], home) == []
+        assert command_name_conflicts(['claude-alt', 'claude-sub', 'claude-new'], home) == []
 
     def test_names_are_compared_without_regard_to_case(self, home: Path) -> None:
         """Case-insensitive file systems would map Claude-P onto claude-p's wrappers."""
-        _write_manifest(home, 'claude-personal', 'claude-personal', ['claude-personal', 'claude-p'])
+        _write_manifest(home, 'claude-alt', 'claude-alt', ['claude-alt', 'claude-p'])
 
         errors = command_name_conflicts(['Claude-P'], home)
 
         assert len(errors) == 1
-        assert 'belongs to the profile "claude-personal"' in errors[0]
+        assert 'belongs to the profile "claude-alt"' in errors[0]
 
     def test_unreadable_manifest_still_owns_its_directory_name(self, home: Path) -> None:
         """A manifest that cannot be parsed leaves its profile's primary name taken."""
