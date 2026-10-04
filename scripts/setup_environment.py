@@ -5840,6 +5840,65 @@ def _letter_case_classes(pattern: str) -> str:
     return re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', pattern)
 
 
+def _windows_short_path(path: Path) -> Path | None:
+    """Return the 8.3 short spelling Windows gives ``path``, or None when the call fails.
+
+    ``GetShortPathNameW`` spells every component of an existing path by its
+    8.3 alias; a component without one (eight characters or fewer, or on a
+    volume that creates no 8.3 names) keeps its long name, and a path that
+    does not exist makes the call fail.
+
+    Args:
+        path: An absolute path on a Windows volume.
+
+    Returns:
+        The short spelling, or None when Windows gives none.
+    """
+    import ctypes
+
+    win_dll = getattr(ctypes, 'WinDLL', None)
+    if win_dll is None:
+        return None
+    try:
+        get_short_path_name = win_dll('kernel32', use_last_error=True).GetShortPathNameW
+        get_short_path_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        get_short_path_name.restype = ctypes.c_uint
+        needed = get_short_path_name(str(path), None, 0)
+        if needed == 0:
+            return None
+        buffer = ctypes.create_unicode_buffer(needed)
+        copied = get_short_path_name(str(path), buffer, needed)
+        if copied == 0 or copied >= needed:
+            return None
+        return Path(buffer.value)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _config_home_spellings(home_dir: Path) -> list[Path]:
+    """Return the home as given and, on Windows, its 8.3 short spelling when that differs beyond letter case.
+
+    Windows spells a home whose account name is longer than eight characters
+    short in ``%TEMP%`` and ``%TMP%`` (``C:\\Users\\CHRIST~1\\...``), so a
+    session started under such a path hands Claude Code ancestor paths the
+    long spelling does not match. A short spelling that equals the long one
+    up to letter case (a volume without 8.3 names, or components of eight
+    characters or fewer) adds nothing the case classes do not cover.
+
+    Args:
+        home_dir: The user's home directory.
+
+    Returns:
+        One or two spellings, the home as given first.
+    """
+    spellings = [home_dir]
+    if sys.platform == 'win32':
+        short = _windows_short_path(home_dir)
+        if short is not None and short.as_posix().casefold() != home_dir.as_posix().casefold():
+            spellings.append(short)
+    return spellings
+
+
 def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) -> list[str]:
     """Name the base profile's memory files an isolated profile excludes from its sessions.
 
@@ -5849,24 +5908,35 @@ def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) 
     case-sensitively against paths it builds from the working directory as
     spelled, which on Windows differs from the home as given whenever the
     shell lowercased the drive letter or the user typed the path in another
-    case. An 8.3 short name in the working directory path (``PROJEC~1``) is
-    a different spelling the classes do not cover.
+    case. On Windows the same patterns are repeated for the home's 8.3 short
+    spelling when Windows gives one that differs (see
+    ``_config_home_spellings()``), so a session started under the short home
+    (``C:\\Users\\CHRIST~1\\...``, the spelling of ``%TEMP%``) matches them
+    too, whether the components below the home are spelled long or short. A
+    working directory that mixes the two spellings of the components above
+    the home (``C:\\DOCUME~1\\Me\\...``, with the home itself spelled long)
+    matches neither set.
 
     Args:
         home_dir: The user's home directory.
         links_rules_from_base: Whether the profile's rules/ entry is a link
             to ``~/.claude/rules``. The base rules are then the profile's own
             rules, so only the memory files at the root of ``~/.claude`` are
-            excluded.
+            excluded, under each spelling.
 
     Returns:
-        The patterns, CLAUDE.md and CLAUDE.local.md first.
+        The patterns of the home as given, CLAUDE.md and CLAUDE.local.md
+        first, then the same patterns of its short spelling when there is
+        one.
     """
-    base = (home_dir / '.claude').as_posix()
-    patterns = [f'{base}/{name}' for name in BASE_CONFIG_HOME_MEMORY_FILES]
+    names = list(BASE_CONFIG_HOME_MEMORY_FILES)
     if not links_rules_from_base:
-        patterns.append(f'{base}/{RULES_PROFILE_DIR}/**')
-    return [_letter_case_classes(pattern) for pattern in patterns]
+        names.append(f'{RULES_PROFILE_DIR}/**')
+    return [
+        _letter_case_classes(f'{(spelling / ".claude").as_posix()}/{name}')
+        for spelling in _config_home_spellings(home_dir)
+        for name in names
+    ]
 
 
 def apply_base_config_home_exclusions(
@@ -16699,6 +16769,26 @@ fi
 
 '''
 
+# Block every Windows launch.sh runs before the home-folder guard. Claude Code
+# tells the home folder's .claude (the base profile) apart from a project's
+# .claude by spelling, and Windows spells a home whose account name is longer
+# than eight characters by its 8.3 short name in %TEMP% and %TMP%, so a session
+# started under such a path would load the base profile's skills, agents and
+# commands as a project's. cygpath -lm gives the long spelling of the working
+# directory in mixed form; -ef confirms it names the same directory before the
+# change, and a failed cygpath or cd leaves the working directory as it was.
+WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD = '''# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\\Users\\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
+'''
+
 # Block every launch.sh runs before it starts claude. Claude Code reads the
 # working directory's .claude as the project settings of the session, so a
 # session started in the home folder would read the home folder's .claude,
@@ -16748,7 +16838,9 @@ def create_launcher_script(
     the calling cmd.exe), so they reference no loader and leave that shell's
     environment as it was; start.cmd keeps its own variables behind setlocal.
 
-    The Windows launch.sh runs WINDOWS_SLASH_ARGUMENTS_GUARD before it starts
+    The Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD, so a
+    session started under an 8.3 short name begins in the long spelling of
+    its working directory, and WINDOWS_SLASH_ARGUMENTS_GUARD before it starts
     claude, so Git Bash hands slash commands to claude.exe unchanged.
 
     Args:
@@ -16862,7 +16954,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-{HOME_FOLDER_SETTINGS_GUARD}PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
@@ -17021,7 +17113,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-{HOME_FOLDER_SETTINGS_GUARD}''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''\
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''\
 exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')

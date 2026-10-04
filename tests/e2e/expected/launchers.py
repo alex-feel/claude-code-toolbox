@@ -372,6 +372,16 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
 # Started in the home folder, a session would read the home folder's .claude
 # (the base profile) as its project settings; keep the settings to the profile
 # there. Anywhere else the working project's own .claude applies as usual.
@@ -416,6 +426,16 @@ MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+fi
+
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
 fi
 
 # Started in the home folder, a session would read the home folder's .claude
@@ -545,6 +565,16 @@ MCP_FLAGS=()
 if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_WIN="$(cygpath -m "$MCP_CONFIG_PATH" 2>/dev/null || echo "$MCP_CONFIG_PATH")"
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
+fi
+
+# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\Users\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
 fi
 
 # Started in the home folder, a session would read the home folder's .claude

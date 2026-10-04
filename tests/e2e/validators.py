@@ -19,6 +19,7 @@ from typing import Any
 from typing import cast
 
 from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
+from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
 from tests.e2e.expected import EXPECTED_JSON_KEYS
 
 
@@ -868,6 +869,7 @@ def validate_launcher_script(
     errors.extend(validate_launcher_has_no_update_check(path))
     if path.name == 'launch.sh':
         errors.extend(validate_launcher_limits_home_folder_settings(path))
+        errors.extend(validate_launcher_starts_in_the_long_working_directory(path, windows=current_platform == 'win32'))
     return errors
 
 
@@ -913,6 +915,41 @@ def validate_launcher_limits_home_folder_settings(launch_sh: Path) -> list[str]:
         if flags not in line or line.index('"${SOURCES[@]}"') > line.index('"$@"')
     )
     return errors
+
+
+def validate_launcher_starts_in_the_long_working_directory(launch_sh: Path, *, windows: bool) -> list[str]:
+    """Validate how launch.sh spells the working directory it starts Claude Code in.
+
+    Claude Code tells the home folder's .claude, the base profile, apart from
+    a project's .claude by spelling, and Windows spells a home whose account
+    name is longer than eight characters short in %TEMP% and %TMP%, so the
+    Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD once,
+    before any line that starts claude: it changes to the long spelling of
+    the working directory when cygpath names the same directory. Linux and
+    macOS have one spelling per directory, and their launch.sh carries no
+    such change.
+
+    Args:
+        launch_sh: The generated launch.sh.
+        windows: Whether launch_sh is the Windows launcher.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = launch_sh.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launch_sh}: {e}']
+    if not windows:
+        if 'cygpath -lm' in content or 'LONG_PWD' in content:
+            return [f'{launch_sh}: the Unix launcher changes the spelling of the working directory']
+        return []
+    if content.count(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) != 1:
+        return [f'{launch_sh}: expected the working-directory spelling guard exactly once']
+    guard_end = content.index(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) + len(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD)
+    if any(line.strip().startswith(('exec claude ', 'claude "')) for line in content[:guard_end].splitlines()):
+        return [f'{launch_sh}: claude starts before the working-directory spelling guard runs']
+    return []
 
 
 # Text a configuration-update check would put into a generated launcher: the

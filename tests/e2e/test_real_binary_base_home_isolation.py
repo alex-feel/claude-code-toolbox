@@ -12,8 +12,14 @@ would load its ``CLAUDE.local.md`` as well. The toolbox closes every channel:
 the profile's ``config.json`` excludes the base profile's memory files, with
 every letter of each pattern spelled as a case class because Claude Code
 matches the patterns case-sensitively against paths built from the working
-directory as spelled, and ``launch.sh`` limits a session started in the home
-folder to the profile's own settings sources.
+directory as spelled, and on Windows under the home's 8.3 short spelling as
+well, because Windows spells a home whose account name is longer than eight
+characters short in ``%TEMP%`` and ``%TMP%``; ``launch.sh`` limits a session
+started in the home folder to the profile's own settings sources and, on
+Windows, starts the session in the long spelling of its working directory,
+because Claude Code tells the home folder's ``.claude`` apart from a project's
+by spelling and would otherwise load the base profile's skills, agents and
+commands from a project under the short home.
 
 The profile is installed by ``main()`` in a child interpreter and started
 exactly as a user starts it -- through ``launch.sh`` and, on Windows,
@@ -21,13 +27,15 @@ exactly as a user starts it -- through ``launch.sh`` and, on Windows,
 ``~/.local/bin`` symlink -- with no argument added by the tests, from the home
 folder, from a project below it, from ``~/.claude`` itself, from the profile
 directory and, on Windows, from the project spelled with a lowercase drive
-letter and all in lowercase. Every channel carries a sentinel that is
-observable only when it loaded: the requested model, a request header the
-``env`` block sets, a marker file each hook writes, memory text in the request
-body, and the skills, agents, commands and MCP servers the init message lists.
-Control runs without the toolbox's exclusions, and with exact-case patterns
-from a working directory spelled in another case, show each base sentinel
-leaking, so every negative assertion is discriminating. The working project's
+letter, all in lowercase, under the home's 8.3 short spelling and with every
+component short. Every channel carries a sentinel that is observable only
+when it loaded: the requested model, a request header the ``env`` block sets,
+a marker file each hook writes, memory text in the request body, and the
+skills, agents, commands and MCP servers the init message lists. Control runs
+without the toolbox's exclusions, with exact-case patterns from a working
+directory spelled in another case, and without the launcher or the short
+spelling's patterns from a working directory under the short home, show each
+base sentinel leaking, so every negative assertion is discriminating. The working project's
 own ``CLAUDE.md``, ``CLAUDE.local.md``, ``.claude`` settings, hooks, rules,
 skills, agents and commands keep loading, the profile's own ``settings.json``
 applies everywhere, and a ``claudeMdExcludes`` the configuration declares
@@ -43,15 +51,17 @@ therefore runs without ``--strict-mcp-config``, shows that for ``.mcp.json``.
 The layout lives where no real config home is an ancestor (see
 linked_entries_support.workspace_root()), so nothing real contributes to a
 run; the sentinels are unique strings, so no real file could stand in for one
-either. Skipped when the binary is absent; CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1
-(set in CI) turns absence into a failure instead of a silent skip.
+either. The home folder's name is longer than eight characters, so Windows
+gives it a differing 8.3 spelling wherever the volume creates 8.3 names, and
+the short-spelling tests skip with the reason where it does not. Skipped when
+the binary is absent; CLAUDE_CODE_TOOLBOX_REQUIRE_REAL_BINARY=1 (set in CI)
+turns absence into a failure instead of a silent skip.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -66,6 +76,9 @@ import yaml
 from scripts import setup_environment
 from scripts.setup_environment import CLAUDE_MD_EXCLUDES_KEY
 from tests.e2e import linked_entries_support as support
+from tests.e2e.base_home_support import BASE_MEMORY_NAMES
+from tests.e2e.base_home_support import base_exclusions
+from tests.e2e.base_home_support import short_spelling
 from tests.e2e.fake_anthropic_api import FakeAnthropicServer
 from tests.e2e.shells import find_powershell
 
@@ -104,8 +117,12 @@ PROJECT_SKILL, PROJECT_AGENT, PROJECT_COMMAND = 'project-skill', 'project-agent'
 PROFILE_SKILL, PROFILE_AGENT, PROFILE_COMMAND, PROFILE_MCP = 'own-skill', 'own-agent', 'own-cmd', 'own-mcp'
 HOME_MCP = 'home-mcp'
 MARKER_NAMES = ('base-hook', 'base-local-hook', 'project-hook', 'profile-hook', 'profile-settings-hook')
-BASE_MEMORY_NAMES = ('CLAUDE.md', 'CLAUDE.local.md', 'rules/**')
 WINDOWS_SPELLINGS = ['lowercase-drive', 'lowercase']
+# The project under the home's 8.3 short spelling: the %TEMP% shape (home
+# short, the rest long) and every component short
+SHORT_SPELLINGS = ['short-home', 'short']
+# The entry points the short-spelling sessions start through
+SHORT_SPELLING_ENTRY_POINTS = ['launch.sh', f'{PROFILE}.cmd']
 
 pytestmark = [
     pytest.mark.real_binary,
@@ -144,30 +161,43 @@ def _failing_mcp_server() -> dict[str, Any]:
     return {'command': sys.executable, 'args': ['-c', 'import sys; sys.exit(1)']}
 
 
-def _case_classes(text: str) -> str:
-    """Spell every ASCII letter of ``text`` as a glob class matching either case."""
-    return re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', text)
-
-
-def _base_exclusions(home: Path, *, with_rules: bool = True) -> list[str]:
-    """The exclusions an isolated profile of ``home`` carries for the base config home."""
-    base = (home / '.claude').as_posix()
-    names = BASE_MEMORY_NAMES if with_rules else BASE_MEMORY_NAMES[:2]
-    return [_case_classes(f'{base}/{name}') for name in names]
-
-
 def _exact_case_exclusions(home: Path) -> list[str]:
-    """The same exclusions spelled with the home's own letter case, matching that one spelling only."""
+    """The long spelling's exclusions spelled with the home's own letter case, matching that one spelling only."""
     base = (home / '.claude').as_posix()
     return [f'{base}/{name}' for name in BASE_MEMORY_NAMES]
 
 
 def _spellings(directory: Path) -> list[str]:
-    """Every spelling a session may start ``directory`` under: as given and, on Windows, in other letter cases."""
+    """Every spelling a session may start ``directory`` under: as given and, on Windows, in other cases and short."""
     spelled = str(directory)
     if sys.platform != 'win32':
         return [spelled]
-    return [spelled, spelled[0].lower() + spelled[1:], spelled.lower()]
+    spellings = [spelled, spelled[0].lower() + spelled[1:], spelled.lower()]
+    short = short_spelling(directory)
+    if short is not None:
+        spellings.append(str(short))
+    return spellings
+
+
+def _short_spelled(layout: Layout, spelling: str) -> str:
+    """The project under the home's 8.3 short spelling, or skip when the volume creates no 8.3 names.
+
+    Args:
+        layout: The layout whose project is spelled.
+        spelling: ``short-home`` keeps the components below the home long,
+            as %TEMP% spells them; ``short`` spells every component short.
+
+    Returns:
+        The working directory as a string, spelled as asked.
+    """
+    short_home = short_spelling(layout.home)
+    if short_home is None:
+        pytest.skip('the volume creates no 8.3 names for the home folder')
+    if spelling == 'short-home':
+        return str(short_home / layout.project.relative_to(layout.home))
+    short_project = short_spelling(layout.project)
+    assert short_project is not None
+    return str(short_project)
 
 
 def _spell(directory: Path, spelling: str) -> str:
@@ -377,7 +407,8 @@ class Layout:
 
 def _build_layout(tmp_path: Path) -> Iterator[Layout]:
     root, cleanup = support.workspace_root(tmp_path)
-    home = root / 'home'
+    # A name longer than eight characters, so the home has an 8.3 spelling of its own
+    home = root / 'home-folder'
     project = home / 'work' / 'project'
     project.mkdir(parents=True)
     markers = {name: root / f'{name}.marker' for name in MARKER_NAMES}
@@ -605,6 +636,37 @@ def test_session_below_the_home_spelled_in_another_letter_case_still_drops_the_b
         assert SENTINELS[key] in run.body_text, f'{key} missing: {run.describe()}'
 
 
+@pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+@pytest.mark.parametrize('entry_point', SHORT_SPELLING_ENTRY_POINTS)
+@pytest.mark.parametrize('spelling', SHORT_SPELLINGS)
+def test_session_below_the_home_spelled_by_its_short_name_still_drops_the_base(
+    layout: Layout, spelling: str, entry_point: str,
+) -> None:
+    """A working directory under the home's 8.3 short spelling still keeps every channel of the base profile shut.
+
+    Windows spells a home whose account name is longer than eight characters
+    short in %TEMP% and %TMP%, and a session started under such a path hands
+    Claude Code ancestor paths the long spelling's patterns do not match and
+    a home folder .claude it no longer tells apart from a project's. The
+    launcher starts the session in the long spelling of the same directory,
+    so Claude Code skips the base profile's skills, agents and commands as it
+    does below a home spelled long, and the patterns of the short spelling
+    keep the base CLAUDE.md and rules out of a session that reaches Claude
+    Code under the short spelling. The project's own CLAUDE.md and rule and
+    the profile's own files load as before.
+    """
+    argv = dict(_entry_points(layout))[entry_point]
+
+    run = layout.run(argv, _short_spelled(layout, spelling))
+
+    init = _assert_turn(run)
+    assert os.path.normcase(init['cwd']) == os.path.normcase(str(layout.project)), init['cwd']
+    _assert_nothing_from_the_base(layout, run, init)
+    _assert_profile_applies(layout, run, init)
+    for key in ('project-claude-md', 'project-rule'):
+        assert SENTINELS[key] in run.body_text, f'{key} missing: {run.describe()}'
+
+
 def test_a_caller_s_own_setting_sources_come_after_the_launcher_s_and_win(layout: Layout) -> None:
     """A --setting-sources the user passes to the launcher follows the launcher's, so Claude Code takes the user's.
 
@@ -652,7 +714,7 @@ def test_config_json_carries_the_declared_and_the_base_exclusions(layout: Layout
     settings = json.loads((layout.profile_dir / 'config.json').read_text(encoding='utf-8'))
 
     assert settings[CLAUDE_MD_EXCLUDES_KEY] == [
-        f'{layout.project.as_posix()}/CLAUDE.local.md', *_base_exclusions(layout.home),
+        f'{layout.project.as_posix()}/CLAUDE.local.md', *base_exclusions(layout.home),
     ]
 
 
@@ -718,7 +780,7 @@ def test_control_with_exact_case_patterns_shows_the_base_leaking_below_a_home_sp
     directory as spelled, which is what the case classes absorb.
     """
     settings = json.loads((layout.profile_dir / 'config.json').read_text(encoding='utf-8'))
-    declared = [p for p in settings[CLAUDE_MD_EXCLUDES_KEY] if p not in _base_exclusions(layout.home)]
+    declared = [p for p in settings[CLAUDE_MD_EXCLUDES_KEY] if p not in base_exclusions(layout.home)]
     settings[CLAUDE_MD_EXCLUDES_KEY] = [*declared, *_exact_case_exclusions(layout.home)]
     control = layout.root / 'exact-case-config.json'
     control.write_text(json.dumps(settings), encoding='utf-8')
@@ -735,6 +797,55 @@ def test_control_with_exact_case_patterns_shows_the_base_leaking_below_a_home_sp
     assert SENTINELS['base-claude-md'] in lowercase.body_text, lowercase.describe()
     assert SENTINELS['base-rule'] in lowercase.body_text, lowercase.describe()
     assert SENTINELS['project-claude-md'] in lowercase.body_text, lowercase.describe()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+def test_controls_below_the_short_home_show_what_the_patterns_and_the_launcher_each_close(layout: Layout) -> None:
+    """claude itself, without the launcher, from the project under the home's 8.3 short spelling.
+
+    With the profile's full config.json the session reaches Claude Code
+    under the short spelling: the short spelling's patterns keep the base
+    CLAUDE.md and rules out, while the base profile's skill, agent and
+    command load as a project's, because Claude Code tells the home folder's
+    .claude apart from a project's by spelling and only the launcher starts
+    the session in the long spelling. With the short spelling's three
+    patterns removed the base memory loads too, from the project under the
+    short home in the shape %TEMP% spells it and with every component short,
+    and stays out from the project as spelled.
+    """
+    env = {**layout.session_env(), 'CLAUDE_CONFIG_DIR': str(layout.profile_dir)}
+    full = _control_argv(layout.profile_dir / 'config.json')
+    for spelling in SHORT_SPELLINGS:
+        under_short_home = layout.run(full, _short_spelled(layout, spelling), env=env)
+        init = _assert_turn(under_short_home)
+        assert '~' in init['cwd'], init['cwd']
+        assert SENTINELS['base-claude-md'] not in under_short_home.body_text, under_short_home.describe()
+        assert SENTINELS['base-rule'] not in under_short_home.body_text, under_short_home.describe()
+        assert BASE_SKILL in init['skills'], init['skills']
+        assert BASE_AGENT in init['agents'], init['agents']
+        assert BASE_COMMAND in init['slash_commands'], init['slash_commands']
+
+    settings = json.loads((layout.profile_dir / 'config.json').read_text(encoding='utf-8'))
+    long_only = base_exclusions(layout.home)[:3]
+    settings[CLAUDE_MD_EXCLUDES_KEY] = [
+        p for p in settings[CLAUDE_MD_EXCLUDES_KEY] if p in long_only or p not in base_exclusions(layout.home)
+    ]
+    assert len(settings[CLAUDE_MD_EXCLUDES_KEY]) == 4, settings[CLAUDE_MD_EXCLUDES_KEY]
+    control = layout.root / 'long-spelling-config.json'
+    control.write_text(json.dumps(settings), encoding='utf-8')
+    long_patterns_only = _control_argv(control)
+
+    as_spelled = layout.run(long_patterns_only, layout.project, env=env)
+    _assert_turn(as_spelled)
+    assert SENTINELS['base-claude-md'] not in as_spelled.body_text, as_spelled.describe()
+    assert SENTINELS['base-rule'] not in as_spelled.body_text, as_spelled.describe()
+
+    for spelling in SHORT_SPELLINGS:
+        below_short_home = layout.run(long_patterns_only, _short_spelled(layout, spelling), env=env)
+        _assert_turn(below_short_home)
+        assert SENTINELS['base-claude-md'] in below_short_home.body_text, below_short_home.describe()
+        assert SENTINELS['base-rule'] in below_short_home.body_text, below_short_home.describe()
+        assert SENTINELS['project-claude-md'] in below_short_home.body_text, below_short_home.describe()
 
 
 def test_rules_linked_from_the_base_profile_still_load(tmp_path: Path) -> None:
@@ -758,7 +869,7 @@ def test_rules_linked_from_the_base_profile_still_load(tmp_path: Path) -> None:
         profile_dir = home / '.claude' / PROFILE
         settings = json.loads((profile_dir / 'config.json').read_text(encoding='utf-8'))
         assert settings[CLAUDE_MD_EXCLUDES_KEY] == [
-            f'{project.as_posix()}/CLAUDE.local.md', *_base_exclusions(home, with_rules=False),
+            f'{project.as_posix()}/CLAUDE.local.md', *base_exclusions(home, with_rules=False),
         ]
         _trust(profile_dir, [home, project])
         server = FakeAnthropicServer().start()

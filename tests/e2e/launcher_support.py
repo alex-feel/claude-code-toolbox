@@ -79,6 +79,8 @@ class LaunchRecord:
         args: The command-line arguments, one per element.
         session_probe: What the stub's Git Bash child handed a native program,
             or None when the launch did not set SESSION_BASH_VARIABLE.
+        cwd: The working directory the stub was started in, as the native
+            program spells it.
     """
 
     config_dir: str
@@ -86,6 +88,7 @@ class LaunchRecord:
     conversion_exclusions: str | None
     args: list[str]
     session_probe: SessionProbe | None
+    cwd: str
 
     def value_after(self, flag: str) -> str:
         """Return the argument that follows flag.
@@ -253,6 +256,7 @@ def write_stub_claude(stub_dir: Path, record_file: Path) -> None:
         "    'conversion_exclusions': os.environ.get('MSYS2_ARG_CONV_EXCL'),\n"
         "    'args': sys.argv[1:],\n"
         "    'session_probe': session_probe,\n"
+        "    'cwd': os.getcwd(),\n"
         '}\n'
         f"with open({str(record_file)!r}, 'w', encoding='utf-8') as handle:\n"
         '    json.dump(record, handle)\n',
@@ -362,6 +366,7 @@ def launch(
         conversion_exclusions=record['conversion_exclusions'],
         args=record['args'],
         session_probe=None if probe is None else SessionProbe(received=probe['received'], converted=probe['converted']),
+        cwd=record['cwd'],
     )
 
 

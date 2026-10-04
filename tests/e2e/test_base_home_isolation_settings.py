@@ -5,26 +5,34 @@ project ``.claude`` of a session started in the home folder and as ancestor
 project memory of every session started below it. An isolated install
 therefore puts the base profile's memory files into ``claudeMdExcludes`` of
 its ``config.json`` (unioned with the exclusions the configuration declares,
-and without the rules when the profile's ``rules/`` is a link to the base
-rules), names the injected value with the ``[auto]`` marker before consent,
-and writes launchers that limit a session started in the home folder to the
-profile's own settings sources. A base install writes none of this.
+without the rules when the profile's ``rules/`` is a link to the base rules,
+and on Windows under the home's 8.3 short spelling as well when Windows gives
+one that differs), names the injected value with the ``[auto]`` marker before
+consent, and writes launchers that limit a session started in the home folder
+to the profile's own settings sources. A base install writes none of this.
 
 Every test runs main() against YAML files on disk in an isolated home; only
 network access, the Claude Code binary, MCP registration, OS-level variables
-and the Windows PATH registry are replaced.
+and the Windows PATH registry are replaced. The expected patterns come from
+``base_home_support``, which asks the Windows API for the short spelling
+itself, so they share no code with the toolbox.
 """
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from scripts import setup_environment
 from scripts.setup_environment import CLAUDE_MD_EXCLUDES_KEY
+from tests.e2e.base_home_support import base_exclusions
+from tests.e2e.base_home_support import short_spelling
 from tests.e2e.profile_support import home_state
 from tests.e2e.profile_support import run_main
 from tests.e2e.profile_support import write_config
@@ -57,13 +65,9 @@ def _team(user_settings: dict[str, Any] | None = None, **extra: Any) -> dict[str
     return config
 
 
-def _patterns(home: Path) -> list[str]:
-    """The exclusions an isolated profile of ``home`` carries, memory files first, every letter a case class."""
-    base = (home / '.claude').as_posix()
-    return [
-        re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', f'{base}/{name}')
-        for name in ('CLAUDE.md', 'CLAUDE.local.md', 'rules/**')
-    ]
+def _patterns(home: Path, *, with_rules: bool = True) -> list[str]:
+    """The exclusions an isolated profile of ``home`` carries: the long spelling's, then on Windows the short spelling's."""
+    return base_exclusions(home, with_rules=with_rules)
 
 
 def _config_json(profile_dir: Path) -> dict[str, Any]:
@@ -74,6 +78,14 @@ def _config_json(profile_dir: Path) -> dict[str, Any]:
 def _output(capsys: pytest.CaptureFixture[str]) -> str:
     captured = capsys.readouterr()
     return (captured.out + captured.err).replace('\r\n', '\n')
+
+
+def _auto_line_patterns(output: str) -> list[str]:
+    """The patterns the summary's ``[auto] user-settings.claudeMdExcludes`` line names, in order."""
+    for line in output.splitlines():
+        if AUTO_LINE in line:
+            return re.sub(r'\x1b\[[0-9;]*m', '', line.split(AUTO_LINE, 1)[1]).split(', ')
+    return []
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -166,8 +178,8 @@ class TestIsolatedConfigJsonExcludesTheBaseConfigHome:
             str(cfg), *SKIP, '--yes', '--command-names', 'work-2', '--link-dirs', 'rules', '--link-from', 'base',
         ]) == 0
 
-        assert _config_json(home / '.claude' / 'work-2')[CLAUDE_MD_EXCLUDES_KEY] == _patterns(home)[:2]
-        assert AUTO_LINE + ', '.join(_patterns(home)[:2]) in _output(capsys)
+        assert _config_json(home / '.claude' / 'work-2')[CLAUDE_MD_EXCLUDES_KEY] == _patterns(home, with_rules=False)
+        assert AUTO_LINE + ', '.join(_patterns(home, with_rules=False)) in _output(capsys)
 
     def test_rules_linked_from_another_profile_still_exclude_the_base_rules(
         self, e2e_isolated_home: dict[str, Path], configs: Path,
@@ -181,6 +193,80 @@ class TestIsolatedConfigJsonExcludesTheBaseConfigHome:
         ]) == 0
 
         assert _config_json(home / '.claude' / 'team-2')[CLAUDE_MD_EXCLUDES_KEY] == _patterns(home)
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestShortHomeSpellingExclusions:
+    """On Windows config.json also excludes the base memory under the home's 8.3 short spelling.
+
+    Windows spells a home whose account name is longer than eight characters
+    short in %TEMP% and %TMP% (``C:\\Users\\CHRIST~1\\...``), and Claude Code
+    builds the ancestor paths it matches the exclusions against from such a
+    working directory as spelled; the isolated home of these tests lies below
+    pytest's temporary directory, whose components are longer than eight
+    characters, so Windows gives it a differing short spelling.
+    """
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+    def test_install_writes_the_short_spelling_s_patterns_after_the_long_ones(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        short = short_spelling(home)
+        if short is None:
+            pytest.skip('the volume creates no 8.3 names for the isolated home')
+        cfg = write_config(configs, 'team.yaml', _team())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'work-1']) == 0
+
+        patterns = _config_json(home / '.claude' / 'work-1')[CLAUDE_MD_EXCLUDES_KEY]
+        assert patterns == _patterns(home)
+        assert len(patterns) == 6
+        short_base = (short / '.claude').as_posix()
+        assert fnmatch.fnmatchcase(f'{short_base}/CLAUDE.md', patterns[3]), patterns[3]
+        assert fnmatch.fnmatchcase(f'{short_base}/CLAUDE.md'.lower(), patterns[3]), patterns[3]
+        assert fnmatch.fnmatchcase(f'{short_base}/CLAUDE.local.md', patterns[4]), patterns[4]
+        assert fnmatch.fnmatchcase(f'{short_base}/rules/team/style.md', patterns[5]), patterns[5]
+        assert not fnmatch.fnmatchcase(f'{short_base}/work-1/CLAUDE.md', patterns[3]), patterns[3]
+        assert not fnmatch.fnmatchcase(f'{short_base}/work-1/rules/own.md', patterns[5]), patterns[5]
+        assert _auto_line_patterns(_output(capsys)) == patterns
+
+    @pytest.mark.skipif(sys.platform != 'win32', reason='8.3 short names are a Windows path form')
+    @pytest.mark.parametrize('windows_gives', ['the long spelling', 'nothing'])
+    def test_a_home_without_a_differing_short_spelling_gets_the_long_patterns_only(
+        self,
+        e2e_isolated_home: dict[str, Path],
+        configs: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        windows_gives: str,
+    ) -> None:
+        """A volume without 8.3 names gives the long spelling back and a failed call gives nothing; neither adds patterns."""
+        home = e2e_isolated_home['home']
+        short = (lambda path: path) if windows_gives == 'the long spelling' else (lambda _path: None)
+        monkeypatch.setattr(setup_environment, '_windows_short_path', short)
+        cfg = write_config(configs, 'team.yaml', _team())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'work-1']) == 0
+
+        patterns = _config_json(home / '.claude' / 'work-1')[CLAUDE_MD_EXCLUDES_KEY]
+        assert patterns == _patterns(home)[:3]
+        assert len(patterns) == 3
+        assert _auto_line_patterns(_output(capsys)) == patterns
+
+    @pytest.mark.skipif(sys.platform == 'win32', reason='the other platforms give a home no second spelling')
+    def test_other_platforms_write_the_long_spelling_s_patterns_only(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        home = e2e_isolated_home['home']
+        cfg = write_config(configs, 'team.yaml', _team())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'work-1']) == 0
+
+        patterns = _config_json(home / '.claude' / 'work-1')[CLAUDE_MD_EXCLUDES_KEY]
+        assert patterns == _patterns(home)
+        assert len(patterns) == 3
+        assert _auto_line_patterns(_output(capsys)) == patterns
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
