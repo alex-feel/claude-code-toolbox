@@ -16319,6 +16319,35 @@ def _spell_profile_dir(profile_dir: Path) -> _ProfileDirSpelling:
     )
 
 
+# Block of the Windows launch.sh that runs before claude starts. Git Bash
+# rewrites every argument that looks like a POSIX path when it starts the
+# native claude.exe, so a slash command such as "/review src" would reach
+# Claude Code as "C:/Program Files/Git/review src". MSYS2_ARG_CONV_EXCL holds
+# ';'-separated prefixes of arguments Git Bash passes unchanged; listing each
+# argument that starts with a single '/' and names no existing path keeps it
+# byte for byte, while an existing path such as /c/work still converts. The
+# list is set only for a launch that has such an argument and keeps the
+# entries the caller set. The session inherits it, and its entries exclude
+# only arguments that start with those texts, so a Git Bash started from the
+# session keeps converting other paths such as /tmp/... An argument holding
+# ';' cannot be listed and needs no entry, because Git Bash never converts one.
+WINDOWS_SLASH_ARGUMENTS_GUARD = r'''# Keep slash arguments such as slash commands unchanged: Git Bash converts an
+# argument that looks like a POSIX path when it starts claude.exe, unless
+# MSYS2_ARG_CONV_EXCL lists it. Existing paths keep converting.
+UNCONVERTED_ARGS=""
+for arg in "$@"; do
+  case "$arg" in
+    //* | *\;*) ;;
+    /*) [ -e "$arg" ] || UNCONVERTED_ARGS="${UNCONVERTED_ARGS:+$UNCONVERTED_ARGS;}$arg" ;;
+  esac
+done
+if [ -n "$UNCONVERTED_ARGS" ]; then
+  export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}$UNCONVERTED_ARGS"
+fi
+
+'''
+
+
 def create_launcher_script(
     config_base_dir: Path,
     command_name: str,
@@ -16347,6 +16376,9 @@ def create_launcher_script(
     calls them ($env: is process-wide in PowerShell; a batch file executes in
     the calling cmd.exe), so they reference no loader and leave that shell's
     environment as it was; start.cmd keeps its own variables behind setlocal.
+
+    The Windows launch.sh runs WINDOWS_SLASH_ARGUMENTS_GUARD before it starts
+    claude, so Git Bash hands slash commands to claude.exe unchanged.
 
     Args:
         config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
@@ -16525,7 +16557,7 @@ get_file_size() {{
 # Safe prompt size threshold (4KB)
 SAFE_PROMPT_SIZE=4096
 
-'''
+''' + WINDOWS_SLASH_ARGUMENTS_GUARD
                 # Add mode-specific logic
                 if mode == 'replace':
                     # Replace mode: Check for continuation flags and use appropriate flag
@@ -16618,7 +16650,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-exec claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_WIN"
+''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash

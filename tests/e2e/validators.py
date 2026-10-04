@@ -902,6 +902,45 @@ def validate_launcher_has_no_update_check(path: Path) -> list[str]:
     ]
 
 
+def validate_launcher_keeps_slash_arguments(launch_sh: Path, *, windows: bool) -> list[str]:
+    """Validate how launch.sh hands arguments that start with a slash to Claude Code.
+
+    Git Bash converts an argument that looks like a POSIX path when it starts
+    the native claude.exe, so the Windows launch.sh lists each argument that
+    starts with a single slash and names no existing path in
+    MSYS2_ARG_CONV_EXCL before any line that starts claude. Linux and macOS
+    convert nothing, and their launch.sh carries no such list.
+
+    Args:
+        launch_sh: The generated launch.sh.
+        windows: Whether launch_sh is the Windows launcher.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = launch_sh.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launch_sh}: {e}']
+    if not windows:
+        if 'MSYS2_ARG_CONV_EXCL' in content:
+            return [f'{launch_sh}: the Unix launcher sets MSYS2_ARG_CONV_EXCL']
+        return []
+
+    markers = ('[ -e "$arg" ]', 'export MSYS2_ARG_CONV_EXCL=')
+    errors = [
+        f'{launch_sh}: expected {marker!r} exactly once, found {content.count(marker)}'
+        for marker in markers
+        if content.count(marker) != 1
+    ]
+    starts = [index for index in range(len(content)) if content.startswith('exec claude ', index)]
+    if not starts:
+        errors.append(f'{launch_sh}: no line starts claude')
+    elif not errors and any(start < content.index(markers[-1]) for start in starts):
+        errors.append(f'{launch_sh}: claude starts before slash arguments are listed in MSYS2_ARG_CONV_EXCL')
+    return errors
+
+
 def _validate_windows_launcher(path: Path, content: str, command_name: str) -> list[str]:
     """Validate Windows launcher script.
 
