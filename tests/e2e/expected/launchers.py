@@ -348,6 +348,20 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
+# Keep slash arguments such as slash commands unchanged: Git Bash converts an
+# argument that looks like a POSIX path when it starts claude.exe, unless
+# MSYS2_ARG_CONV_EXCL lists it. Existing paths keep converting.
+UNCONVERTED_ARGS=""
+for arg in "$@"; do
+  case "$arg" in
+    //* | *\;*) ;;
+    /*) [ -e "$arg" ] || UNCONVERTED_ARGS="${UNCONVERTED_ARGS:+$UNCONVERTED_ARGS;}$arg" ;;
+  esac
+done
+if [ -n "$UNCONVERTED_ARGS" ]; then
+  export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}$UNCONVERTED_ARGS"
+fi
+
 exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
 ''',
     'windows/launch.sh/prompt-append': r'''#!/usr/bin/env bash
@@ -437,6 +451,20 @@ get_file_size() {
 
 # Safe prompt size threshold (4KB)
 SAFE_PROMPT_SIZE=4096
+
+# Keep slash arguments such as slash commands unchanged: Git Bash converts an
+# argument that looks like a POSIX path when it starts claude.exe, unless
+# MSYS2_ARG_CONV_EXCL lists it. Existing paths keep converting.
+UNCONVERTED_ARGS=""
+for arg in "$@"; do
+  case "$arg" in
+    //* | *\;*) ;;
+    /*) [ -e "$arg" ] || UNCONVERTED_ARGS="${UNCONVERTED_ARGS:+$UNCONVERTED_ARGS;}$arg" ;;
+  esac
+done
+if [ -n "$UNCONVERTED_ARGS" ]; then
+  export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}$UNCONVERTED_ARGS"
+fi
 
 # Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
@@ -544,6 +572,20 @@ get_file_size() {
 
 # Safe prompt size threshold (4KB)
 SAFE_PROMPT_SIZE=4096
+
+# Keep slash arguments such as slash commands unchanged: Git Bash converts an
+# argument that looks like a POSIX path when it starts claude.exe, unless
+# MSYS2_ARG_CONV_EXCL lists it. Existing paths keep converting.
+UNCONVERTED_ARGS=""
+for arg in "$@"; do
+  case "$arg" in
+    //* | *\;*) ;;
+    /*) [ -e "$arg" ] || UNCONVERTED_ARGS="${UNCONVERTED_ARGS:+$UNCONVERTED_ARGS;}$arg" ;;
+  esac
+done
+if [ -n "$UNCONVERTED_ARGS" ]; then
+  export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}$UNCONVERTED_ARGS"
+fi
 
 # Replace mode: Check for continuation flags
 HAS_CONTINUE=false

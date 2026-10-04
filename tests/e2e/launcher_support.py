@@ -3,12 +3,16 @@
 The generated launchers and wrappers are run under their real interpreters
 (bash, cmd.exe, PowerShell) with a stub ``claude`` first on PATH. The stub
 records the CLAUDE_CONFIG_DIR it inherits, the marks the env loaders left,
-and every argument it receives, so a test can check which profile directory
-a script actually reached.
+the MSYS2_ARG_CONV_EXCL list it inherits, and every argument it receives, so
+a test can check which profile directory a script actually reached and what
+Claude Code is handed. On request it also starts Git Bash from its own
+environment, the way a session's Bash tool does, and records what a native
+program started from there receives.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -35,6 +39,32 @@ WINDOWS_GIT_BASH = Path(r'C:\Program Files\Git\bin\bash.exe')
 # Variable the marking loaders append to: each loader adds its own mark.
 LOADER_MARKS_VARIABLE = 'PROFILE_LOADER_MARKS'
 
+# Variables that switch Git Bash argument conversion off; a launch starts
+# without them unless a test hands them in.
+PATH_CONVERSION_VARIABLES = ('MSYS2_ARG_CONV_EXCL', 'MSYS_NO_PATHCONV')
+
+# Variable naming the bash the stub starts from its own environment; set, it
+# makes the stub run the session probe below.
+SESSION_BASH_VARIABLE = 'LAUNCHER_SESSION_BASH'
+
+# POSIX path the session probe hands a native program from Git Bash, as the
+# Bash tool of a session hands a script under /tmp to a native interpreter.
+SESSION_PROBE_PATH = '/tmp/session-probe.py'
+
+
+@dataclass(frozen=True)
+class SessionProbe:
+    """What a Git Bash started from the session's environment hands a native program.
+
+    Attributes:
+        received: SESSION_PROBE_PATH as the native program received it.
+        converted: The Windows spelling ``cygpath -m`` gives SESSION_PROBE_PATH
+            in the same environment.
+    """
+
+    received: str
+    converted: str
+
 
 @dataclass(frozen=True)
 class LaunchRecord:
@@ -43,12 +73,18 @@ class LaunchRecord:
     Attributes:
         config_dir: The CLAUDE_CONFIG_DIR value in the stub's environment.
         loader_marks: The marks the env loaders appended, in sourcing order.
+        conversion_exclusions: The MSYS2_ARG_CONV_EXCL value in the stub's
+            environment, or None when the variable is unset.
         args: The command-line arguments, one per element.
+        session_probe: What the stub's Git Bash child handed a native program,
+            or None when the launch did not set SESSION_BASH_VARIABLE.
     """
 
     config_dir: str
     loader_marks: str
+    conversion_exclusions: str | None
     args: list[str]
+    session_probe: SessionProbe | None
 
     def value_after(self, flag: str) -> str:
         """Return the argument that follows flag.
@@ -132,32 +168,75 @@ def find_powershell() -> str | None:
     return shutil.which('pwsh') or shutil.which('powershell')
 
 
+def _sh_single_quoted(value: str) -> str:
+    """Quote a value for a POSIX shell so it stays one literal word.
+
+    Args:
+        value: The text to quote.
+
+    Returns:
+        The value in single quotes.
+    """
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
 def write_stub_claude(stub_dir: Path, record_file: Path) -> None:
     """Write a stub claude that records its environment and arguments.
 
-    On Windows, POSIX-form paths are converted with cygpath so the record
-    holds host paths whichever form the launcher passed.
+    The stub is a shell script that hands its arguments to a recorder run by
+    the test interpreter. On Windows that interpreter is a native program, so
+    Git Bash converts the arguments and the environment on the way in exactly
+    as it does when a launcher starts claude.exe, and the record holds what
+    Claude Code itself would receive.
+
+    When SESSION_BASH_VARIABLE names a bash, the recorder also starts that
+    bash with the environment it inherited, has it hand SESSION_PROBE_PATH to
+    the test interpreter, and records what arrived beside the ``cygpath -m``
+    spelling of the path in the same environment.
 
     Args:
         stub_dir: Directory that receives the stub; prepended to PATH.
         record_file: File the stub writes its record to.
     """
     stub_dir.mkdir(parents=True, exist_ok=True)
+    recorder = stub_dir / 'claude_recorder.py'
+    recorder.write_text(
+        'import json\n'
+        'import os\n'
+        'import subprocess\n'
+        'import sys\n'
+        '\n'
+        "if sys.argv[1:2] == ['--version']:\n"
+        "    print('2.1.0 (Claude Code)')\n"
+        '    sys.exit(0)\n'
+        'session_probe = None\n'
+        f'bash = os.environ.get({SESSION_BASH_VARIABLE!r})\n'
+        'if bash:\n'
+        "    python = sys.executable.replace(os.sep, '/')\n"
+        "    show_first_argument = 'import json, sys; print(json.dumps(sys.argv[1]))'\n"
+        '    received = subprocess.run(\n'
+        f"        [bash, '-c', 'exec \"$0\" -c \"$1\" {SESSION_PROBE_PATH}', python, show_first_argument],\n"
+        '        capture_output=True, text=True, check=True,\n'
+        '    ).stdout\n'
+        '    converted = subprocess.run(\n'
+        f"        [bash, '-c', 'cygpath -m {SESSION_PROBE_PATH}'], capture_output=True, text=True, check=True,\n"
+        '    ).stdout\n'
+        "    session_probe = {'received': json.loads(received), 'converted': converted.strip()}\n"
+        'record = {\n'
+        "    'config_dir': os.environ.get('CLAUDE_CONFIG_DIR', ''),\n"
+        f"    'loader_marks': os.environ.get({LOADER_MARKS_VARIABLE!r}, ''),\n"
+        "    'conversion_exclusions': os.environ.get('MSYS2_ARG_CONV_EXCL'),\n"
+        "    'args': sys.argv[1:],\n"
+        "    'session_probe': session_probe,\n"
+        '}\n'
+        f"with open({str(record_file)!r}, 'w', encoding='utf-8') as handle:\n"
+        '    json.dump(record, handle)\n',
+        encoding='utf-8',
+    )
     stub = stub_dir / 'claude'
     stub.write_text(
         '#!/bin/sh\n'
-        'if [ "$1" = "--version" ]; then echo "2.1.0 (Claude Code)"; exit 0; fi\n'
-        'to_host() {\n'
-        '  case "$1" in\n'
-        '    /*) if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; return; fi ;;\n'
-        '  esac\n'
-        "  printf '%s\\n' \"$1\"\n"
-        '}\n'
-        '{\n'
-        '  printf \'CLAUDE_CONFIG_DIR=%s\\n\' "$(to_host "${CLAUDE_CONFIG_DIR:-}")"\n'
-        f'  printf \'LOADER_MARKS=%s\\n\' "${{{LOADER_MARKS_VARIABLE}:-}}"\n'
-        '  for arg in "$@"; do printf \'ARG=%s\\n\' "$(to_host "$arg")"; done\n'
-        '} > "' + record_file.as_posix() + '"\n',
+        f'exec {_sh_single_quoted(Path(sys.executable).as_posix())} {_sh_single_quoted(recorder.as_posix())} "$@"\n',
         encoding='utf-8',
         newline='\n',
     )
@@ -180,22 +259,36 @@ def write_marking_loaders(profile_dir: Path) -> None:
     (profile_dir / 'env.ps1').write_text(f'$env:{name} = "$env:{name}" + \'ps1;\'\n', encoding='utf-8')
 
 
-def seed_profile(profile_dir: Path, prompt: str | None) -> None:
+def seed_profile(profile_dir: Path, prompt: str | None, *, mcp: bool = True) -> None:
     """Create the files a launcher reads from its profile directory.
 
     Args:
         profile_dir: The profile directory.
         prompt: The system prompt file name, or None.
+        mcp: Whether the profile holds an mcp.json; without one the launcher
+            passes no MCP flags.
     """
     (profile_dir / 'prompts').mkdir(parents=True, exist_ok=True)
     (profile_dir / 'config.json').write_text('{}', encoding='utf-8')
-    (profile_dir / 'mcp.json').write_text('{"mcpServers": {}}', encoding='utf-8')
+    if mcp:
+        (profile_dir / 'mcp.json').write_text('{"mcpServers": {}}', encoding='utf-8')
     if prompt is not None:
         (profile_dir / 'prompts' / prompt).write_text('Probe prompt.\n', encoding='utf-8')
 
 
-def launch(command: list[str] | str, *, home: Path, stub_dir: Path, extra_path: Path | None = None) -> LaunchRecord:
+def launch(
+    command: list[str] | str,
+    *,
+    home: Path,
+    stub_dir: Path,
+    extra_path: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> LaunchRecord:
     """Run a generated script with the stub claude first on PATH.
+
+    The script starts without the variables that switch Git Bash argument
+    conversion off, so the conversion a test observes does not depend on the
+    environment the test suite runs in.
 
     Args:
         command: The command line that runs the script; a string is handed to
@@ -203,32 +296,39 @@ def launch(command: list[str] | str, *, home: Path, stub_dir: Path, extra_path: 
         home: The home directory the script sees at run time.
         stub_dir: Directory holding the stub claude.
         extra_path: Directory appended to PATH, such as ~/.local/bin.
+        extra_env: Variables the script inherits on top of the test environment.
 
     Returns:
         What the stub claude received.
     """
-    record_file = stub_dir / 'record.txt'
+    record_file = stub_dir / 'record.json'
     record_file.unlink(missing_ok=True)
     write_stub_claude(stub_dir, record_file)
-    env = {key: value for key, value in os.environ.items() if key not in {'CLAUDE_CONFIG_DIR', LOADER_MARKS_VARIABLE}}
+    dropped = {'CLAUDE_CONFIG_DIR', LOADER_MARKS_VARIABLE, SESSION_BASH_VARIABLE, *PATH_CONVERSION_VARIABLES}
+    env = {key: value for key, value in os.environ.items() if key not in dropped}
     env['HOME'] = str(home)
     env['USERPROFILE'] = str(home)
     env['PATH'] = f'{stub_dir}{os.pathsep}' + env.get('PATH', '')
     if extra_path is not None:
         env['PATH'] += f'{os.pathsep}{extra_path}'
+    env.update(extra_env or {})
 
-    completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120, env=env)
+    completed = subprocess.run(
+        command, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False, timeout=120, env=env,
+    )
 
     assert completed.returncode == 0, (
         f'{command} failed with {completed.returncode}:\nstdout: {completed.stdout}\nstderr: {completed.stderr}'
     )
     assert record_file.exists(), f'stub claude was never invoked:\nstdout: {completed.stdout}\nstderr: {completed.stderr}'
-    lines = record_file.read_text(encoding='utf-8').splitlines()
-    fields = dict(line.split('=', 1) for line in lines if not line.startswith('ARG='))
+    record = json.loads(record_file.read_text(encoding='utf-8'))
+    probe = record['session_probe']
     return LaunchRecord(
-        config_dir=fields['CLAUDE_CONFIG_DIR'],
-        loader_marks=fields['LOADER_MARKS'],
-        args=[line.removeprefix('ARG=') for line in lines if line.startswith('ARG=')],
+        config_dir=record['config_dir'],
+        loader_marks=record['loader_marks'],
+        conversion_exclusions=record['conversion_exclusions'],
+        args=record['args'],
+        session_probe=None if probe is None else SessionProbe(received=probe['received'], converted=probe['converted']),
     )
 
 
@@ -275,18 +375,24 @@ def same_path(value: str, expected: Path) -> bool:
     return Path(value).resolve() == expected.resolve()
 
 
-def assert_reaches_profile(record: LaunchRecord, profile_dir: Path, prompt: str | None) -> None:
+def assert_reaches_profile(record: LaunchRecord, profile_dir: Path, prompt: str | None, *, mcp: bool = True) -> None:
     """Assert that a launch used every file of profile_dir and nothing else.
 
     Args:
         record: What the stub claude received.
         profile_dir: The profile directory the launch must use.
         prompt: The system prompt file name, or None.
+        mcp: Whether the profile holds an mcp.json; without one the launch
+            must pass no MCP flags.
     """
     assert same_path(record.config_dir, profile_dir), f'CLAUDE_CONFIG_DIR={record.config_dir}'
     assert same_path(record.value_after('--settings'), profile_dir / 'config.json'), record.args
-    assert '--strict-mcp-config' in record.args, record.args
-    assert same_path(record.value_after('--mcp-config'), profile_dir / 'mcp.json'), record.args
+    if mcp:
+        assert '--strict-mcp-config' in record.args, record.args
+        assert same_path(record.value_after('--mcp-config'), profile_dir / 'mcp.json'), record.args
+    else:
+        assert '--strict-mcp-config' not in record.args, record.args
+        assert '--mcp-config' not in record.args, record.args
     if prompt is not None:
         prompt_flags = [arg for arg in record.args if arg in {'--system-prompt-file', '--append-system-prompt-file'}]
         assert len(prompt_flags) == 1, record.args
