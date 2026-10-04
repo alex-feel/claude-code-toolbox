@@ -43,7 +43,7 @@ def _args(
     namespace = argparse.Namespace(
         config=None, yes=True, dry_run=False, skip_install=True, no_admin=True, env_vars=None,
         select=select, with_=None, without=None, list_components=False, command_names=None, profile=None,
-        switch_config=False, refresh_all_child=False, link_dirs=link_dirs, link_from=link_from,
+        switch_config=False, child_run=False, link_dirs=link_dirs, link_from=link_from,
     )
     cleared = {twin.variable: '' for twin in setup_environment.ENV_TWINS}
     with patch.dict(os.environ, {**cleared, **(env or {})}, clear=False):
@@ -898,8 +898,8 @@ class TestRefreshDependents:
 
         script = '/repo/scripts/setup_environment.py'
         assert [argv for argv, _ in calls] == [
-            [sys.executable, script, '--profile', 'aegis-2', '--yes', '--skip-install', '--no-admin'],
-            [sys.executable, script, '--profile', 'aegis-3', '--yes', '--skip-install', '--no-admin'],
+            [sys.executable, script, '--profile', 'aegis-2', '--yes', '--child-run', '--skip-install', '--no-admin'],
+            [sys.executable, script, '--profile', 'aegis-3', '--yes', '--child-run', '--skip-install', '--no-admin'],
         ]
         for _, env in calls:
             assert 'CLAUDE_CODE_TOOLBOX_LINK_DIRS' not in env
@@ -932,7 +932,8 @@ class TestRefreshDependents:
         ):
             setup_environment.refresh_dependents(self._dependents(tmp_path)[:1])
         assert calls == [[
-            sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'aegis-2', '--yes', '--skip-install', '--no-admin',
+            sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'aegis-2', '--yes', '--child-run',
+            '--skip-install', '--no-admin',
         ]]
 
     def test_unstartable_child_and_elevation_remedy(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -958,21 +959,25 @@ class TestRefreshDependents:
 class TestDependentRefreshStep:
     """run_dependent_refresh_step() prints Step 23 and runs only when there is something to run."""
 
-    def test_no_dependents_and_refresh_all_child(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_no_dependents_and_child_run(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A child run -- of --profile all, or a dependent a source refreshes -- leaves the step to its parent."""
         with patch.object(setup_environment, 'refresh_dependents') as refresh:
-            assert setup_environment.run_dependent_refresh_step([], source_name='aegis-1', refresh_all_child=False) == []
+            assert setup_environment.run_dependent_refresh_step([], source_name='aegis-1', child_run=False) == []
             dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)
-            assert setup_environment.run_dependent_refresh_step([dep], source_name='aegis-1', refresh_all_child=True) == []
+            assert setup_environment.run_dependent_refresh_step([dep], source_name='aegis-1', child_run=True) == []
+            assert setup_environment.run_dependent_refresh_step([], source_name='aegis-2', child_run=True) == []
         refresh.assert_not_called()
         output = capsys.readouterr().out
-        assert 'Step 23: No installed profile links content from "aegis-1"' in output
-        assert 'Step 23: Dependent profiles are refreshed by the --profile all run' in output
+        assert output.count('Step 23: No installed profile links content from "aegis-1"') == 1
+        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2
+        assert '--profile all' not in output
+        assert 'aegis-2' not in output
 
     def test_dependents_are_refreshed(self, capsys: pytest.CaptureFixture[str]) -> None:
         dep = setup_environment.InstalledProfile('d', Path('/d'), Path('/d/manifest.json'), None)
         expected = [setup_environment.DependentResult('d', 0, False)]
         with patch.object(setup_environment, 'refresh_dependents', return_value=expected) as refresh:
-            assert setup_environment.run_dependent_refresh_step([dep], source_name='s', refresh_all_child=False) == expected
+            assert setup_environment.run_dependent_refresh_step([dep], source_name='s', child_run=False) == expected
         refresh.assert_called_once_with([dep])
         assert 'Step 23: Refreshing 1 dependent profile(s): d...' in capsys.readouterr().out
 

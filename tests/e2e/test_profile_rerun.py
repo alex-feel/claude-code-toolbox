@@ -736,7 +736,7 @@ class TestProfileAll:
         assert [argv[argv.index('--profile') + 1] for argv in argvs] == ['base', 'aegis-1', 'aegis-2']
         for argv in argvs:
             assert '--no-admin' in argv, argv
-            assert '--refresh-all-child' in argv, argv
+            assert '--child-run' in argv, argv
         assert '* base: ok' in output
         assert '* aegis-1: ok' in output
         assert '* aegis-2: failed (exit code 1); retry with --profile aegis-2' in output

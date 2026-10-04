@@ -64,7 +64,7 @@ def _args(
         command_names=command_names,
         profile=profile,
         switch_config=switch_config,
-        refresh_all_child=False,
+        child_run=False,
         link_dirs=link_dirs,
         link_from=link_from,
     )
@@ -1117,7 +1117,7 @@ class TestRefreshAllProfiles:
         assert [argv[argv.index('--profile') + 1] for argv, _ in calls] == ['base', 'a', 'b']
         for argv, env in calls:
             assert argv[:2] == [sys.executable, '/repo/scripts/setup_environment.py']
-            assert argv[-3:] == ['--yes', '--refresh-all-child', '--dry-run']
+            assert argv[-3:] == ['--yes', '--child-run', '--dry-run']
             assert 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES' not in env
             assert 'CLAUDE_CONFIG_DIR' not in env
             assert env['GITHUB_TOKEN'] == 't'
@@ -1129,16 +1129,16 @@ class TestRefreshAllProfiles:
     @pytest.mark.parametrize(
         ('parent', 'expected_flags'),
         [
-            (_args(profile='all', yes=True), ['--yes', '--refresh-all-child', '--no-admin']),
+            (_args(profile='all', yes=True), ['--yes', '--child-run', '--no-admin']),
             (
                 _args(profile='all', yes=True, skip_install=True),
-                ['--yes', '--refresh-all-child', '--skip-install', '--no-admin'],
+                ['--yes', '--child-run', '--skip-install', '--no-admin'],
             ),
-            (_args(profile='all', yes=True, no_admin=True), ['--yes', '--refresh-all-child', '--no-admin']),
-            (_args(profile='all', dry_run=True), ['--yes', '--refresh-all-child', '--dry-run']),
+            (_args(profile='all', yes=True, no_admin=True), ['--yes', '--child-run', '--no-admin']),
+            (_args(profile='all', dry_run=True), ['--yes', '--child-run', '--dry-run']),
             (
                 _args(profile='all', dry_run=True, no_admin=True),
-                ['--yes', '--refresh-all-child', '--dry-run', '--no-admin'],
+                ['--yes', '--child-run', '--dry-run', '--no-admin'],
             ),
         ],
     )
@@ -1181,7 +1181,7 @@ class TestRefreshAllProfiles:
         ):
             assert setup_environment.refresh_all_profiles(_args(profile='all', yes=True)) == 0
         assert calls[0][:4] == [sys.executable, '-m', 'cc_toolbox.cli', 'setup']
-        assert calls[0][4:] == ['--profile', 'base', '--yes', '--refresh-all-child', '--no-admin']
+        assert calls[0][4:] == ['--profile', 'base', '--yes', '--child-run', '--no-admin']
 
     def test_elevation_is_requested_once_before_consent_and_children(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -1527,3 +1527,17 @@ class TestNewTwinsForwardThroughUac:
                 setup_environment.request_admin_elevation(['--profile', 'p'])
         assert '--env-CLAUDE_CODE_TOOLBOX_PROFILE=p' in captured[0]
         assert '--env-CLAUDE_CODE_TOOLBOX_SWITCH_CONFIG=1' in captured[0]
+
+
+class TestChildRunFlag:
+    """The flag a parent run passes to every child it starts is internal: --help never shows it."""
+
+    def test_child_run_is_hidden_from_help(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch('sys.argv', ['/repo/scripts/setup_environment.py', '--help']), pytest.raises(SystemExit) as exc_info:
+            setup_environment.main()
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert '--profile' in out
+        assert setup_environment.CHILD_RUN_FLAG == '--child-run'
+        assert '--child-run' not in out
+        assert '--elevated-via-uac' not in out

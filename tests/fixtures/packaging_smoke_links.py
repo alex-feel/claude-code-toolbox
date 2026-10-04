@@ -9,10 +9,10 @@ minimal configuration, installs smoke-2 linking every entry from smoke-1,
 and re-runs smoke-1 the way the console script does: through
 cc_toolbox.cli with a sys.argv[0] that carries no .py suffix. Step 23 of
 that run starts the refresh of smoke-2 as ``python -m cc_toolbox.cli setup
---profile smoke-2 --yes --skip-install --no-admin``; the probe records the
-argv the run hands to subprocess.run, lets the real child run, and fails
-unless the argv has that shape, the child exits 0, smoke-2's links still
-point into smoke-1, and smoke-2's manifest was rewritten.
+--profile smoke-2 --yes --child-run --skip-install --no-admin``; the probe
+records the argv the run hands to subprocess.run, lets the real child run,
+and fails unless the argv has that shape, the child exits 0, smoke-2's links
+still point into smoke-1, and smoke-2's manifest was rewritten.
 
 The writers that reach outside the home -- the Windows registry (OS
 environment variables, the WM_SETTINGCHANGE broadcast, the user PATH
@@ -138,7 +138,10 @@ def main() -> int:
 
     launches = [argv for argv in recorded if '--profile' in argv]
     print(f'Step 23 launches: {launches!r}')
-    expected = [sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'smoke-2', *RUN_FLAGS]
+    expected = [
+        sys.executable, '-m', 'cc_toolbox.cli', 'setup', '--profile', 'smoke-2',
+        '--yes', '--child-run', '--skip-install', '--no-admin',
+    ]
     if launches != [expected]:
         return _fail(f'expected exactly one launch {expected!r}')
     if code != 0:
