@@ -1190,7 +1190,7 @@ class TestManifestRecords:
             'sha256': setup_environment._sha256_of_file(outside),
         }]
         assert manifest['os_env_written'] == [], 'an isolated run routes its variables to the env loaders'
-        assert manifest['settings_keys_written'] == ['model', 'theme']
+        assert manifest['settings_keys_written'] == ['claudeMdExcludes', 'model', 'theme']
         assert manifest['mcp_servers'] == [{'name': 'srv', 'scopes': ['profile']}]
         for relative in manifest['files_written']:
             assert (profile_dir / relative).is_file(), relative
