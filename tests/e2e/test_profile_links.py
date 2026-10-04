@@ -1281,6 +1281,24 @@ class TestSourceRunRefreshesDependents:
             assert _theme(claude_dir / name) == 'light', 'the dependent applied the refreshed snapshot'
             assert _links_to(claude_dir / name / 'agents', claude_dir / 'agents')
         assert _installed_at(claude_dir / 'sessions-only') == before['sessions-only']
+        assert output.count('* Installed profiles this run did not refresh:') == 1, (
+            'only the base run lists the profiles it did not refresh; its children list none'
+        )
+        assert output.count('Step 23: Dependent profiles are refreshed by the run that started this one') == 2, (
+            'each dependent child leaves Step 23 to the base run that started it'
+        )
+        assert 'the --profile all run' not in output, 'a child of a base run is not a child of --profile all'
+        assert 'base (--profile base)' not in output, 'no child names the base: the base run is refreshing it right now'
+        for name in ('aegis-1', 'aegis-2'):
+            assert f'{name} (--profile {name})' not in output, (
+                f'no child lists {name}: the base run refreshes it in the same run'
+            )
+        source_summary = output[output.rindex('=== Dependent profile aegis-2 ==='):]
+        source_summary = source_summary[source_summary.index('* Dependent profiles refreshed from this run:'):]
+        assert '* Installed profiles this run did not refresh:' in source_summary
+        assert '- sessions-only (--profile sessions-only)' in source_summary, (
+            'the projects-only profile is the one profile the base run did not refresh'
+        )
 
     def test_isolated_source_refreshes_its_dependents_and_a_dependent_rerun_applies_the_snapshot(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
