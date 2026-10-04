@@ -31,6 +31,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -40,6 +43,7 @@ import pytest
 
 from scripts import setup_environment
 from tests.e2e.fake_anthropic_api import FakeAnthropicServer
+from tests.e2e.shells import LOGIN_SHELL_INHERITED_PATH
 
 LINKABLE_ENTRIES: tuple[str, ...] = (
     'skills', 'agents', 'commands', 'rules', 'hooks', 'output-styles', 'prompts', 'projects',
@@ -96,6 +100,65 @@ _SYMLINK_SKIP_REASON = (
 _STRIPPED_ENV_PREFIXES = ('CLAUDE_', 'ANTHROPIC_', 'DISABLE_')
 # The one CLAUDE_ variable kept: Claude Code uses it to find Git Bash on Windows
 _KEPT_ENV_VARIABLES = ('CLAUDE_CODE_GIT_BASH_PATH',)
+# Variables dropped by name: the PATH an outer Git Bash login shell recorded,
+# which the login shell a Windows entry point starts would restore
+_STRIPPED_ENV_VARIABLES = (LOGIN_SHELL_INHERITED_PATH,)
+
+# What Claude Code reads from a directory above the working directory: its
+# .claude directory (project settings in the working directory itself, memory
+# and rules from every ancestor), its memory files, and its .mcp.json
+CONFIG_HOME_MARKERS: tuple[str, ...] = ('.claude', 'CLAUDE.md', 'CLAUDE.local.md', '.mcp.json')
+
+
+def config_home_above(path: Path) -> Path | None:
+    """Return the nearest directory at or above ``path`` that holds a config home or memory file.
+
+    Args:
+        path: The directory to start from.
+
+    Returns:
+        The directory holding one of CONFIG_HOME_MARKERS, or None when none
+        of ``path`` and its ancestors does.
+    """
+    for directory in (path, *path.parents):
+        if any((directory / marker).exists() for marker in CONFIG_HOME_MARKERS):
+            return directory
+    return None
+
+
+def workspace_root(tmp_path: Path) -> tuple[Path, Callable[[], None]]:
+    """Return a directory with no config home above it, and the cleanup that removes it.
+
+    The real binary discovers settings and memory exactly as a user's session
+    does: from the working directory's .claude and from the .claude, memory
+    files and .mcp.json of every directory above it. pytest's tmp_path lies
+    below the system temp directory, which on Windows lies below the user's
+    home, so a developer's real ~/.claude would contribute to every run made
+    there. The workspace therefore stays in tmp_path when nothing above it
+    holds such a file, and otherwise moves to a fresh directory under the
+    first clean, writable candidate: the system temp directory, then the
+    root of the drive tmp_path is on.
+
+    Args:
+        tmp_path: The test's temporary directory.
+
+    Returns:
+        The root directory, and a callable that removes it when it was
+        created here (a no-op for tmp_path itself).
+    """
+    polluted = config_home_above(tmp_path)
+    if polluted is None:
+        return tmp_path, lambda: None
+    for candidate in (Path(tempfile.gettempdir()), Path(tmp_path.anchor)):
+        if config_home_above(candidate) is not None:
+            continue
+        root = candidate / f'cct-e2e-{uuid.uuid4().hex[:12]}'
+        try:
+            root.mkdir()
+        except OSError:
+            continue
+        return root, functools.partial(shutil.rmtree, root, ignore_errors=True)
+    pytest.skip(f'no writable directory without a Claude Code config home above it ({polluted} holds one)')
 
 
 def link_kinds() -> list[str]:
@@ -399,9 +462,10 @@ def isolated_home_env(home: Path) -> dict[str, str]:
 
     The session's PATH and system variables are inherited; its Claude Code,
     Anthropic and update-control variables are not (CLAUDE_CODE_GIT_BASH_PATH
-    stays, Claude Code needs it to find Git Bash on Windows). HOME is passed
-    in POSIX form so the toolbox launcher resolves ``$HOME/.claude/...``
-    under Git Bash as well.
+    stays, Claude Code needs it to find Git Bash on Windows), and neither is
+    the PATH an outer Git Bash login shell recorded. HOME is passed in POSIX
+    form so the toolbox launcher resolves ``$HOME/.claude/...`` under Git
+    Bash as well.
 
     Args:
         home: Directory to use as the home directory.
@@ -412,7 +476,8 @@ def isolated_home_env(home: Path) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.upper().startswith(_STRIPPED_ENV_PREFIXES) or key.upper() in _KEPT_ENV_VARIABLES
+        if (not key.upper().startswith(_STRIPPED_ENV_PREFIXES) or key.upper() in _KEPT_ENV_VARIABLES)
+        and key.upper() not in _STRIPPED_ENV_VARIABLES
     }
     appdata_local = home / 'AppData' / 'Local'
     appdata_roaming = home / 'AppData' / 'Roaming'
@@ -623,10 +688,10 @@ def run_stream_json(
 def print_args(prompt: str, *extra: str) -> list[str]:
     """Return the `claude` arguments of one non-interactive turn.
 
-    ``--setting-sources user`` limits settings to the config dir under test,
-    so a .claude directory on an ancestor of the working directory (a
-    developer's real profile sits above the system temp directory) cannot
-    contribute skills or commands to the run.
+    Nothing here limits where Claude Code reads settings or memory from: the
+    run discovers files exactly as a user's session does, and the workspace
+    layout (see workspace_root()) keeps every real config home out of the
+    working directory's ancestors instead.
 
     Args:
         prompt: The user prompt.
@@ -635,10 +700,7 @@ def print_args(prompt: str, *extra: str) -> list[str]:
     Returns:
         The argument list, without the binary itself.
     """
-    return [
-        '-p', prompt, *extra, '--output-format', 'stream-json', '--verbose', '--max-turns', '1',
-        '--setting-sources', 'user',
-    ]
+    return ['-p', prompt, *extra, '--output-format', 'stream-json', '--verbose', '--max-turns', '1']
 
 
 def session_file(projects_dir: Path, session_id: str) -> Path | None:

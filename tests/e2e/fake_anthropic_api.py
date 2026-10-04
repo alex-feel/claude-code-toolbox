@@ -44,6 +44,10 @@ class FakeAnthropicServer:
     def __init__(self, reply_text: str = FAKE_REPLY) -> None:
         self.reply_text = reply_text
         self.bodies: list[dict[str, Any]] = []
+        # The HTTP headers of each recorded request, lower-case names, in
+        # the order of self.bodies; a settings env block that sets
+        # ANTHROPIC_CUSTOM_HEADERS shows up here
+        self.headers: list[dict[str, str]] = []
         self._server = make_server(
             '127.0.0.1', 0, self._app, server_class=_ThreadingWSGIServer, handler_class=_QuietHandler,
         )
@@ -72,6 +76,11 @@ class FakeAnthropicServer:
         if path.startswith('/v1/messages'):
             body = json.loads(raw)
             self.bodies.append(body)
+            self.headers.append({
+                key[5:].lower().replace('_', '-'): str(value)
+                for key, value in environ.items()
+                if key.startswith('HTTP_')
+            })
             if body.get('stream'):
                 return self._respond(start_response, '200 OK', 'text/event-stream', self._sse_payload())
             return self._respond_json(start_response, self._message_json(body.get('model', 'fake')))

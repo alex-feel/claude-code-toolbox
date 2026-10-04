@@ -341,12 +341,12 @@ def test_parse_stream_json_extracts_init_hooks_and_result() -> None:
     assert result['result'] == 'FAKE-OK'
 
 
-def test_print_args_limit_settings_to_the_config_dir() -> None:
-    """The turn is non-interactive, single-turn, stream-json, and reads user-scope settings only."""
+def test_print_args_run_one_turn_without_limiting_discovery() -> None:
+    """The turn is non-interactive, single-turn, stream-json, and limits no setting source or memory file."""
     args = support.print_args('hello', '--resume', 'sid')
 
     assert args[:4] == ['-p', 'hello', '--resume', 'sid']
-    assert args[-2:] == ['--setting-sources', 'user']
+    assert '--setting-sources' not in args
     assert '--max-turns' in args
     assert args[args.index('--output-format') + 1] == 'stream-json'
 

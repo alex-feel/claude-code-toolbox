@@ -65,6 +65,7 @@ import yaml
 from scripts import setup_environment
 from tests.conftest import empty_mcp_stats
 from tests.e2e.launcher_support import WINDOWS_GIT_BASH
+from tests.e2e.shells import LOGIN_SHELL_INHERITED_PATH
 from tests.e2e.shells import find_bash
 from tests.e2e.shells import find_powershell
 from tests.e2e.validators import validate_env_loader_files
@@ -1013,7 +1014,8 @@ def _probe_environment(home: Path, stub_dir: Path) -> dict[str, str]:
     """Build the environment a probe shell starts with.
 
     The stub claude leads PATH, the home directories name the isolated
-    home, and no loader variable or CLAUDE_CONFIG_DIR is inherited.
+    home, and no loader variable, CLAUDE_CONFIG_DIR or PATH recorded by an
+    outer Git Bash login shell is inherited.
 
     Returns:
         The environment for subprocess.run.
@@ -1021,7 +1023,7 @@ def _probe_environment(home: Path, stub_dir: Path) -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {'CLAUDE_CONFIG_DIR', 'E2E_KEPT', 'E2E_GONE'}
+        if key not in {'CLAUDE_CONFIG_DIR', 'E2E_KEPT', 'E2E_GONE', LOGIN_SHELL_INHERITED_PATH}
     }
     env['HOME'] = str(home)
     env['USERPROFILE'] = str(home)
