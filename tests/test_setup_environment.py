@@ -15313,6 +15313,24 @@ class TestOtherProfilePins:
         assert setup_environment._other_profile_pins(tmp_path, None) == ([], False, [])
         assert setup_environment._other_profile_pins(tmp_path, 'current') == (['base'], False, ['2.1.85'])
 
+    def test_pending_profiles_are_skipped_like_the_runs_own(self, tmp_path: Path) -> None:
+        """A manifest the run rewrites before deciding the controls again is not a pin another profile holds."""
+        claude_dir = tmp_path / '.claude'
+        self._write_manifest(claude_dir, None, '2.1.85')
+        self._write_manifest(claude_dir / 'team-1', 'team-1', '2.1.85')
+        self._write_manifest(claude_dir / 'team-3', 'team-3', '2.1.85')
+        self._write_manifest(claude_dir / 'other', 'other', '2.1.90')
+        assert setup_environment._other_profile_pins(tmp_path, 'team-2') == (
+            ['base', 'other', 'team-1', 'team-3'], False, ['2.1.85', '2.1.90'],
+        )
+        scan = setup_environment._other_profile_pins(
+            tmp_path, 'team-2', pending=frozenset({'base', 'team-1', 'TEAM-3'}),
+        )
+        assert scan == (['other'], False, ['2.1.90'])
+        assert setup_environment._other_profile_pins(
+            tmp_path, 'team-2', pending=frozenset({'base', 'team-1', 'team-3', 'other'}),
+        ) == ([], False, [])
+
 
 class TestPinnedElsewhereMessage:
     """The info line explaining why an unpinned run keeps the controls."""
