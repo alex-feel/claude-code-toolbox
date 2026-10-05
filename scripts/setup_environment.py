@@ -208,6 +208,7 @@ LINKABLE_PROFILE_DIRS: tuple[str, ...] = (
 # component selection to the profile
 SESSIONS_PROFILE_DIR = 'projects'
 SKILLS_PROFILE_DIR = 'skills'
+RULES_PROFILE_DIR = 'rules'
 
 # The linkable entries that hold installed content; they link only between
 # installs of one configuration, and a profile that links one takes its
@@ -4648,6 +4649,16 @@ INSTALL_METHOD_KEY = 'installMethod'
 SKILLS_SYNC_KEY = 'syncClaudeAiSkills'
 SKILLS_SYNC_DISABLED_VALUE = False
 
+# Constants for keeping an isolated profile's sessions out of the base config
+# home. Claude Code reads the home folder's .claude -- the base profile -- as
+# the project .claude of a session started in the home folder and as ancestor
+# project memory of every session started below it, so an isolated profile's
+# config.json excludes the memory files that would reach its sessions that
+# way: CLAUDE.md and CLAUDE.local.md at the root of ~/.claude, and every rule
+# below ~/.claude/rules.
+CLAUDE_MD_EXCLUDES_KEY = 'claudeMdExcludes'
+BASE_CONFIG_HOME_MEMORY_FILES: tuple[str, ...] = ('CLAUDE.md', 'CLAUDE.local.md')
+
 # Constants for IDE extension version management
 IDE_AUTO_INSTALL_KEY = 'autoInstallIdeExtension'
 IDE_AUTO_INSTALL_DISABLED_VALUE = False
@@ -5809,6 +5820,169 @@ def apply_skills_sync_settings(
         f'User set user-settings.{SKILLS_SYNC_KEY} to {user_settings[SKILLS_SYNC_KEY]!r} '
         f'(linked skills intent is {SKILLS_SYNC_DISABLED_VALUE!r}). Respecting user value.',
     ], []
+
+
+def _letter_case_classes(pattern: str) -> str:
+    """Spell every ASCII letter of a glob pattern as a class matching either case.
+
+    Claude Code matches ``claudeMdExcludes`` case-sensitively against paths
+    it builds from the working directory as the shell spelled it, so a
+    pattern spelled ``C:/Users/Me/.claude/CLAUDE.md`` misses a session
+    started in ``c:\\users\\me\\work``; ``[cC]:/[uU][sS][eE][rR][sS]/...``
+    matches every letter case the working directory can carry.
+
+    Args:
+        pattern: A glob pattern holding no bracket class of its own.
+
+    Returns:
+        The pattern with each ASCII letter replaced by ``[xX]``.
+    """
+    return re.sub(r'[A-Za-z]', lambda match: f'[{match.group(0).lower()}{match.group(0).upper()}]', pattern)
+
+
+def _windows_short_path(path: Path) -> Path | None:
+    """Return the 8.3 short spelling Windows gives ``path``, or None when the call fails.
+
+    ``GetShortPathNameW`` spells every component of an existing path by its
+    8.3 alias; a component without one (eight characters or fewer, or on a
+    volume that creates no 8.3 names) keeps its long name, and a path that
+    does not exist makes the call fail.
+
+    Args:
+        path: An absolute path on a Windows volume.
+
+    Returns:
+        The short spelling, or None when Windows gives none.
+    """
+    import ctypes
+
+    win_dll = getattr(ctypes, 'WinDLL', None)
+    if win_dll is None:
+        return None
+    try:
+        get_short_path_name = win_dll('kernel32', use_last_error=True).GetShortPathNameW
+        get_short_path_name.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+        get_short_path_name.restype = ctypes.c_uint
+        needed = get_short_path_name(str(path), None, 0)
+        if needed == 0:
+            return None
+        buffer = ctypes.create_unicode_buffer(needed)
+        copied = get_short_path_name(str(path), buffer, needed)
+        if copied == 0 or copied >= needed:
+            return None
+        return Path(buffer.value)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _config_home_spellings(home_dir: Path) -> list[Path]:
+    """Return the home as given and, on Windows, its 8.3 short spelling when that differs beyond letter case.
+
+    Windows spells a home whose account name is longer than eight characters
+    short in ``%TEMP%`` and ``%TMP%`` (``C:\\Users\\CHRIST~1\\...``), so a
+    session started under such a path hands Claude Code ancestor paths the
+    long spelling does not match. A short spelling that equals the long one
+    up to letter case (a volume without 8.3 names, or components of eight
+    characters or fewer) adds nothing the case classes do not cover.
+
+    Args:
+        home_dir: The user's home directory.
+
+    Returns:
+        One or two spellings, the home as given first.
+    """
+    spellings = [home_dir]
+    if sys.platform == 'win32':
+        short = _windows_short_path(home_dir)
+        if short is not None and short.as_posix().casefold() != home_dir.as_posix().casefold():
+            spellings.append(short)
+    return spellings
+
+
+def base_config_home_exclusions(home_dir: Path, *, links_rules_from_base: bool) -> list[str]:
+    """Name the base profile's memory files an isolated profile excludes from its sessions.
+
+    The patterns are absolute paths below ``<home>/.claude`` with forward
+    slashes on every platform and every ASCII letter spelled as a case class
+    (see ``_letter_case_classes()``): Claude Code matches them
+    case-sensitively against paths it builds from the working directory as
+    spelled, which on Windows differs from the home as given whenever the
+    shell lowercased the drive letter or the user typed the path in another
+    case. On Windows the same patterns are repeated for the home's 8.3 short
+    spelling when Windows gives one that differs (see
+    ``_config_home_spellings()``), so a session started under the short home
+    (``C:\\Users\\CHRIST~1\\...``, the spelling of ``%TEMP%``) matches them
+    too, whether the components below the home are spelled long or short. A
+    working directory that mixes the two spellings of the components above
+    the home (``C:\\DOCUME~1\\Me\\...``, with the home itself spelled long)
+    matches neither set; the Windows launch.sh starts the session in the long
+    spelling (``WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD``), so only claude
+    started without the launcher under such a path loads the base memory.
+
+    Args:
+        home_dir: The user's home directory.
+        links_rules_from_base: Whether the profile's rules/ entry is a link
+            to ``~/.claude/rules``. The base rules are then the profile's own
+            rules, so only the memory files at the root of ``~/.claude`` are
+            excluded, under each spelling.
+
+    Returns:
+        The patterns of the home as given, CLAUDE.md and CLAUDE.local.md
+        first, then the same patterns of its short spelling when there is
+        one.
+    """
+    names = list(BASE_CONFIG_HOME_MEMORY_FILES)
+    if not links_rules_from_base:
+        names.append(f'{RULES_PROFILE_DIR}/**')
+    return [
+        _letter_case_classes(f'{(spelling / ".claude").as_posix()}/{name}')
+        for spelling in _config_home_spellings(home_dir)
+        for name in names
+    ]
+
+
+def apply_base_config_home_exclusions(
+    user_settings: dict[str, Any] | None,
+    *,
+    home_dir: Path,
+    links_rules_from_base: bool,
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """Add the base profile's memory files to an isolated profile's claudeMdExcludes.
+
+    The exclusions are unioned with the list the configuration declares: the
+    configuration's patterns stay first and in order, and only the base
+    patterns it does not already hold are appended. A declared value that is
+    not a list cannot hold them and is replaced with a warning.
+
+    Args:
+        user_settings: The resolved user-settings section, or None.
+        home_dir: The user's home directory.
+        links_rules_from_base: Whether the profile's rules/ entry links to
+            the base profile's rules.
+
+    Returns:
+        Tuple of (user_settings, warnings, auto_injected_items); the first is
+        the given dict, updated in place, or a new dict when None was given.
+    """
+    patterns = base_config_home_exclusions(home_dir, links_rules_from_base=links_rules_from_base)
+    if user_settings is None:
+        user_settings = {}
+    warnings: list[str] = []
+    declared = user_settings.get(CLAUDE_MD_EXCLUDES_KEY)
+    existing: list[Any]
+    if isinstance(declared, list):
+        existing = list(cast(list[Any], declared))
+    else:
+        existing = []
+        if CLAUDE_MD_EXCLUDES_KEY in user_settings:
+            warnings.append(
+                f'user-settings.{CLAUDE_MD_EXCLUDES_KEY} is {declared!r}, not a list of patterns; the base profile '
+                'exclusions of this isolated profile replace it.',
+            )
+    added = [pattern for pattern in patterns if pattern not in existing]
+    user_settings[CLAUDE_MD_EXCLUDES_KEY] = [*existing, *added]
+    auto_injected = [f'user-settings.{CLAUDE_MD_EXCLUDES_KEY}: {", ".join(added)}'] if added else []
+    return user_settings, warnings, auto_injected
 
 
 def _cleanup_claude_json_ide_auto_install(claude_json_path: Path) -> None:
@@ -9657,7 +9831,7 @@ def display_installation_summary(
     # Auto-injected items section (green)
     if plan.auto_injected_items:
         _print()
-        _print(f'{Colors.GREEN}{Colors.BOLD}Auto-update controls (version pinned):{Colors.NC}')
+        _print(f'{Colors.GREEN}{Colors.BOLD}Settings added by the setup:{Colors.NC}')
         for item in plan.auto_injected_items:
             _print(f'  {Colors.GREEN}[auto] {item}{Colors.NC}')
 
@@ -16775,6 +16949,55 @@ fi
 
 '''
 
+# Block every Windows launch.sh runs before the home-folder guard, with no
+# condition on where the session starts. Claude Code tells the home folder's
+# .claude (the base profile) apart from a project's .claude by spelling and
+# reports the working directory it is handed letter for letter, and Windows
+# spells a home whose account name is longer than eight characters by its 8.3
+# short name in %TEMP% and %TMP%, so a session started under such a path would
+# load the base profile's skills, agents and commands as a project's. cygpath
+# -lm gives the long spelling of the working directory in mixed form: each 8.3
+# component comes back as the long name the filesystem holds, letter case
+# included, and the drive letter comes back uppercase. A component given with
+# its long name in another letter case comes back in the filesystem's case
+# when that name fits the 8.3 shape (Users) and as typed when it is longer,
+# which the case classes of the base exclusions cover. -ef confirms the long spelling names
+# the same directory before the change, and a failed cygpath or cd leaves the
+# working directory as it was. Outside the home the base profile is no
+# ancestor of the session, and the block runs there too, so one folder reaches
+# Claude Code as one spelling however the shell spelled it.
+WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD = '''# Claude Code tells the home folder's .claude, the base profile, apart from a
+# project's .claude by spelling, and reports the working directory it is
+# handed letter for letter: under an 8.3 short name (%TEMP% spells a home
+# whose account name is longer than eight characters as C:\\Users\\CHRIST~1) the
+# base profile's skills, agents and commands would load as a project's. Start
+# in the long spelling of the same directory, wherever the session started.
+LONG_PWD="$(cygpath -lm "$PWD" 2>/dev/null || true)"
+if [ -n "$LONG_PWD" ] && [ "$LONG_PWD" -ef "$PWD" ]; then
+  cd "$LONG_PWD" || true
+fi
+
+'''
+
+# Block every launch.sh runs before it starts claude. Claude Code reads the
+# working directory's .claude as the project settings of the session, so a
+# session started in the home folder would read the home folder's .claude,
+# the base profile, as its project settings and hooks; the guard limits such
+# a session to the profile's own settings sources, which still include the
+# config.json the launcher passes with --settings. Anywhere else the working
+# project's own .claude applies as usual. -ef compares the two directories by
+# identity, so letter case, symlinks and short names on Windows make no
+# difference, and an argument the caller passes comes later and wins.
+HOME_FOLDER_SETTINGS_GUARD = '''# Started in the home folder, a session would read the home folder's .claude
+# (the base profile) as its project settings; keep the settings to the profile
+# there. Anywhere else the working project's own .claude applies as usual.
+SOURCES=()
+if [ "$PWD" -ef "$HOME" ]; then
+  SOURCES=(--setting-sources user)
+fi
+
+'''
+
 
 def create_launcher_script(
     config_base_dir: Path,
@@ -16805,8 +17028,11 @@ def create_launcher_script(
     the calling cmd.exe), so they reference no loader and leave that shell's
     environment as it was; start.cmd keeps its own variables behind setlocal.
 
-    The Windows launch.sh runs WINDOWS_SLASH_ARGUMENTS_GUARD before it starts
-    claude, so Git Bash hands slash commands to claude.exe unchanged.
+    The Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD with
+    no condition on where the session starts, so every session begins in the
+    long spelling of its working directory, below the home and outside it
+    alike, and WINDOWS_SLASH_ARGUMENTS_GUARD before it starts claude, so Git
+    Bash hands slash commands to claude.exe unchanged.
 
     Args:
         config_base_dir: The profile directory (e.g., ~/.claude/{cmd}/, or the
@@ -16919,7 +17145,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}PROMPT_PATH="{profile_sh}/prompts/{system_prompt_file}"
 if [ ! -f "$PROMPT_PATH" ]; then
   echo "Error: System prompt not found at $PROMPT_PATH" >&2
   exit 1
@@ -17001,35 +17227,35 @@ done
 # For v2.0.64+: bug #11641 is fixed, --system-prompt works correctly with --continue/--resume
 if version_ge "$CLAUDE_VERSION" "2.0.64"; then
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 elif [ "$HAS_CONTINUE" = true ]; then
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+      exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
     fi
   fi
 else
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    exec claude "${MCP_FLAGS[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -17037,20 +17263,20 @@ fi
                     # Append mode: use --append-system-prompt-file if available
                     shared_sh_content += '''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  exec claude "${MCP_FLAGS[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
+  exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_WIN"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    exec claude "${MCP_FLAGS[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_WIN"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+    exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
   fi
 fi
 '''
@@ -17078,7 +17304,8 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_WIN")
 fi
 
-''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''exec claude "${MCP_FLAGS[@]}" "$@" --settings "$SETTINGS_WIN"
+{WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD}{HOME_FOLDER_SETTINGS_GUARD}''' + WINDOWS_SLASH_ARGUMENTS_GUARD + '''\
+exec claude "${MCP_FLAGS[@]}" "${SOURCES[@]}" "$@" --settings "$SETTINGS_WIN"
 '''
             shared_sh.write_text(shared_sh_content, newline='\n')
             # Make it executable for bash
@@ -17112,7 +17339,7 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
-if [ ! -f "$PROMPT_PATH" ]; then
+{HOME_FOLDER_SETTINGS_GUARD}if [ ! -f "$PROMPT_PATH" ]; then
     echo -e "\\033[0;31mError: System prompt not found at $PROMPT_PATH\\033[0m"
     echo -e "\\033[1;33mPlease run setup_environment.py first\\033[0m"
     exit 1
@@ -17199,37 +17426,37 @@ if version_ge "$CLAUDE_VERSION" "2.0.64"; then
     echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   fi
   # Fixed in v2.0.64: always use --system-prompt-file (no need for workaround)
-  claude "${{MCP_FLAGS[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 elif [ "$HAS_CONTINUE" = true ]; then
   echo -e "\\033[0;32mResuming Claude Code session with {command_name} configuration...\\033[0m"
   # Legacy workaround for v < 2.0.64: use --append-system-prompt for continuation
   # Continuation: use --append-system-prompt-file if available (v2.0.34+)
   if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-    claude "${{MCP_FLAGS[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
     PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
     if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
       # Small prompt: safe to use content-based flag
       PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-      claude "${{MCP_FLAGS[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
     else
       # Large prompt: skip to prevent error
       echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
       echo "Skipping prompt to prevent 'Argument list too long' error" >&2
       echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-      claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
+      claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
     fi
   fi
 else
   echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
   # New session: use --system-prompt-file (available in v2.0.14+)
   if version_ge "$CLAUDE_VERSION" "2.0.14"; then
-    claude "${{MCP_FLAGS[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
   else
     # Fallback to content-based flag for very old versions
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${{MCP_FLAGS[@]}}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -17238,20 +17465,20 @@ fi
                     launcher_content += f'''# Append mode: use --append-system-prompt-file if available (v2.0.34+)
 echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 if version_ge "$CLAUDE_VERSION" "2.0.34"; then
-  claude "${{MCP_FLAGS[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
+  claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt-file "$PROMPT_PATH" "$@" --settings "$SETTINGS_PATH"
 else
   # For Claude < 2.0.34: check prompt size to avoid "Argument list too long"
   PROMPT_SIZE=$(get_file_size "$PROMPT_PATH")
   if [ "$PROMPT_SIZE" -lt "$SAFE_PROMPT_SIZE" ]; then
     # Small prompt: safe to use content-based flag
     PROMPT_CONTENT=$(cat "$PROMPT_PATH")
-    claude "${{MCP_FLAGS[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" --append-system-prompt "$PROMPT_CONTENT" "$@" --settings "$SETTINGS_PATH"
   else
     # Large prompt: skip to prevent error
     echo "Warning: System prompt too large ($PROMPT_SIZE bytes) for Claude < 2.0.34" >&2
     echo "Skipping prompt to prevent 'Argument list too long' error" >&2
     echo "Solutions: 1) Upgrade to Claude v2.0.34+, 2) Reduce prompt to <4KB" >&2
-    claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
+    claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
   fi
 fi
 '''
@@ -17276,10 +17503,10 @@ if [ -f "$MCP_CONFIG_PATH" ]; then
   MCP_FLAGS=(--strict-mcp-config --mcp-config "$MCP_CONFIG_PATH")
 fi
 
-echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
+{HOME_FOLDER_SETTINGS_GUARD}echo -e "\\033[0;32mStarting Claude Code with {command_name} configuration...\\033[0m"
 
 # Pass any additional arguments to Claude
-claude "${{MCP_FLAGS[@]}}" "$@" --settings "$SETTINGS_PATH"
+claude "${{MCP_FLAGS[@]}}" "${{SOURCES[@]}}" "$@" --settings "$SETTINGS_PATH"
 '''
             launcher_path.write_text(launcher_content)
             launcher_path.chmod(0o755)
@@ -19550,6 +19777,21 @@ def main() -> None:
         for warn_msg in skills_sync_warnings:
             warning(warn_msg)
         auto_injected_items.extend(skills_sync_auto_injected)
+
+        # Claude Code reads the home folder's .claude, the base profile, as
+        # ancestor project memory of every session started below the home,
+        # so an isolated profile excludes the base profile's memory files;
+        # a rules/ entry linked from the base holds the base rules as the
+        # profile's own, so the rules stay in then
+        if primary_command_name:
+            user_settings, exclusion_warnings, exclusion_auto_injected = apply_base_config_home_exclusions(
+                user_settings,
+                home_dir=home_dir,
+                links_rules_from_base=RULES_PROFILE_DIR in linked_entries and link_spec.source == LINK_SOURCE_BASE,
+            )
+            for warn_msg in exclusion_warnings:
+                warning(warn_msg)
+            auto_injected_items.extend(exclusion_auto_injected)
 
         # Validate user-settings section (excluded keys and known key values)
         if user_settings:

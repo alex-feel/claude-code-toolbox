@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from typing import cast
 
+from scripts.setup_environment import HOME_FOLDER_SETTINGS_GUARD
+from scripts.setup_environment import WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD
 from tests.e2e.expected import EXPECTED_JSON_KEYS
 
 
@@ -866,7 +868,90 @@ def validate_launcher_script(
     else:
         errors = _validate_unix_launcher(path, content, command_name)
     errors.extend(validate_launcher_has_no_update_check(path))
+    if path.name == 'launch.sh':
+        errors.extend(validate_launcher_limits_home_folder_settings(path))
+        errors.extend(validate_launcher_starts_in_the_long_working_directory(path, windows=current_platform == 'win32'))
     return errors
+
+
+def validate_launcher_limits_home_folder_settings(launch_sh: Path) -> list[str]:
+    """Validate that launch.sh keeps a session started in the home folder out of the base profile's settings.
+
+    Claude Code reads the working directory's .claude as the project
+    settings of the session, so a session started in the home folder would
+    read the home folder's .claude, the base profile, as its project
+    settings and hooks. Every launch.sh runs HOME_FOLDER_SETTINGS_GUARD once
+    before it starts claude: the guard compares the working directory with
+    the home folder by identity (-ef) and fills SOURCES with
+    ``--setting-sources user`` only there, and every line that starts claude
+    passes SOURCES right after the MCP flags and before the user's own
+    arguments, so an argument the user passes still wins.
+
+    Args:
+        launch_sh: The generated launch.sh.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = launch_sh.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launch_sh}: {e}']
+    errors: list[str] = []
+    if content.count(HOME_FOLDER_SETTINGS_GUARD) != 1:
+        errors.append(f'{launch_sh}: expected the home-folder settings guard exactly once')
+        return errors
+    guard_end = content.index(HOME_FOLDER_SETTINGS_GUARD) + len(HOME_FOLDER_SETTINGS_GUARD)
+    starts = [
+        line.strip() for line in content.splitlines() if line.strip().startswith(('exec claude ', 'claude "'))
+    ]
+    if not starts:
+        errors.append(f'{launch_sh}: no line starts claude')
+    if any(line.strip().startswith(('exec claude ', 'claude "')) for line in content[:guard_end].splitlines()):
+        errors.append(f'{launch_sh}: claude starts before the home-folder settings guard runs')
+    flags = '"${MCP_FLAGS[@]}" "${SOURCES[@]}" '
+    errors.extend(
+        f'{launch_sh}: a claude start lacks the setting-source flags after the MCP flags: {line}'
+        for line in starts
+        if flags not in line or line.index('"${SOURCES[@]}"') > line.index('"$@"')
+    )
+    return errors
+
+
+def validate_launcher_starts_in_the_long_working_directory(launch_sh: Path, *, windows: bool) -> list[str]:
+    """Validate how launch.sh spells the working directory it starts Claude Code in.
+
+    Claude Code tells the home folder's .claude, the base profile, apart from
+    a project's .claude by spelling, and Windows spells a home whose account
+    name is longer than eight characters short in %TEMP% and %TMP%, so the
+    Windows launch.sh runs WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD once,
+    before any line that starts claude: it changes to the long spelling of
+    the working directory when cygpath names the same directory. The block
+    carries no condition on where the session starts, so it runs below the
+    home and outside it alike. Linux and macOS have one spelling per
+    directory, and their launch.sh carries no such change.
+
+    Args:
+        launch_sh: The generated launch.sh.
+        windows: Whether launch_sh is the Windows launcher.
+
+    Returns:
+        List of error strings (empty if validation passes)
+    """
+    try:
+        content = launch_sh.read_text(encoding='utf-8')
+    except OSError as e:
+        return [f'Failed to read launcher {launch_sh}: {e}']
+    if not windows:
+        if 'cygpath -lm' in content or 'LONG_PWD' in content:
+            return [f'{launch_sh}: the Unix launcher changes the spelling of the working directory']
+        return []
+    if content.count(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) != 1:
+        return [f'{launch_sh}: expected the working-directory spelling guard exactly once']
+    guard_end = content.index(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD) + len(WINDOWS_WORKING_DIRECTORY_SPELLING_GUARD)
+    if any(line.strip().startswith(('exec claude ', 'claude "')) for line in content[:guard_end].splitlines()):
+        return [f'{launch_sh}: claude starts before the working-directory spelling guard runs']
+    return []
 
 
 # Text a configuration-update check would put into a generated launcher: the
@@ -2212,7 +2297,8 @@ def validate_launcher_profile_spelling(
         ])
         if 'PROMPT_PATH=' in content:
             expect(content, launch_sh, [f'PROMPT_PATH="{posix_dir}/prompts/'])
-        expect_only_profile(content, launch_sh, '$HOME', posix_dir)
+        # The home-folder guard names $HOME itself, never a path below it
+        expect_only_profile(content.replace(HOME_FOLDER_SETTINGS_GUARD, ''), launch_sh, '$HOME', posix_dir)
 
     def expect_no_loader(content: str, path: Path, loader: str) -> None:
         if loader in content:

@@ -32,6 +32,7 @@ from tests.e2e.launcher_support import find_bash
 from tests.e2e.launcher_support import find_powershell
 from tests.e2e.launcher_support import launch
 from tests.e2e.launcher_support import powershell_command
+from tests.e2e.launcher_support import require_empty_array_expansion
 from tests.e2e.launcher_support import seed_profile
 from tests.e2e.launcher_support import write_marking_loaders
 from tests.e2e.validators import validate_launcher_profile_spelling
@@ -163,6 +164,8 @@ class TestMcpConfigPathWithSpaces:
         bash = find_bash()
         if bash is None:
             pytest.skip('bash unavailable')
+        if system == 'Windows':
+            require_empty_array_expansion(bash)
         home = tmp_path / 'user home (x)'
         profile_dir = home / '.claude' / GOLDEN_COMMAND
         seed_profile(profile_dir, prompt)
@@ -205,6 +208,8 @@ class TestRelocatedProfileLaunchers:
         bash = find_bash()
         if bash is None:
             pytest.skip('bash unavailable')
+        if system == 'Windows':
+            require_empty_array_expansion(bash)
         home = e2e_isolated_home['home']
         profile_dir = _profile_dir(e2e_isolated_home, anchor, parts)
         seed_profile(profile_dir, prompt)

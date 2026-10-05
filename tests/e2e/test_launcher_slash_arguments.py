@@ -33,6 +33,7 @@ from tests.e2e.launcher_support import find_bash
 from tests.e2e.launcher_support import find_powershell
 from tests.e2e.launcher_support import launch
 from tests.e2e.launcher_support import powershell_command
+from tests.e2e.launcher_support import require_empty_array_expansion
 from tests.e2e.launcher_support import same_path
 from tests.e2e.launcher_support import seed_profile
 from tests.e2e.profile_support import run_main
@@ -60,28 +61,6 @@ def _require_bash() -> str:
     if bash is None:
         pytest.skip('bash unavailable')
     return bash
-
-
-def _require_empty_array_expansion(bash: str) -> None:
-    """Skip the test when bash cannot start claude with an empty MCP_FLAGS.
-
-    The Windows launch.sh runs under ``set -u`` and passes ``"${MCP_FLAGS[@]}"``,
-    an empty array when the profile has no mcp.json. bash before 4.4 reports
-    an empty array as unbound there and stops, while Git Bash, the only shell
-    the Windows launch.sh runs under, expands it to nothing. A bash a
-    non-Windows runner provides, such as the macOS /bin/bash 3.2, can be older.
-
-    Args:
-        bash: The bash that runs the launchers.
-    """
-    completed = subprocess.run(
-        [bash, '-c', 'set -u; flags=(); : "${flags[@]}"'],
-        capture_output=True,
-        check=False,
-        timeout=60,
-    )
-    if completed.returncode != 0:
-        pytest.skip(f'{bash} stops at an empty array under set -u, which Git Bash expands to nothing')
 
 
 def _posix_spelling(bash: str, path: Path) -> str:
@@ -191,8 +170,7 @@ class TestLaunchShKeepsSlashArguments:
         """
         del variant
         bash = _require_bash()
-        if not with_mcp:
-            _require_empty_array_expansion(bash)
+        require_empty_array_expansion(bash)
         home = e2e_isolated_home['home']
         profile_dir = e2e_isolated_home['claude_dir'] / 'slash-cmd'
         seed_profile(profile_dir, prompt, mcp=with_mcp)
@@ -226,6 +204,7 @@ class TestLaunchShKeepsSlashArguments:
         """A launch with no slash argument leaves MSYS2_ARG_CONV_EXCL out of the session's environment."""
         del variant
         bash = _require_bash()
+        require_empty_array_expansion(bash)
         home = e2e_isolated_home['home']
         profile_dir = e2e_isolated_home['claude_dir'] / 'slash-cmd'
         seed_profile(profile_dir, prompt)
