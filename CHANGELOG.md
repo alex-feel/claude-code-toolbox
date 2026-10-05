@@ -1,5 +1,20 @@
 # Changelog
 
+## [8.1.0](https://github.com/alex-feel/claude-code-toolbox/compare/v8.0.0...v8.1.0) (2026-10-05)
+
+
+### Features
+
+* leave the source's machine-wide work to profiles that link all its content ([#476](https://github.com/alex-feel/claude-code-toolbox/issues/476)) ([1ac47bc](https://github.com/alex-feel/claude-code-toolbox/commit/1ac47bc3db33f321f7565ea0ef50eeca942726d3))
+* schedule a daily update job per profile with the auto-update key ([#477](https://github.com/alex-feel/claude-code-toolbox/issues/477)) ([bce0254](https://github.com/alex-feel/claude-code-toolbox/commit/bce0254cdbd2d91be0da32dea27a6bbd4da2ea0c))
+* warn when an older global-prefix npm shadows the npm bundled with Node.js ([#473](https://github.com/alex-feel/claude-code-toolbox/issues/473)) ([a6150fc](https://github.com/alex-feel/claude-code-toolbox/commit/a6150fccc1f143b1ae396fd2d4760c283f61f49b))
+
+
+### Bug Fixes
+
+* keep isolated profile sessions out of the base config home ([#474](https://github.com/alex-feel/claude-code-toolbox/issues/474)) ([8cf48a0](https://github.com/alex-feel/claude-code-toolbox/commit/8cf48a00db52147304b6cd44e8768125e3361727))
+* refresh a stale link source before installing its dependent ([#475](https://github.com/alex-feel/claude-code-toolbox/issues/475)) ([8c67317](https://github.com/alex-feel/claude-code-toolbox/commit/8c673177496053d8509811aefced892efda5f829))
+
 ## [8.0.0](https://github.com/alex-feel/claude-code-toolbox/compare/v7.4.2...v8.0.0) (2026-10-04)
 
 
