@@ -24,6 +24,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 from unittest.mock import patch
 
 import pytest
@@ -1636,12 +1637,20 @@ def _recording_subprocess_run(
     """Build a subprocess.run stand-in that records each child's argv and environment, then runs it."""
     real_run = setup_environment.subprocess.run
 
-    def _run(argv: list[str], *, env: dict[str, str], check: bool) -> subprocess.CompletedProcess[Any]:
-        argvs.append(list(argv))
-        envs.append(dict(env))
-        return real_run(argv, env=env, check=check)
+    def _run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        # The run also starts other processes, such as the npm probes of
+        # Step 5; only a child run starts the interpreter
+        if argv[0] == sys.executable:
+            argvs.append(list(argv))
+            envs.append(dict(kwargs['env']))
+        return real_run(argv, **kwargs)
 
     return _run
+
+
+def _child_runs(run: MagicMock) -> list[Any]:
+    """Return the calls of a subprocess.run stand-in that started a child run of the interpreter."""
+    return [call for call in run.call_args_list if call.args and call.args[0][0] == sys.executable]
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -1793,7 +1802,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _output(capsys)
         assert 'The configuration matches the resolved-config.yaml of profile "team-1"; applying the snapshot' in output
         snapshot = claude_dir / 'team-1' / 'resolved-config.yaml'
@@ -1822,7 +1831,7 @@ class TestStaleSourceRefresh:
             assert run_main(['--profile', 'team-2', *SKIP, '--yes']) == 0
 
         load.assert_not_called()
-        run.assert_not_called()
+        assert _child_runs(run) == []
         assert 'Source refresh' not in _output(capsys)
         assert _theme(claude_dir / 'team-2') == 'dark'
         assert _installed_at(claude_dir / 'team-1') == source_before
@@ -1841,7 +1850,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', 'team-2']) == 0
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _output(capsys)
         assert SOURCE_REFRESH_HEADER in output
         assert DIGEST_DIFFERS in output
@@ -1980,7 +1989,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 0
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _run_output(capfd)
         assert 'The configuration matches the resolved-config.yaml of profile "team-1"; applying the snapshot' in output
         assert 'Source refresh' not in output
@@ -2018,7 +2027,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2']) == 1
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _output(capsys)
         assert (
             f"components: the remembered selection of profile team-1 (recorded in {claude_dir / 'team-1' / 'manifest.json'}) "
@@ -2071,7 +2080,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-2'], validation_result=failure) == 1
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _output(capsys)
         assert 'Configuration validation failed!' in output
         assert 'The file list comes from profile' not in output
@@ -2200,7 +2209,7 @@ class TestStaleSourceRefresh:
         with patch.object(setup_environment.subprocess, 'run') as run:
             assert run_main([str(cfg), *SKIP, '--dry-run', '--command-names', 'team-2']) == 0
 
-        run.assert_not_called()
+        assert _child_runs(run) == []
         output = _output(capsys)
         assert BASE_SOURCE_REFRESH_HEADER in output
         assert DIGEST_DIFFERS in output
