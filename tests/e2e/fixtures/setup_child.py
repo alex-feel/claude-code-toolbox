@@ -16,7 +16,10 @@ changes the machine it runs on.
 When the environment names a fake scheduler registry (see
 tests/e2e/fake_scheduler.py), the child answers its scheduler commands from
 that registry instead of the real scheduler, so a profile with auto-update
-registers its daily update job with the same fake the parent test uses.
+registers its daily update job with the same fake the parent test uses; the
+child counts as holding administrator rights, so a Windows registration
+succeeds, and a fake shaped for another platform replaces the platform the
+setup builds, so the parent's backend is the child's too.
 
 Setting SIMULATE_NON_ADMIN_VARIABLE to ``1`` makes the child behave as a
 process without an administrator token whatever token it actually holds:
@@ -41,6 +44,7 @@ from unittest.mock import patch
 from scripts import setup_environment
 from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
 from tests.e2e.fake_scheduler import FakeScheduler
+from tests.e2e.fake_scheduler import fake_platform
 
 SIMULATE_NON_ADMIN_VARIABLE = 'CCT_E2E_SIMULATE_NON_ADMIN'
 ELEVATION_MARKER = '[setup_child] elevation requested by the administrator gate'
@@ -77,8 +81,13 @@ def main() -> None:
         # never reaches the real scheduler and the parent sees what the child did
         registry = os.environ.get(REGISTRY_VARIABLE)
         if registry:
-            stack.enter_context(patch.object(setup_environment, '_run_scheduler_command', FakeScheduler(Path(registry))))
-            stack.enter_context(patch.object(setup_environment, '_scheduler_registration_needs_elevation', lambda: False))
+            fake = FakeScheduler(Path(registry))
+            stack.enter_context(patch.object(setup_environment, '_run_scheduler_command', fake))
+            stack.enter_context(patch.object(setup_environment, 'is_admin', lambda: True))
+            if fake.platform_name is not None:
+                stack.enter_context(patch.object(
+                    setup_environment, 'default_scheduler_platform', lambda: fake_platform(fake, setup_environment),
+                ))
         if os.environ.get(SIMULATE_NON_ADMIN_VARIABLE) == '1':
             stack.enter_context(patch.object(setup_environment, 'is_admin', lambda: False))
             stack.enter_context(patch.object(setup_environment, 'request_admin_elevation', _refuse_elevation))

@@ -63,6 +63,18 @@ SPEC = AutoUpdateSpec(hour=3, minute=30, command=None)
 COMMAND = ['/opt/uv/uvx', 'cc-toolbox@latest', 'setup', '--profile', 'team-1', '--yes', '--no-admin', '--scheduled-run']
 
 
+@pytest.fixture
+def elevated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process counts as holding administrator rights, which a Windows registration needs."""
+    monkeypatch.setattr(setup_environment, 'is_admin', lambda: True)
+
+
+@pytest.fixture
+def non_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The process counts as lacking administrator rights."""
+    monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+
+
 class TestAutoUpdateKey:
     """The auto-update key: a daily local time and an optional command."""
 
@@ -294,6 +306,52 @@ class TestBackends:
         with pytest.raises(SchedulerError, match='Access is denied'):
             setup_environment.apply_job_registration(platform, plan)
 
+    @pytest.mark.parametrize('name', ['darwin', 'linux'])
+    def test_registration_creates_the_logs_directory_the_job_writes_into(self, tmp_path: Path, name: str) -> None:
+        """launchd and cron send the job's output into <state>/logs, which must exist before the job first fires."""
+        scheduler = FakeScheduler(systemd=False)
+        platform = _platform(tmp_path, name, scheduler)
+        plan = setup_environment.plan_job_registration(platform, 'cc-toolbox-update-team-1', COMMAND, SPEC, NOW)
+        assert platform.state / 'logs' in plan.directories
+        assert not (platform.state / 'logs').exists()
+        setup_environment.apply_job_registration(platform, plan)
+        assert (platform.state / 'logs').is_dir()
+
+    @pytest.mark.parametrize(
+        ('name', 'systemd', 'detail'),
+        [
+            ('win32', True, 'Access is denied'),
+            ('darwin', True, 'Boot-out failed'),
+            ('linux', True, 'Failed to disable unit'),
+            ('linux', False, 'Permission denied'),
+        ],
+    )
+    def test_refused_removal_raises(self, tmp_path: Path, name: str, systemd: bool, detail: str) -> None:
+        """A removal the scheduler refuses is a SchedulerError naming the refusal; the job stays registered."""
+        scheduler = FakeScheduler(systemd=systemd)
+        platform = _platform(tmp_path, name, scheduler)
+        job = 'cc-toolbox-update-team-1'
+        setup_environment.apply_job_registration(
+            platform, setup_environment.plan_job_registration(platform, job, COMMAND, SPEC, NOW),
+        )
+        scheduler.fail_remove = True
+        with pytest.raises(SchedulerError, match=detail):
+            setup_environment.remove_job_registration(platform, job)
+        assert job in scheduler.jobs
+
+    @pytest.mark.parametrize('name', ['win32', 'darwin', 'linux'])
+    def test_absent_job_is_not_removed_again(self, tmp_path: Path, name: str) -> None:
+        """A job the scheduler does not hold triggers no removal command and no error."""
+        scheduler = FakeScheduler(fail_remove=True)
+        platform = _platform(tmp_path, name, scheduler)
+        setup_environment.remove_job_registration(platform, 'cc-toolbox-update-team-1')
+        removals = [
+            call for call in scheduler.calls
+            if call[:2] in (['schtasks', '/Delete'], ['launchctl', 'bootout'])
+            or (call[0] == 'systemctl' and 'disable' in call)
+        ]
+        assert removals == []
+
     @pytest.mark.real_scheduler
     def test_default_runner_reports_a_missing_command(self) -> None:
         """The real runner turns a missing executable into exit 127 instead of raising."""
@@ -419,6 +477,35 @@ class TestPlanScheduledUpdate:
         assert later.action == 'deferred'
         assert not later.changes_registration
 
+    def test_scheduled_run_defers_the_removal_of_its_own_job(self, tmp_path: Path) -> None:
+        """A configuration that dropped the key is seen first by the job itself: the job stays, recorded as before."""
+        scheduler = FakeScheduler()
+        _registered(tmp_path, scheduler)
+        manifest = {'auto_update': {'time': '03:30', 'command': None, 'job': 'cc-toolbox-update-team-1'}}
+        later, _ = _plan(tmp_path, scheduler, spec=None, manifest=manifest, scheduled_run=True)
+        assert later.action == 'deferred'
+        assert later.keeps_job
+        assert later.spec == SPEC, 'the manifest record rebuilds the spec, so the manifest keeps recording the job'
+        assert 'the next manual run removes it' in later.reason
+        manual, _ = _plan(tmp_path, scheduler, spec=None, manifest=manifest)
+        assert manual.action == 'remove'
+
+    def test_scheduled_run_defers_the_removal_of_a_job_only_the_state_dir_remembers(self, tmp_path: Path) -> None:
+        """Without a manifest record the job record supplies the time the job keeps running at."""
+        scheduler = FakeScheduler()
+        _registered(tmp_path, scheduler)
+        later, _ = _plan(tmp_path, scheduler, spec=None, manifest=None, scheduled_run=True)
+        assert later.action == 'deferred'
+        assert later.spec == SPEC
+
+    def test_linked_scheduled_run_defers_the_removal_too(self, tmp_path: Path) -> None:
+        """A profile converted to a linked one keeps its job through the scheduled run that first sees the change."""
+        scheduler = FakeScheduler()
+        _registered(tmp_path, scheduler)
+        later, _ = _plan(tmp_path, scheduler, linked_from='team-0', scheduled_run=True)
+        assert later.action == 'deferred'
+        assert 'links content' in later.reason
+
     def test_scheduler_problem_is_carried(self, tmp_path: Path) -> None:
         """A Linux box with neither systemd nor crontab carries the problem into the plan."""
         platform = _platform(tmp_path, 'linux', FakeScheduler(systemd=False), which={'crontab': None})
@@ -447,6 +534,7 @@ class TestApplyScheduledUpdate:
         assert setup_environment.read_job_record(platform, plan.name) is None
         assert plan.name not in scheduler.jobs
 
+    @pytest.mark.usefixtures('elevated')
     def test_failed_registration_returns_the_failure(self, tmp_path: Path) -> None:
         """A scheduler refusal is returned as the step's failure and nothing is recorded."""
         plan, platform = _plan(tmp_path, FakeScheduler(fail_create=True), name='win32')
@@ -455,18 +543,72 @@ class TestApplyScheduledUpdate:
         assert 'Access is denied' in failure
         assert setup_environment.read_job_record(platform, plan.name) is None
 
-    def test_windows_non_elevated_registration_fails_with_the_remedy(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    @pytest.mark.usefixtures('non_admin')
+    def test_windows_non_elevated_registration_fails_with_the_remedy(self, tmp_path: Path) -> None:
         """Under --no-admin in a non-elevated process the registration is reported failed, with the remedy."""
         scheduler = FakeScheduler()
         plan, platform = _plan(tmp_path, scheduler, name='win32')
-        monkeypatch.setattr(setup_environment, '_scheduler_registration_needs_elevation', lambda: True)
         failure = setup_environment.apply_scheduled_update(platform, plan, now=NOW)
         assert failure is not None
         assert 'elevated' in failure
         assert '--no-admin' in failure
         assert all(call[:2] != ['schtasks', '/Create'] for call in scheduler.calls), 'nothing was registered'
+
+    @pytest.mark.usefixtures('non_admin')
+    def test_windows_non_elevated_removal_fails_and_keeps_the_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Removing a highest-privilege task needs the same rights: the job and its record stay."""
+        scheduler = FakeScheduler()
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: True)
+        plan, platform = _registered(tmp_path, scheduler, name='win32')
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+        removal, _ = _plan(tmp_path, scheduler, spec=None, name='win32')
+        failure = setup_environment.apply_scheduled_update(platform, removal, now=NOW)
+        assert failure is not None
+        assert 'was not removed' in failure
+        assert plan.name in scheduler.jobs
+        assert setup_environment.read_job_record(platform, plan.name) is not None
+
+    @pytest.mark.parametrize(('name', 'systemd'), [('win32', True), ('darwin', True), ('linux', True), ('linux', False)])
+    @pytest.mark.usefixtures('elevated')
+    def test_refused_removal_is_the_failure_and_keeps_the_record(self, tmp_path: Path, name: str, systemd: bool) -> None:
+        """A scheduler that refuses the removal makes the step fail; the record stays for the next run."""
+        scheduler = FakeScheduler(systemd=systemd)
+        plan, platform = _registered(tmp_path, scheduler, name=name)
+        scheduler.fail_remove = True
+        removal, _ = _plan(tmp_path, scheduler, spec=None, name=name)
+        failure = setup_environment.apply_scheduled_update(platform, removal, now=NOW)
+        assert failure is not None
+        assert 'could not be removed' in failure
+        assert plan.name in scheduler.jobs
+        assert setup_environment.read_job_record(platform, plan.name) is not None
+        scheduler.fail_remove = False
+        again, _ = _plan(tmp_path, scheduler, spec=None, name=name)
+        assert again.action == 'remove', 'the kept record makes the next run plan the removal again'
+        assert setup_environment.apply_scheduled_update(platform, again, now=NOW) is None
+        assert plan.name not in scheduler.jobs
+
+    @pytest.mark.usefixtures('elevated')
+    def test_step_writes_a_refused_removal_back_into_the_manifest(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Step 19 recorded no job; a removal Step 24 cannot apply puts the job back so the next run plans it."""
+        scheduler = FakeScheduler()
+        plan, platform = _registered(tmp_path, scheduler)
+        scheduler.fail_remove = True
+        manifest_path = tmp_path / 'manifest.json'
+        manifest_path.write_text(json.dumps({'name': 'team-1', 'auto_update': None}), encoding='utf-8')
+        removal, _ = _plan(tmp_path, scheduler, spec=None)
+        previous = {'time': '03:30', 'command': None, 'job': plan.name}
+        failure = setup_environment.run_scheduled_update_step(
+            platform, removal, warnings_=[], now=NOW, manifest_path=manifest_path, previous_record=previous,
+        )
+        assert failure is not None
+        written = json.loads(manifest_path.read_text(encoding='utf-8'))
+        assert written['auto_update'] == previous
+        assert written['name'] == 'team-1'
+        assert 'keeps recording the job' in capsys.readouterr().out
 
     def test_unchanged_touches_nothing(self, tmp_path: Path) -> None:
         """An unchanged job runs no scheduler command."""
@@ -492,6 +634,7 @@ class TestElevationReason:
             reasons = setup_environment.admin_elevation_reasons({'auto-update': {'time': '03:30'}}, self._args())
         assert reasons == [setup_environment.SCHEDULED_UPDATE_ELEVATION_REASON]
 
+    @pytest.mark.usefixtures('elevated')
     def test_plan_without_a_registration_change_adds_no_reason(self, tmp_path: Path) -> None:
         """An unchanged job needs no elevation, so a run with the plan lists none."""
         scheduler = FakeScheduler()
@@ -512,6 +655,48 @@ class TestElevationReason:
         with patch.object(setup_environment.platform, 'system', return_value='Linux'):
             assert setup_environment.admin_elevation_reasons({'auto-update': {'time': '03:30'}}, self._args()) == []
 
+    def test_needs_elevation_follows_the_platform_and_the_rights(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A Windows scheduler needs an elevated process; every other scheduler and an elevated process need nothing."""
+        windows = _platform(tmp_path, 'win32', FakeScheduler())
+        linux = _platform(tmp_path, 'linux', FakeScheduler())
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+        assert setup_environment._scheduler_registration_needs_elevation(windows)
+        assert not setup_environment._scheduler_registration_needs_elevation(linux)
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: True)
+        assert not setup_environment._scheduler_registration_needs_elevation(windows)
+
+    @pytest.mark.usefixtures('non_admin')
+    def test_profile_all_lists_the_reason_only_for_a_changed_registration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The parent plans each profile's job from its snapshot: an unchanged job prompts for nothing, a change does."""
+        scheduler = FakeScheduler()
+        platform = _platform(tmp_path, 'win32', scheduler)
+        monkeypatch.setattr(setup_environment, 'default_scheduler_platform', lambda: platform)
+        with patch.object(setup_environment, 'is_admin', return_value=True):
+            _registered(tmp_path, scheduler, name='win32')
+        monkeypatch.setattr(
+            setup_environment, 'scheduled_update_command', lambda _platform, _profile: list(COMMAND),
+        )
+        profile_dir = tmp_path / 'home' / '.claude' / 'team-1'
+        profile_dir.mkdir(parents=True)
+        manifest = {'name': 'team-1', 'auto_update': {'time': '03:30', 'command': None, 'job': 'cc-toolbox-update-team-1'}}
+        profile = setup_environment.InstalledProfile('team-1', profile_dir, profile_dir / 'manifest.json', manifest)
+        args = self._args(no_admin=False, profile='all', yes=True)
+
+        def _snapshot(time: str) -> None:
+            (profile_dir / 'resolved-config.yaml').write_text(f'name: x\nauto-update:\n  time: "{time}"\n', encoding='utf-8')
+
+        _snapshot('03:30')
+        with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+            unchanged = setup_environment.refresh_all_elevation_reasons([profile], args)
+            _snapshot('04:00')
+            changed = setup_environment.refresh_all_elevation_reasons([profile], args)
+        assert unchanged == []
+        assert changed == [setup_environment.SCHEDULED_UPDATE_ELEVATION_REASON]
+
 
 class TestUpdateLock:
     """Jobs never overlap on one machine."""
@@ -519,7 +704,9 @@ class TestUpdateLock:
     def test_acquire_and_release(self, tmp_path: Path) -> None:
         """A free lock is taken and holds the pid; releasing removes it."""
         lock = tmp_path / 'state' / 'update.lock'
-        assert setup_environment.acquire_update_lock(lock, wait_seconds=0, poll_seconds=1, stale_seconds=3600)
+        assert setup_environment.acquire_update_lock(lock, wait_seconds=0, poll_seconds=1, stale_seconds=3600) == (
+            True, None,
+        )
         assert lock.read_text(encoding='utf-8').strip() == str(os.getpid())
         setup_environment.release_update_lock(lock)
         assert not lock.exists()
@@ -535,10 +722,11 @@ class TestUpdateLock:
             slept.append(seconds)
             clock[0] += seconds
 
-        taken = setup_environment.acquire_update_lock(
+        taken, note = setup_environment.acquire_update_lock(
             lock, wait_seconds=60, poll_seconds=15, stale_seconds=3600, sleep=_sleep, clock=lambda: clock[0],
         )
         assert not taken
+        assert note is None
         assert slept == [15.0, 15.0, 15.0, 15.0]
         assert lock.exists()
 
@@ -554,18 +742,23 @@ class TestUpdateLock:
             if polls == 2:
                 lock.unlink()
 
-        assert setup_environment.acquire_update_lock(
+        taken, _ = setup_environment.acquire_update_lock(
             lock, wait_seconds=600, poll_seconds=15, stale_seconds=3600, sleep=_sleep,
         )
+        assert taken
         assert polls == 2
 
     def test_stale_lock_is_replaced(self, tmp_path: Path) -> None:
-        """A lock older than the stale threshold belongs to a dead run and is taken over."""
+        """A lock older than the stale threshold belongs to a dead run and is taken over, with a note for the log."""
         lock = tmp_path / 'update.lock'
         lock.write_text('1\n', encoding='utf-8')
         old = lock.stat().st_mtime - 7200
         os.utime(lock, (old, old))
-        assert setup_environment.acquire_update_lock(lock, wait_seconds=0, poll_seconds=1, stale_seconds=3600)
+        taken, note = setup_environment.acquire_update_lock(lock, wait_seconds=0, poll_seconds=1, stale_seconds=3600)
+        assert taken
+        assert note is not None
+        assert note.startswith(f'Took over the stale lock {lock}')
+        assert '2.0 hours ago' in note
         assert lock.read_text(encoding='utf-8').strip() == str(os.getpid())
 
 
@@ -616,9 +809,38 @@ class TestRunScheduledUpdate:
     """The harness a scheduled run goes through: lock, log, the command, the record."""
 
     @pytest.fixture(autouse=True)
-    def _no_output_redirect(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Keep the test process's own output where pytest captures it."""
-        monkeypatch.setattr(setup_environment, '_redirect_output_to', lambda _path: None)
+    def _keep_the_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep the test process's own output where pytest captures it and its stdin as it is."""
+        monkeypatch.setattr(setup_environment, '_detach_from_terminal', lambda _path: None)
+
+    def test_detaching_from_the_terminal_rebinds_the_streams(self, tmp_path: Path) -> None:
+        """A process cut off its terminal prints into the log and reads nothing: no prompt can wait for a keypress."""
+        log = tmp_path / 'run.log'
+        probe = tmp_path / 'probe.py'
+        probe.write_text(
+            'import sys\n'
+            'from pathlib import Path\n'
+            'from scripts import setup_environment\n'
+            f'setup_environment._detach_from_terminal(Path({str(log)!r}))\n'
+            "print('printed after the redirection')\n"
+            "print('stdout replaced:', sys.stdout is not sys.__stdout__)\n"
+            "print('stdin is a tty:', sys.stdin.isatty())\n"
+            "print('stdin holds:', repr(sys.stdin.read()))\n"
+            "setup_environment.info('info() after the redirection')\n",
+            encoding='utf-8',
+        )
+        result = subprocess.run(
+            [sys.executable, str(probe)], capture_output=True, text=True, check=False, cwd=str(Path(__file__).parents[1]),
+            env={**os.environ, 'PYTHONPATH': str(Path(__file__).parents[1])},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == '', 'nothing reaches the original stdout after the redirection'
+        text = log.read_text(encoding='utf-8')
+        assert 'printed after the redirection' in text
+        assert 'stdout replaced: True' in text
+        assert 'stdin is a tty: False' in text
+        assert "stdin holds: ''" in text
+        assert 'info() after the redirection' in text
 
     def test_default_runs_the_setup_and_records_its_exit_code(self, tmp_path: Path) -> None:
         """The setup callable runs under the lock; its SystemExit code becomes the run's exit code."""
@@ -655,6 +877,44 @@ class TestRunScheduledUpdate:
         record = setup_environment.read_scheduled_run_record(platform, 'cc-toolbox-update-team-1')
         assert record is not None
         assert record['exit_code'] == 1
+
+    def test_crashed_setup_is_recorded_with_its_traceback(self, tmp_path: Path) -> None:
+        """A setup that raises instead of exiting is a completed run with exit code 1, the traceback in the log."""
+        platform = _platform(tmp_path, 'linux', FakeScheduler())
+
+        def _setup() -> None:
+            raise OSError(9, 'The handle is invalid')
+
+        assert setup_environment.run_scheduled_update(_scheduled_args(), _setup, platform_=platform, custom_command=None) == 1
+        record = setup_environment.read_scheduled_run_record(platform, 'cc-toolbox-update-team-1')
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 1
+        assert record['reason'] == 'the run raised OSError: [Errno 9] The handle is invalid'
+        text = Path(record['log']).read_text(encoding='utf-8')
+        assert 'Traceback (most recent call last)' in text
+        assert 'The handle is invalid' in text
+        assert 'Finished: exit code 1' in text
+        assert not (platform.state / 'update.lock').exists(), 'the lock is released'
+
+    def test_stale_lock_is_taken_over_and_noted_in_the_log(self, tmp_path: Path) -> None:
+        """A lock left by a run that never finished does not block the night's run; the log says it was taken over."""
+        platform = _platform(tmp_path, 'linux', FakeScheduler())
+        lock = platform.state / 'update.lock'
+        lock.parent.mkdir(parents=True)
+        lock.write_text('4242\n', encoding='utf-8')
+        old = lock.stat().st_mtime - setup_environment.SCHEDULED_UPDATE_LOCK_STALE_SECONDS - 60
+        os.utime(lock, (old, old))
+
+        def _setup() -> None:
+            raise SystemExit(0)
+
+        assert setup_environment.run_scheduled_update(_scheduled_args(), _setup, platform_=platform, custom_command=None) == 0
+        record = setup_environment.read_scheduled_run_record(platform, 'cc-toolbox-update-team-1')
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert 'Took over the stale lock' in Path(record['log']).read_text(encoding='utf-8')
+        assert not lock.exists()
 
     def test_custom_command_runs_instead_of_the_setup(self, tmp_path: Path) -> None:
         """A configured command runs in the shell, its output lands in the log, the setup never runs."""
@@ -798,51 +1058,126 @@ class TestCliStoredCredentials:
         assert 'gh auth token' in out
 
 
-class TestUnattendedCredentialWarning:
-    """Registering a job for a private configuration warns when no unattended source covers its host."""
+class TestJobEnvironment:
+    """What the scheduler hands the job: the registry on Windows, launchd's and the user manager's environment."""
+
+    def test_windows_reads_the_user_and_system_registry(self, tmp_path: Path) -> None:
+        """A value in HKCU\\Environment or the system environment key reaches the task; a session export does not."""
+        scheduler = FakeScheduler(environment={'GITHUB_TOKEN': 'ghp_persistent'})
+        platform = _platform(tmp_path, 'win32', scheduler)
+        assert setup_environment.job_environment_carries(platform, 'GITHUB_TOKEN')
+        assert not setup_environment.job_environment_carries(platform, 'GITLAB_TOKEN')
+        queried = [call for call in scheduler.calls if call[0] == 'reg']
+        assert queried[0][:4] == ['reg', 'query', r'HKCU\Environment', '/v']
+        assert any(call[2].startswith(r'HKLM\SYSTEM') for call in queried), 'the system key is read too'
+
+    def test_darwin_asks_launchd(self, tmp_path: Path) -> None:
+        """launchctl getenv answers for the environment launchd starts agents with."""
+        scheduler = FakeScheduler(environment={'REPO_TOKEN': 'x'})
+        platform = _platform(tmp_path, 'darwin', scheduler)
+        assert setup_environment.job_environment_carries(platform, 'REPO_TOKEN')
+        assert not setup_environment.job_environment_carries(platform, 'GITHUB_TOKEN')
+        assert ['launchctl', 'getenv', 'REPO_TOKEN'] in scheduler.calls
+
+    def test_linux_reads_the_user_manager_environment(self, tmp_path: Path) -> None:
+        """systemctl --user show-environment lists what a user service inherits."""
+        scheduler = FakeScheduler(environment={'GITLAB_TOKEN': 'glpat'})
+        platform = _platform(tmp_path, 'linux', scheduler)
+        assert setup_environment.job_environment_carries(platform, 'GITLAB_TOKEN')
+        assert not setup_environment.job_environment_carries(platform, 'GITHUB_TOKEN')
+
+    def test_cron_hands_the_job_no_variable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A crontab line carries only PATH, so no variable counts, whatever the session holds."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_session')
+        platform = _platform(tmp_path, 'linux', FakeScheduler(systemd=False, environment={'GITHUB_TOKEN': 'ghp'}))
+        assert not setup_environment.job_environment_carries(platform, 'GITHUB_TOKEN')
+
+    def test_session_variables_do_not_count(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A variable this shell exports is not in the job's environment unless the scheduler holds it."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_session_only')
+        for name in ('win32', 'darwin', 'linux'):
+            platform = _platform(tmp_path, name, FakeScheduler())
+            assert not setup_environment.job_environment_carries(platform, 'GITHUB_TOKEN'), name
+
+
+class TestUnattendedCredentialWarnings:
+    """Registering a job for private hosts warns for every host no unattended source covers."""
 
     @pytest.fixture(autouse=True)
     def _private_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(setup_environment, '_AUTHENTICATED_HOSTS', {'github.com'})
+        monkeypatch.setattr(setup_environment, '_AUTHENTICATED_HOSTS', {'github.com': 'github'})
 
     @pytest.mark.usefixtures('stubs')
-    def test_warns_when_neither_source_covers_the_host(self) -> None:
-        """No variable, no gh login: the warning names the host and both remedies."""
-        warning_text = setup_environment.unattended_credential_warning(GITHUB_URL, env_vars_from_cli=[])
-        assert warning_text is not None
-        assert 'github.com' in warning_text
-        assert 'GITHUB_TOKEN' in warning_text
-        assert 'gh auth login' in warning_text
+    @pytest.mark.parametrize('name', ['win32', 'darwin', 'linux'])
+    def test_warns_when_neither_source_covers_the_host(self, tmp_path: Path, name: str) -> None:
+        """No job-visible variable, no gh login: the warning names the host, the login and the platform's variable remedy."""
+        platform = _platform(tmp_path, name, FakeScheduler())
+        warnings_ = setup_environment.unattended_credential_warnings(platform)
+        assert len(warnings_) == 1
+        assert 'github.com' in warnings_[0]
+        assert 'gh auth login --hostname github.com' in warnings_[0]
+        assert 'GITHUB_TOKEN' in warnings_[0]
+        remedy = {
+            'win32': 'setx GITHUB_TOKEN',
+            'darwin': 'launchctl setenv GITHUB_TOKEN',
+            'linux': 'systemctl --user set-environment',
+        }
+        assert remedy[name] in warnings_[0]
 
     @pytest.mark.usefixtures('stubs')
-    def test_token_passed_with_env_flag_does_not_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """--env GITHUB_TOKEN=... lives in this run only, so the job still lacks credentials."""
-        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_x')
-        assert setup_environment.unattended_credential_warning(GITHUB_URL, env_vars_from_cli=['GITHUB_TOKEN']) is not None
-        assert setup_environment.unattended_credential_warning(GITHUB_URL, env_vars_from_cli=[]) is None
+    def test_cron_names_the_login_as_the_only_source(self, tmp_path: Path) -> None:
+        """A crontab job receives no variable, so the warning offers the stored login alone."""
+        platform = _platform(tmp_path, 'linux', FakeScheduler(systemd=False))
+        warnings_ = setup_environment.unattended_credential_warnings(platform)
+        assert len(warnings_) == 1
+        assert 'a crontab job receives no environment variable' in warnings_[0]
+        assert 'setx' not in warnings_[0]
 
-    def test_gh_login_covers_the_host(self, stubs: Path) -> None:
+    @pytest.mark.usefixtures('stubs')
+    def test_session_token_does_not_count(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A token the shell exports, or --env sets, is not in the job's environment, so the job still lacks it."""
+        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_session')
+        platform = _platform(tmp_path, 'win32', FakeScheduler())
+        assert setup_environment.unattended_credential_warnings(platform) != []
+
+    @pytest.mark.usefixtures('stubs')
+    @pytest.mark.parametrize('variable', ['GITHUB_TOKEN', 'REPO_TOKEN', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH'])
+    def test_job_visible_variable_covers_the_host(self, tmp_path: Path, variable: str) -> None:
+        """The host token, the generic token or the explicit auth override in the job's environment covers the host."""
+        platform = _platform(tmp_path, 'win32', FakeScheduler(environment={variable: 'value'}))
+        assert setup_environment.unattended_credential_warnings(platform) == []
+
+    def test_gh_login_covers_the_host(self, stubs: Path, tmp_path: Path) -> None:
         """A logged-in gh means the job can authenticate."""
         write_cli_stub(stubs, 'gh', ['ghp_stub'])
-        assert setup_environment.unattended_credential_warning(GITHUB_URL, env_vars_from_cli=[]) is None
+        platform = _platform(tmp_path, 'linux', FakeScheduler())
+        assert setup_environment.unattended_credential_warnings(platform) == []
 
     @pytest.mark.usefixtures('stubs')
-    def test_public_or_local_configuration_warns_nothing(self) -> None:
-        """A host that needed no authentication this run, or a local file, is not private."""
-        public = 'https://raw.githubusercontent.com/acme/pub/main/c.yaml'
-        setup_environment._AUTHENTICATED_HOSTS.clear()
-        assert setup_environment.unattended_credential_warning(public, env_vars_from_cli=[]) is None
-        assert setup_environment.unattended_credential_warning(GITHUB_URL, env_vars_from_cli=[]) is None
-        assert setup_environment.unattended_credential_warning('/home/me/config.yaml', env_vars_from_cli=[]) is None
+    def test_every_authenticated_host_is_checked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A leaf on GitHub inheriting a base on GitLab: only the uncovered GitLab host is warned about."""
+        monkeypatch.setattr(
+            setup_environment, '_AUTHENTICATED_HOSTS', {'github.com': 'github', 'gitlab.example.com': 'gitlab'},
+        )
+        platform = _platform(tmp_path, 'win32', FakeScheduler(environment={'GITHUB_TOKEN': 'ghp'}))
+        warnings_ = setup_environment.unattended_credential_warnings(platform)
+        assert len(warnings_) == 1
+        assert 'gitlab.example.com' in warnings_[0]
+        assert 'glab auth login --hostname gitlab.example.com' in warnings_[0]
+        assert 'GITLAB_TOKEN' in warnings_[0]
+
+    def test_no_authenticated_host_warns_nothing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A run that needed no credentials has nothing to warn about."""
+        monkeypatch.setattr(setup_environment, '_AUTHENTICATED_HOSTS', {})
+        assert setup_environment.unattended_credential_warnings(_platform(tmp_path, 'linux', FakeScheduler())) == []
 
     @pytest.mark.usefixtures('stubs')
     def test_get_auth_headers_records_the_authenticated_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Resolving credentials for a URL marks its host as private for the rest of the run."""
-        setup_environment._AUTHENTICATED_HOSTS.clear()
+        """Resolving credentials for a URL marks its host, with its repository type, as private for the rest of the run."""
+        monkeypatch.setattr(setup_environment, '_AUTHENTICATED_HOSTS', {})
         monkeypatch.setenv('GITLAB_TOKEN', 'glpat-x')
         assert setup_environment.get_auth_headers(GITLAB_URL) == {'PRIVATE-TOKEN': 'glpat-x'}
-        assert 'gitlab.example.com' in setup_environment._AUTHENTICATED_HOSTS
-        assert len(setup_environment._AUTHENTICATED_HOSTS) == 1
+        assert setup_environment._AUTHENTICATED_HOSTS == {'gitlab.example.com': 'gitlab'}
 
 
 class TestManifestRecord:
@@ -867,9 +1202,11 @@ class TestManifestRecord:
 
 
 class TestResidue:
-    """Switching to a configuration without the key removes the job."""
+    """Switching to a configuration without the key lists the job as residue; Step 24 removes it."""
 
-    def test_residue_lists_and_removes_the_job(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_residue_lists_the_job_and_leaves_its_removal_to_step_24(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
         """The recorded job is residue when the new configuration declares no auto-update."""
         scheduler = FakeScheduler()
         plan, platform = _registered(tmp_path, scheduler)
@@ -895,5 +1232,11 @@ class TestResidue:
         )
         assert kept.scheduled_job is None
         setup_environment.remove_profile_residue(residue, profile_dir=profile_dir, claude_dir=claude_dir)
+        assert plan.name in scheduler.jobs, 'the residue removal leaves the job to Step 24'
+        assert setup_environment.read_job_record(platform, plan.name) is not None
+        assert f'The scheduled update job {plan.name} is removed in Step 24' in capsys.readouterr().out
+        removal, _ = _plan(tmp_path, scheduler, spec=None, manifest=manifest)
+        assert removal.action == 'remove'
+        assert setup_environment.apply_scheduled_update(platform, removal, now=NOW) is None
         assert plan.name not in scheduler.jobs
         assert setup_environment.read_job_record(platform, plan.name) is None

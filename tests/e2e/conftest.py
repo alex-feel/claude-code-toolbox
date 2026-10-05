@@ -7,6 +7,7 @@ All fixtures use function scope for complete test isolation.
 import sys
 from collections.abc import Generator
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -15,6 +16,32 @@ import yaml
 from scripts import setup_environment
 from tests.e2e.fake_scheduler import REGISTRY_VARIABLE
 from tests.e2e.fake_scheduler import FakeScheduler
+from tests.e2e.fake_scheduler import fake_platform
+
+
+def _setup_modules() -> list[ModuleType]:
+    """Every module object the setup script is imported as in this session."""
+    return [
+        module for module in (sys.modules.get(name) for name in ('setup_environment', 'scripts.setup_environment'))
+        if module is not None
+    ]
+
+
+def _install_fake_scheduler(fake: FakeScheduler, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every setup module drive the fake instead of the machine's scheduler.
+
+    The process counts as holding administrator rights, so a registration
+    that needs them (a Windows task) succeeds on any host; tests of that
+    requirement patch ``is_admin`` themselves. A fake shaped for another
+    platform also replaces the platform the setup builds, so the backend of
+    that platform runs on every CI operating system.
+    """
+    fake.save()
+    for module in _setup_modules():
+        monkeypatch.setattr(module, '_run_scheduler_command', fake)
+        monkeypatch.setattr(module, 'is_admin', lambda: True)
+        if fake.platform_name is not None:
+            monkeypatch.setattr(module, 'default_scheduler_platform', lambda module=module: fake_platform(fake, module))
 
 
 @pytest.fixture(autouse=True)
@@ -29,9 +56,10 @@ def fake_scheduler(
     test's temporary directory, which it also hands to every child run
     through REGISTRY_VARIABLE, so a dependent refresh or a scheduled run
     sees the parent's jobs the way it would see a real scheduler's. The
-    Windows elevation requirement of the registration is switched off, so
-    the fake registers in a non-elevated test process too; tests of that
-    requirement patch it back on.
+    process counts as elevated (``is_admin`` answers True), so a Windows
+    registration, which needs administrator rights, succeeds in a
+    non-elevated test process too; tests of that requirement patch
+    ``is_admin`` back to False.
 
     Tests marked ``real_scheduler`` opt out and reach the real scheduler.
 
@@ -42,14 +70,51 @@ def fake_scheduler(
         return None
     registry = tmp_path / 'fake-scheduler.json'
     fake = FakeScheduler(registry)
-    for module_name in ('setup_environment', 'scripts.setup_environment'):
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        monkeypatch.setattr(module, '_run_scheduler_command', fake)
-        monkeypatch.setattr(module, '_scheduler_registration_needs_elevation', lambda: False)
+    _install_fake_scheduler(fake, monkeypatch)
     monkeypatch.setenv(REGISTRY_VARIABLE, str(registry))
     return fake
+
+
+def _shaped_scheduler(
+    fake_scheduler: FakeScheduler | None, monkeypatch: pytest.MonkeyPatch, **shape: Any,
+) -> FakeScheduler:
+    assert fake_scheduler is not None
+    fake = FakeScheduler(fake_scheduler.registry, **shape)
+    _install_fake_scheduler(fake, monkeypatch)
+    return fake
+
+
+@pytest.fixture
+def cron_scheduler(fake_scheduler: FakeScheduler | None, monkeypatch: pytest.MonkeyPatch) -> FakeScheduler:
+    """The fake as a Linux machine without a systemd user manager: the job is a crontab entry.
+
+    The shape is written into the registry, so a child run started by the
+    test answers the same way.
+
+    Returns:
+        The reshaped fake.
+    """
+    return _shaped_scheduler(fake_scheduler, monkeypatch, platform_name='linux', systemd=False)
+
+
+@pytest.fixture
+def linux_scheduler(fake_scheduler: FakeScheduler | None, monkeypatch: pytest.MonkeyPatch) -> FakeScheduler:
+    """The fake as a Linux machine with a systemd user manager: the job is a user timer.
+
+    Returns:
+        The reshaped fake.
+    """
+    return _shaped_scheduler(fake_scheduler, monkeypatch, platform_name='linux')
+
+
+@pytest.fixture
+def windows_scheduler(fake_scheduler: FakeScheduler | None, monkeypatch: pytest.MonkeyPatch) -> FakeScheduler:
+    """The fake as a Windows machine: the job is a Task Scheduler task that needs an elevated registration.
+
+    Returns:
+        The reshaped fake.
+    """
+    return _shaped_scheduler(fake_scheduler, monkeypatch, platform_name='win32')
 
 
 @pytest.fixture(autouse=True)

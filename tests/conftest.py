@@ -485,7 +485,7 @@ def _reset_credential_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
         except ImportError:
             continue
         monkeypatch.setattr(module, '_CLI_TOKEN_CACHE', {})
-        monkeypatch.setattr(module, '_AUTHENTICATED_HOSTS', set())
+        monkeypatch.setattr(module, '_AUTHENTICATED_HOSTS', {})
 
 
 @pytest.fixture(autouse=True)

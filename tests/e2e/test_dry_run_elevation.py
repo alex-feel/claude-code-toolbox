@@ -366,6 +366,10 @@ class TestNoAdminRunsEveryStepUnelevated:
         # A local configuration file resolves every resource relative to its own directory
         config = _golden_with_elevated_dependencies()
         del config['base-url']
+        # The daily update job is the one step a non-elevated Windows run cannot
+        # perform: it reports the refused registration and exits 1, which
+        # tests/e2e/test_scheduled_updates.py covers; this test watches Steps 1 and 6
+        del config['auto-update']
         repo = e2e_isolated_home['home'].parent / 'repo'
         shutil.copytree(mock_repo_path, repo)
         config_file = repo / 'golden.yaml'

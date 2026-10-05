@@ -17,6 +17,7 @@ import glob as glob_module
 import gzip
 import hashlib
 import http.client
+import io
 import json
 import os
 import platform
@@ -31,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -7786,10 +7788,11 @@ def resolve_credentials(url: str, auth_param: str | None = None) -> dict[str, st
     return {}
 
 
-# Hosts whose fetches needed authentication during this run: a configuration
-# from one of them is private, so a scheduled job needs an unattended
-# credential source for it
-_AUTHENTICATED_HOSTS: set[str] = set()
+# Hosts whose fetches needed authentication during this run, each with its
+# repository type: whatever came from one of them -- the configuration, a
+# configuration it inherits, a downloaded file -- is private, so a scheduled
+# job needs an unattended credential source for every one of them
+_AUTHENTICATED_HOSTS: dict[str, str] = {}
 
 # Tokens the host CLIs answered with, per (repository type, host); None
 # records a lookup that found nothing, so each CLI is asked once per host
@@ -7891,41 +7894,6 @@ def cli_stored_token(repo_type: str, host: str) -> str | None:
     return _CLI_TOKEN_CACHE[key]
 
 
-def unattended_credential_warning(config_source: str, *, env_vars_from_cli: list[str]) -> str | None:
-    """Warn when a scheduled job cannot authenticate to a private configuration's host.
-
-    The job runs with the user's persistent environment and the host CLIs'
-    stored logins; a token this run took from ``--env`` or from a prompt is
-    not there at night.
-
-    Args:
-        config_source: The resolved configuration source.
-        env_vars_from_cli: Variable names ``--env`` set for this run only.
-
-    Returns:
-        The warning, or None when the configuration is local or public, or
-        a persistent variable or a CLI login covers its host.
-    """
-    if not config_source.startswith(('http://', 'https://')):
-        return None
-    repo_type = detect_repo_type(config_source)
-    host = _credential_host(config_source)
-    if repo_type not in ('github', 'gitlab') or host is None or host not in _AUTHENTICATED_HOSTS:
-        return None
-    names = _env_tokens_checked_for_repo_type(repo_type)
-    transient = set(env_vars_from_cli)
-    if any(os.environ.get(name) and name not in transient for name in names):
-        return None
-    if cli_stored_token(repo_type, host):
-        return None
-    tool = 'gh' if repo_type == 'github' else 'glab'
-    return (
-        f'The scheduled update job cannot authenticate to {host}: this run used a token that no unattended source '
-        f'provides. Set {names[0]} as a persistent environment variable of your user account, or log in with '
-        f'{tool} auth login --hostname {host} so the job can use the stored token.'
-    )
-
-
 def prompt_for_credentials(url: str, *, tokens_checked: list[str]) -> dict[str, str]:
     """Prompt the user interactively for authentication credentials.
 
@@ -8025,11 +7993,12 @@ def get_auth_headers(url: str, auth_param: str | None = None) -> dict[str, str]:
         tokens_checked = _env_tokens_checked_for_repo_type(repo_type)
         headers = prompt_for_credentials(url, tokens_checked=tokens_checked)
     if headers:
-        # A host that needed credentials holds a private configuration, which
-        # a scheduled job needs an unattended source for
+        # A host that needed credentials holds something private, which a
+        # scheduled job needs an unattended source for
         host = _credential_host(url)
-        if host is not None:
-            _AUTHENTICATED_HOSTS.add(host)
+        repo_type = detect_repo_type(url)
+        if host is not None and repo_type is not None:
+            _AUTHENTICATED_HOSTS[host] = repo_type
     return headers
 
 
@@ -15751,16 +15720,31 @@ def content_dependents(home_dir: Path, source_name: str) -> list[InstalledProfil
         The dependents in sorted directory order; the base profile never
         links, so it is never a dependent.
     """
-    dependents: list[InstalledProfile] = []
-    for profile in installed_profiles(home_dir):
-        record = manifest_link(profile.manifest)
-        if record is None or profile.name == 'base':
-            continue
-        if str(record.get('source') or LINK_SOURCE_BASE).casefold() != source_name.casefold():
-            continue
-        if any(str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])):
-            dependents.append(profile)
-    return dependents
+    return [
+        profile for profile in installed_profiles(home_dir)
+        if profile.name != 'base'
+        and (source := content_link_source(profile.manifest)) is not None
+        and source.casefold() == source_name.casefold()
+    ]
+
+
+def content_link_source(manifest: dict[str, Any] | None) -> str | None:
+    """Name the profile a manifest links content from.
+
+    Args:
+        manifest: The profile manifest, or None when the profile is new.
+
+    Returns:
+        The source's display name (``base`` or a primary command name) when
+        the manifest records a link holding a content entry, else None: a
+        ``projects``-only link makes no dependent.
+    """
+    record = manifest_link(manifest)
+    if record is None:
+        return None
+    if not any(str(entry) != SESSIONS_PROFILE_DIR for entry in cast(list[object], record['dirs'])):
+        return None
+    return str(record.get('source') or LINK_SOURCE_BASE)
 
 
 def dependents_remedy(dependents: list[InstalledProfile]) -> list[str]:
@@ -16601,14 +16585,10 @@ def remove_profile_residue(residue: ProfileResidue, *, profile_dir: Path, claude
         else:
             warning(f'Cannot remove settings.json key(s): {", ".join(residue.settings_keys)}')
     if residue.scheduled_job:
-        scheduler_platform = default_scheduler_platform()
-        try:
-            remove_job_registration(scheduler_platform, residue.scheduled_job)
-        except SchedulerError as e:
-            warning(f'Cannot remove the scheduled update job {residue.scheduled_job}: {e}')
-        else:
-            remove_job_record(scheduler_platform, residue.scheduled_job)
-            success(f'Removed the scheduled update job {residue.scheduled_job}')
+        # The job is removed by Step 24, which checks the rights the removal
+        # needs, reports a refused removal and keeps the job recorded until
+        # it is gone; here the residue only names it
+        info(f'The scheduled update job {residue.scheduled_job} is removed in Step 24')
 
 
 def write_manifest(
@@ -17023,11 +17003,23 @@ def scheduled_update_command(platform_: SchedulerPlatform, profile_name: str) ->
 
 @dataclass
 class JobRegistration:
-    """Everything one registration writes and runs, so a plan can be shown before it is applied."""
+    """Everything one registration writes and runs, so a plan can be shown before it is applied.
+
+    Attributes:
+        target: The file the scheduler reads the job from.
+        document: The registration as text, for the summary.
+        files: The files to write, each with its content and encoding.
+        directories: The directories the registered job writes into when
+            it fires, created before the job can, because a shell refuses a
+            redirection into a directory that does not exist.
+        best_effort: Commands whose failure is ignored.
+        commands: Commands that must succeed.
+    """
 
     target: Path
     document: str
     files: dict[Path, tuple[str, str]] = field(default_factory=lambda: dict[Path, tuple[str, str]]())
+    directories: list[Path] = field(default_factory=lambda: list[Path]())
     best_effort: list[list[str]] = field(default_factory=lambda: list[list[str]]())
     commands: list[list[str]] = field(default_factory=lambda: list[list[str]]())
 
@@ -17203,6 +17195,104 @@ def scheduler_problems(platform_: SchedulerPlatform) -> list[str]:
     return []
 
 
+_WINDOWS_ENVIRONMENT_KEYS = (
+    r'HKCU\Environment',
+    r'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment',
+)
+
+
+def _registry_environment_carries(platform_: SchedulerPlatform, key: str, name: str) -> bool:
+    result = platform_.runner(['reg', 'query', key, '/v', name])
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].casefold() == name.casefold() and parts[2].strip():
+            return True
+    return False
+
+
+def job_environment_carries(platform_: SchedulerPlatform, name: str) -> bool:
+    """Report whether the scheduler hands the job a non-empty value of an environment variable.
+
+    A job inherits the scheduler's environment, never a shell's: Task
+    Scheduler gives it the user and system variables of the registry, launchd
+    its own environment, the systemd user manager its manager environment,
+    and cron only the PATH the crontab line sets. A variable a shell profile
+    exports, or ``--env`` sets for one run, reaches none of them.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        name: The variable name.
+
+    Returns:
+        True when the job's environment holds a non-empty value.
+    """
+    if platform_.name == 'win32':
+        return any(_registry_environment_carries(platform_, key, name) for key in _WINDOWS_ENVIRONMENT_KEYS)
+    if platform_.name == 'darwin':
+        result = platform_.runner(['launchctl', 'getenv', name])
+        return result.returncode == 0 and bool(result.stdout.strip())
+    if scheduler_uses_cron(platform_):
+        return False
+    result = platform_.runner(['systemctl', '--user', 'show-environment'])
+    if result.returncode != 0:
+        return False
+    prefix = f'{name}='
+    return any(line.startswith(prefix) and line[len(prefix):].strip() for line in result.stdout.splitlines())
+
+
+def _job_environment_remedy(platform_: SchedulerPlatform, name: str) -> str | None:
+    """Name how a variable reaches the job's environment on this platform, or None where none does."""
+    if platform_.name == 'win32':
+        return f'set {name} as a user environment variable of your Windows account (setx {name} <token>)'
+    if platform_.name == 'darwin':
+        return f'hand {name} to launchd with launchctl setenv {name} <token> (needed again after every restart)'
+    if scheduler_uses_cron(platform_):
+        return None
+    return (
+        f'set {name} for the systemd user manager (systemctl --user set-environment {name}=<token> for this '
+        'session, or a ~/.config/environment.d/*.conf entry for every session)'
+    )
+
+
+def unattended_credential_warnings(platform_: SchedulerPlatform) -> list[str]:
+    """Warn for every private host a scheduled job cannot authenticate to.
+
+    Every host this run authenticated to is checked: a job can authenticate
+    to it when the environment the scheduler hands the job carries
+    ``CLAUDE_CODE_TOOLBOX_ENV_AUTH`` or the host's token variable, or when
+    the host CLI stores a login for it. A token this run took from a shell
+    profile, from ``--env`` or from the prompt is not there at night.
+
+    Args:
+        platform_: The machine's scheduler platform.
+
+    Returns:
+        One warning per uncovered host, naming the host and the remedies
+        that work on this platform; empty when every host is covered.
+    """
+    warnings_: list[str] = []
+    for host, repo_type in sorted(_AUTHENTICATED_HOSTS.items()):
+        names = ['CLAUDE_CODE_TOOLBOX_ENV_AUTH', *_env_tokens_checked_for_repo_type(repo_type)]
+        if any(job_environment_carries(platform_, name) for name in names):
+            continue
+        if cli_stored_token(repo_type, host):
+            continue
+        tool = 'gh' if repo_type == 'github' else 'glab'
+        remedy = _job_environment_remedy(platform_, names[1])
+        variable_text = (
+            f', or {remedy}' if remedy
+            else '; a crontab job receives no environment variable, so the stored login is the only source'
+        )
+        warnings_.append(
+            f'The scheduled update job cannot authenticate to {host}: this run used a token that no unattended '
+            f'source provides. Log in with {tool} auth login --hostname {host} so the job can use the stored '
+            f'token{variable_text}.',
+        )
+    return warnings_
+
+
 def _crontab_without(runner: SchedulerRunner, name: str) -> list[str]:
     current = runner(['crontab', '-l'])
     lines = current.stdout.splitlines() if current.returncode == 0 else []
@@ -17255,7 +17345,7 @@ def plan_job_registration(
         document = launchd_update_plist(name, command, spec, path_env, scheduler_log)
         uid = _scheduler_user_id(platform_.runner)
         return JobRegistration(
-            target, document, files={target: (document, 'utf-8')},
+            target, document, files={target: (document, 'utf-8')}, directories=[scheduler_log.parent],
             best_effort=[['launchctl', 'bootout', f'gui/{uid}/{name}']],
             commands=[['launchctl', 'bootstrap', f'gui/{uid}', str(target)]],
         )
@@ -17273,29 +17363,47 @@ def plan_job_registration(
     staged = platform_.state / 'jobs' / 'crontab.txt'
     line = cron_update_line(name, command, spec, path_env, scheduler_log)
     content = ''.join(f'{entry}\n' for entry in [*_crontab_without(platform_.runner, name), line])
-    return JobRegistration(staged, line, files={staged: (content, 'utf-8')}, commands=[['crontab', str(staged)]])
+    return JobRegistration(
+        staged, line, files={staged: (content, 'utf-8')}, directories=[scheduler_log.parent],
+        commands=[['crontab', str(staged)]],
+    )
+
+
+def _run_checked_scheduler_command(platform_: SchedulerPlatform, step: list[str]) -> None:
+    """Run one scheduler command that must succeed.
+
+    Args:
+        platform_: The machine's scheduler platform.
+        step: The command and its arguments.
+
+    Raises:
+        SchedulerError: When the command exits non-zero, with its output.
+    """
+    result = platform_.runner(step)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()
+        raise SchedulerError(f'{subprocess.list2cmdline(step[:3])} failed (exit {result.returncode}): {detail}')
 
 
 def apply_job_registration(platform_: SchedulerPlatform, plan: JobRegistration) -> None:
-    """Write the plan's files and run its commands.
+    """Create the plan's directories, write its files and run its commands.
+
+    A scheduler command that exits non-zero ends the registration with a
+    SchedulerError carrying its output.
 
     Args:
         platform_: The machine's scheduler platform.
         plan: The registration plan.
-
-    Raises:
-        SchedulerError: When a scheduler command exits non-zero.
     """
+    for directory in plan.directories:
+        directory.mkdir(parents=True, exist_ok=True)
     for path, (content, encoding) in plan.files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding=encoding)
     for step in plan.best_effort:
         platform_.runner(step)
     for step in plan.commands:
-        result = platform_.runner(step)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or '').strip()
-            raise SchedulerError(f'{subprocess.list2cmdline(step[:3])} failed (exit {result.returncode}): {detail}')
+        _run_checked_scheduler_command(platform_, step)
 
 
 def query_job_registration(platform_: SchedulerPlatform, name: str) -> str | None:
@@ -17326,29 +17434,39 @@ def query_job_registration(platform_: SchedulerPlatform, name: str) -> str | Non
 
 
 def remove_job_registration(platform_: SchedulerPlatform, name: str) -> None:
-    """Remove the job from the scheduler; a job that is not registered is left alone.
+    """Remove the job from the scheduler and the files it was registered from.
+
+    The scheduler is asked first: a job it does not hold is not removed
+    again (only its leftover files are deleted), and a removal it refuses is
+    a SchedulerError, so the caller keeps the job's records and names the
+    failure instead of reporting a removal that never happened.
 
     Args:
         platform_: The machine's scheduler platform.
         name: The job name.
     """
+    registered = query_job_registration(platform_, name) is not None
     if platform_.name == 'win32':
-        platform_.runner(['schtasks', '/Delete', '/TN', name, '/F'])
+        if registered:
+            _run_checked_scheduler_command(platform_, ['schtasks', '/Delete', '/TN', name, '/F'])
         (platform_.state / 'jobs' / f'{name}.xml').unlink(missing_ok=True)
     elif platform_.name == 'darwin':
-        platform_.runner(['launchctl', 'bootout', f'gui/{_scheduler_user_id(platform_.runner)}/{name}'])
+        if registered:
+            uid = _scheduler_user_id(platform_.runner)
+            _run_checked_scheduler_command(platform_, ['launchctl', 'bootout', f'gui/{uid}/{name}'])
         (platform_.home / 'Library' / 'LaunchAgents' / f'{name}.plist').unlink(missing_ok=True)
     elif not scheduler_uses_cron(platform_):
-        platform_.runner(['systemctl', '--user', 'disable', '--now', f'{name}.timer'])
+        if registered:
+            _run_checked_scheduler_command(platform_, ['systemctl', '--user', 'disable', '--now', f'{name}.timer'])
         (_systemd_unit_dir(platform_) / f'{name}.timer').unlink(missing_ok=True)
         (_systemd_unit_dir(platform_) / f'{name}.service').unlink(missing_ok=True)
         platform_.runner(['systemctl', '--user', 'daemon-reload'])
-    else:
+    elif registered:
         remaining = _crontab_without(platform_.runner, name)
         staged = platform_.state / 'jobs' / 'crontab.txt'
         staged.parent.mkdir(parents=True, exist_ok=True)
         staged.write_text(''.join(f'{entry}\n' for entry in remaining), encoding='utf-8')
-        platform_.runner(['crontab', str(staged)])
+        _run_checked_scheduler_command(platform_, ['crontab', str(staged)])
 
 
 def job_record_path(platform_: SchedulerPlatform, name: str) -> Path:
@@ -17476,6 +17594,26 @@ def _registration_difference(previous: dict[str, Any] | None, desired: dict[str,
     return ', '.join(changes) if changes else 'the registration differs'
 
 
+def _spec_from_record(record: object) -> AutoUpdateSpec | None:
+    """Rebuild the auto-update a job was registered with from a manifest or job record.
+
+    Args:
+        record: The manifest's ``auto_update`` field or the state directory's
+            job record, each holding ``time`` and ``command``.
+
+    Returns:
+        The spec, or None when the record holds no readable time.
+    """
+    if not isinstance(record, dict):
+        return None
+    mapping = cast(dict[str, Any], record)
+    match = _AUTO_UPDATE_TIME_PATTERN.match(str(mapping.get('time') or '').strip())
+    if match is None:
+        return None
+    command = mapping.get('command')
+    return AutoUpdateSpec(int(match.group(1)), int(match.group(2)), str(command) if command else None)
+
+
 def plan_scheduled_update(
     platform_: SchedulerPlatform,
     *,
@@ -17492,6 +17630,8 @@ def plan_scheduled_update(
     a dependent). A job the manifest or the state directory remembers and the
     configuration no longer asks for is removed. The scheduler is asked only
     when a job is wanted, so a configuration without the key costs nothing.
+    A scheduled run never changes or removes its own job: such a change is
+    deferred to the next manual run.
 
     Args:
         platform_: The machine's scheduler platform.
@@ -17513,9 +17653,16 @@ def plan_scheduled_update(
             reason = f'the profile links content from profile "{linked_from}", whose job refreshes it'
         else:
             reason = 'the configuration declares no auto-update'
-        if manifest_records_job or job_record is not None:
-            return ScheduledUpdatePlan('remove', name, None, [], reason, [], platform_.state)
-        return ScheduledUpdatePlan('none', name, None, [], reason if spec is not None else '', [], platform_.state)
+        if not (manifest_records_job or job_record is not None):
+            return ScheduledUpdatePlan('none', name, None, [], reason if spec is not None else '', [], platform_.state)
+        registered_spec = _spec_from_record(recorded) or _spec_from_record(job_record)
+        if scheduled_run and registered_spec is not None:
+            # The job that is running now is never removed from inside it (a
+            # launchd bootout would kill this run); the plan keeps the job
+            # recorded so the next manual run removes it
+            reason = f'{reason}; a scheduled run leaves its own job as registered, the next manual run removes it'
+            return ScheduledUpdatePlan('deferred', name, registered_spec, [], reason, [], platform_.state)
+        return ScheduledUpdatePlan('remove', name, None, [], reason, [], platform_.state)
     problems = scheduler_problems(platform_)
     try:
         command = scheduled_update_command(platform_, profile_name)
@@ -17536,15 +17683,18 @@ def plan_scheduled_update(
     return ScheduledUpdatePlan('register', name, spec, command, 'no job is registered yet', problems, platform_.state)
 
 
-def _scheduler_registration_needs_elevation() -> bool:
+def _scheduler_registration_needs_elevation(platform_: SchedulerPlatform) -> bool:
     """Report whether registering or removing the job needs rights this process lacks.
 
+    Args:
+        platform_: The machine's scheduler platform.
+
     Returns:
-        True on Windows in a process without administrator rights: a task
-        that runs with the highest privileges is registered only by an
-        elevated process.
+        True for a Windows scheduler in a process without administrator
+        rights: a task that runs with the highest privileges is registered
+        and removed only by an elevated process.
     """
-    return platform.system() == 'Windows' and not is_admin()
+    return platform_.name == 'win32' and not is_admin()
 
 
 def apply_scheduled_update(platform_: SchedulerPlatform, plan: ScheduledUpdatePlan, *, now: datetime) -> str | None:
@@ -17568,7 +17718,7 @@ def apply_scheduled_update(platform_: SchedulerPlatform, plan: ScheduledUpdatePl
         return None
     if plan.problems and plan.action != 'remove':
         return f'The scheduled update job {plan.name} cannot be registered: {"; ".join(plan.problems)}'
-    if _scheduler_registration_needs_elevation():
+    if _scheduler_registration_needs_elevation(platform_):
         verb = 'removed' if plan.action == 'remove' else 'registered'
         return (
             f'The scheduled update job {plan.name} was not {verb}: on Windows the job runs with the highest '
@@ -17602,14 +17752,23 @@ def run_scheduled_update_step(
     *,
     warnings_: list[str],
     now: datetime,
+    manifest_path: Path,
+    previous_record: object,
 ) -> str | None:
     """Run Step 24: the profile's daily update job.
+
+    Step 19 wrote the manifest for the job the plan leaves behind, so a
+    removal the scheduler refuses writes the job back into the manifest:
+    the job still exists, and the next run has to plan its removal again.
 
     Args:
         platform_: The machine's scheduler platform.
         plan: The plan decided before consent.
         warnings_: Warnings about the job, printed with the step.
         now: The local time.
+        manifest_path: The profile's manifest, written by Step 19.
+        previous_record: The ``auto_update`` field of the manifest the run
+            started from, or None.
 
     Returns:
         The failure, or None.
@@ -17629,7 +17788,33 @@ def run_scheduled_update_step(
     failure = apply_scheduled_update(platform_, plan, now=now)
     if failure:
         error(failure)
+        if plan.action == 'remove':
+            kept = _spec_from_record(read_job_record(platform_, plan.name)) or _spec_from_record(previous_record)
+            if kept is not None and _record_manifest_auto_update(manifest_path, auto_update_manifest_record(kept, plan.name)):
+                info(f'The manifest keeps recording the job {plan.name} until a run removes it')
     return failure
+
+
+def _record_manifest_auto_update(manifest_path: Path, record: dict[str, Any] | None) -> bool:
+    """Replace the ``auto_update`` field of a written manifest.
+
+    Args:
+        manifest_path: The manifest Step 19 wrote.
+        record: The field's new value, as auto_update_manifest_record() renders it.
+
+    Returns:
+        True when the manifest was rewritten; False when it cannot be read.
+    """
+    try:
+        content = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(content, dict):
+        return False
+    manifest = cast(dict[str, Any], content)
+    manifest['auto_update'] = record
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    return True
 
 
 def auto_update_manifest_record(spec: AutoUpdateSpec | None, name: str) -> dict[str, Any] | None:
@@ -17722,11 +17907,12 @@ def acquire_update_lock(
     stale_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.time,
-) -> bool:
+) -> tuple[bool, str | None]:
     """Take the machine-wide update lock, waiting a bounded time for a holder to finish.
 
     A lock older than ``stale_seconds`` belongs to a run that never released
-    it and is taken over.
+    it (a shutdown, a sleep or a kill in the middle of the night) and is
+    taken over.
 
     Args:
         lock: The lock file.
@@ -17737,24 +17923,30 @@ def acquire_update_lock(
         clock: Returns the current time in seconds.
 
     Returns:
-        True when the lock was taken, False when another run held it past the wait.
+        Whether the lock was taken (False when another run held it past the
+        wait), and a note about a stale lock that was taken over, or None.
     """
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = clock() + wait_seconds
+    note: str | None = None
     while True:
         with contextlib.suppress(FileNotFoundError):
-            if clock() - lock.stat().st_mtime >= stale_seconds:
+            age = clock() - lock.stat().st_mtime
+            if age >= stale_seconds:
                 lock.unlink()
+                note = (
+                    f'Took over the stale lock {lock}: a run that never released it left it {age / 3600:.1f} hours ago'
+                )
         try:
             handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             if clock() >= deadline:
-                return False
+                return False, note
             sleep(poll_seconds)
             continue
         with os.fdopen(handle, 'w', encoding='utf-8') as stream:
             stream.write(f'{os.getpid()}\n')
-        return True
+        return True, note
 
 
 def release_update_lock(lock: Path) -> None:
@@ -17843,21 +18035,57 @@ def last_scheduled_run_line(platform_: SchedulerPlatform, name: str) -> str | No
 def _redirect_output_to(log_path: Path) -> None:
     """Send this process's stdout and stderr, and those of its children, to the log file.
 
+    File descriptors 1 and 2 are pointed at the log, so child processes log
+    too, and ``sys.stdout`` and ``sys.stderr`` are rebuilt on those
+    descriptors: the stream objects a console process starts with write to
+    the console device itself (on Windows through its console handle, which
+    the duplicated descriptor no longer is), so keeping them would make the
+    first ``print()`` after the redirection fail.
+
     Args:
         log_path: The log file, appended to.
     """
-    sys.stdout.flush()
-    sys.stderr.flush()
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:
+            stream.flush()
     fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
     try:
         os.dup2(fd, 1)
         os.dup2(fd, 2)
     finally:
         os.close(fd)
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, 'reconfigure', None)
-        if reconfigure is not None:
-            reconfigure(line_buffering=True)
+    sys.stdout = io.TextIOWrapper(io.FileIO(1, 'w', closefd=False), encoding='utf-8', errors='replace', line_buffering=True)
+    sys.stderr = io.TextIOWrapper(io.FileIO(2, 'w', closefd=False), encoding='utf-8', errors='replace', line_buffering=True)
+
+
+def _detach_stdin() -> None:
+    """Read this process's stdin from the null device, so no prompt can wait for an answer.
+
+    A scheduled run owns a console on Windows, where ``sys.stdin.isatty()``
+    answers True and an authentication prompt would wait for a keypress
+    nobody gives while the run holds the update lock. Descriptor 0 is
+    pointed at the null device for child processes, and ``sys.stdin``
+    becomes an exhausted in-memory stream (the null device itself is a
+    character device on Windows, which ``isatty()`` reports as a terminal),
+    so every prompt takes its non-interactive branch and the run fails fast
+    instead.
+    """
+    fd = os.open(os.devnull, os.O_RDONLY)
+    try:
+        os.dup2(fd, 0)
+    finally:
+        os.close(fd)
+    sys.stdin = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+
+
+def _detach_from_terminal(log_path: Path) -> None:
+    """Cut a scheduled run off its terminal: output to the log, input from the null device.
+
+    Args:
+        log_path: The log file, appended to.
+    """
+    _redirect_output_to(log_path)
+    _detach_stdin()
 
 
 def _exit_code_of(exc: SystemExit) -> int:
@@ -17922,9 +18150,13 @@ def run_scheduled_update(
     """Run one scheduled update of a profile: the lock, the log, the command, the record.
 
     The machine-wide lock keeps scheduled runs from overlapping; a run that
-    finds it held waits a bounded time, then logs why it gave up and exits 1.
-    The run's output goes to a log in the state directory (the newest 30 are
-    kept), and the outcome is recorded for the next manual run's summary.
+    finds it held waits a bounded time, then logs why it gave up and exits 1,
+    and a lock an earlier run never released is taken over with a note in
+    the log. The run is cut off its terminal (output to a log in the state
+    directory, of which the newest 30 are kept; input from the null device,
+    so no prompt waits), and the outcome is recorded for the next manual
+    run's summary -- a setup that raises instead of exiting is recorded as a
+    completed run with exit code 1 and its traceback in the log.
 
     Args:
         args: Arguments after resolve_args(); ``profile`` names the profile.
@@ -17958,36 +18190,49 @@ def run_scheduled_update(
     }
     header_line = f'cc-toolbox scheduled update: profile {profile_name}, job {name}, started {record["started_at"]}\n'
     lock = platform_.state / SCHEDULED_UPDATE_LOCK_FILENAME
-    if not acquire_update_lock(
+    taken, lock_note = acquire_update_lock(
         lock,
         wait_seconds=SCHEDULED_UPDATE_LOCK_WAIT_SECONDS,
         poll_seconds=SCHEDULED_UPDATE_LOCK_POLL_SECONDS,
         stale_seconds=SCHEDULED_UPDATE_LOCK_STALE_SECONDS,
-    ):
-        reason = f'another scheduled run held the lock {lock} for {SCHEDULED_UPDATE_LOCK_WAIT_SECONDS} seconds'
-        log_path.write_text(f'{header_line}Skipped: {reason}.\n', encoding='utf-8')
+    )
+    if not taken:
+        skip_reason = f'another scheduled run held the lock {lock} for {SCHEDULED_UPDATE_LOCK_WAIT_SECONDS} seconds'
+        log_path.write_text(f'{header_line}Skipped: {skip_reason}.\n', encoding='utf-8')
         record.update(
             finished_at=datetime.now(UTC).astimezone().isoformat(timespec='seconds'),
-            exit_code=1, outcome='skipped', reason=reason,
+            exit_code=1, outcome='skipped', reason=skip_reason,
         )
         write_scheduled_run_record(platform_, name, record)
         prune_scheduled_update_logs(logs, name)
         return 1
     try:
-        log_path.write_text(f'{header_line}Command: {command_text}\n\n', encoding='utf-8')
-        if custom_command:
-            code = _run_custom_update_command(custom_command, log_path)
-        else:
-            _redirect_output_to(log_path)
-            try:
-                run_setup()
-                code = 0
-            except SystemExit as exit_request:
-                code = _exit_code_of(exit_request)
+        lock_line = f'{lock_note}\n' if lock_note else ''
+        log_path.write_text(f'{header_line}{lock_line}Command: {command_text}\n\n', encoding='utf-8')
+        reason: str | None = None
+        try:
+            if custom_command:
+                code = _run_custom_update_command(custom_command, log_path)
+            else:
+                _detach_from_terminal(log_path)
+                try:
+                    run_setup()
+                    code = 0
+                except SystemExit as exit_request:
+                    code = _exit_code_of(exit_request)
+        except Exception as exc:
+            # The outcome of a run that crashed instead of exiting is still
+            # recorded, whatever raised, so the next manual run reports it
+            code = 1
+            reason = f'the run raised {type(exc).__name__}: {exc}'
+            with log_path.open('a', encoding='utf-8', errors='replace') as log:
+                log.write(f'\n{traceback.format_exc()}')
         finished = datetime.now(UTC).astimezone()
-        with log_path.open('a', encoding='utf-8') as log:
+        with log_path.open('a', encoding='utf-8', errors='replace') as log:
             log.write(f'\nFinished: exit code {code} at {finished.isoformat(timespec="seconds")}\n')
-        record.update(finished_at=finished.isoformat(timespec='seconds'), exit_code=code, outcome='completed')
+        record.update(
+            finished_at=finished.isoformat(timespec='seconds'), exit_code=code, outcome='completed', reason=reason,
+        )
         write_scheduled_run_record(platform_, name, record)
         return code
     finally:
@@ -20086,7 +20331,11 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     refreshed while it still runs. Without --skip-install every profile
     installs Claude Code, which needs elevation; with it, each profile's
     resolved-config.yaml decides, and a profile whose snapshot cannot be
-    read counts as needing it.
+    read counts as needing it. A profile's daily update job counts only
+    when its run would register, re-register or remove it: the plan is
+    decided here from the snapshot, the manifest and the job record, the
+    way the child's own run decides it, so an unchanged job prompts for
+    nothing.
 
     Args:
         profiles: The installed profiles the run refreshes.
@@ -20102,15 +20351,27 @@ def refresh_all_elevation_reasons(profiles: list[InstalledProfile], args: argpar
     if not args.skip_install:
         return admin_elevation_reasons({}, args)
     reasons: list[str] = []
+    scheduler_platform = default_scheduler_platform()
     for profile in profiles:
         snapshot = read_resolved_config_snapshot(profile.directory)
-        if snapshot is None:
+        if snapshot is None or validate_auto_update(snapshot):
             reasons.append(
                 f'Profile "{profile.name}": {RESOLVED_CONFIG_FILENAME} is missing or unreadable, '
                 'so its run may need elevation',
             )
             continue
-        reasons.extend(reason for reason in admin_elevation_reasons(snapshot, args) if reason not in reasons)
+        scheduled_update = plan_scheduled_update(
+            scheduler_platform,
+            profile_name=profile.name,
+            spec=parse_auto_update(snapshot),
+            linked_from=content_link_source(profile.manifest),
+            manifest=profile.manifest,
+            scheduled_run=False,
+        )
+        reasons.extend(
+            reason for reason in admin_elevation_reasons(snapshot, args, scheduled_update=scheduled_update)
+            if reason not in reasons
+        )
     return reasons
 
 
@@ -21069,13 +21330,11 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
         plan.scheduled_update = scheduled_update_plan
         plan.last_scheduled_run = last_scheduled_run_line(scheduler_platform, scheduled_update_plan.name)
         if scheduled_update_plan.keeps_job:
-            # A job for a private configuration needs a credential source
-            # that exists at night: a persistent variable or a CLI login
-            credential_warning = unattended_credential_warning(
-                config_source, env_vars_from_cli=[item.split('=', 1)[0] for item in args.env_vars or []],
-            )
-            if credential_warning:
-                plan.scheduled_update_warnings.append(credential_warning)
+            # A job for a private configuration needs, for every host this
+            # run authenticated to, a credential source that exists at night:
+            # a variable in the environment the scheduler hands the job, or a
+            # CLI login
+            plan.scheduled_update_warnings.extend(unattended_credential_warnings(scheduler_platform))
 
         # A pin holds or moves the one binary the other installed profiles
         # use, so the summary names them; the installed version is probed
@@ -21491,7 +21750,7 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             'mcp_servers': mcp_server_records(mcp_servers),
             'files_written': planned_profile_files(config, artifact_base_dir, linked_entries=linked_entries),
             'auto_update': auto_update_manifest_record(
-                auto_update_spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
+                scheduled_update_plan.spec if scheduled_update_plan.keeps_job else None, scheduled_update_plan.name,
             ),
         }
         config_source_type = classify_config_source(config_source)
@@ -21626,6 +21885,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             scheduled_update_failure = run_scheduled_update_step(
                 scheduler_platform, scheduled_update_plan,
                 warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
+                manifest_path=artifact_base_dir / MANIFEST_FILENAME,
+                previous_record=(target_manifest or {}).get('auto_update'),
             )
         else:
             # No command-names: route the profile-owned YAML keys
@@ -21739,6 +22000,8 @@ def _run_setup(args: argparse.Namespace, was_elevated_via_uac: bool) -> None:
             scheduled_update_failure = run_scheduled_update_step(
                 scheduler_platform, scheduled_update_plan,
                 warnings_=plan.scheduled_update_warnings, now=datetime.now(UTC).astimezone(),
+                manifest_path=claude_user_dir / MANIFEST_FILENAME,
+                previous_record=(target_manifest or {}).get('auto_update'),
             )
             info('Environment configuration completed successfully')
             info('To create custom commands, add "command-names: [name1, name2]" to your config')

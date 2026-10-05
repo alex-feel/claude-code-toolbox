@@ -7,8 +7,11 @@ the profile's setup through ``uvx cc-toolbox@latest setup --profile NAME
 tests install real local YAML files into an isolated home through main(),
 with the scheduler replaced by the fake every E2E test shares, so a
 registration, an update, a removal and a scheduled run itself are seen end to
-end without a real job ever reaching the machine. The one test that reaches
-the real scheduler runs only where CI says so.
+end without a real job ever reaching the machine. The fake can take the shape
+of another platform's scheduler (Windows, Linux with and without a systemd
+user manager), so every backend's path through main() runs on every CI
+operating system. The one test that reaches the real scheduler runs only
+where CI says so.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import os
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 from datetime import UTC
 from datetime import datetime
 from pathlib import Path
@@ -42,6 +46,10 @@ from tests.e2e.profile_support import write_config
 SKIP = ['--skip-install', '--no-admin']
 JOB = 'cc-toolbox-update-team-1'
 REAL_SCHEDULER_VARIABLE = 'CLAUDE_CODE_TOOLBOX_E2E_REAL_SCHEDULER'
+WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != 'win32',
+    reason='a Task Scheduler task runs in a console of its own, which only Windows can give a child process',
+)
 
 
 @pytest.fixture
@@ -86,11 +94,19 @@ def _output(capsys: pytest.CaptureFixture[str]) -> str:
 
 
 def _platform(home: Path, fake: FakeScheduler) -> SchedulerPlatform:
-    """The scheduler platform a run in the isolated home builds, with the fake runner."""
+    """The scheduler platform a run in the isolated home builds, with the fake runner.
+
+    A fake shaped for another platform names that platform, so the state
+    directory is the one the run used.
+
+    Returns:
+        The platform.
+    """
+    name = fake.platform_name or sys.platform
     return SchedulerPlatform(
-        name=sys.platform,
+        name=name,
         home=home,
-        state=setup_environment.toolbox_state_dir(sys.platform, home, dict(os.environ)),
+        state=setup_environment.toolbox_state_dir(name, home, dict(os.environ)),
         runner=fake,
         environ=dict(os.environ),
     )
@@ -113,6 +129,20 @@ def _registered_document(fake: FakeScheduler, name: str) -> str:
     fake.reload()
     assert name in fake.jobs, f'{name} is not registered; jobs: {sorted(fake.jobs)}'
     return fake.jobs[name]
+
+
+def _custom_command(tmp_path: Path, marker_name: str, text: str) -> tuple[str, Path]:
+    """A command line that writes a marker file and prints a line, for the scheduled run to execute."""
+    marker = tmp_path / marker_name
+    script = f"import pathlib; pathlib.Path(r'{marker}').write_text('ran'); print('{text}')"
+    return f'"{sys.executable}" -c "{script}"', marker
+
+
+def _scheduled_child(runner: Path, **run_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    argv = [
+        sys.executable, str(runner), '--profile', 'team-1', '--yes', '--no-admin', '--skip-install', '--scheduled-run',
+    ]
+    return subprocess.run(argv, text=True, check=False, env=dict(os.environ), **run_kwargs)
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
@@ -210,6 +240,71 @@ class TestRegistration:
         assert f'Scheduled update: job {JOB} updated, every day at 04:00 local time' in output
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update']['time'] == '04:00'
 
+    def test_changed_command_updates_the_job(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A new command re-registers the job, the records follow, and the next scheduled run executes the new one."""
+        home = e2e_isolated_home['home']
+        first, first_marker = _custom_command(tmp_path, 'first.txt', 'first command ran')
+        second, second_marker = _custom_command(tmp_path, 'second.txt', 'second command ran')
+        cfg = write_config(configs, 'env.yaml', _scheduled(command=first))
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        write_config(configs, 'env.yaml', _scheduled(command=second))
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        fake_scheduler.reload()
+        assert len(fake_scheduler.creations()) == 2
+        record = _job_record(home, fake_scheduler, JOB)
+        assert record is not None
+        assert record['command'] == second
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update']['command'] == second
+        output = _output(capsys)
+        assert f'Job {JOB}: update (command {first} -> {second}); runs every day at 03:30 local time' in output
+        runner = write_child_runner(tmp_path, monkeypatch)
+
+        child = _scheduled_child(runner, capture_output=True)
+
+        assert child.returncode == 0, child.stdout + child.stderr
+        assert second_marker.read_text() == 'ran'
+        assert not first_marker.exists(), 'the scheduled run executes the command the manifest records now'
+        run = _run_record(home, fake_scheduler, JOB)
+        assert run is not None
+        assert run['command'] == second
+
+    def test_removed_command_falls_back_to_the_profile_setup(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Dropping the command re-registers the job for the profile setup, which the next scheduled run performs."""
+        home = e2e_isolated_home['home']
+        command, marker = _custom_command(tmp_path, 'custom.txt', 'custom command ran')
+        cfg = write_config(configs, 'env.yaml', _scheduled(command=command))
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        write_config(configs, 'env.yaml', _scheduled())
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        fake_scheduler.reload()
+        assert len(fake_scheduler.creations()) == 2
+        record = _job_record(home, fake_scheduler, JOB)
+        assert record is not None
+        assert record['command'] is None
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update']['command'] is None
+        assert f'Job {JOB}: update (command {command} -> the profile setup)' in _output(capsys)
+        runner = write_child_runner(tmp_path, monkeypatch)
+
+        child = _scheduled_child(runner, capture_output=True)
+
+        assert child.returncode == 0, child.stdout + child.stderr
+        assert not marker.exists(), 'the dropped command no longer runs'
+        run = _run_record(home, fake_scheduler, JOB)
+        assert run is not None
+        assert 'Step 24:' in Path(run['log']).read_text(encoding='utf-8', errors='replace'), 'the setup ran instead'
+
     def test_custom_command_is_recorded_and_the_job_still_runs_the_toolbox(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         capsys: pytest.CaptureFixture[str],
@@ -289,7 +384,7 @@ class TestRemoval:
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """The switch guard lists the job as residue and --switch-config removes it."""
+        """The switch guard lists the job as residue and --switch-config lets Step 24 remove it."""
         home = e2e_isolated_home['home']
         cfg = write_config(configs, 'env.yaml', _scheduled())
         other = write_config(configs, 'other.yaml', {'name': 'Other Env', 'user-settings': {'theme': 'light'}})
@@ -305,6 +400,8 @@ class TestRemoval:
         assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
         output = _output(capsys)
         assert f'scheduled update job: {JOB}' in output, 'the guard lists the job among the residue'
+        assert f'The scheduled update job {JOB} is removed in Step 24' in output
+        assert f'Step 24: Removing the scheduled update job {JOB}...' in output
         assert f'Removed the scheduled update job {JOB}' in output
 
     def test_switch_guard_refuses_without_consent_and_keeps_the_job(
@@ -321,6 +418,41 @@ class TestRemoval:
 
         _registered_document(fake_scheduler, JOB)
         assert f'scheduled update job: {JOB}' in _output(capsys)
+
+    def test_switch_under_no_admin_on_windows_keeps_the_job_recorded_until_an_elevated_run_removes_it(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, windows_scheduler: FakeScheduler,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-elevated switch cannot remove the task: the run fails with the remedy; an elevated re-run removes it."""
+        home = e2e_isolated_home['home']
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        other = write_config(configs, 'other.yaml', {'name': 'Other Env', 'user-settings': {'theme': 'light'}})
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        _registered_document(windows_scheduler, JOB)
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+        capsys.readouterr()
+
+        assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-1', '--switch-config']) == 1
+
+        _registered_document(windows_scheduler, JOB)
+        assert _job_record(home, windows_scheduler, JOB) is not None, 'the job record survives the refused removal'
+        manifest = read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')
+        assert manifest['auto_update'] == {'time': '03:30', 'command': None, 'job': JOB}
+        output = _output(capsys)
+        assert f'The scheduled update job {JOB} was not removed' in output
+        assert 'Run the setup from an elevated terminal, or without --no-admin' in output
+        assert 'The scheduled update job (auto-update) was not applied:' in output
+        assert f'The manifest keeps recording the job {JOB} until a run removes it' in output
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: True)
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        windows_scheduler.reload()
+        assert JOB not in windows_scheduler.jobs
+        assert _job_record(home, windows_scheduler, JOB) is None
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
+        assert f'Removed the scheduled update job {JOB}' in _output(capsys)
 
     def test_linked_profile_gets_no_job(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
@@ -389,12 +521,10 @@ class TestScheduledRun:
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
         return cfg
 
-    @staticmethod
-    def _scheduled_child(runner: Path) -> subprocess.CompletedProcess[str]:
-        argv = [
-            sys.executable, str(runner), '--profile', 'team-1', '--yes', '--no-admin', '--skip-install', '--scheduled-run',
-        ]
-        return subprocess.run(argv, capture_output=True, text=True, check=False, env=dict(os.environ))
+    @pytest.fixture
+    def in_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A scheduled run inside the test process keeps its terminal, so pytest captures its output."""
+        monkeypatch.setattr(setup_environment, '_detach_from_terminal', lambda _path: None)
 
     def test_scheduled_run_runs_the_setup_logs_it_and_records_the_outcome(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
@@ -405,7 +535,7 @@ class TestScheduledRun:
         self._install(configs, _scheduled())
         runner = write_child_runner(tmp_path, monkeypatch)
 
-        child = self._scheduled_child(runner)
+        child = _scheduled_child(runner, capture_output=True)
 
         assert child.returncode == 0, child.stdout + child.stderr
         record = _run_record(home, fake_scheduler, JOB)
@@ -430,19 +560,74 @@ class TestScheduledRun:
         assert 'Last scheduled run: ' in output
         assert f'exit code 0, log {log}' in output
 
+    @WINDOWS_ONLY
+    def test_scheduled_run_in_its_own_console_logs_the_setup_output(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A run started the way Task Scheduler starts it, with a console of its own and no pipes, logs every line."""
+        home = e2e_isolated_home['home']
+        self._install(configs, _scheduled())
+        runner = write_child_runner(tmp_path, monkeypatch)
+
+        child = _scheduled_child(runner, creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0), timeout=600)
+
+        assert child.returncode == 0
+        record = _run_record(home, fake_scheduler, JOB)
+        assert record is not None, 'the scheduled run leaves a record'
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 0
+        assert record['reason'] is None
+        text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        assert 'Step 24:' in text, 'the setup output lands in the log when stdout was the console'
+        assert 'Scheduled update: job' in text
+        assert 'Finished: exit code 0' in text
+        assert 'The handle is invalid' not in text
+
+    @pytest.mark.usefixtures('in_process')
+    def test_scheduled_run_records_a_crash_of_the_setup(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A setup that raises is a completed run with exit code 1: the traceback is in the log, the record names it."""
+        home = e2e_isolated_home['home']
+        self._install(configs, _scheduled())
+        capsys.readouterr()
+
+        def _crash(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError('the setup fell over')
+
+        with patch.object(setup_environment, '_run_setup', _crash):
+            code = run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run'])
+
+        assert code == 1
+        record = _run_record(home, fake_scheduler, JOB)
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 1
+        assert record['reason'] == 'the run raised RuntimeError: the setup fell over'
+        text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        assert 'Traceback (most recent call last)' in text
+        assert 'the setup fell over' in text
+        assert 'Finished: exit code 1' in text
+        assert not (_platform(home, fake_scheduler).state / 'update.lock').exists(), 'the lock is released'
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        assert f'exit code 1, log {record["log"]}' in _output(capsys)
+
     def test_scheduled_run_with_a_custom_command_runs_it_instead_of_the_setup(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The configured command runs under the lock with its output in the log; the setup does not run."""
         home = e2e_isolated_home['home']
-        marker = tmp_path / 'custom-ran.txt'
-        script = f"import pathlib; pathlib.Path(r'{marker}').write_text('ran'); print('custom command ran')"
-        command = f'"{sys.executable}" -c "{script}"'
+        command, marker = _custom_command(tmp_path, 'custom-ran.txt', 'custom command ran')
         self._install(configs, _scheduled(command=command))
         runner = write_child_runner(tmp_path, monkeypatch)
 
-        child = self._scheduled_child(runner)
+        child = _scheduled_child(runner, capture_output=True)
 
         assert child.returncode == 0, child.stdout + child.stderr
         assert marker.read_text() == 'ran'
@@ -454,6 +639,7 @@ class TestScheduledRun:
         assert 'custom command ran' in text
         assert 'Step 1' not in text, 'the setup itself does not run for a custom command'
 
+    @pytest.mark.usefixtures('in_process')
     def test_scheduled_run_waits_for_the_lock_then_skips_with_a_logged_reason(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
         monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
@@ -466,7 +652,6 @@ class TestScheduledRun:
         lock.parent.mkdir(parents=True, exist_ok=True)
         lock.write_text('4242\n', encoding='utf-8')
         monkeypatch.setattr(setup_environment, 'SCHEDULED_UPDATE_LOCK_WAIT_SECONDS', 0)
-        monkeypatch.setattr(setup_environment, '_redirect_output_to', lambda _path: None)
         capsys.readouterr()
 
         code = run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run'])
@@ -480,9 +665,35 @@ class TestScheduledRun:
         assert lock.read_text(encoding='utf-8').strip() == '4242', 'the holder keeps its lock'
         assert 'Step 1' not in _output(capsys), 'the setup did not run'
 
+    @pytest.mark.usefixtures('in_process')
+    def test_scheduled_run_takes_over_a_stale_lock(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A lock left by a run killed mid-night does not block the next one: it is taken over, noted, and released."""
+        home = e2e_isolated_home['home']
+        self._install(configs, _scheduled())
+        lock = _platform(home, fake_scheduler).state / 'update.lock'
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text('4242\n', encoding='utf-8')
+        old = lock.stat().st_mtime - setup_environment.SCHEDULED_UPDATE_LOCK_STALE_SECONDS - 60
+        os.utime(lock, (old, old))
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run']) == 0
+
+        record = _run_record(home, fake_scheduler, JOB)
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 0
+        text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        assert f'Took over the stale lock {lock}' in text
+        assert 'Step 24:' in _output(capsys), 'the setup ran'
+        assert not lock.exists(), 'the lock is released afterwards'
+
+    @pytest.mark.usefixtures('in_process')
     def test_scheduled_run_keeps_the_last_30_logs(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Older logs of the job are pruned to the newest 30 after each run."""
         home = e2e_isolated_home['home']
@@ -491,7 +702,6 @@ class TestScheduledRun:
         logs.mkdir(parents=True, exist_ok=True)
         for index in range(32):
             (logs / f'{JOB}-202609{index:02d}-000000.log').write_text('old\n', encoding='utf-8')
-        monkeypatch.setattr(setup_environment, '_redirect_output_to', lambda _path: None)
 
         assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run']) == 0
 
@@ -499,15 +709,15 @@ class TestScheduledRun:
         assert len(remaining) == 30
         assert remaining[-1].read_text(encoding='utf-8').startswith('cc-toolbox scheduled update'), 'the newest is this run'
 
+    @pytest.mark.usefixtures('in_process')
     def test_scheduled_run_leaves_its_own_changed_job_to_the_next_manual_run(
         self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
-        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A configuration whose time moved is applied by the next manual run, never by the job itself."""
         home = e2e_isolated_home['home']
         self._install(configs, _scheduled())
         write_config(configs, 'env.yaml', _scheduled(time='04:00'))
-        monkeypatch.setattr(setup_environment, '_redirect_output_to', lambda _path: None)
         capsys.readouterr()
 
         assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run']) == 0
@@ -527,6 +737,43 @@ class TestScheduledRun:
         assert record is not None
         assert record['time'] == '04:00'
 
+    @pytest.mark.usefixtures('in_process')
+    def test_scheduled_run_leaves_the_removal_of_its_own_job_to_the_next_manual_run(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A configuration that dropped the key is first seen by the job itself: the job stays for a manual run to remove."""
+        home = e2e_isolated_home['home']
+        self._install(configs, _scheduled())
+        write_config(configs, 'env.yaml', _unscheduled())
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes', '--scheduled-run']) == 0
+
+        _registered_document(fake_scheduler, JOB)
+        assert _job_record(home, fake_scheduler, JOB) is not None
+        run = _run_record(home, fake_scheduler, JOB)
+        assert run is not None
+        assert run['outcome'] == 'completed'
+        assert run['exit_code'] == 0
+        manifest = read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')
+        assert manifest['auto_update'] == {'time': '03:30', 'command': None, 'job': JOB}, 'the manifest keeps the job'
+        output = _output(capsys)
+        assert (
+            f'Job {JOB}: deferred (the configuration declares no auto-update; a scheduled run leaves its own job as '
+            'registered, the next manual run removes it)'
+        ) in output
+        assert f'Scheduled update: job {JOB} left as registered, every day at 03:30 local time' in output
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        fake_scheduler.reload()
+        assert JOB not in fake_scheduler.jobs
+        assert _job_record(home, fake_scheduler, JOB) is None
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
+        assert f'Scheduled update: job {JOB} removed (the configuration declares no auto-update)' in _output(capsys)
+
     def test_scheduled_run_needs_a_single_profile(
         self, configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -542,20 +789,25 @@ class TestScheduledRun:
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestWindowsElevation:
-    """On Windows the job runs with the highest privileges, so registering it needs an elevated run."""
+    """On Windows the job runs with the highest privileges, so registering it needs an elevated run.
+
+    The fake takes the shape of the Windows scheduler, so the real elevation
+    check runs on every CI operating system; the process's rights are what
+    each test says they are.
+    """
 
     def test_no_admin_in_a_non_elevated_process_reports_the_failed_registration(
-        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
+        self, e2e_isolated_home: dict[str, Path], configs: Path, windows_scheduler: FakeScheduler,
         monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """The registration is reported as failed with the remedy, nothing is registered, and the run exits 1."""
-        monkeypatch.setattr(setup_environment, '_scheduler_registration_needs_elevation', lambda: True)
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
         cfg = write_config(configs, 'env.yaml', _scheduled())
 
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 1
 
-        fake_scheduler.reload()
-        assert fake_scheduler.creations() == []
+        windows_scheduler.reload()
+        assert windows_scheduler.creations() == []
         output = _output(capsys)
         assert f'The scheduled update job {JOB} was not registered' in output
         assert 'Run the setup from an elevated terminal, or without --no-admin' in output
@@ -563,17 +815,187 @@ class TestWindowsElevation:
         assert (e2e_isolated_home['claude_dir'] / 'team-1' / 'agents' / 'core.md').is_file(), 'the rest of the setup ran'
 
     def test_elevated_process_registers_under_no_admin(
-        self, configs: Path, fake_scheduler: FakeScheduler,
+        self, configs: Path, windows_scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """--no-admin in a process that already holds administrator rights registers the job."""
+        """--no-admin in a process that already holds administrator rights registers the task."""
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: True)
         cfg = write_config(configs, 'env.yaml', _scheduled())
 
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
 
-        _registered_document(fake_scheduler, JOB)
+        document = _registered_document(windows_scheduler, JOB)
+        assert 'HighestAvailable' in document
+
+    def test_other_platforms_register_without_administrator_rights(
+        self, configs: Path, linux_scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A systemd user timer needs no rights the process lacks, whatever is_admin says."""
+        monkeypatch.setattr(setup_environment, 'is_admin', lambda: False)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+
+        assert _registered_document(linux_scheduler, JOB) == f'{JOB}.timer'
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestCronFallback:
+    """On a Linux machine without a systemd user manager the job is a tagged crontab entry.
+
+    The fake takes that shape, so the crontab backend runs through main() on
+    every CI operating system.
+    """
+
+    OTHER_LINE = '0 1 * * * echo other # other'
+
+    def _seed_user_crontab(self, cron_scheduler: FakeScheduler) -> None:
+        cron_scheduler.jobs['other'] = f'cron:{self.OTHER_LINE}'
+        cron_scheduler.save()
+
+    def test_install_registers_a_tagged_crontab_line_and_the_logs_directory(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, cron_scheduler: FakeScheduler,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The line carries the daily time, the resolved command and the job tag; the user's own lines survive."""
+        home = e2e_isolated_home['home']
+        self._seed_user_crontab(cron_scheduler)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+
+        cron_scheduler.reload()
+        line = cron_scheduler.jobs[JOB].removeprefix('cron:')
+        assert line.startswith('30 3 * * * PATH=')
+        assert line.endswith(f'# {JOB}')
+        assert 'cc-toolbox@latest setup --profile team-1 --yes --no-admin --scheduled-run' in line
+        assert cron_scheduler.crontab_lines() == [self.OTHER_LINE, line]
+        state = _platform(home, cron_scheduler).state
+        assert (state / 'logs').is_dir(), 'the directory the line redirects into exists before the job first fires'
+        assert f'{state / "logs"}' in line
+        assert _job_record(home, cron_scheduler, JOB) is not None
+        output = _output(capsys)
+        cron_note = 'The job is a crontab entry: it fires only while a cron daemon runs and does not catch up a missed day'
+        assert cron_note in output
+        assert f'Scheduled update: job {JOB} registered, every day at 03:30 local time' in output
+
+    def test_rerun_leaves_the_line_alone(
+        self, configs: Path, cron_scheduler: FakeScheduler, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """An unchanged configuration installs no second crontab."""
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        cron_scheduler.reload()
+        installs = len(cron_scheduler.creations())
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        cron_scheduler.reload()
+        assert len(cron_scheduler.creations()) == installs
+        assert f'Job {JOB}: unchanged (registered as the configuration asks)' in _output(capsys)
+
+    def test_changed_time_rewrites_the_line(
+        self, configs: Path, cron_scheduler: FakeScheduler, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A new time replaces the tagged line and only that line."""
+        self._seed_user_crontab(cron_scheduler)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        write_config(configs, 'env.yaml', _scheduled(time='04:00'))
+        capsys.readouterr()
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        cron_scheduler.reload()
+        lines = cron_scheduler.crontab_lines()
+        assert len(lines) == 2
+        assert lines[0] == self.OTHER_LINE
+        assert lines[1].startswith('0 4 * * * ')
+        assert lines[1].endswith(f'# {JOB}')
+        assert f'Job {JOB}: update (time 03:30 -> 04:00)' in _output(capsys)
+
+    def test_removing_the_key_removes_only_the_tagged_line(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, cron_scheduler: FakeScheduler,
+    ) -> None:
+        """The user's other lines survive the removal."""
+        home = e2e_isolated_home['home']
+        self._seed_user_crontab(cron_scheduler)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        write_config(configs, 'env.yaml', _unscheduled())
+
+        assert run_main(['--profile', 'team-1', *SKIP, '--yes']) == 0
+
+        cron_scheduler.reload()
+        assert cron_scheduler.crontab_lines() == [self.OTHER_LINE]
+        assert _job_record(home, cron_scheduler, JOB) is None
+        assert read_manifest(e2e_isolated_home['claude_dir'] / 'team-1')['auto_update'] is None
+
+    def test_switching_configuration_removes_only_the_tagged_line(
+        self, configs: Path, cron_scheduler: FakeScheduler, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--switch-config to a configuration without the key removes the job's line and keeps the rest."""
+        self._seed_user_crontab(cron_scheduler)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        other = write_config(configs, 'other.yaml', {'name': 'Other Env', 'user-settings': {'theme': 'light'}})
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        capsys.readouterr()
+
+        assert run_main([str(other), *SKIP, '--yes', '--command-names', 'team-1', '--switch-config']) == 0
+
+        cron_scheduler.reload()
+        assert cron_scheduler.crontab_lines() == [self.OTHER_LINE]
+        assert f'Removed the scheduled update job {JOB}' in _output(capsys)
+
+    def test_scheduled_child_run_completes_and_records(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, cron_scheduler: FakeScheduler, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The run a cron line starts completes against the same crontab shape and leaves its record."""
+        home = e2e_isolated_home['home']
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        runner = write_child_runner(tmp_path, monkeypatch)
+
+        child = _scheduled_child(runner, capture_output=True)
+
+        assert child.returncode == 0, child.stdout + child.stderr
+        record = _run_record(home, cron_scheduler, JOB)
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 0
+        assert 'Step 24:' in Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        cron_scheduler.reload()
+        assert len(cron_scheduler.creations()) == 1, 'the scheduled run leaves its own line alone'
+        assert JOB in cron_scheduler.jobs
+
+    def test_without_systemd_or_crontab_the_problem_reaches_the_summary_and_the_error_block(
+        self, e2e_isolated_home: dict[str, Path], configs: Path, fake_scheduler: FakeScheduler,
+        monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A Linux machine with neither scheduler installs everything else, names the problem and exits 1."""
+        from tests.e2e.conftest import _shaped_scheduler
+
+        fake = _shaped_scheduler(fake_scheduler, monkeypatch, platform_name='linux', systemd=False, crontab=False)
+        cfg = write_config(configs, 'env.yaml', _scheduled())
+
+        assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 1
+
+        fake.reload()
+        assert fake.creations() == []
+        output = _output(capsys)
+        problem = 'neither a systemd user manager nor the crontab command is available to schedule the job'
+        assert '[!]' in output
+        assert output.count(problem) >= 2, 'the summary before consent and Step 24 both name it'
+        assert 'The scheduled update job (auto-update) was not applied:' in output
+        assert f'The scheduled update job {JOB} cannot be registered: {problem}' in output
+        assert (e2e_isolated_home['claude_dir'] / 'team-1' / 'agents' / 'core.md').is_file(), 'the rest of the setup ran'
 
 
 GITHUB_CONFIG_URL = 'https://raw.githubusercontent.com/acme/private-configs/main/env.yaml'
+GITLAB_CONFIG_URL = 'https://gitlab.example.com/acme/private-configs/-/raw/main/env.yaml'
+GITLAB_BASE_URL = 'https://gitlab.example.com/acme/private-configs/-/raw/main/base.yaml'
+GITLAB_HOST = 'gitlab.example.com'
 
 
 class _Response:
@@ -591,32 +1013,97 @@ class _Response:
         return self.body
 
 
-class _PrivateGitHub:
-    """A urlopen stand-in for a private repository that answers only to one bearer token."""
+GITHUB_HOSTS = ('raw.githubusercontent.com', 'api.github.com')
 
-    def __init__(self, token: str, body: bytes) -> None:
-        self.token = token
-        self.body = body
+
+class _PrivateHosts:
+    """A urlopen stand-in for private repositories, each answering only to its own credential header.
+
+    A private GitHub file is fetched through the API host once the raw host
+    answered 401, so both GitHub hosts serve the GitHub entry.
+    """
+
+    def __init__(self, hosts: dict[str, tuple[str, str, bytes]]) -> None:
+        """Describe the hosts.
+
+        Args:
+            hosts: Per hostname, the header name the host checks, the value
+                it accepts, and the body it serves.
+        """
+        self.hosts = dict(hosts)
+        github = next((entry for host, entry in hosts.items() if host in GITHUB_HOSTS), None)
+        if github is not None:
+            for host in GITHUB_HOSTS:
+                self.hosts.setdefault(host, github)
         self.requests: list[Request] = []
 
     def __call__(self, request: Request, *_args: Any, **_kwargs: Any) -> _Response:
         """Answer one request.
 
         Returns:
-            The response when the bearer token matches.
+            The response when the credential header matches.
 
         Raises:
             urllib.error.HTTPError: 401 for every other request.
         """
         self.requests.append(request)
-        if request.get_header('Authorization') != f'Bearer {self.token}':
+        header, accepted, body = self.hosts[str(urllib.parse.urlparse(request.full_url).hostname)]
+        sent = {name.lower(): value for name, value in {**request.unredirected_hdrs, **request.headers}.items()}
+        if sent.get(header.lower()) != accepted:
             raise urllib.error.HTTPError(request.full_url, 401, 'Unauthorized', email.message.Message(), None)
-        return _Response(self.body)
+        return _Response(body)
+
+    def header_values(self, header: str) -> list[str]:
+        """Return every value sent for a header, across the requests.
+
+        Returns:
+            The values, in request order.
+        """
+        values: list[str] = []
+        for request in self.requests:
+            sent = {name.lower(): value for name, value in {**request.unredirected_hdrs, **request.headers}.items()}
+            if header.lower() in sent:
+                values.append(sent[header.lower()])
+        return values
+
+
+def _private_github(token: str, body: bytes) -> _PrivateHosts:
+    """A private GitHub repository answering only to one bearer token."""
+    return _PrivateHosts({'raw.githubusercontent.com': ('Authorization', f'Bearer {token}', body)})
+
+
+def _private_gitlab(token: str, body: bytes) -> _PrivateHosts:
+    """A private GitLab repository answering only to one private token."""
+    return _PrivateHosts({GITLAB_HOST: ('PRIVATE-TOKEN', token, body)})
+
+
+def _glab_logged_in(stubs: Path, token: str) -> None:
+    """A glab stub whose status report names the stored token for the host."""
+    write_cli_stub(
+        stubs, 'glab',
+        [
+            GITLAB_HOST,
+            f'  Logged in to {GITLAB_HOST} as me',
+            f'  Token found in configuration file (plaintext): {token}',
+        ],
+        stderr=True,
+    )
+
+
+def _glab_not_logged_in(stubs: Path) -> None:
+    """A glab stub that knows no login for the host."""
+    write_cli_stub(stubs, 'glab', [f'  {GITLAB_HOST}: no token found'], stderr=True, exit_code=1)
 
 
 @pytest.mark.usefixtures('e2e_isolated_home')
 class TestUnattendedCredentials:
-    """A private configuration is fetched with the logged-in host CLI's token when no variable applies."""
+    """A private configuration is fetched with the logged-in host CLI's token when no variable applies.
+
+    A job registered or kept for a private host warns unless the host is
+    covered by a login the CLI stores or by a variable in the environment
+    the scheduler hands the job; the shaped fakes answer the environment
+    probes (the registry on Windows, the user manager on Linux).
+    """
 
     @pytest.fixture
     def stubs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -624,7 +1111,7 @@ class TestUnattendedCredentials:
         directory = tmp_path / 'bin'
         directory.mkdir()
         monkeypatch.setenv('PATH', f'{directory}{os.pathsep}{os.environ.get("PATH", "")}')
-        for variable in ('GITHUB_TOKEN', 'GITLAB_TOKEN', 'REPO_TOKEN'):
+        for variable in ('GITHUB_TOKEN', 'GITLAB_TOKEN', 'REPO_TOKEN', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH'):
             monkeypatch.delenv(variable, raising=False)
         return directory
 
@@ -638,25 +1125,53 @@ class TestUnattendedCredentials:
     ) -> None:
         """GITHUB_TOKEN is absent, gh is logged in: the fetch authenticates with gh's token and never prints it."""
         write_cli_stub(stubs, 'gh', ['ghp_stub_token_value'])
-        private = _PrivateGitHub('ghp_stub_token_value', self._private_config())
+        private = _private_github('ghp_stub_token_value', self._private_config())
 
         with patch('scripts.setup_environment.urlopen', private):
             code = run_main([GITHUB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1'])
 
         assert code == 0
-        assert any(request.get_header('Authorization') == 'Bearer ghp_stub_token_value' for request in private.requests)
+        assert 'Bearer ghp_stub_token_value' in private.header_values('Authorization')
         output = _output(capsys)
         assert 'Using the stored GitHub CLI (gh) login for github.com' in output
         assert 'ghp_stub_token_value' not in output
         assert 'cannot authenticate' not in output, 'the gh login covers the scheduled job too'
         _registered_document(fake_scheduler, JOB)
 
+    def test_private_gitlab_configuration_is_fetched_with_the_glab_token(
+        self, stubs: Path, e2e_isolated_home: dict[str, Path], fake_scheduler: FakeScheduler,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """GITLAB_TOKEN is absent, glab is logged in: the fetch sends glab's token as PRIVATE-TOKEN and never prints it."""
+        _glab_logged_in(stubs, 'glpat-stub-token-value')
+        private = _private_gitlab('glpat-stub-token-value', self._private_config())
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([GITLAB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1'])
+
+        assert code == 0
+        assert 'glpat-stub-token-value' in private.header_values('PRIVATE-TOKEN')
+        output = _output(capsys)
+        assert f'Using the stored GitLab CLI (glab) login for {GITLAB_HOST}' in output
+        assert 'glpat-stub-token-value' not in output
+        assert 'cannot authenticate' not in output, 'the glab login covers the scheduled job too'
+        _registered_document(fake_scheduler, JOB)
+        home = e2e_isolated_home['home']
+        run_record = _run_record(home, fake_scheduler, JOB)
+        assert run_record is None
+        state_text = ''.join(
+            path.read_text(encoding='utf-8', errors='replace')
+            for path in _platform(home, fake_scheduler).state.rglob('*') if path.is_file()
+        )
+        manifest_text = (e2e_isolated_home['claude_dir'] / 'team-1' / 'manifest.json').read_text(encoding='utf-8')
+        assert 'glpat-stub-token-value' not in state_text + manifest_text
+
     def test_job_for_a_private_configuration_warns_without_an_unattended_credential(
         self, stubs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A token passed with --env lives in this run only, and gh is not logged in: the summary and Step 24 warn."""
         write_cli_stub(stubs, 'gh', ['no oauth token found for github.com'], stderr=True, exit_code=1)
-        private = _PrivateGitHub('ghp_for_this_run', self._private_config())
+        private = _private_github('ghp_for_this_run', self._private_config())
 
         with patch('scripts.setup_environment.urlopen', private):
             code = run_main([
@@ -670,6 +1185,42 @@ class TestUnattendedCredentials:
         assert 'gh auth login --hostname github.com' in output
         assert 'ghp_for_this_run' not in output
 
+    def test_job_for_a_private_gitlab_configuration_warns_when_glab_is_not_logged_in(
+        self, stubs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """GITLAB_TOKEN from --env reaches this run only, glab knows no login: the warning names the glab login."""
+        _glab_not_logged_in(stubs)
+        private = _private_gitlab('glpat-for-this-run', self._private_config())
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([
+                GITLAB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1', '--env', 'GITLAB_TOKEN=glpat-for-this-run',
+            ])
+
+        assert code == 0
+        output = _output(capsys)
+        assert f'The scheduled update job cannot authenticate to {GITLAB_HOST}' in output
+        assert f'glab auth login --hostname {GITLAB_HOST}' in output
+        assert 'GITLAB_TOKEN' in output
+        assert 'glpat-for-this-run' not in output
+
+    def test_masked_glab_token_is_not_used(
+        self, stubs: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A glab report that masks the token offers nothing: the fetch has no credential and fails without a prompt."""
+        _glab_logged_in(stubs, '**************')
+        private = _private_gitlab('glpat-real', self._private_config())
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([GITLAB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1'])
+
+        assert code == 1
+        assert private.header_values('PRIVATE-TOKEN') == [], 'the masked line is never sent as a token'
+        output = _output(capsys)
+        assert f'Authentication required for https://{GITLAB_HOST}/' in output
+        assert f'Checked the stored CLI login too: glab auth status --hostname {GITLAB_HOST} --show-token' in output
+        assert 'Using the stored GitLab CLI' not in output
+
     def test_public_configuration_warns_nothing(
         self, stubs: Path, configs: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
@@ -680,6 +1231,160 @@ class TestUnattendedCredentials:
         assert run_main([str(cfg), *SKIP, '--yes', '--command-names', 'team-1']) == 0
 
         assert 'cannot authenticate' not in _output(capsys)
+
+    def test_session_token_does_not_count_as_a_job_credential(
+        self, stubs: Path, windows_scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A GITHUB_TOKEN this shell exports is not in the task's environment: the warning fires and names setx."""
+        write_cli_stub(stubs, 'gh', ['no oauth token found for github.com'], stderr=True, exit_code=1)
+        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_session_only')
+        private = _private_github('ghp_session_only', self._private_config())
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([GITHUB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1'])
+
+        assert code == 0
+        output = _output(capsys)
+        assert 'The scheduled update job cannot authenticate to github.com' in output
+        assert 'setx GITHUB_TOKEN' in output
+        assert 'ghp_session_only' not in output
+        windows_scheduler.reload()
+        assert any(call[:3] == ['reg', 'query', r'HKCU\Environment'] for call in windows_scheduler.calls)
+
+    @pytest.mark.parametrize(
+        ('fixture', 'variable'),
+        [
+            ('windows_scheduler', 'GITHUB_TOKEN'),
+            ('windows_scheduler', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH'),
+            ('linux_scheduler', 'GITHUB_TOKEN'),
+            ('linux_scheduler', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH'),
+        ],
+    )
+    def test_job_visible_variable_covers_the_job(
+        self, stubs: Path, request: pytest.FixtureRequest, fixture: str, variable: str, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A token, or the auth override, in the environment the scheduler hands the job silences the warning."""
+        fake: FakeScheduler = request.getfixturevalue(fixture)
+        value = 'Authorization:Bearer ghp_persistent' if variable.endswith('ENV_AUTH') else 'ghp_persistent'
+        fake.environment[variable] = value
+        fake.save()
+        write_cli_stub(stubs, 'gh', ['no oauth token found for github.com'], stderr=True, exit_code=1)
+        monkeypatch.setenv(variable, fake.environment[variable])
+        private = _private_github('ghp_persistent', self._private_config())
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([GITHUB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1'])
+
+        assert code == 0
+        output = _output(capsys)
+        assert 'cannot authenticate' not in output
+        assert 'ghp_persistent' not in output
+
+    def test_every_private_host_of_the_configuration_is_checked(
+        self, stubs: Path, windows_scheduler: FakeScheduler, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A GitHub leaf inheriting a GitLab base, only the GitHub token job-visible: the warning names GitLab alone."""
+        windows_scheduler.environment['GITHUB_TOKEN'] = 'ghp_persistent'
+        windows_scheduler.save()
+        monkeypatch.setenv('GITHUB_TOKEN', 'ghp_persistent')
+        _glab_not_logged_in(stubs)
+        leaf = yaml.safe_dump(
+            {'name': 'Leaf', 'inherit': GITLAB_BASE_URL, 'auto-update': {'time': '03:30'}}, sort_keys=False,
+        ).encode('utf-8')
+        base = yaml.safe_dump({'name': 'Base', 'user-settings': {'theme': 'dark'}}, sort_keys=False).encode('utf-8')
+        private = _PrivateHosts({
+            'raw.githubusercontent.com': ('Authorization', 'Bearer ghp_persistent', leaf),
+            GITLAB_HOST: ('PRIVATE-TOKEN', 'glpat-for-this-run', base),
+        })
+
+        with patch('scripts.setup_environment.urlopen', private):
+            code = run_main([
+                GITHUB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1', '--env', 'GITLAB_TOKEN=glpat-for-this-run',
+            ])
+
+        assert code == 0, _output(capsys)
+        assert 'glpat-for-this-run' in private.header_values('PRIVATE-TOKEN'), 'the base was fetched from GitLab'
+        output = _output(capsys)
+        assert f'The scheduled update job cannot authenticate to {GITLAB_HOST}' in output
+        assert f'glab auth login --hostname {GITLAB_HOST}' in output
+        assert 'cannot authenticate to github.com' not in output
+        assert 'glpat-for-this-run' not in output
+        assert 'ghp_persistent' not in output
+
+
+PRIVATE_CHILD_RUNNER = '''\
+"""Child runner for a scheduled run whose configuration host refuses every request."""
+import email.message
+import urllib.error
+from unittest.mock import patch
+
+from scripts import setup_environment
+from tests.e2e.fixtures import setup_child
+
+_real_find = setup_environment.find_command
+
+
+def _find(name: str) -> str | None:
+    return '/usr/bin/claude' if name == 'claude' else _real_find(name)
+
+
+def _refuse(request, *_args, **_kwargs):
+    raise urllib.error.HTTPError(request.full_url, 401, 'Unauthorized', email.message.Message(), None)
+
+
+with (
+    patch.object(setup_environment, 'find_command', _find),
+    patch.object(setup_environment, 'ensure_local_bin_in_path', lambda: None),
+    patch.object(setup_environment, 'refresh_path_from_registry', lambda: None),
+    patch.object(setup_environment, 'urlopen', _refuse),
+):
+    setup_child.main()
+'''
+
+
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestScheduledRunNeverPrompts:
+    """A scheduled run owns a console on Windows, where a credential prompt would wait for a keypress nobody gives."""
+
+    @WINDOWS_ONLY
+    def test_private_configuration_without_a_credential_fails_fast_in_its_own_console(
+        self, e2e_isolated_home: dict[str, Path], fake_scheduler: FakeScheduler, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No variable, no gh login, a console of its own: the run exits 1 with the failure logged instead of waiting."""
+        home = e2e_isolated_home['home']
+        stubs = tmp_path / 'bin'
+        stubs.mkdir()
+        monkeypatch.setenv('PATH', f'{stubs}{os.pathsep}{os.environ.get("PATH", "")}')
+        write_cli_stub(stubs, 'gh', ['no oauth token found for github.com'], stderr=True, exit_code=1)
+        for variable in ('GITHUB_TOKEN', 'GITLAB_TOKEN', 'REPO_TOKEN', 'CLAUDE_CODE_TOOLBOX_ENV_AUTH'):
+            monkeypatch.delenv(variable, raising=False)
+        config = {'name': 'Private Env', 'user-settings': {'theme': 'dark'}, 'auto-update': {'time': '03:30'}}
+        private = _private_github('ghp_install_only', yaml.safe_dump(config, sort_keys=False).encode('utf-8'))
+        with patch('scripts.setup_environment.urlopen', private):
+            assert run_main([
+                GITHUB_CONFIG_URL, *SKIP, '--yes', '--command-names', 'team-1', '--env', 'GITHUB_TOKEN=ghp_install_only',
+            ]) == 0
+        write_child_runner(tmp_path, monkeypatch)
+        runner = tmp_path / 'private_runner.py'
+        runner.write_text(PRIVATE_CHILD_RUNNER, encoding='utf-8')
+
+        child = _scheduled_child(runner, creationflags=getattr(subprocess, 'CREATE_NEW_CONSOLE', 0), timeout=300)
+
+        assert child.returncode == 1
+        record = _run_record(home, fake_scheduler, JOB)
+        assert record is not None
+        assert record['outcome'] == 'completed'
+        assert record['exit_code'] == 1
+        text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
+        assert 'Authentication required for https://' in text
+        assert 'Checked the stored CLI login too: gh auth token --hostname github.com' in text
+        assert 'Would you like to enter the token now?' not in text
+        assert 'Finished: exit code 1' in text
+        assert not (_platform(home, fake_scheduler).state / 'update.lock').exists(), 'the lock is released'
 
 
 @pytest.mark.real_scheduler
@@ -708,6 +1413,8 @@ def test_real_scheduler_registers_queries_and_removes_a_job(tmp_path: Path) -> N
         assert registered is not None, 'the scheduler reports the registered job'
         if sys.platform == 'win32':
             assert name in registered
+        for directory in registration.directories:
+            assert directory.is_dir(), f'{directory} was not created for the job'
     finally:
         setup_environment.remove_job_registration(platform, name)
     assert setup_environment.query_job_registration(platform, name) is None

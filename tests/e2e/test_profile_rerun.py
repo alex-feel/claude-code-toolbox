@@ -29,6 +29,7 @@ import pytest
 import yaml
 
 from scripts import setup_environment
+from tests.e2e.fake_scheduler import FakeScheduler
 from tests.e2e.profile_support import home_state
 from tests.e2e.profile_support import read_manifest
 from tests.e2e.profile_support import run_main
@@ -834,6 +835,101 @@ class TestProfileAll:
         run.assert_not_called()
         assert 'Administrator Privileges Required' in output
         assert f'  - {expected_reason}' in output
+
+    def _install_scheduled_profiles(self, configs: Path) -> Path:
+        """A plain base, two full profiles from a configuration with auto-update, and a dependent linked from the first."""
+        base = write_config(configs, 'base.yaml', {'name': 'Base', 'agents': ['agents/core.md']})
+        scheduled = write_config(configs, 'sched.yaml', {
+            'name': 'Scheduled', 'agents': ['agents/extra.md'], 'auto-update': {'time': '03:30'},
+        })
+        assert run_main([str(base), *SKIP, '--yes']) == 0
+        assert run_main([str(scheduled), *SKIP, '--yes', '--command-names', 'team-1']) == 0
+        assert run_main([str(scheduled), *SKIP, '--yes', '--command-names', 'team-2']) == 0
+        linked = [str(scheduled), *SKIP, '--yes', '--command-names', 'team-3', '--link-dirs', 'all', '--link-from', 'team-1']
+        assert run_main(linked) == 0
+        return scheduled
+
+    def test_refreshes_the_daily_update_jobs_of_the_full_profiles_only(
+        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str],
+        fake_scheduler: FakeScheduler,
+    ) -> None:
+        """Every full profile keeps its own job, unchanged, and the linked dependent gets none."""
+        self._install_scheduled_profiles(configs)
+        fake_scheduler.reload()
+        assert sorted(fake_scheduler.jobs) == ['cc-toolbox-update-team-1', 'cc-toolbox-update-team-2']
+        creations = len(fake_scheduler.creations())
+        runner = self._runner(tmp_path, monkeypatch)
+        capfd.readouterr()
+
+        code = run_main(['--profile', 'all', *SKIP, '--yes'], argv0=str(runner))
+
+        captured = capfd.readouterr()
+        output = (captured.out + captured.err).replace('\r\n', '\n')
+        assert code == 0, output
+        fake_scheduler.reload()
+        assert sorted(fake_scheduler.jobs) == ['cc-toolbox-update-team-1', 'cc-toolbox-update-team-2']
+        assert len(fake_scheduler.creations()) == creations, 'an unchanged job is not registered again'
+        assert 'Job cc-toolbox-update-team-1: unchanged (registered as the configuration asks)' in output
+        assert 'Job cc-toolbox-update-team-2: unchanged (registered as the configuration asks)' in output
+        assert 'Job: none (the profile links content from profile "team-1", whose job refreshes it)' in output
+        assert 'Step 24: No scheduled update job (auto-update not declared)' in output, 'the plain base has none'
+
+    def test_non_admin_windows_parent_elevates_for_the_jobs_only_when_one_changes(
+        self, configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+        fake_scheduler: FakeScheduler,
+    ) -> None:
+        """The parent plans each job from the snapshot, the manifest and the scheduler: unchanged jobs prompt for nothing."""
+        self._install_scheduled_profiles(configs)
+        runner = self._runner(tmp_path, monkeypatch)
+        real_decide = setup_environment.refresh_all_elevation_reasons
+
+        def _decide_as_windows(
+            profiles: list[setup_environment.InstalledProfile], args: argparse.Namespace,
+        ) -> list[str]:
+            with patch.object(setup_environment.platform, 'system', return_value='Windows'):
+                return real_decide(profiles, args)
+
+        elevations: list[list[str] | None] = []
+
+        def _elevate(script_args: list[str] | None = None) -> None:
+            elevations.append(script_args)
+            raise SystemExit(0)
+
+        capsys.readouterr()
+
+        with (
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'refresh_all_elevation_reasons', side_effect=_decide_as_windows),
+            patch.object(setup_environment, 'request_admin_elevation', side_effect=_elevate),
+        ):
+            unchanged = run_main(['--profile', 'all', '--skip-install', '--yes'], argv0=str(runner))
+
+        output = _output(capsys)
+        assert unchanged == 0, output
+        assert elevations == [], 'unchanged jobs are no reason to elevate'
+        assert 'Administrator Privileges Required' not in output
+        assert '* team-2: ok' in output, 'the children ran'
+        # The job of team-2 is gone from the scheduler (deleted by hand): its
+        # run has to register it again, which on Windows needs the elevated run
+        fake_scheduler.reload()
+        assert fake_scheduler.jobs.pop('cc-toolbox-update-team-2') is not None
+        fake_scheduler.save()
+        capsys.readouterr()
+
+        with (
+            patch.object(setup_environment, 'is_admin', return_value=False),
+            patch.object(setup_environment, 'refresh_all_elevation_reasons', side_effect=_decide_as_windows),
+            patch.object(setup_environment, 'request_admin_elevation', side_effect=_elevate),
+            patch.object(setup_environment.subprocess, 'run') as run,
+        ):
+            changed = run_main(['--profile', 'all', '--skip-install', '--yes'], argv0=str(runner))
+
+        output = _output(capsys)
+        assert changed == 0, output
+        assert elevations == [None], 'a job that must be registered again needs the elevated run, requested once'
+        run.assert_not_called()
+        assert 'Administrator Privileges Required' in output
+        assert f'  - {setup_environment.SCHEDULED_UPDATE_ELEVATION_REASON}' in output
 
     def test_dry_run_previews_every_child(
         self, e2e_isolated_home: dict[str, Path], configs: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
