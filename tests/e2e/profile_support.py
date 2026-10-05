@@ -84,6 +84,7 @@ def run_main(
     answers: list[str] | None = None,
     argv0: str = 'setup_environment.py',
     os_env_writes: list[dict[str, str | None]] | None = None,
+    claude_path: str | None = '/usr/bin/claude',
     validation_result: tuple[bool, list[tuple[str, str, bool, str]]] = (True, []),
 ) -> int:
     """Run main() with the given arguments and return its exit code.
@@ -103,6 +104,8 @@ def run_main(
         argv0: The program name main() sees.
         os_env_writes: When given, every dict the run hands to the OS
             environment writer is appended to it.
+        claude_path: What the run finds when it looks for the Claude Code
+            binary; None makes the presence check of Step 1 fail.
         validation_result: What the remote validation of the run's files
             reports: every file accessible by default, or a failure with
             its ``(file_type, path, is_valid, method)`` rows.
@@ -114,7 +117,7 @@ def run_main(
     remaining = list(answers or [])
 
     def _find_command(name: str) -> str | None:
-        return '/usr/bin/claude' if name == 'claude' else original_find(name)
+        return claude_path if name == 'claude' else original_find(name)
 
     def _read_answer(_prompt: str) -> str:
         return remaining.pop(0) if remaining else ''

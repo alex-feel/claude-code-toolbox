@@ -1,9 +1,10 @@
-"""E2E tests for --command-names, --profile and the link flags through the platform bootstrap wrappers.
+"""E2E tests for --command-names, --profile, the link flags and --run-all-commands through the platform bootstrap wrappers.
 
 The wrappers download setup_environment.py and run it with uv, forwarding
 every user argument verbatim, and leave CLAUDE_CODE_TOOLBOX_ENV_CONFIG,
 CLAUDE_CODE_TOOLBOX_COMMAND_NAMES, CLAUDE_CODE_TOOLBOX_PROFILE,
-CLAUDE_CODE_TOOLBOX_LINK_DIRS and CLAUDE_CODE_TOOLBOX_LINK_FROM in the
+CLAUDE_CODE_TOOLBOX_LINK_DIRS, CLAUDE_CODE_TOOLBOX_LINK_FROM and
+CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS in the
 environment the script reads: a configuration from the variable never
 reaches the command line, which is how the script tells a typed
 configuration from one set in the environment. A --profile re-run needs no
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,7 +30,10 @@ from pathlib import Path
 import pytest
 
 from scripts import setup_environment
+from tests.e2e.profile_support import run_main
 
+# Color codes the setup's summary rows can carry, stripped before text assertions
+_ANSI_SEQUENCE = re.compile(r'\x1b\[[0-9;]*m')
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / 'scripts'
 
@@ -226,6 +231,68 @@ class TestUnixWrapperLinks:
         assert f'projects -> {tmp_path / "home" / ".claude" / "projects"} [create]' in output
 
 
+def _install_source_and_dependent(tmp_path: Path) -> None:
+    """Install a profile with a shared dependency command and a second profile linking all from it, in the wrapper's home.
+
+    The runs go through main() in this process against the home the
+    e2e_isolated_home fixture made at ``tmp_path / 'home'``, which is the
+    home the wrapper's subprocess resolves too.
+    """
+    config = tmp_path / 'team.yaml'
+    config.write_text(
+        'name: Wrapper Team\nagents: []\ndependencies:\n  common:\n  - echo shared\n', encoding='utf-8',
+    )
+    skip = ['--skip-install', '--no-admin', '--yes']
+    assert run_main([str(config), *skip, '--command-names', 'team-1']) == 0
+    assert run_main([str(config), *skip, '--command-names', 'team-2', '--link-dirs', 'all', '--link-from', 'team-1']) == 0
+
+
+@pytest.mark.parametrize('platform_dir', UNIX_WRAPPERS)
+@pytest.mark.usefixtures('e2e_isolated_home')
+class TestUnixWrapperRunAllCommands:
+    """The bash wrappers hand --run-all-commands and its variable to the setup script."""
+
+    def test_dependent_preview_leaves_the_shared_command_to_the_source(self, platform_dir: str, tmp_path: Path) -> None:
+        """Without the flag the dependent's preview names the command its source runs."""
+        _install_source_and_dependent(tmp_path)
+
+        result = _run_unix_wrapper(
+            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'], {},
+        )
+
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
+        assert result.returncode == 0, output
+        assert '[from source team-1] echo shared' in output
+
+    def test_flag_reaches_the_setup_script(self, platform_dir: str, tmp_path: Path) -> None:
+        """--run-all-commands is forwarded verbatim, so the dependent's preview lists the command as its own."""
+        _install_source_and_dependent(tmp_path)
+
+        result = _run_unix_wrapper(
+            tmp_path, _unix_wrapper(platform_dir),
+            ['--profile', 'team-2', '--skip-install', '--dry-run', '--run-all-commands'], {},
+        )
+
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
+        assert result.returncode == 0, output
+        assert 'from source' not in output
+        assert '$ echo shared' in output
+
+    def test_variable_reaches_the_setup_script(self, platform_dir: str, tmp_path: Path) -> None:
+        """CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1 passes through the wrapper's environment unchanged."""
+        _install_source_and_dependent(tmp_path)
+
+        result = _run_unix_wrapper(
+            tmp_path, _unix_wrapper(platform_dir), ['--profile', 'team-2', '--skip-install', '--dry-run'],
+            {'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'},
+        )
+
+        output = _ANSI_SEQUENCE.sub('', result.stdout + result.stderr)
+        assert result.returncode == 0, output
+        assert 'from source' not in output
+        assert '$ echo shared' in output
+
+
 def _install_profile_manifest(tmp_path: Path, name: str) -> Path:
     """Record an installed profile in the wrapper's home, with a configuration beside it.
 
@@ -365,6 +432,7 @@ function uv {
         profile = $env:CLAUDE_CODE_TOOLBOX_PROFILE
         link_dirs = $env:CLAUDE_CODE_TOOLBOX_LINK_DIRS
         link_from = $env:CLAUDE_CODE_TOOLBOX_LINK_FROM
+        run_all_commands = $env:CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS
     }
     $record | ConvertTo-Json | Set-Content -LiteralPath $env:E2E_RECORD -Encoding utf8
     $global:LASTEXITCODE = 0
@@ -385,8 +453,9 @@ def _run_windows_wrapper(
 
     Returns:
         What uv received (``args``, ``config``, ``command_names``,
-        ``profile``, ``link_dirs``, ``link_from``), or the wrapper's output
-        under ``output`` when it stopped before running uv.
+        ``profile``, ``link_dirs``, ``link_from``, ``run_all_commands``), or
+        the wrapper's output under ``output`` when it stopped before running
+        uv.
     """
     home = tmp_path / 'home'
     home.mkdir(exist_ok=True)
@@ -397,7 +466,7 @@ def _run_windows_wrapper(
     env = {**os.environ, 'USERPROFILE': str(home), 'E2E_RECORD': str(record), **extra_env}
     for variable in (
         'CLAUDE_CODE_TOOLBOX_PROFILE', 'CLAUDE_CODE_TOOLBOX_ENV_CONFIG', 'CLAUDE_CODE_TOOLBOX_COMMAND_NAMES',
-        'CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'CLAUDE_CODE_TOOLBOX_LINK_FROM',
+        'CLAUDE_CODE_TOOLBOX_LINK_DIRS', 'CLAUDE_CODE_TOOLBOX_LINK_FROM', 'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS',
     ):
         env.pop(variable, None)
     env.update(extra_env)
@@ -498,6 +567,31 @@ class TestWindowsWrapperLinks:
         assert recorded['command_names'] == 'team-2'
         assert recorded['link_dirs'] == 'all'
         assert recorded['link_from'] == 'team-1'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')
+class TestWindowsWrapperRunAllCommands:
+    """The PowerShell wrapper hands --run-all-commands and its variable to the setup script."""
+
+    def test_flag_is_forwarded_verbatim(self, tmp_path: Path) -> None:
+        """--run-all-commands typed beside --profile reaches setup_environment.py unchanged."""
+        recorded = _run_windows_wrapper(tmp_path, ['--profile', 'team-2', '--run-all-commands', '--dry-run'], {})
+
+        assert recorded['args'] == [
+            'run', '--no-project', '--python', '3.12', 'setup_environment.py',
+            '--profile', 'team-2', '--run-all-commands', '--dry-run',
+        ]
+        assert recorded['run_all_commands'] is None
+
+    def test_variable_reaches_the_setup_script(self, tmp_path: Path) -> None:
+        """The one-liner form carries the variable through the wrapper's environment unchanged."""
+        recorded = _run_windows_wrapper(
+            tmp_path, [], {'CLAUDE_CODE_TOOLBOX_PROFILE': 'team-2', 'CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS': '1'},
+        )
+
+        assert recorded['args'] == ['run', '--no-project', '--python', '3.12', 'setup_environment.py']
+        assert recorded['profile'] == 'team-2'
+        assert recorded['run_all_commands'] == '1'
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='the PowerShell wrapper runs only on Windows')

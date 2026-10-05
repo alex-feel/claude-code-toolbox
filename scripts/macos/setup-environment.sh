@@ -13,6 +13,9 @@
 #   export CLAUDE_CODE_TOOLBOX_LINK_FROM=<source profile>
 # To re-run an installed profile from its manifest, no configuration needed (same as --profile):
 #   export CLAUDE_CODE_TOOLBOX_PROFILE=<name>
+# To make a profile that links content from another profile install Claude Code, the IDE extension and Node.js
+# and run every dependency command itself, instead of leaving that work to its source's run (same as --run-all-commands):
+#   export CLAUDE_CODE_TOOLBOX_RUN_ALL_COMMANDS=1
 
 set -euo pipefail
 
