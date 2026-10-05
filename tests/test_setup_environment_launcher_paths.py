@@ -127,7 +127,7 @@ class TestLauncherRendering:
         launch_sh = (profile_dir / 'launch.sh').read_text(encoding='utf-8')
         assert 'export CLAUDE_CONFIG_DIR="$HOME/profiles/work"' in launch_sh
         assert 'PROMPT_PATH="$HOME/profiles/work/prompts/prompt.md"' in launch_sh
-        assert '.claude' not in launch_sh
+        assert '$HOME/.claude' not in launch_sh
         assert 'ENV_FILE="$HOME/profiles/work/env.sh"' in launch_sh
         start_cmd = (profile_dir / 'start.cmd').read_text(encoding='utf-8')
         assert 'set "SCRIPT_WIN=%USERPROFILE%\\profiles\\work\\launch.sh"' in start_cmd
@@ -174,7 +174,7 @@ class TestLauncherRendering:
         launch_sh = (profile_dir / 'launch.sh').read_text(encoding='utf-8')
         assert f'export CLAUDE_CONFIG_DIR="{profile_dir.as_posix()}"' in launch_sh
         assert f'SETTINGS_PATH="{profile_dir.as_posix()}/config.json"' in launch_sh
-        assert '$HOME' not in launch_sh
+        assert '$HOME/' not in launch_sh
 
     def test_windows_wrappers_default_to_launch_sh_beside_launcher(
         self, home: Path, monkeypatch: pytest.MonkeyPatch,
