@@ -16780,9 +16780,10 @@ fi
 # load the base profile's skills, agents and commands as a project's. cygpath
 # -lm gives the long spelling of the working directory in mixed form: each 8.3
 # component comes back as the long name the filesystem holds, letter case
-# included, and the drive letter comes back uppercase, while a component given
-# with its long name in another letter case keeps that case, which the case
-# classes of the base exclusions cover. -ef confirms the long spelling names
+# included, and the drive letter comes back uppercase. A component given with
+# its long name in another letter case comes back in the filesystem's case
+# when that name fits the 8.3 shape (Users) and as typed when it is longer,
+# which the case classes of the base exclusions cover. -ef confirms the long spelling names
 # the same directory before the change, and a failed cygpath or cd leaves the
 # working directory as it was. Outside the home the base profile is no
 # ancestor of the session, and the block runs there too, so one folder reaches

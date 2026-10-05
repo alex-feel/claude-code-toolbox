@@ -16,9 +16,10 @@ folder outside it: one folder is always one spelling to Claude Code, which
 reports the working directory it receives letter for letter. Each 8.3
 component comes back as the long name the filesystem holds, letter case
 included, and the drive letter comes back uppercase (``c:\\...`` starts the
-session in ``C:\\...``); a component spelled with its long name in another
-letter case keeps that case, which is why the base exclusions spell every
-letter as a case class.
+session in ``C:\\...``). A component spelled with its long name in another
+letter case comes back in the filesystem's case when that name fits the 8.3
+shape and as typed when it is longer, which is why the base exclusions spell
+every letter as a case class.
 
 The stub claude records the working directory it starts in. The tests start
 the launchers from a project below the isolated home, spelled long, with the
@@ -144,8 +145,9 @@ def _assert_long_spelling(record: LaunchRecord, directory: Path, label: str, *, 
             letter for letter. Replacing an 8.3 component restores the long
             name the filesystem holds with its own letter case, so a launch
             from a short-spelled directory is held to that; a component
-            given with its long name in another letter case keeps that case,
-            so a launch from a lowercased directory is not.
+            given with its long name in another letter case keeps the typed
+            case unless that name fits the 8.3 shape, so a launch from a
+            lowercased directory is not.
     """
     assert '~' not in record.cwd, f'{label} started claude in {record.cwd}'
     assert record.cwd[:1] == record.cwd[:1].upper(), f'{label} started claude in {record.cwd}'
