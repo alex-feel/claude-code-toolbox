@@ -457,6 +457,7 @@ Install Node.js LTS before processing dependencies. Used when MCP servers or too
 - **Type:** `bool | None`
 - **Default:** `None`
 - **Note:** When `true`, only checks the minimum Node.js version (>= 18.0.0), not Claude Code npm compatibility
+- **npm check:** After this step, on every run whether or not `install-nodejs` is set, setup compares the version `npm --version` reports with the npm bundled beside the Node.js on PATH. When an older npm in the npm global prefix runs instead, Step 5 prints a warning with both versions, both paths and the commands that remove or update that copy, and the completion summary repeats it; setup changes neither copy. See [npm in the global prefix runs instead of the bundled npm](#npm-in-the-global-prefix-runs-instead-of-the-bundled-npm).
 - **Inheritance:** Standard override (child replaces parent)
 - **Example:** `install-nodejs: true`
 
@@ -2094,7 +2095,7 @@ Here is a conceptual overview of what the setup script does when you run it with
 2. **Install IDE extensions** -- Installs the pinned-version Claude Code extension into detected VS Code family IDEs, selecting the VSIX build matching the host targetPlatform. Skipped if no version is pinned or `--skip-install` is used. When the pinned version has no matching marketplace extension for the host platform (every download URL returns HTTP 404), the step prints a warning and skips installation, leaving each IDE's current extension in place.
 3. **Create directories and links** -- Creates `~/.claude/agents/`, `commands/`, `rules/`, `prompts/`, `hooks/`, and `skills/` directories, and for a profile with `link-dirs` every link before any content step: a missing link is created, a link that points elsewhere is repaired, and a real directory with content is moved aside only when a value typed for this run asks for it (see [`link-dirs`](#link-dirs)).
 4. **Download custom files** -- Processes `files-to-download` entries.
-5. **Install Node.js** -- If `install-nodejs: true` is set in the config.
+5. **Install Node.js** -- If `install-nodejs: true` is set in the config. Then, on every run, warns when an older npm in the npm global prefix runs instead of the npm bundled with Node.js (see [npm in the global prefix runs instead of the bundled npm](#npm-in-the-global-prefix-runs-instead-of-the-bundled-npm)).
 6. **Install dependencies** -- Runs platform-specific dependency commands. Failed global npm installs are retried with sudo on Linux/macOS/WSL when the npm global prefix is not user-writable; every failed dependency is listed in the end-of-run error block and causes exit code 1.
 7. **Set OS environment variables** -- A base run writes every `os-env-variables` entry to the OS environment (a `null` value deletes the variable). An isolated run writes only the three machine-wide binary controls there and rebuilds its env loader files from every other entry (`env.sh`, which `launch.sh` sources at session start, plus `env.fish`, `env.ps1` and `env.cmd` for sourcing by hand), `null` entries as unset lines -- header-only when the configuration declares no profile variable, so stale lines are cleared.
 8. **Process agents** -- Downloads agent Markdown files to `~/.claude/agents/`.
@@ -2617,6 +2618,25 @@ dependencies:
   macos:  # Correct
     - "brew install wget"
 ```
+
+### npm in the global prefix runs instead of the bundled npm
+
+`npm install -g npm@<version>` installs a separate npm into the npm global prefix: `%APPDATA%\npm\node_modules\npm` with `npm` and `npx` shims beside it on Windows, `<prefix>/lib/node_modules/npm` with `<prefix>/bin/npm` on Linux and macOS. On Windows the `npm.cmd` shim of Node.js runs that copy whenever it exists; on Linux and macOS it runs when `<prefix>/bin` comes before the Node.js bin directory on PATH. Each later Node.js upgrade installs a newer bundled npm that never runs, and a dependency command that relies on a newer npm option fails or prints warnings such as `npm warn Unknown cli config "--allow-scripts"`.
+
+Step 5 checks for this on every run. It runs `npm --version` and compares the result with the `package.json` version of the npm bundled with the Node.js on PATH (`node_modules\npm` beside `node.exe` on Windows, `lib/node_modules/npm` beside the `bin` directory elsewhere). When npm reports an older version, it runs `npm config get prefix` to confirm that the global-prefix copy holds that version, then prints:
+
+```text
+  WARN: npm 11.8.0 in the npm global prefix runs instead of the npm 11.17.0 bundled with Node.js
+  WARN:   Global prefix copy: C:\Users\me\AppData\Roaming\npm\node_modules\npm
+  WARN:   Bundled copy: C:\Program Files\nodejs\node_modules\npm
+  WARN:   To run the bundled copy, remove the global prefix copy: npm uninstall -g npm
+  WARN:   Or update the global prefix copy to the bundled version: npm install -g npm@11.17.0
+  INFO: Setup leaves both copies unchanged
+```
+
+The completion summary repeats the warning, and so does the error block of a run that completes with errors. Setup changes neither copy, so run one of the two commands yourself. After `npm uninstall -g npm`, npm runs the copy each Node.js upgrade brings; an updated prefix copy falls behind again at the next upgrade.
+
+Setup prints no warning when npm runs the bundled copy or a copy at least as new, and none when it cannot determine a version: no Node.js or bundled npm, an unreadable `package.json`, npm missing or failing, or a probe that runs longer than 30 seconds. The check never changes the outcome of the run. Its npm probes run with `NPM_CONFIG_UPDATE_NOTIFIER=false` and `NPM_CONFIG_LOGS_MAX=0`, so they query no registry and write no debug log.
 
 ### SKILL.md is required in the files list
 
